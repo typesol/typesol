@@ -72,12 +72,11 @@ export abstract class EmitterBase {
   }
 
   protected line(s: string) {
-    // After a CPI the callee may have resized or created accounts: refresh the cached lengths from the input buffer.
-    const cpi = /^(TS_TRY\()?(sol_invoke|ts_cpi\(|ts_token_|ts_ata_create|ts_mpl_|ts_t22_init_metadata|ts_system_transfer|ts_init_extra_metas)/.test(s.trim());
     // Runtime failures name the TypeScript line they come from: "TypeSOL: arithmetic overflow (vault.ts:42)".
     if (this.where) s = s.replace(/"TypeSOL: ((?:[^"\\]|\\.)*)"\)/g, (_, msg: string) => `"TypeSOL: ${msg} (${cString(this.where!).slice(1, -1)})")`);
+    // `*(&a_x->key)` reads the key in place: write it as `a_x->key`.
+    s = s.replace(/\*\(&(\w+->(?:key|owner))\)/g, "$1");
     this.lines.push("  ".repeat(this.indent) + s);
-    if (cpi) this.lines.push("  ".repeat(this.indent) + "ts_refresh_lens(params);");
   }
 
   /** `file.ts:line` of a node, for messages. */

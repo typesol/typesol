@@ -9,31 +9,31 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(TSS_Counter) == 41, "TSS_Counter layout");
 static const uint8_t TS_DISC_Counter[8] = {255, 176, 4, 245, 188, 253, 124, 25};
 
-__attribute__((noinline)) static uint64_t ix_initialize(SolParameters *params) {
+__attribute__((noinline)) static uint64_t ix_initialize(TsParams *params) {
   if (params->ka_num < 3) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");
-  SolAccountInfo *a_authority = &params->ka[0];
+  TsAccount *a_authority = params->ka[0];
   TS_TRY(ts_check_signer(a_authority));
   TS_TRY(ts_check_writable(a_authority));
-  SolAccountInfo *a_counter = &params->ka[1];
+  TsAccount *a_counter = params->ka[1];
   TS_TRY(ts_check_writable(a_counter));
   TSS_Counter *d_counter = (TSS_Counter *)(a_counter->data + 8);
-  SolAccountInfo *a_systemProgram = &params->ka[2];
+  TsAccount *a_systemProgram = params->ka[2];
   TS_TRY(ts_check_address(a_systemProgram, &TS_SYSTEM_PROGRAM_ID));
-  if (ts_key_eq(a_authority->key, a_counter->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: authority and counter must be different accounts");
-  SolSignerSeed seeds0[3] = {{(const uint8_t *)"counter", 7}, {(const uint8_t *)(a_authority->key), 32}};
+  if (a_authority == a_counter) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: authority and counter must be different accounts");
+  SolSignerSeed seeds0[3] = {{(const uint8_t *)"counter", 7}, {(const uint8_t *)(&a_authority->key), 32}};
   uint8_t bump1;
   TS_TRY(ts_create_pda(params, a_authority, a_counter, seeds0, 2, TS_DISC_Counter, 8 + sizeof(TSS_Counter), &bump1));
   d_counter->bump = bump1;
-  d_counter->authority = *(a_authority->key);
+  d_counter->authority = a_authority->key;
   d_counter->count = 0ULL;
   return SUCCESS;
 }
 
-__attribute__((noinline)) static uint64_t ix_increment(SolParameters *params) {
+__attribute__((noinline)) static uint64_t ix_increment(TsParams *params) {
   if (params->ka_num < 2) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");
-  SolAccountInfo *a_authority = &params->ka[0];
+  TsAccount *a_authority = params->ka[0];
   TS_TRY(ts_check_signer(a_authority));
-  SolAccountInfo *a_counter = &params->ka[1];
+  TsAccount *a_counter = params->ka[1];
   TS_TRY(ts_check_writable(a_counter));
   TS_TRY(ts_check_program_account(a_counter, params->program_id, TS_DISC_Counter, sizeof(TSS_Counter)));
   TSS_Counter *d_counter = (TSS_Counter *)(a_counter->data + 8);
@@ -42,16 +42,16 @@ __attribute__((noinline)) static uint64_t ix_increment(SolParameters *params) {
   uint64_t arg_by = (uint64_t)ts_read_le(params->data + off, 8);
   off += 8;
   (void)off;
-  if (!ts_key_eq((&d_counter->authority), a_authority->key)) TS_FAIL(6000, "Error 6000 Unauthorized: Only the counter's authority can change it (counter.ts:21)");
+  if (!ts_key_eq((&d_counter->authority), &a_authority->key)) TS_FAIL(6000, "Error 6000 Unauthorized: Only the counter's authority can change it (counter.ts:21)");
   uint64_t t0;
   if (ts_add_overflow_u64(d_counter->count, arg_by, &t0)) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow (counter.ts:22)");
   d_counter->count = t0;
   return SUCCESS;
 }
 
-__attribute__((noinline)) static uint64_t ix_assert_at_least(SolParameters *params) {
+__attribute__((noinline)) static uint64_t ix_assert_at_least(TsParams *params) {
   if (params->ka_num < 1) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");
-  SolAccountInfo *a_counter = &params->ka[0];
+  TsAccount *a_counter = params->ka[0];
   TS_TRY(ts_check_program_account(a_counter, params->program_id, TS_DISC_Counter, sizeof(TSS_Counter)));
   TSS_Counter *d_counter = (TSS_Counter *)(a_counter->data + 8);
   uint64_t off = 8;
@@ -63,11 +63,9 @@ __attribute__((noinline)) static uint64_t ix_assert_at_least(SolParameters *para
   return SUCCESS;
 }
 
-#define TS_MAX_ACCOUNTS 32
+_Static_assert(TS_MAX_ACCOUNTS == 32, "TS_MAX_ACCOUNTS");
 extern uint64_t entrypoint(const uint8_t *input) {
-  SolAccountInfo ka[TS_MAX_ACCOUNTS];
-  SolParameters params;
-  params.ka = ka; /* ts_deserialize fills in the rest */
+  TsParams params; /* filled in by ts_deserialize */
   if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: at most 32 accounts per instruction");
   ts_deserialize(input, &params);
   if (params.data_len < 8) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSOL: instruction data too short");

@@ -63,6 +63,11 @@ describe("subset enforcement", () => {
       `export function f(p: UncheckedProgram, a: Mut<AccountInfo>): void { invoke(p, [writableSigner(a)], []); }`,
       /did not sign/,
     ],
+    [
+      "invoke with more than 32 accounts",
+      `export function f(p: UncheckedProgram, a: AccountInfo): void { invoke(p, [${Array(33).fill("readonly(a)").join(", ")}], []); }`,
+      /invoke takes at most 32 accounts/,
+    ],
     ["CPI helpers outside invoke", `export function f(a: AccountInfo): void { const x = readonly(a); }`, /only valid inside the accounts list/],
     ["invoking a non-program", `export function f(a: AccountInfo): void { invoke(a as never, [], []); }`, /program must be/],
     ["emit without a type argument", `export interface Ev { v: u64; }\nexport function f(): void { emit({ v: 1n }); }`, /explicit event type/],

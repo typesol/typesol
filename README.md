@@ -21,8 +21,8 @@ Codama and explorer tooling work with TypeSOL programs unchanged.
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.
-- **Small and fast.** On the same programs, TypeSOL uses 6–46% of Anchor's compute units, with binaries about 10×
-  smaller. It is faster than native Rust and close to hand-tuned Pinocchio (see the [numbers](#numbers)).
+- **Small and fast.** On the same programs, TypeSOL uses 5–46% of Anchor's compute units, with binaries about 10×
+  smaller. It is faster than native Rust and than hand-tuned Pinocchio on every benchmarked instruction (see the [numbers](#numbers)).
 - **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` checks a deployed program
   against its source.
 
@@ -204,24 +204,28 @@ Subpath exports: `typesol/compiler`, `typesol/workspace`, `typesol/cpi`, `typeso
 
 ## Numbers
 
-The same counter and vault programs, written four ways. All four use the same instruction encoding, account layout
-and checks. They get identical transactions in LiteSVM and must end in identical account state. The table shows mean
-compute units per call:
+The same counter, vault and escrow programs, written four ways. All four use the same instruction encoding, account
+layout and checks. They get identical transactions in LiteSVM and must end in identical account state. The table
+shows mean compute units per call:
 
 | Instruction | TypeSOL | Anchor 1.0.2 | Native Rust | Pinocchio 0.10 |
 | --- | ---: | ---: | ---: | ---: |
-| counter.initialize | 3,048 | 6,573 | 4,601 | 3,186 |
-| counter.increment | 143 | 2,323 | 857 | 113 |
-| vault.open | 3,062 | 6,627 | 4,613 | 3,185 |
-| vault.deposit | 1,358 | 4,355 | 2,832 | 1,377 |
-| vault.withdraw | 352 | 3,628 | 1,176 | 370 |
-| vault.shut | 201 | 2,024 | 950 | 167 |
-| binary, counter / vault | 12.3 / 16.1 KB | 145.2 / 158.9 KB | 27.9 / 35.0 KB | 19.6 / 22.9 KB |
+| counter.initialize | 3,030 | 6,573 | 4,601 | 3,186 |
+| counter.increment | 110 | 2,323 | 857 | 113 |
+| vault.open | 3,044 | 6,627 | 4,613 | 3,185 |
+| vault.deposit | 1,314 | 4,355 | 2,832 | 1,377 |
+| vault.withdraw | 315 | 3,628 | 1,176 | 370 |
+| vault.shut | 161 | 2,024 | 950 | 167 |
+| escrow.make | 5,974 | 13,304 | 9,240 | 6,179 |
+| escrow.take | 4,035 | 14,365 | 8,500 | 4,051 |
+| escrow.refund | 2,716 | 8,449 | 5,695 | 2,769 |
+| binary, counter / vault / escrow | 12.8 / 16.1 / 23.5 KB | 145.2 / 158.9 / 190.7 KB | 27.9 / 35.0 / 46.5 KB | 19.6 / 22.9 / 29.4 KB |
 
-`initialize` and `open` include the PDA bump search, which costs the same in every implementation. The remaining gap
-to Pinocchio on the small instructions is the entry point: TypeSOL fills a `SolAccountInfo` for every account up
-front (about 25 CU each), where Pinocchio reads accounts in place. Fewer compute units are not a safety claim. Beyond these numbers, the differential tests also check
-an escrow program against Anchor ([docs/testing.md](docs/testing.md)).
+`initialize`, `open` and `make` include the PDA bump search, which costs the same in every implementation. The
+escrow moves SPL tokens through CPIs (`take` makes three). Like Pinocchio, TypeSOL reads accounts in place and builds
+CPI account records only for the accounts a call lists. It uses fewer compute units than Pinocchio on every
+instruction here, while also refusing duplicate writable accounts as Anchor does. Fewer compute
+units are not a safety claim. The differential tests also run the escrow against its Anchor twin ([docs/testing.md](docs/testing.md)).
 
 ## How it is tested
 

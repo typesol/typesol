@@ -70,8 +70,11 @@ These invariants are easy to break. Each one has tests.
   replace a place while a live reference into it is still used, because JS would keep the old object.
 - **Every buffer write after a variable-size piece is bounds-checked.** See `byteBuffer()`. Events, CPI data and
   Metaplex instructions all go through it.
-- **Account lengths are refreshed after every CPI.** `line()` appends `ts_refresh_lens(params)` after any line that
-  invokes another program, because the callee may resize accounts.
+- **Accounts are read in place.** A `TsAccount` is the loader's serialized record, so `ts_deserialize` stores one
+  pointer per account, and lengths, lamports and owners a CPI changes are seen without copying anything back. CPIs
+  go through `ts_invoke`, which builds `SolAccountInfo` records only for the accounts the call lists. It finds each
+  record from its meta (the key sits 8 bytes into it), so every `SolAccountMeta` must point at `&acct->key` of an
+  instruction account, never at a derived or local `SolPubkey`.
 - **Runtime messages carry the source location.** `line()` appends `(file.ts:line)` to every `"TypeSOL: …"`
   message.
 - **No SDK byte loops.** Generated code and the runtime compare, copy and zero memory with `ts_key_eq`, `ts_mem_eq`,

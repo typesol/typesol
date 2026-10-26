@@ -15,6 +15,7 @@ import {
   typeName,
 } from "../model.js";
 import {
+  MAX_ACCOUNTS,
   MAX_SEEDS,
   MAX_CPI_DATA,
   MAX_EVENT,
@@ -47,6 +48,15 @@ export abstract class CpiEmitter extends CallEmitter {
     if (node.elements.length > MAX_SEEDS) this.fail(node, `at most ${MAX_SEEDS} seeds`);
     const parts: string[] = [];
     let idl: IdlSeed[] | undefined = [];
+    // Without calls or writes among the seeds, nothing can change a seed before the CPI reads it: account fields are
+    // then passed in place instead of copied.
+    const mutates = (n: ts.Node): boolean =>
+      ts.isCallExpression(n) ||
+      (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+      ts.isPrefixUnaryExpression(n) ||
+      ts.isPostfixUnaryExpression(n) ||
+      ts.forEachChild(n, mutates) === true;
+    const inPlace = !node.elements.some(mutates);
     for (const el of node.elements) {
       const desc = this.describeSeed(el);
       if (!desc) idl = undefined;
@@ -59,7 +69,10 @@ export abstract class CpiEmitter extends CallEmitter {
       }
       // Each seed is copied when it is evaluated, so later seeds (helper calls) cannot change earlier ones.
       const v = this.expr(el);
-      if (v.type.kind === "pubkey" && isStable(v.c)) parts.push(`{(const uint8_t *)(${v.c}), 32}`);
+      if (v.type.kind === "pubkey" && (isStable(v.c) || (inPlace && /^\(&d_\w+(->\w+)+\)$/.test(v.c))))
+        parts.push(`{(const uint8_t *)${v.c.startsWith("(") ? v.c : `(${v.c})`}, 32}`);
+      else if (v.type.kind === "int" && inPlace && v.literal === undefined && /^d_\w+(->\w+)+$/.test(v.c))
+        parts.push(`{(const uint8_t *)&${v.c}, ${INT_INFO[(v.type as { name: IntName }).name].bytes}}`);
       else if (v.type.kind === "pubkey") {
         const t = this.tmp("seed");
         this.line(`SolPubkey ${t} = *(${v.c});`);
@@ -198,7 +211,7 @@ export abstract class CpiEmitter extends CallEmitter {
   /** Emit a CPI to the program account `program` with these metas (account, writable, signer). */
   protected cpi(program: string, metas: [string, boolean, boolean][], buf: string, len: string, seeds: { name: string; count: number | string }) {
     const m = this.tmp("metas");
-    this.line(`SolAccountMeta ${m}[${metas.length}] = {${metas.map(([acc, w, sg]) => `{${acc}->key, ${w}, ${sg}}`).join(", ")}};`);
+    this.line(`SolAccountMeta ${m}[${metas.length}] = {${metas.map(([acc, w, sg]) => `{&${acc}->key, ${w}, ${sg}}`).join(", ")}};`);
     this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${metas.length}, ${seeds.name}, ${seeds.count}));`);
   }
 
@@ -651,12 +664,12 @@ export abstract class CpiEmitter extends CallEmitter {
     const programHandle = this.handle(a[0]);
     if (programHandle) {
       this.line(`TS_TRY(ts_check_executable(${programHandle}));`);
-      programKey = `${programHandle}->key`;
+      programKey = `&${programHandle}->key`;
     } else {
       const program = this.accountParam(a[0], "invoke's program");
       if (program.kind.kind !== "program" && program.kind.kind !== "system" && program.kind.kind !== "tokenProgram")
         this.fail(a[0], 'invoke\'s program must be a Program<"address">, UncheckedProgram, SystemProgram, token program or remaining account');
-      programKey = `a_${program.name}->key`;
+      programKey = `&a_${program.name}->key`;
     }
     const hasSeeds = a.length === 4;
 
@@ -674,15 +687,18 @@ export abstract class CpiEmitter extends CallEmitter {
         // Remaining accounts: the flags are only known at runtime.
         if (isW) this.line(`TS_TRY(ts_check_writable(${h}));`);
         if (isS && !hasSeeds) this.line(`TS_TRY(ts_check_signer(${h}));`);
-        metas.push(`{${h}->key, ${isW}, ${isS}}`);
+        metas.push(`{&${h}->key, ${isW}, ${isS}}`);
         continue;
       }
       const acct = this.accountParam(el.arguments[0], `${fn}()'s argument`);
       if (isW && !isWritable(acct.kind)) this.fail(el, `"${acct.name}" is not writable here; declare it Mut<...>`);
       if (isS && acct.kind.kind !== "signer" && !hasSeeds)
         this.fail(el, `"${acct.name}" did not sign; pass signerSeeds to sign for a PDA, or declare it Signer`);
-      metas.push(`{a_${acct.name}->key, ${isW}, ${isS}}`);
+      metas.push(`{&a_${acct.name}->key, ${isW}, ${isS}}`);
     }
+
+    // The CPI's account list is built in a buffer with room for one entry per instruction account.
+    if (metas.length > MAX_ACCOUNTS) this.fail(a[1], `invoke takes at most ${MAX_ACCOUNTS} accounts`);
 
     // Data: integers (LE at their width), booleans, Pubkeys, strings (Borsh), sighash("name"), hex("..")
     if (!ts.isArrayLiteralExpression(a[2])) this.fail(a[2], "data must be an array literal");
@@ -739,9 +755,9 @@ export abstract class CpiEmitter extends CallEmitter {
       this.line(`SolSignerSeeds ${signer} = {${seeds.name}, ${seeds.count}};`);
       // No seeds (e.g. signer([]) passed to a helper) means no PDA signature at all.
       this.line(
-        `TS_TRY(sol_invoke_signed(&${ixName}, params->ka, params->ka_num, &${signer}, ${typeof seeds.count === "number" ? (seeds.count > 0 ? 1 : 0) : `${seeds.count} > 0 ? 1 : 0`}));`,
+        `TS_TRY(ts_invoke(params, &${ixName}, &${signer}, ${typeof seeds.count === "number" ? (seeds.count > 0 ? 1 : 0) : `${seeds.count} > 0 ? 1 : 0`}));`,
       );
-    } else this.line(`TS_TRY(sol_invoke(&${ixName}, params->ka, params->ka_num));`);
+    } else this.line(`TS_TRY(ts_invoke(params, &${ixName}, NULL, 0));`);
     return undefined;
   }
 
@@ -910,11 +926,11 @@ export abstract class CpiEmitter extends CallEmitter {
       const sd = this.tmp("seeds");
       const ix = this.tmp("cpi");
       const signer = this.tmp("signer");
-      this.line(`SolAccountMeta ${m}[1] = {{a_${cpi.authority}->key, false, true}};`);
+      this.line(`SolAccountMeta ${m}[1] = {{&a_${cpi.authority}->key, false, true}};`);
       this.line(`SolSignerSeed ${sd}[2] = {{(const uint8_t *)"__event_authority", 17}, {&eb_${cpi.authority}, 1}};`);
-      this.line(`SolInstruction ${ix} = {a_${cpi.program}->key, ${m}, 1, ${buf}, ${len}};`);
+      this.line(`SolInstruction ${ix} = {&a_${cpi.program}->key, ${m}, 1, ${buf}, ${len}};`);
       this.line(`SolSignerSeeds ${signer} = {${sd}, 2};`);
-      this.line(`TS_TRY(sol_invoke_signed(&${ix}, params->ka, params->ka_num, &${signer}, 1));`);
+      this.line(`TS_TRY(ts_invoke(params, &${ix}, &${signer}, 1));`);
       return undefined;
     }
     const bytes = this.tmp("evbytes");

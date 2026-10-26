@@ -331,7 +331,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const [expected, stale, dec] = this.lowerInOrder(args.slice(1), [PUBKEY, U64, U8]);
         const t = this.tmp("sb");
         this.line(`int64_t ${t};`);
-        this.line(`if (!ts_key_eq(a_${f.name}->key, ${expected.c})) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: not the expected Switchboard feed");`);
+        this.line(`if (!ts_key_eq(&a_${f.name}->key, ${expected.c})) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: not the expected Switchboard feed");`);
         this.line(`TS_TRY(ts_switchboard_value(a_${f.name}, ${stale.c}, ${dec.c}, &${t}));`);
         return { c: t, type: I64 };
       }
@@ -360,7 +360,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const mint = this.accountParam(args[2], "the mint");
         const sys = this.accountParam(args[3], "the system program");
         if (sys.kind.kind !== "system") this.fail(args[3], "pass the SystemProgram parameter");
-        this.line(`TS_TRY(ts_init_extra_metas(params, a_${payer.name}, a_${acct.name}, a_${mint.name}->key));`);
+        this.line(`TS_TRY(ts_init_extra_metas(params, a_${payer.name}, a_${acct.name}, &a_${mint.name}->key));`);
         return undefined;
       }
       case "remainingAccounts":
@@ -613,7 +613,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return ts.isCallExpression(node) && this.exportName(node.expression) === "remainingAccounts";
   }
 
-  /** C pointer (`SolAccountInfo *`) for an expression naming a remaining account, or undefined. */
+  /** C pointer (`TsAccount *`) for an expression naming a remaining account, or undefined. */
   protected handle(node: ts.Expression): string | undefined {
     if (ts.isParenthesizedExpression(node)) return this.handle(node.expression);
     if (ts.isIdentifier(node)) {
@@ -631,13 +631,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
       const n = this.ix.accounts.length;
       const idx = this.index(node.arguments[0], `(uint64_t)(params->ka_num - ${n})`);
       const t = this.tmp("acct");
-      this.line(`SolAccountInfo *${t} = &params->ka[${n} + ${idx}];`);
+      this.line(`TsAccount *${t} = params->ka[${n} + ${idx}];`);
       return t;
     }
     return undefined;
   }
 
-  /** A declared account parameter or a remaining account, as a `SolAccountInfo *` C expression. */
+  /** A declared account parameter or a remaining account, as a `TsAccount *` C expression. */
   protected anyAccount(node: ts.Expression, what: string): string {
     const h = this.handle(node);
     if (h) return h;
@@ -681,7 +681,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const owner = this.expect(this.expr(node.arguments[1], PUBKEY), PUBKEY, node.arguments[1]);
     const disc = this.tmp("disc");
     this.line(`static const uint8_t ${disc}[8] = ${cBytes(s.accountDiscriminator)};`);
-    this.line(`if (!ts_key_eq(${h}->owner, ${owner.c})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by the expected program");`);
+    this.line(`if (!ts_key_eq(&${h}->owner, ${owner.c})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by the expected program");`);
     this.line(`if (${h}->data_len < 8 + sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
     this.line(`if (!ts_mem_eq(${h}->data, ${disc}, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");`);
     // Another program wrote these bytes: check bools, enums, option tags and string lengths like arguments.
