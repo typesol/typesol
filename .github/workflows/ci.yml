@@ -10,9 +10,9 @@ on:
         type: string
         default: '["ubuntu-latest"]'
       differential:
-        description: Run the Anchor differential job
-        type: boolean
-        default: true
+        description: Run the Anchor differential job ("yes" or "no")
+        type: string
+        default: "yes"
 
 permissions:
   contents: read
@@ -84,7 +84,9 @@ jobs:
           npm test
 
   differential:
-    if: ${{ inputs.differential != false }}
+    # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
+    # pushes and pull requests.
+    if: ${{ inputs.differential != 'no' }}
     # The Anchor twins (bench/anchor) make test/differential.test.ts and the cpigen Anchor test run instead of skip.
     timeout-minutes: 60
     runs-on: ubuntu-latest
