@@ -1,0 +1,30 @@
+name: Bug report
+description: The compiler rejects valid code, generates a wrong program, or a command fails.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues: do not open an issue. Follow SECURITY.md instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead (with the full error output).
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest program that shows it
+      description: A minimal `.ts` file, and the transaction or test that fails if it compiles.
+      render: ts
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `typesol --version`, `node --version` and `cargo-build-sbf --version`, and your OS.
+    validations:
+      required: true

@@ -1,0 +1,5 @@
+# bufferutil / utf-8-validate are optional native speedups of `ws` (pulled in by @solana/kit's subscriptions);
+# TypeSol does not need them, so their install scripts stay disabled.
+allowBuilds:
+  bufferutil: false
+  utf-8-validate: false

@@ -1,0 +1,11 @@
+dist
+node_modules
+target
+bench/anchor/target
+test/golden
+test/programs
+# TypeSol programs: tests and the golden C refer to their line numbers
+test/fixtures
+examples
+pnpm-lock.yaml
+*.md

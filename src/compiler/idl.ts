@@ -1,0 +1,197 @@
+import ts from "typescript";
+import { snakeCase } from "./analyze.js";
+import { decodeAddress } from "../keys.js";
+import { type FieldType, type Instruction, type ParamKind, type ProgramModel, type ScalarType, type ValueType, isWritable, optionKey } from "./model.js";
+
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+const BPF_UPGRADEABLE_LOADER = [
+  2, 168, 246, 145, 78, 136, 161, 176, 226, 16, 21, 62, 247, 99, 174, 43, 0, 194, 185, 61, 22, 193, 36, 210, 192, 83, 122, 16, 4, 128, 0, 0,
+];
+
+/** JSDoc text of a declaration, as IDL `docs` lines (omitted when empty). */
+function docsOf(node: ts.Node | undefined): { docs?: string[] } {
+  if (!node) return {};
+  const text = ts
+    .getJSDocCommentsAndTags(node)
+    .filter(ts.isJSDoc)
+    .map((d) => (typeof d.comment === "string" ? d.comment : (ts.getTextOfJSDocComment(d.comment) ?? "")))
+    .join("\n")
+    .trim();
+  return text ? { docs: text.split("\n").map((l) => l.trim()) } : {};
+}
+
+/** `@param name text` of a function parameter. */
+function paramDocs(param: ts.ParameterDeclaration): { docs?: string[] } {
+  const text = ts
+    .getJSDocParameterTags(param)
+    .map((t) => (typeof t.comment === "string" ? t.comment : (ts.getTextOfJSDocComment(t.comment) ?? "")))
+    .join("\n")
+    .replace(/^[-\s]+/, "")
+    .trim();
+  return text ? { docs: text.split("\n").map((l) => l.trim()) } : {};
+}
+
+const fstringTypeName = (cap: number) => `FixedString${cap}`;
+const fixedOptionName = (inner: ScalarType | { kind: "struct"; name: string }) => `FixedOption_${optionKey(inner)}`;
+const fixedEnumName = (name: string) => `FixedEnum_${name}`;
+
+/**
+ * IDL type of a field or value. `borshOption` picks the encoding of Option: Borsh `option` for
+ * instruction arguments and events, the fixed { is_some, value } struct for account data.
+ */
+function idlType(t: FieldType | ValueType, borshOption = false): unknown {
+  switch (t.kind) {
+    case "int":
+      return t.name;
+    case "bool":
+      return "bool";
+    case "pubkey":
+      return t.hash ? { array: ["u8", 32] } : "pubkey";
+    case "string":
+      return "string";
+    case "array":
+      return { array: [idlType(t.elem), t.len] };
+    case "struct":
+      return { defined: { name: t.name } };
+    case "fstring":
+      return { defined: { name: fstringTypeName(t.cap) } };
+    case "enum":
+      return { defined: { name: t.name } };
+    case "option":
+      return borshOption ? { option: idlType(t.inner) } : { defined: { name: fixedOptionName(t.inner) } };
+    case "dataEnum":
+    case "dataEnumArg":
+      // Borsh enum in arguments and events; fixed tag + payload in account data.
+      return borshOption || t.kind === "dataEnumArg" ? { defined: { name: t.name } } : { defined: { name: fixedEnumName(t.name) } };
+    case "vec":
+      return { vec: idlType(t.elem) };
+    case "vecArg":
+      return { vec: idlType(t.elem) };
+    case "arrayArg":
+      return idlType(t.array);
+    case "structRef":
+      return { defined: { name: t.struct } };
+    default:
+      throw new Error(`no IDL type for ${t.kind}`);
+  }
+}
+
+function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddress: string) {
+  const param = ix.accounts.find((a) => a.name === name);
+  const entry: Record<string, unknown> = { name: snakeCase(name), ...(param ? paramDocs(param.node) : {}) };
+  if (isWritable(k)) entry.writable = true;
+  if (param?.optional) entry.optional = true;
+  if (k.kind === "signer") entry.signer = true;
+  if (k.kind === "system") entry.address = SYSTEM_PROGRAM;
+  if (k.kind === "instructionsSysvar") entry.address = "Sysvar1nstructions1111111111111111111111111";
+  if (k.kind === "ataProgram") entry.address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+  if (k.kind === "metadataProgram") entry.address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+  if (k.kind === "coreProgram") entry.address = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d";
+  if (k.kind === "bubblegumProgram") entry.address = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
+  if (k.kind === "tokenProgram" && k.flavor === "token") entry.address = TOKEN_PROGRAM;
+  if (k.kind === "tokenProgram" && k.flavor === "token2022") entry.address = TOKEN_2022_PROGRAM;
+  if (k.kind === "program" && k.address) entry.address = k.address.base58;
+  // Anchor's direction: the account named by a has_one lists the accounts that hold it (Anchor clients then read
+  // `holder.data[name]` to fill it in). Only struct accounts' HasOne are has_one relations in Anchor's sense.
+  const relations = ix.accounts.filter((a) => a.kind.kind === "account" && a.constraints.hasOne.includes(name)).map((a) => a.name);
+  if (relations.length) entry.relations = relations.map(snakeCase);
+  const seeds = ix.pdas.get(name);
+  const program = ix.pdaPrograms.get(name);
+  if (seeds) entry.pda = program ? { seeds, program } : { seeds };
+  const address = ix.accounts.find((a) => a.name === name)?.constraints.address;
+  if (address) entry.address = address.base58;
+  const programId = decodeAddress(programAddress);
+  if (k.kind === "eventAuthority") entry.pda = { seeds: [{ kind: "const", value: [...Buffer.from("__event_authority")] }] };
+  if (k.kind === "selfProgram") entry.address = programAddress;
+  if (k.kind === "programData" && programId)
+    entry.pda = { seeds: [{ kind: "const", value: [...programId] }], program: { kind: "const", value: BPF_UPGRADEABLE_LOADER } };
+  return entry;
+}
+
+/** Anchor IDL (spec 0.1.0) so existing Anchor / Codama clients can talk to TypeSol programs. */
+export function buildIdl(model: ProgramModel, address: string, version = "0.1.0") {
+  const structs = [...model.structs.values()];
+  const usedStructs = structs.filter((s) => model.accountStructs.has(s.name) || model.events.has(s.name) || s.size !== undefined);
+  return {
+    address,
+    metadata: { name: model.name, version, spec: "0.1.0", description: "Built with TypeSol" },
+    instructions: model.instructions.map((ix) => ({
+      name: ix.name,
+      ...docsOf(ix.node),
+      discriminator: ix.discriminator,
+      accounts: ix.accounts.map((a) => accountEntry(ix, a.name, a.kind, address)),
+      args: ix.args.map((a) => ({ name: snakeCase(a.name), ...paramDocs(a.node), type: idlType(a.type, true) })),
+      ...(ix.returns ? { returns: idlType(ix.returns) } : {}),
+    })),
+    accounts: structs.filter((s) => model.accountStructs.has(s.name)).map((s) => ({ name: s.name, discriminator: s.accountDiscriminator })),
+    events: structs.filter((s) => model.events.has(s.name)).map((s) => ({ name: s.name, discriminator: s.eventDiscriminator })),
+    errors: model.errors.map((e) => ({ code: e.code, name: e.name, msg: e.msg })),
+    types: [
+      ...usedStructs.map((s) => ({
+        name: s.name,
+        ...docsOf(s.node),
+        type: {
+          kind: "struct",
+          fields: s.fields.map((f) => ({
+            name: snakeCase(f.name),
+            ...docsOf(s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name)),
+            type: idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),
+          })),
+        },
+      })),
+      ...[...model.enums.values()].map((e) => ({ name: e.name, type: { kind: "enum", variants: e.variants.map((v) => ({ name: v })) } })),
+      ...[...model.dataEnums.values()].flatMap((e) => [
+        {
+          name: e.name,
+          ...docsOf(e.node),
+          type: {
+            kind: "enum",
+            variants: e.variants.map((v) =>
+              v.fields.length ? { name: v.name, fields: v.fields.map((f) => ({ name: snakeCase(f.name), type: idlType(f.type) })) } : { name: v.name },
+            ),
+          },
+        },
+        {
+          name: fixedEnumName(e.name),
+          docs: [
+            `TypeSol ${e.name} in account data: \`tag\` is the variant index, \`payload\` the variant's fields (Borsh layout) padded to the largest variant.`,
+          ],
+          type: {
+            kind: "struct",
+            fields: [
+              { name: "tag", type: "u8" },
+              { name: "payload", type: { array: ["u8", e.payload] } },
+            ],
+          },
+        },
+      ]),
+      ...[...model.options.values()].map((inner) => ({
+        name: fixedOptionName(inner),
+        docs: [`TypeSol Option<${optionKey(inner)}> in account data: fixed size, \`value\` is zero when \`is_some\` is false.`],
+        type: {
+          kind: "struct",
+          fields: [
+            { name: "is_some", type: "bool" },
+            { name: "value", type: idlType(inner) },
+          ],
+        },
+      })),
+      ...[...model.fstrings]
+        .sort((a, b) => a - b)
+        .map((cap) => ({
+          name: fstringTypeName(cap),
+          docs: [`TypeSol FixedString<${cap}>: UTF-8 bytes, \`len\` of them meaningful, zero-padded.`],
+          type: {
+            kind: "struct",
+            fields: [
+              { name: "len", type: "u32" },
+              { name: "bytes", type: { array: ["u8", cap] } },
+            ],
+          },
+        })),
+    ],
+  };
+}

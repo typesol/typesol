@@ -1,0 +1,16 @@
+name: Feature request
+description: A type, built-in, CPI or command TypeSol does not support yet.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to write
+      description: The TypeScript you would like to compile, or the Anchor/Rust feature it corresponds to.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The program you are building and what blocks you today.

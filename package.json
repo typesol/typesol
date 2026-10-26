@@ -1,0 +1,101 @@
+{
+  "name": "typesol",
+  "version": "0.10.0",
+  "description": "Compile a TypeScript-syntax language directly to Solana SBF programs.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "typesol": "./dist/cli.js"
+  },
+  "types": "./lib/typesol.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/typesol.d.ts",
+      "default": "./dist/stub.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler/index.d.ts",
+      "default": "./dist/compiler/index.js"
+    },
+    "./workspace": {
+      "types": "./dist/workspace.d.ts",
+      "default": "./dist/workspace.js"
+    },
+    "./cpi": {
+      "types": "./dist/cpigen.d.ts",
+      "default": "./dist/cpigen.js"
+    },
+    "./profile": {
+      "types": "./dist/profile.d.ts",
+      "default": "./dist/profile.js"
+    },
+    "./idl": {
+      "types": "./dist/idlpublish.d.ts",
+      "default": "./dist/idlpublish.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "lib",
+    "runtime",
+    "assets",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "docs"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "typesol": "node dist/cli.js",
+    "smoke": "node scripts/smoke.ts",
+    "fuzz": "FUZZ_RUNS=2000 FUZZ_STEPS=600 FUZZ_VERBOSE=1 vitest run test/fuzz-arith.test.ts test/fuzz-state.test.ts test/differential.test.ts --silent=false",
+    "bench:anchor": "cd bench/anchor && cargo-build-sbf",
+    "prepack": "npm run build",
+    "fetch:programs": "bash scripts/fetch-programs.sh",
+    "format": "prettier --write \"src/**/*.ts\" \"test/*.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\"",
+    "lint": "prettier --check \"src/**/*.ts\" \"test/*.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\" && pnpm typecheck",
+    "prepublishOnly": "pnpm lint && pnpm test"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "@solana-program/program-metadata": "0.11.0",
+    "@solana/kit": "^8.5.0",
+    "typescript": "6.0.3"
+  },
+  "devDependencies": {
+    "@anchor-lang/core": "1.2.1",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@solana-program/system": "^0.16.0",
+    "@solana-program/token": "~0.18.0",
+    "@solana-program/token-2022": "^0.20.0",
+    "@types/node": "^26.6.5",
+    "litesvm": "1.6.1",
+    "prettier": "^3.9.10",
+    "vitest": "^5.0.5"
+  },
+  "keywords": [
+    "solana",
+    "typescript",
+    "compiler",
+    "sbf",
+    "smart-contracts",
+    "anchor",
+    "blockchain"
+  ],
+  "packageManager": "pnpm@11.9.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/typesol/typesol.git"
+  },
+  "bugs": {
+    "url": "https://github.com/typesol/typesol/issues"
+  },
+  "homepage": "https://github.com/typesol/typesol#readme"
+}
