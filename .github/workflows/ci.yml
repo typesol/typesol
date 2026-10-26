@@ -3,13 +3,22 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call: # run by release.yml before publishing
+  workflow_call: # run by release.yml before publishing, and by macos.yml with another runner
+    inputs:
+      os:
+        description: JSON list of runner labels for the test matrix
+        type: string
+        default: '["ubuntu-latest"]'
+      differential:
+        description: Run the Anchor differential job
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +27,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Pushes and pull requests test on Ubuntu; macOS runs daily from macos.yml (its runners are often unavailable,
+        # and a cancelled job marks the commit as failed).
+        os: ${{ fromJSON(inputs.os || '["ubuntu-latest"]') }}
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
@@ -73,6 +84,7 @@ jobs:
           npm test
 
   differential:
+    if: ${{ inputs.differential != false }}
     # The Anchor twins (bench/anchor) make test/differential.test.ts and the cpigen Anchor test run instead of skip.
     timeout-minutes: 60
     runs-on: ubuntu-latest
