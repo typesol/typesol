@@ -42,7 +42,11 @@ jobs:
       - name: Install platform-tools (the clang TypeSol compiles with)
         run: |
           sdk=~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf
-          [ -x "$sdk/dependencies/platform-tools/llvm/bin/clang" ] || cargo-build-sbf --install-only
+          # Pinned (the version Agave 3.1.10 uses), with retries: the download can fail transiently.
+          for i in 1 2 3 4; do
+            [ -x "$sdk/dependencies/platform-tools/llvm/bin/clang" ] && break
+            cargo-build-sbf --install-only --tools-version v1.52 || sleep $((i * 15))
+          done
           "$sdk/dependencies/platform-tools/llvm/bin/clang" --version | head -1
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
