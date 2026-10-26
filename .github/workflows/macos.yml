@@ -1,0 +1,17 @@
+name: macos
+# The full test suite on macOS, once a day and on demand. It is kept off pushes and pull requests because GitHub's
+# macOS runners are often not assigned in time, and a cancelled job would mark the commit as failed.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    uses: ./.github/workflows/ci.yml
+    with:
+      os: '["macos-15"]'
+      differential: "no"
