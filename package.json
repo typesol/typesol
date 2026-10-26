@@ -40,6 +40,7 @@
     "lib",
     "runtime",
     "assets",
+    "!assets/readme",
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
