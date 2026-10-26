@@ -238,13 +238,17 @@ _Static_assert(__builtin_offsetof(TsAccount, key) == 8 && __builtin_offsetof(TsA
                    __builtin_offsetof(TsAccount, data) == 88,
                "TsAccount layout");
 
+/* Accounts per instruction: the entry point refuses more (5113). */
+#define TS_MAX_ACCOUNTS 32
+
+/* Lives in the entry point's frame; the arrays are inline so setting it up stores nothing. */
 typedef struct {
-  TsAccount **ka;        /* ka_num entries */
   uint64_t ka_num;
-  const uint8_t *data;   /* instruction data */
+  const uint8_t *data; /* instruction data */
   uint64_t data_len;
   const SolPubkey *program_id;
-  SolAccountInfo *infos; /* scratch for CPI account lists (ts_invoke), one per account */
+  TsAccount *ka[TS_MAX_ACCOUNTS];             /* ka_num entries */
+  SolAccountInfo infos[TS_MAX_ACCOUNTS];      /* scratch for CPI account lists (ts_invoke) */
 } TsParams;
 
 /*

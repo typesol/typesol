@@ -48,6 +48,15 @@ export abstract class CpiEmitter extends CallEmitter {
     if (node.elements.length > MAX_SEEDS) this.fail(node, `at most ${MAX_SEEDS} seeds`);
     const parts: string[] = [];
     let idl: IdlSeed[] | undefined = [];
+    // Without calls or writes among the seeds, nothing can change a seed before the CPI reads it: account fields are
+    // then passed in place instead of copied.
+    const mutates = (n: ts.Node): boolean =>
+      ts.isCallExpression(n) ||
+      (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+      ts.isPrefixUnaryExpression(n) ||
+      ts.isPostfixUnaryExpression(n) ||
+      ts.forEachChild(n, mutates) === true;
+    const inPlace = !node.elements.some(mutates);
     for (const el of node.elements) {
       const desc = this.describeSeed(el);
       if (!desc) idl = undefined;
@@ -60,7 +69,10 @@ export abstract class CpiEmitter extends CallEmitter {
       }
       // Each seed is copied when it is evaluated, so later seeds (helper calls) cannot change earlier ones.
       const v = this.expr(el);
-      if (v.type.kind === "pubkey" && isStable(v.c)) parts.push(`{(const uint8_t *)(${v.c}), 32}`);
+      if (v.type.kind === "pubkey" && (isStable(v.c) || (inPlace && /^\(&d_\w+(->\w+)+\)$/.test(v.c))))
+        parts.push(`{(const uint8_t *)${v.c.startsWith("(") ? v.c : `(${v.c})`}, 32}`);
+      else if (v.type.kind === "int" && inPlace && v.literal === undefined && /^d_\w+(->\w+)+$/.test(v.c))
+        parts.push(`{(const uint8_t *)&${v.c}, ${INT_INFO[(v.type as { name: IntName }).name].bytes}}`);
       else if (v.type.kind === "pubkey") {
         const t = this.tmp("seed");
         this.line(`SolPubkey ${t} = *(${v.c});`);

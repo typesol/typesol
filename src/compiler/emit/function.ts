@@ -113,6 +113,8 @@ export class FunctionEmitter extends StatementEmitter {
     }
 
     // Writable accounts must be distinct: aliasing two mutable views of one account is the classic drain.
+    // The loader passes each account once and marks repeats as duplicates, which share its record (ts_deserialize),
+    // so two parameters name the same account exactly when their pointers are equal.
     const writable = ix.accounts.filter((a) => isWritable(a.kind));
     for (let i = 0; i < writable.length; i++)
       for (let j = i + 1; j < writable.length; j++) {
@@ -121,7 +123,7 @@ export class FunctionEmitter extends StatementEmitter {
           .map((a) => `a_${a.name} && `)
           .join("");
         head.push(
-          `  if (${present}ts_key_eq(&a_${writable[i].name}->key, &a_${writable[j].name}->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
+          `  if (${present}a_${writable[i].name} == a_${writable[j].name}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
         );
       }
 

@@ -19,7 +19,7 @@ __attribute__((noinline)) static uint64_t ix_initialize(TsParams *params) {
   TSS_Counter *d_counter = (TSS_Counter *)(a_counter->data + 8);
   TsAccount *a_systemProgram = params->ka[2];
   TS_TRY(ts_check_address(a_systemProgram, &TS_SYSTEM_PROGRAM_ID));
-  if (ts_key_eq(&a_authority->key, &a_counter->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: authority and counter must be different accounts");
+  if (a_authority == a_counter) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: authority and counter must be different accounts");
   SolSignerSeed seeds0[3] = {{(const uint8_t *)"counter", 7}, {(const uint8_t *)(&a_authority->key), 32}};
   uint8_t bump1;
   TS_TRY(ts_create_pda(params, a_authority, a_counter, seeds0, 2, TS_DISC_Counter, 8 + sizeof(TSS_Counter), &bump1));
@@ -63,13 +63,9 @@ __attribute__((noinline)) static uint64_t ix_assert_at_least(TsParams *params) {
   return SUCCESS;
 }
 
-#define TS_MAX_ACCOUNTS 32
+_Static_assert(TS_MAX_ACCOUNTS == 32, "TS_MAX_ACCOUNTS");
 extern uint64_t entrypoint(const uint8_t *input) {
-  TsAccount *ka[TS_MAX_ACCOUNTS];
-  SolAccountInfo infos[TS_MAX_ACCOUNTS]; /* filled only by CPIs */
-  TsParams params;
-  params.ka = ka; /* ts_deserialize fills in the rest */
-  params.infos = infos;
+  TsParams params; /* filled in by ts_deserialize */
   if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: at most 32 accounts per instruction");
   ts_deserialize(input, &params);
   if (params.data_len < 8) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSOL: instruction data too short");
