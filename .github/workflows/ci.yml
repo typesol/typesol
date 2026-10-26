@@ -41,8 +41,8 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - run: cargo-build-sbf --force-tools-install --version || cargo-build-sbf --version
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
       - run: pnpm build
+      - run: pnpm lint # scripts/ typecheck against dist/
       - name: Cache third-party program binaries
         uses: actions/cache@v4
         with:
