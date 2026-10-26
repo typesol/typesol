@@ -71,6 +71,68 @@
     if (ts_r_ != SUCCESS) return ts_r_; \
   } while (0)
 
+/*
+ * ---- Word-wise memory helpers --------------------------------------------
+ * The SDK's sol_memcmp / sol_memcpy / sol_memset and SolPubkey_same walk one byte per iteration (about 11
+ * instructions, so 11 CU, per byte). SBF loads and stores may be unaligned, so these move 8 bytes per instruction
+ * through a 1-byte-aligned type (clang then emits plain ldxdw/stxdw even where it cannot prove alignment, e.g. the
+ * program id, which follows the variable-length instruction data). Constant sizes unroll completely.
+ */
+typedef uint64_t __attribute__((aligned(1), may_alias)) ts_u64_unaligned;
+static inline __attribute__((always_inline)) uint64_t ts_ld64(const void *p) { return *(const ts_u64_unaligned *)p; }
+static inline __attribute__((always_inline)) void ts_st64(void *p, uint64_t v) { *(ts_u64_unaligned *)p = v; }
+typedef uint32_t __attribute__((aligned(1), may_alias)) ts_u32_unaligned;
+
+/* Byte-for-byte equality (only equality: lexicographic order is ts_bytes_cmp). */
+static inline __attribute__((always_inline)) bool ts_mem_eq(const void *a, const void *b, uint64_t n) {
+  const uint8_t *x = (const uint8_t *)a, *y = (const uint8_t *)b;
+  for (; n >= 8; n -= 8, x += 8, y += 8)
+    if (ts_ld64(x) != ts_ld64(y)) return false;
+  for (; n; n--, x++, y++)
+    if (*x != *y) return false;
+  return true;
+}
+
+/* Forward copy of non-overlapping bytes (every caller copies between distinct places or onto itself). */
+static inline __attribute__((always_inline)) void ts_memcpy(void *dst, const void *src, uint64_t n) {
+  uint8_t *d = (uint8_t *)dst;
+  const uint8_t *s = (const uint8_t *)src;
+  for (; n >= 8; n -= 8, d += 8, s += 8) ts_st64(d, ts_ld64(s));
+  for (; n; n--) *d++ = *s++;
+}
+
+static inline __attribute__((always_inline)) void ts_memzero(void *dst, uint64_t n) {
+  uint8_t *d = (uint8_t *)dst;
+  for (; n >= 8; n -= 8, d += 8) ts_st64(d, 0);
+  for (; n; n--) *d++ = 0;
+}
+
+/*
+ * Checked u64 addition and subtraction. Same results as __builtin_add/sub_overflow, but written as one compare
+ * on the operands, which clang lowers to a single branch on SBF instead of materializing the carry flag.
+ */
+static inline __attribute__((always_inline)) bool ts_add_overflow_u64(uint64_t a, uint64_t b, uint64_t *out) {
+  *out = a + b;
+  return b > ~a;
+}
+static inline __attribute__((always_inline)) bool ts_sub_overflow_u64(uint64_t a, uint64_t b, uint64_t *out) {
+  *out = a - b;
+  return b > a;
+}
+
+/*
+ * Checked u64 multiplication. __builtin_mul_overflow widens to 128 bits and calls __multi3 on SBF (tens of CU;
+ * clang also rewrites a division-based test back into that call). When both factors fit in 32 bits the product
+ * cannot overflow, so only larger factors pay for the full check.
+ */
+static inline __attribute__((always_inline)) bool ts_mul_overflow_u64(uint64_t a, uint64_t b, uint64_t *out) {
+  if (((a | b) >> 32) == 0) {
+    *out = a * b;
+    return false;
+  }
+  return __builtin_mul_overflow(a, b, out);
+}
+
 /* ---- Well-known program ids --------------------------------------------- */
 static const SolPubkey TS_SYSTEM_PROGRAM_ID = {{0}};
 /* TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA */
@@ -126,20 +188,20 @@ static inline bool ts_is_zero(const void *p, uint64_t n) {
   return true;
 }
 
-static inline bool ts_str_eq(TS_Str a, TS_Str b) { return a.len == b.len && sol_memcmp(a.ptr, b.ptr, (int)a.len) == 0; }
+static inline bool ts_str_eq(TS_Str a, TS_Str b) { return a.len == b.len && ts_mem_eq(a.ptr, b.ptr, a.len); }
 
 /* FixedString<N> layout: u32 length (LE) then N bytes. Lengths past N are clamped on read. */
 static inline TS_Str ts_fstr_view(const uint8_t *base, uint64_t cap) {
   uint32_t len;
-  sol_memcpy(&len, base, 4);
+  ts_memcpy(&len, base, 4);
   return ts_str(base + 4, len > cap ? cap : len);
 }
 static inline uint64_t ts_fstr_set(uint8_t *base, uint64_t cap, TS_Str v) {
   if (v.len > cap) TS_FAIL(TS_ERR_STRING_TOO_LONG, "TypeSol: string longer than the field capacity");
   uint32_t len = (uint32_t)v.len;
-  sol_memcpy(base, &len, 4);
-  sol_memcpy(base + 4, v.ptr, (int)v.len);
-  sol_memset(base + 4 + v.len, 0, cap - v.len);
+  ts_memcpy(base, &len, 4);
+  ts_memcpy(base + 4, v.ptr, v.len);
+  ts_memzero(base + 4 + v.len, cap - v.len);
   return SUCCESS;
 }
 
@@ -149,6 +211,48 @@ typedef struct {
   uint32_t len;
 } TS_VecArg;
 
+/*
+ * ---- Entrypoint input ------------------------------------------------------
+ * The loader's serialized input: u64 account count, then per account either a duplicate marker (u8 index of the
+ * earlier account, 7 bytes padding) or u8 0xff, is_signer, is_writable, executable, 4 bytes padding, key, owner,
+ * lamports, data_len, data, 10 KiB realloc room, padding to 8, rent_epoch; then u64 data length, data, program id.
+ * Same result as the SDK's sol_deserialize, minus its per-account "past the array" branch: the entry point has
+ * already refused counts above TS_MAX_ACCOUNTS (the size of `params->ka`), so every account fits.
+ */
+static inline __attribute__((always_inline)) void ts_deserialize(const uint8_t *input, SolParameters *params) {
+  uint64_t n = *(const uint64_t *)input;
+  input += 8;
+  params->ka_num = n;
+  for (uint64_t i = 0; i < n; i++) {
+    SolAccountInfo *a = &params->ka[i];
+    uint8_t dup = input[0];
+    if (dup != UINT8_MAX) {
+      ts_memcpy(a, &params->ka[dup], sizeof(*a)); /* the loader only ever points back at an earlier account */
+      input += 8;
+      continue;
+    }
+    /* is_signer, is_writable, executable: the loader writes each as exactly 0 or 1, so the bytes are valid bools
+       as they are and need no normalizing branches. One 4-byte move copies all three (the fourth byte lands in the
+       struct's tail padding). */
+    _Static_assert(__builtin_offsetof(SolAccountInfo, executable) == __builtin_offsetof(SolAccountInfo, is_signer) + 2 &&
+                       __builtin_offsetof(SolAccountInfo, is_signer) + 4 <= sizeof(SolAccountInfo),
+                   "SolAccountInfo flag layout");
+    *(ts_u32_unaligned *)&a->is_signer = *(const ts_u32_unaligned *)(input + 1);
+    a->key = (SolPubkey *)(input + 8);
+    a->owner = (SolPubkey *)(input + 40);
+    a->lamports = (uint64_t *)(input + 72);
+    uint64_t len = *(const uint64_t *)(input + 80);
+    a->data_len = len;
+    a->data = (uint8_t *)(input + 88);
+    input = (const uint8_t *)(((uint64_t)(input + 88 + len + MAX_PERMITTED_DATA_INCREASE) + 7) & ~(uint64_t)7);
+    a->rent_epoch = *(const uint64_t *)input;
+    input += 8;
+  }
+  params->data_len = *(const uint64_t *)input;
+  params->data = input + 8;
+  params->program_id = (const SolPubkey *)(input + 8 + params->data_len);
+}
+
 /* ---- Account checks ------------------------------------------------------ */
 /* After a CPI: every account's length as the runtime left it (the serialized length precedes the data). */
 static inline void ts_refresh_lens(SolParameters *params) {
@@ -157,10 +261,13 @@ static inline void ts_refresh_lens(SolParameters *params) {
 
 /* Copy between two places of the same type: distinct, or the very same place (then nothing to do). */
 static inline void ts_copy(void *dst, const void *src, uint64_t n) {
-  if (dst != src) sol_memcpy(dst, src, (int)n);
+  if (dst != src) ts_memcpy(dst, src, n);
 }
 
-static inline bool ts_key_eq(const SolPubkey *a, const SolPubkey *b) { return SolPubkey_same(a, b); }
+static inline __attribute__((always_inline)) bool ts_key_eq(const SolPubkey *a, const SolPubkey *b) {
+  return ts_ld64(a->x) == ts_ld64(b->x) && ts_ld64(a->x + 8) == ts_ld64(b->x + 8) && ts_ld64(a->x + 16) == ts_ld64(b->x + 16) &&
+         ts_ld64(a->x + 24) == ts_ld64(b->x + 24);
+}
 
 static inline uint64_t ts_check_signer(const SolAccountInfo *a) {
   if (!a->is_signer) TS_FAIL(TS_ERR_NOT_SIGNER, "TypeSol: account must sign");
@@ -178,7 +285,7 @@ static inline uint64_t ts_check_program_account(const SolAccountInfo *a, const S
   if (*a->lamports == 0 && ts_key_eq(a->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_INITIALIZED, "TypeSol: account is not initialized");
   if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: account not owned by this program");
   if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");
-  if (sol_memcmp(a->data, disc, 8) != 0) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");
+  if (!ts_mem_eq(a->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");
   return SUCCESS;
 }
 
@@ -248,17 +355,17 @@ static inline const SolPubkey *ts_token_mint(const SolAccountInfo *a) { return (
 static inline const SolPubkey *ts_token_owner(const SolAccountInfo *a) { return (const SolPubkey *)(a->data + 32); }
 static inline uint64_t ts_token_amount(const SolAccountInfo *a) {
   uint64_t v;
-  sol_memcpy(&v, a->data + 64, 8);
+  ts_memcpy(&v, a->data + 64, 8);
   return v;
 }
 
 /* ---- Little-endian scalar IO (account data is packed Borsh) ------------- */
 static inline uint64_t ts_read_le(const uint8_t *p, int n) {
   uint64_t v = 0;
-  sol_memcpy(&v, p, n);
+  ts_memcpy(&v, p, n);
   return v;
 }
-static inline void ts_write_le(uint8_t *p, uint64_t v, int n) { sol_memcpy(p, &v, n); }
+static inline void ts_write_le(uint8_t *p, uint64_t v, int n) { ts_memcpy(p, &v, n); }
 
 /* ---- Sysvars --------------------------------------------------------------- */
 uint64_t sol_get_rent_sysvar(void *ret);
@@ -268,11 +375,22 @@ static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
   /* Rent { lamports_per_byte_year: u64, exemption_threshold: f64, burn_percent: u8 } */
   uint64_t rent[3] = {0};
   if (sol_get_rent_sysvar(rent) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSol: rent sysvar unavailable");
-  double threshold;
-  sol_memcpy(&threshold, &rent[1], 8);
   uint64_t bytes, per_year;
-  if (__builtin_add_overflow(data_len, 128, &bytes) || __builtin_mul_overflow(bytes, rent[0], &per_year))
+  if (ts_add_overflow_u64(data_len, 128, &bytes) || ts_mul_overflow_u64(bytes, rent[0], &per_year))
     TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
+  /* Fast path, bit-identical to the double math below: when the threshold is a positive whole number t (2.0 on
+     every cluster) and per_year * t < 2^53, both factors and the product are exact doubles, so the integer product
+     is the answer. Soft-float multiplication and conversions cost hundreds of CU; anything else takes that path. */
+  uint64_t exp = (rent[1] >> 52) & 0x7ff;
+  if (!(rent[1] >> 63) && exp >= 1023 && exp <= 1023 + 52) {
+    uint64_t mant = (rent[1] & 0xfffffffffffffULL) | (1ULL << 52), frac = 52 - (exp - 1023), exact;
+    if ((mant & ((1ULL << frac) - 1)) == 0 && !ts_mul_overflow_u64(per_year, mant >> frac, &exact) && exact < (1ULL << 53)) {
+      *out = exact;
+      return SUCCESS;
+    }
+  }
+  double threshold;
+  ts_memcpy(&threshold, &rent[1], 8);
   double lamports = (double)per_year * threshold;
   if (lamports >= 18446744073709551615.0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
   *out = (uint64_t)lamports;
@@ -332,12 +450,11 @@ static inline uint64_t ts_now(int64_t *out) {
 static inline uint64_t ts_init_zeroed(SolAccountInfo *a, const SolPubkey *program_id, const uint8_t disc[8], uint64_t size) {
   if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: account not owned by this program");
   if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");
-  static const uint8_t zero[8] = {0};
-  if (sol_memcmp(a->data, zero, 8) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSol: account already initialized");
+  if (ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSol: account already initialized");
   uint64_t need;
   TS_TRY(ts_minimum_balance(a->data_len, &need));
   if (*a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSol: account is not rent-exempt");
-  sol_memcpy(a->data, disc, 8);
+  ts_memcpy(a->data, disc, 8);
   return SUCCESS;
 }
 
@@ -355,8 +472,8 @@ static inline uint64_t ts_system_transfer(SolParameters *params, SolAccountInfo 
                                           uint64_t lamports) {
   uint8_t data[12];
   uint32_t tag = 2;
-  sol_memcpy(data, &tag, 4);
-  sol_memcpy(data + 4, &lamports, 8);
+  ts_memcpy(data, &tag, 4);
+  ts_memcpy(data + 4, &lamports, 8);
   SolAccountMeta metas[2] = {{from->key, true, true}, {to->key, true, false}};
   SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
   return sol_invoke(&ix, params->ka, params->ka_num);
@@ -385,10 +502,10 @@ static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *paye
   if (*acct->lamports == 0) {
     uint8_t data[52];
     uint32_t tag = 0; /* CreateAccount */
-    sol_memcpy(data, &tag, 4);
-    sol_memcpy(data + 4, &lamports, 8);
-    sol_memcpy(data + 12, &space, 8);
-    sol_memcpy(data + 20, params->program_id, 32);
+    ts_memcpy(data, &tag, 4);
+    ts_memcpy(data + 4, &lamports, 8);
+    ts_memcpy(data + 12, &space, 8);
+    ts_memcpy(data + 20, params->program_id, 32);
     SolAccountMeta metas[2] = {{payer->key, true, true}, {acct->key, true, true}};
     SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
     TS_TRY(sol_invoke_signed(&ix, params->ka, params->ka_num, &signer, 1));
@@ -397,21 +514,21 @@ static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *paye
     if (*acct->lamports < lamports) TS_TRY(ts_system_transfer(params, payer, acct, lamports - *acct->lamports));
     uint8_t alloc[12];
     uint32_t alloc_tag = 8; /* Allocate */
-    sol_memcpy(alloc, &alloc_tag, 4);
-    sol_memcpy(alloc + 4, &space, 8);
+    ts_memcpy(alloc, &alloc_tag, 4);
+    ts_memcpy(alloc + 4, &space, 8);
     SolAccountMeta one[1] = {{acct->key, true, true}};
     SolInstruction alloc_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, alloc, sizeof(alloc)};
     TS_TRY(sol_invoke_signed(&alloc_ix, params->ka, params->ka_num, &signer, 1));
     uint8_t assign[36];
     uint32_t assign_tag = 1; /* Assign */
-    sol_memcpy(assign, &assign_tag, 4);
-    sol_memcpy(assign + 4, params->program_id, 32);
+    ts_memcpy(assign, &assign_tag, 4);
+    ts_memcpy(assign + 4, params->program_id, 32);
     SolInstruction assign_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, assign, sizeof(assign)};
     TS_TRY(sol_invoke_signed(&assign_ix, params->ka, params->ka_num, &signer, 1));
   }
 
   acct->data_len = space;
-  sol_memcpy(acct->data, disc, 8);
+  ts_memcpy(acct->data, disc, 8);
   *bump_out = bump;
   return SUCCESS;
 }
@@ -436,7 +553,7 @@ static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, S
       if (payer == NULL) TS_FAIL(TS_ERR_REALLOC, "TypeSol: growing an account needs a payer");
       TS_TRY(ts_system_transfer(params, payer, acct, new_rent - old_rent));
     }
-    sol_memset(acct->data + old_len, 0, new_len - old_len);
+    ts_memzero(acct->data + old_len, new_len - old_len);
   }
   *(uint64_t *)(acct->data - 8) = new_len; /* serialized data length */
   acct->data_len = new_len;
@@ -467,7 +584,7 @@ static inline uint64_t ts_create_pda_if_needed(SolParameters *params, SolAccount
         !ts_key_eq(&derived, acct->key))
       TS_FAIL(TS_ERR_SEEDS, "TypeSol: PDA seeds do not match account");
     if (acct->data_len < space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");
-    if (sol_memcmp(acct->data, disc, 8) != 0) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");
+    if (!ts_mem_eq(acct->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");
     *bump_out = bump;
     *created = false;
     return SUCCESS;
@@ -479,14 +596,14 @@ static inline uint64_t ts_create_pda_if_needed(SolParameters *params, SolAccount
 /* Move every lamport to `dest`, zero the data, shrink to 0 and hand back to System. */
 static inline uint64_t ts_close(SolAccountInfo *acct, SolAccountInfo *dest) {
   uint64_t total;
-  if (__builtin_add_overflow(*dest->lamports, *acct->lamports, &total))
+  if (ts_add_overflow_u64(*dest->lamports, *acct->lamports, &total))
     TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
   *dest->lamports = total;
   *acct->lamports = 0;
-  sol_memset(acct->data, 0, acct->data_len);
+  ts_memzero(acct->data, acct->data_len);
   *(uint64_t *)(acct->data - 8) = 0; /* serialized data length */
   acct->data_len = 0;
-  sol_memcpy(acct->owner, &TS_SYSTEM_PROGRAM_ID, 32);
+  ts_memcpy(acct->owner, &TS_SYSTEM_PROGRAM_ID, 32);
   return SUCCESS;
 }
 
@@ -538,7 +655,7 @@ static inline bool ts_t22_ext(const SolAccountInfo *a, uint16_t type, uint64_t *
 static inline bool ts_t22_key(const SolAccountInfo *a, uint16_t type, uint64_t field, SolPubkey *out) {
   uint64_t off, len;
   if (!ts_t22_ext(a, type, &off, &len) || len < field + 32) return false;
-  sol_memcpy(out, a->data + off + field, 32);
+  ts_memcpy(out, a->data + off + field, 32);
   static const SolPubkey zero = {{0}};
   return !ts_key_eq(out, &zero);
 }
@@ -584,7 +701,7 @@ static inline uint64_t ts_token_transfer(SolParameters *params, const SolAccount
                                          SolAccountInfo *to, SolAccountInfo *authority, uint64_t amount,
                                          const SolSignerSeed *seeds, int n) {
   uint8_t data[9] = {3}; /* Transfer */
-  sol_memcpy(data + 1, &amount, 8);
+  ts_memcpy(data + 1, &amount, 8);
   SolAccountMeta metas[3] = {{from->key, true, false}, {to->key, true, false}, {authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
@@ -594,7 +711,7 @@ static inline uint64_t ts_token_transfer_checked(SolParameters *params, const So
                                                  SolAccountInfo *authority, uint64_t amount, const SolSignerSeed *seeds,
                                                  int n) {
   uint8_t data[10] = {12}; /* TransferChecked */
-  sol_memcpy(data + 1, &amount, 8);
+  ts_memcpy(data + 1, &amount, 8);
   data[9] = mint->data[44];
   SolAccountMeta metas[4] = {
       {from->key, true, false}, {mint->key, false, false}, {to->key, true, false}, {authority->key, false, true}};
@@ -605,7 +722,7 @@ static inline uint64_t ts_token_mint_to(SolParameters *params, const SolAccountI
                                         SolAccountInfo *to, SolAccountInfo *authority, uint64_t amount,
                                         const SolSignerSeed *seeds, int n) {
   uint8_t data[9] = {7}; /* MintTo */
-  sol_memcpy(data + 1, &amount, 8);
+  ts_memcpy(data + 1, &amount, 8);
   SolAccountMeta metas[3] = {{mint->key, true, false}, {to->key, true, false}, {authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
@@ -614,7 +731,7 @@ static inline uint64_t ts_token_burn(SolParameters *params, const SolAccountInfo
                                      SolAccountInfo *mint, SolAccountInfo *authority, uint64_t amount,
                                      const SolSignerSeed *seeds, int n) {
   uint8_t data[9] = {8}; /* Burn */
-  sol_memcpy(data + 1, &amount, 8);
+  ts_memcpy(data + 1, &amount, 8);
   SolAccountMeta metas[3] = {{from->key, true, false}, {mint->key, true, false}, {authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
@@ -633,7 +750,7 @@ static inline uint64_t ts_return_data(const SolAccountInfo *program, uint8_t *ou
   uint64_t n = sol_get_return_data(buf, sizeof(buf), &from);
   if (n != size || !ts_key_eq(&from, program->key))
     TS_FAIL(TS_ERR_RETURN_DATA, "TypeSol: missing or mismatched return data");
-  sol_memcpy(out, buf, (int)size);
+  ts_memcpy(out, buf, size);
   return SUCCESS;
 }
 
@@ -657,10 +774,10 @@ static inline int ts_bytes_cmp(const uint8_t *a, const uint8_t *b, uint64_t n) {
 
 static inline bool ts_merkle_verify(const SolPubkey *leaf, const uint8_t *proof, uint32_t n, const SolPubkey *root) {
   uint8_t node[32];
-  sol_memcpy(node, leaf, 32);
+  ts_memcpy(node, leaf, 32);
   for (uint32_t i = 0; i < n; i++) {
     uint8_t sib[32];
-    sol_memcpy(sib, proof + (uint64_t)i * 32, 32);
+    ts_memcpy(sib, proof + (uint64_t)i * 32, 32);
     SolBytes pair[2];
     bool node_first = ts_bytes_cmp(node, sib, 32) <= 0;
     pair[0].addr = node_first ? node : sib;
@@ -669,9 +786,9 @@ static inline bool ts_merkle_verify(const SolPubkey *leaf, const uint8_t *proof,
     pair[1].len = 32;
     uint8_t out[32];
     sol_keccak256(pair, 2, out);
-    sol_memcpy(node, out, 32);
+    ts_memcpy(node, out, 32);
   }
-  return sol_memcmp(node, root, 32) == 0;
+  return ts_mem_eq(node, root, 32);
 }
 
 /*
@@ -686,21 +803,21 @@ static inline bool ts_ed25519_verified(const SolAccountInfo *ixs, const SolPubke
   uint64_t len = ixs->data_len;
   if (len < 2) return false;
   uint16_t count;
-  sol_memcpy(&count, d, 2);
+  ts_memcpy(&count, d, 2);
   if (2 + (uint64_t)count * 2 > len) return false;
   for (uint16_t i = 0; i < count; i++) {
     uint16_t at;
-    sol_memcpy(&at, d + 2 + (uint64_t)i * 2, 2);
+    ts_memcpy(&at, d + 2 + (uint64_t)i * 2, 2);
     uint64_t p = at;
     if (p + 2 > len) return false;
     uint16_t nacc;
-    sol_memcpy(&nacc, d + p, 2);
+    ts_memcpy(&nacc, d + p, 2);
     p += 2 + (uint64_t)nacc * 33;
     if (p + 34 > len) return false;
-    bool is_ed = sol_memcmp(d + p, &TS_ED25519_PROGRAM_ID, 32) == 0;
+    bool is_ed = ts_mem_eq(d + p, &TS_ED25519_PROGRAM_ID, 32);
     p += 32;
     uint16_t dlen;
-    sol_memcpy(&dlen, d + p, 2);
+    ts_memcpy(&dlen, d + p, 2);
     p += 2;
     if (p + dlen > len) return false;
     if (!is_ed || dlen < 2) continue;
@@ -710,11 +827,11 @@ static inline bool ts_ed25519_verified(const SolAccountInfo *ixs, const SolPubke
       uint64_t o = 2 + (uint64_t)k * 14;
       if (o + 14 > dlen) break;
       uint16_t f[7];
-      sol_memcpy(f, ix + o, 14); /* sig_off, sig_ix, pk_off, pk_ix, msg_off, msg_len, msg_ix */
+      ts_memcpy(f, ix + o, 14); /* sig_off, sig_ix, pk_off, pk_ix, msg_off, msg_len, msg_ix */
       if (f[1] != 0xFFFF || f[3] != 0xFFFF || f[6] != 0xFFFF) continue;
       if ((uint64_t)f[2] + 32 > dlen || (uint64_t)f[4] + f[5] > dlen) continue;
-      if (sol_memcmp(ix + f[2], signer, 32) != 0) continue;
-      if (f[5] != message.len || sol_memcmp(ix + f[4], message.ptr, (int)message.len) != 0) continue;
+      if (!ts_mem_eq(ix + f[2], signer, 32)) continue;
+      if (f[5] != message.len || !ts_mem_eq(ix + f[4], message.ptr, message.len)) continue;
       return true;
     }
   }
@@ -725,8 +842,8 @@ static inline bool ts_ed25519_verified(const SolAccountInfo *ixs, const SolPubke
 static inline bool ts_secp256k1_verify(const SolPubkey *hash, uint64_t recovery_id, const SolPubkey *r, const SolPubkey *s,
                                        const SolPubkey *eth_address) {
   uint8_t sig[64];
-  sol_memcpy(sig, r, 32);
-  sol_memcpy(sig + 32, s, 32);
+  ts_memcpy(sig, r, 32);
+  ts_memcpy(sig + 32, s, 32);
   /* Reject high-s signatures: (r, n - s) would otherwise verify too (malleability). */
   static const uint8_t half_n[32] = {0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                                      0xff, 0xff, 0xff, 0xff, 0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4,
@@ -738,7 +855,7 @@ static inline bool ts_secp256k1_verify(const SolPubkey *hash, uint64_t recovery_
   uint8_t h[32];
   sol_keccak256(&b, 1, h);
   static const uint8_t zero12[12] = {0};
-  return sol_memcmp(eth_address, zero12, 12) == 0 && sol_memcmp((const uint8_t *)eth_address + 12, h + 12, 20) == 0;
+  return ts_mem_eq(eth_address, zero12, 12) && ts_mem_eq((const uint8_t *)eth_address + 12, h + 12, 20);
 }
 
 /* ---- Heap: a bump allocator for strings built at runtime ----------------- */
@@ -761,8 +878,8 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
 static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
   uint8_t *p;
   TS_TRY(ts_alloc(a.len + b.len, &p));
-  sol_memcpy(p, a.ptr, (int)a.len);
-  sol_memcpy(p + a.len, b.ptr, (int)b.len);
+  ts_memcpy(p, a.ptr, a.len);
+  ts_memcpy(p + a.len, b.ptr, b.len);
   *out = ts_str(p, a.len + b.len);
   return SUCCESS;
 }
@@ -772,7 +889,7 @@ static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
 static inline uint64_t ts_str_copy(TS_Str a, TS_Str *out) {
   uint8_t *p;
   TS_TRY(ts_alloc(a.len, &p));
-  sol_memcpy(p, a.ptr, (int)a.len);
+  ts_memcpy(p, a.ptr, a.len);
   *out = ts_str(p, a.len);
   return SUCCESS;
 }
@@ -861,7 +978,7 @@ static const uint8_t TS_PYTH_PRICE_UPDATE_DISC[8] = {34, 241, 35, 99, 157, 126, 
  */
 static inline uint64_t ts_pyth_message(const SolAccountInfo *a, uint64_t *msg, bool *full) {
   if (!ts_key_eq(a->owner, &TS_PYTH_RECEIVER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not a Pyth price update (owner)");
-  if (a->data_len < 8 + 32 + 1 + 84 || sol_memcmp(a->data, TS_PYTH_PRICE_UPDATE_DISC, 8) != 0)
+  if (a->data_len < 8 + 32 + 1 + 84 || !ts_mem_eq(a->data, TS_PYTH_PRICE_UPDATE_DISC, 8))
     TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: not a Pyth PriceUpdateV2 account");
   uint8_t level = a->data[40];
   if (level == 0) *msg = 42;
@@ -873,7 +990,7 @@ static inline uint64_t ts_pyth_message(const SolAccountInfo *a, uint64_t *msg, b
 }
 static inline int64_t ts_le_i64(const uint8_t *p) {
   int64_t v;
-  sol_memcpy(&v, p, 8);
+  ts_memcpy(&v, p, 8);
   return v;
 }
 
@@ -883,7 +1000,7 @@ static inline uint64_t ts_pyth_price(const SolAccountInfo *a, const SolPubkey *f
   bool full;
   TS_TRY(ts_pyth_message(a, &m, &full));
   if (!full) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Pyth update is not fully verified");
-  if (sol_memcmp(a->data + m, feed, 32) != 0) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Pyth feed id mismatch");
+  if (!ts_mem_eq(a->data + m, feed, 32)) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Pyth feed id mismatch");
   int64_t now;
   TS_TRY(ts_now(&now));
   int64_t published = ts_le_i64(a->data + m + 52);
@@ -906,7 +1023,7 @@ static const uint8_t TS_SWITCHBOARD_FEED_DISC[8] = {196, 27, 108, 196, 10, 215, 
 static inline uint64_t ts_check_switchboard(const SolAccountInfo *a, bool devnet) {
   if (!ts_key_eq(a->owner, devnet ? &TS_SWITCHBOARD_DEVNET_ID : &TS_SWITCHBOARD_MAINNET_ID))
     TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not a Switchboard feed (owner)");
-  if (a->data_len < TS_SB_RESULT_SLOT + 8 || sol_memcmp(a->data, TS_SWITCHBOARD_FEED_DISC, 8) != 0)
+  if (a->data_len < TS_SB_RESULT_SLOT + 8 || !ts_mem_eq(a->data, TS_SWITCHBOARD_FEED_DISC, 8))
     TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: not a Switchboard PullFeedAccountData account");
   return SUCCESS;
 }
@@ -925,7 +1042,7 @@ static inline uint64_t ts_switchboard_value(const SolAccountInfo *a, uint64_t ma
   if (__builtin_add_overflow(slot, max_stale_slots, &fresh_until)) fresh_until = UINT64_MAX;
   if (fresh_until < clock[0]) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Switchboard value is stale");
   __int128 v;
-  sol_memcpy(&v, a->data + TS_SB_RESULT_VALUE, 16);
+  ts_memcpy(&v, a->data + TS_SB_RESULT_VALUE, 16);
   __int128 scale = 1;
   for (int i = decimals; i < 18; i++) scale *= 10;
   __int128 r = v / scale;
@@ -961,8 +1078,8 @@ static inline uint64_t ts_ata_create(SolParameters *params, const SolAccountInfo
 /* Append a Borsh string to a heap buffer. */
 static inline void ts_put_str(uint8_t *buf, uint64_t *at, TS_Str s) {
   uint32_t n = (uint32_t)s.len;
-  sol_memcpy(buf + *at, &n, 4);
-  sol_memcpy(buf + *at + 4, s.ptr, (int)s.len);
+  ts_memcpy(buf + *at, &n, 4);
+  ts_memcpy(buf + *at + 4, s.ptr, s.len);
   *at += 4 + s.len;
 }
 
@@ -977,7 +1094,7 @@ static inline uint64_t ts_t22_init_metadata(SolParameters *params, const SolAcco
   uint8_t *data;
   TS_TRY(ts_alloc(8 + 12 + name.len + symbol.len + uri.len, &data));
   static const uint8_t disc[8] = {210, 225, 30, 162, 88, 184, 77, 141};
-  sol_memcpy(data, disc, 8);
+  ts_memcpy(data, disc, 8);
   uint64_t at = 8;
   ts_put_str(data, &at, name);
   ts_put_str(data, &at, symbol);
@@ -1013,7 +1130,7 @@ static inline uint64_t ts_mpl_create_v3(SolParameters *params, const SolAccountI
   ts_put_str(data, &at, name);
   ts_put_str(data, &at, symbol);
   ts_put_str(data, &at, uri);
-  sol_memcpy(data + at, &fee_bps, 2);
+  ts_memcpy(data + at, &fee_bps, 2);
   at += 2;
   data[at++] = 0; /* creators: None */
   data[at++] = 0; /* collection: None */
@@ -1040,7 +1157,7 @@ static inline uint64_t ts_init_extra_metas(SolParameters *params, SolAccountInfo
   /* 16 bytes in total: the 8-byte discriminator slot holds the execute discriminator. */
   TS_TRY(ts_create_pda(params, payer, acct, seeds, 2, TS_TRANSFER_HOOK_EXECUTE_DISC, 16, &bump));
   uint32_t len = 4;
-  sol_memcpy(acct->data + 8, &len, 4);
+  ts_memcpy(acct->data + 8, &len, 4);
   return SUCCESS;
 }
 

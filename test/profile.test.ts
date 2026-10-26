@@ -41,10 +41,11 @@ describe("source locations and --profile", () => {
   it("attributes compute units to statements; the profile adds up to the measured cost", async () => {
     const { d, acc } = await withAcc(true);
     const payer = await fundedSigner(d.svm);
-    const r = expectOk(await send(d.svm, payer, [ix(d, "work", { n: new BN(10) }, [{ address: acc, writable: true }])]));
+    // Enough loop passes that the statements, not the fixed entry and return-data cost, make up most of the total.
+    const r = expectOk(await send(d.svm, payer, [ix(d, "work", { n: new BN(100) }, [{ address: acc, writable: true }])]));
     const rows = profileLogs(r.logs(), d.programId);
     const byLine = Object.fromEntries(rows.map((row) => [row.location, row]));
-    expect(byLine["profiled.ts:10"].calls).toBe(10); // the loop body
+    expect(byLine["profiled.ts:10"].calls).toBe(100); // the loop body
     expect(byLine["profiled.ts:9"].calls).toBe(1);
     expect(Object.keys(byLine)).toEqual(expect.arrayContaining(["profiled.ts:8", "profiled.ts:12", "profiled.ts:13", "profiled.ts:14"]));
     // Against the same program built without markers: the profile explains the statements' cost to within the
@@ -52,7 +53,7 @@ describe("source locations and --profile", () => {
     const { d: plain, acc: acc2 } = await withAcc(false);
     const p2 = await fundedSigner(plain.svm);
     const consumed = Number(
-      expectOk(await send(plain.svm, p2, [ix(plain, "work", { n: new BN(10) }, [{ address: acc2, writable: true }])])).computeUnitsConsumed(),
+      expectOk(await send(plain.svm, p2, [ix(plain, "work", { n: new BN(100) }, [{ address: acc2, writable: true }])])).computeUnitsConsumed(),
     );
     const profiled = rows.reduce((s, row) => s + row.units, 0);
     expect(profiled).toBeLessThanOrEqual(consumed);

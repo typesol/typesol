@@ -3,6 +3,24 @@
 TypeSol follows [semantic versioning](https://semver.org/) with the 0.x rules described in CONTRIBUTING.md:
 until 1.0, a minor version may change the language, the IDL layout or error codes, and says so here.
 
+## Unreleased
+
+### Performance
+Same checks, error codes and account state; fewer compute units and smaller binaries. counter.increment 926 → 143 CU,
+vault.withdraw 1,394 → 352, vault.shut 1,190 → 201, vault.deposit 2,436 → 1,358; counter / vault binaries
+29.9 / 33.6 KB → 12.3 / 16.1 KB (see the README numbers).
+- Pubkey, discriminator and other byte comparisons, copies and zeroing work 8 bytes at a time (`ts_key_eq`,
+  `ts_mem_eq`, `ts_memcpy`, `ts_memzero`) instead of the SDK's byte loops.
+- Instruction dispatch compares an 8-byte discriminator as one u64.
+- The entry point deserializes accounts with `ts_deserialize`: same layout and duplicate handling as the SDK's
+  `sol_deserialize`, without its per-account bound branch (the account count is already capped) or bool
+  normalization (the loader writes 0 or 1).
+- The rent-exempt minimum uses integer math when the exemption threshold is a whole number (every cluster) and the
+  product stays below 2^53, where it is bit-identical to the floating-point formula; other thresholds still take it.
+- Checked u64 `+`, `-` and `*` compile to one compare; `*` skips the 128-bit multiply when both factors fit in 32 bits.
+- Programs link with `--gc-sections` and `--strip-all` (clang `-ffunction-sections -fdata-sections`): unused
+  compiler-builtins code and the symbol tables are dropped. Build manifests' binary hashes change accordingly.
+
 ## 0.10.0 — 2026-10-23
 
 First release candidate. Not externally audited (see SECURITY.md).

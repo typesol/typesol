@@ -763,7 +763,7 @@ export abstract class CpiEmitter extends CallEmitter {
       if (bytes === undefined) dynamic = true;
       else fixed += bytes;
       if (dynamic) this.line(`if (${len} + ${n} > ${max}) TS_FAIL(${errorCode}, "TypeSol: ${what} too large");`);
-      this.line(`sol_memcpy(${buf} + ${len}, ${src}, ${n});`);
+      this.line(`ts_memcpy(${buf} + ${len}, ${src}, ${n});`);
       this.line(`${len} += ${n};`);
     };
     const finish = (at: ts.Node) => {
@@ -873,7 +873,7 @@ export abstract class CpiEmitter extends CallEmitter {
         const src = this.ref(e);
         if (!src || src.type.kind !== "dataEnum" || src.type.name !== enumName) this.fail(e, `expected a ${enumName}`);
         this.line(`TSE_${enumName} ${t};`);
-        this.line(`sol_memcpy(&${t}, &${src.lv}, sizeof(${t}));`);
+        this.line(`ts_memcpy(&${t}, &${src.lv}, sizeof(${t}));`);
         staged.set(name, (put) => this.serializeDataEnumLv(t, enumName, put));
       } else if (vt) {
         const v = this.ownedString(this.expect(this.expr(e, vt), vt, e));
@@ -893,7 +893,7 @@ export abstract class CpiEmitter extends CallEmitter {
         if (!src || !sameType(src.type, f.type)) this.fail(e, `expected a ${typeName(f.type)} from account data`);
         const n = this.fieldBytes(f.type);
         this.line(`uint8_t ${t}[${n}];`);
-        this.line(`sol_memcpy(${t}, &${src.lv}, ${n});`);
+        this.line(`ts_memcpy(${t}, &${src.lv}, ${n});`);
         staged.set(name, (put) => put(t, String(n), n));
       }
     }

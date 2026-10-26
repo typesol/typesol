@@ -80,6 +80,9 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     "-Wno-tautological-compare",
     "-O2",
     "-fno-builtin",
+    // One section per function and constant, so the linker's --gc-sections can drop what nothing reaches.
+    "-ffunction-sections",
+    "-fdata-sections",
     "-std=c17",
     "-target",
     "sbf",
@@ -100,6 +103,10 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     tc.libDir,
     "-z",
     "max-page-size=4096",
+    // Drop unreachable code (e.g. the parts of compiler-builtins' soft-float objects nothing calls) and the symbol
+    // tables, which the loader never reads: smaller programs cost less rent and upload time.
+    "--gc-sections",
+    "--strip-all",
     "-lc",
     "-o",
     outSo,

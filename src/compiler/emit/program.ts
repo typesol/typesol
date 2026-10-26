@@ -94,21 +94,27 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   out.push(`#define TS_MAX_ACCOUNTS ${MAX_ACCOUNTS}`);
   out.push(`extern uint64_t entrypoint(const uint8_t *input) {`);
   out.push(`  SolAccountInfo ka[TS_MAX_ACCOUNTS];`);
-  out.push(`  SolParameters params = (SolParameters){.ka = ka};`);
-  // sol_deserialize clamps the count to what fits, so extra accounts would silently vanish from
-  // remainingAccounts(): read the real count (the first u64 of the input) and refuse instead.
+  out.push(`  SolParameters params;`, `  params.ka = ka; /* ts_deserialize fills in the rest */`);
+  // Clamping the count to what fits would make extra accounts silently vanish from remainingAccounts():
+  // refuse more than the array holds instead (ts_deserialize relies on this bound).
   out.push(`  if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSol: at most ${MAX_ACCOUNTS} accounts per instruction");`);
-  out.push(`  if (!sol_deserialize(input, &params, TS_MAX_ACCOUNTS)) return ERROR_INVALID_ARGUMENT;`);
+  out.push(`  ts_deserialize(input, &params);`);
   const minDisc = Math.min(8, ...model.instructions.map((ix) => ix.discriminator.length));
   out.push(`  if (params.data_len < ${minDisc}) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSol: instruction data too short");`);
   // Self-CPI events (emitCpi): accept the event instruction when its authority PDA signed it, like Anchor.
   if (model.instructions.some((ix) => ix.accounts.some((a) => a.kind.kind === "eventAuthority")))
-    out.push(`  if (params.data_len >= 8 && sol_memcmp(params.data, TS_EVENT_IX_TAG, 8) == 0) return ts_event_dispatch(&params);`);
+    out.push(`  if (params.data_len >= 8 && ts_mem_eq(params.data, TS_EVENT_IX_TAG, 8)) return ts_event_dispatch(&params);`);
   for (const ix of model.instructions) {
     const n = ix.discriminator.length;
+    // An 8-byte discriminator is one u64 compare (the data is little-endian bytes, the literal their u64 value).
+    if (n === 8) {
+      const word = [...ix.discriminator].reverse().reduce((v, b) => (v << 8n) | BigInt(b), 0n);
+      out.push(`  if (params.data_len >= 8 && ts_ld64(params.data) == 0x${word.toString(16).padStart(16, "0")}ULL) return ix_${ix.name}(&params);`);
+      continue;
+    }
     out.push(`  {`);
     out.push(`    static const uint8_t disc[${n}] = ${cBytes(ix.discriminator)};`);
-    out.push(`    if (params.data_len >= ${n} && sol_memcmp(params.data, disc, ${n}) == 0) return ix_${ix.name}(&params);`);
+    out.push(`    if (params.data_len >= ${n} && ts_mem_eq(params.data, disc, ${n})) return ix_${ix.name}(&params);`);
     out.push(`  }`);
   }
   out.push(`  TS_FAIL(TS_ERR_INSTRUCTION_NOT_FOUND, "TypeSol: unknown instruction");`);

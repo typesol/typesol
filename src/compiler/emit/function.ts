@@ -141,7 +141,7 @@ export class FunctionEmitter extends StatementEmitter {
         );
       } else if (a.type.kind === "pubkey") {
         need("32");
-        head.push(`  SolPubkey arg_${a.name};`, `  sol_memcpy(&arg_${a.name}, ${at}, 32);`, `  off += 32;`);
+        head.push(`  SolPubkey arg_${a.name};`, `  ts_memcpy(&arg_${a.name}, ${at}, 32);`, `  off += 32;`);
       } else if (a.type.kind === "bool") {
         need("1");
         head.push(`  uint8_t arg_${a.name}__raw = *(${at});`, `  off += 1;`);
@@ -161,7 +161,7 @@ export class FunctionEmitter extends StatementEmitter {
         head.push(`  if (arg_${a.name}__tag > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid option argument");`);
         head.push(`  if (arg_${a.name}__tag == 1) {`);
         head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: instruction data too short");`);
-        head.push(`    arg_${a.name}.some = 1;`, `    sol_memcpy(&arg_${a.name}.v, ${at}, ${size});`, `    off += ${size};`);
+        head.push(`    arg_${a.name}.some = 1;`, `    ts_memcpy(&arg_${a.name}.v, ${at}, ${size});`, `    off += ${size};`);
         if (inner.kind === "bool" || inner.kind === "enum") {
           const max = inner.kind === "bool" ? 2 : this.model.enums.get(inner.name)!.variants.length;
           head.push(`    if (arg_${a.name}.v >= ${max}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid option argument");`);
@@ -187,14 +187,14 @@ export class FunctionEmitter extends StatementEmitter {
         const ft: FieldType = a.type.kind === "structRef" ? { kind: "struct", name: a.type.struct } : a.type.array;
         const size = this.fieldBytes(ft);
         need(String(size));
-        head.push(`  ${decl};`, `  TS_TRY(ts_alloc(${size}, (uint8_t **)&${v}));`, `  sol_memcpy(${v}, ${at}, ${size});`, `  off += ${size};`);
+        head.push(`  ${decl};`, `  TS_TRY(ts_alloc(${size}, (uint8_t **)&${v}));`, `  ts_memcpy(${v}, ${at}, ${size});`, `  off += ${size};`);
         head.push(...this.validation(`(*${v})`, ft, "  "));
       } else if (a.type.kind === "dataEnumArg") {
         // Borsh enum: tag byte, then the variant's fields in order.
         const e = this.model.dataEnums.get(a.type.name)!;
         const v = `arg_${a.name}__v`;
         need("1");
-        head.push(`  TSE_${e.name} ${v};`, `  sol_memset(&${v}, 0, sizeof(${v}));`, `  ${v}.tag = *(${at});`, `  off += 1;`);
+        head.push(`  TSE_${e.name} ${v};`, `  ts_memzero(&${v}, sizeof(${v}));`, `  ${v}.tag = *(${at});`, `  off += 1;`);
         head.push(`  switch (${v}.tag) {`);
         e.variants.forEach((variant, i) => {
           head.push(`  case ${i}: {`);
@@ -203,7 +203,7 @@ export class FunctionEmitter extends StatementEmitter {
               this.reporter.fail(a.node, `${e.name}.${variant.name}.${f.name}: enum arguments carry integers, booleans, Pubkeys and enums`);
             const size = scalarSize(f.type as ScalarType);
             head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: instruction data too short");`);
-            head.push(`    sol_memcpy(&${v}.v.${variant.name}.${f.name}, params->data + off, ${size});`, `    off += ${size};`);
+            head.push(`    ts_memcpy(&${v}.v.${variant.name}.${f.name}, params->data + off, ${size});`, `    off += ${size};`);
             if (f.type.kind === "bool")
               head.push(`    if (${v}.v.${variant.name}.${f.name} > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid bool argument");`);
             if (f.type.kind === "enum")
@@ -220,7 +220,7 @@ export class FunctionEmitter extends StatementEmitter {
       } else {
         const info = INT_INFO[a.type.name];
         need(String(info.bytes));
-        if (info.bytes === 16) head.push(`  ${info.c} arg_${a.name};`, `  sol_memcpy(&arg_${a.name}, ${at}, 16);`, `  off += 16;`);
+        if (info.bytes === 16) head.push(`  ${info.c} arg_${a.name};`, `  ts_memcpy(&arg_${a.name}, ${at}, 16);`, `  off += 16;`);
         else head.push(`  ${info.c} arg_${a.name} = (${info.c})ts_read_le(${at}, ${info.bytes});`, `  off += ${info.bytes};`);
       }
     }

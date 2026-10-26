@@ -21,8 +21,8 @@ Codama and explorer tooling work with TypeSol programs unchanged.
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.
-- **Small and fast.** On the same programs, TypeSol uses 38–69% of Anchor's compute units, with binaries about 5×
-  smaller. It is on par with native Rust. Hand-tuned Pinocchio is still faster (see the [numbers](#numbers)).
+- **Small and fast.** On the same programs, TypeSol uses 6–46% of Anchor's compute units, with binaries about 10×
+  smaller. It is faster than native Rust and close to hand-tuned Pinocchio (see the [numbers](#numbers)).
 - **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` checks a deployed program
   against its source.
 
@@ -210,17 +210,17 @@ compute units per call:
 
 | Instruction | TypeSol | Anchor 1.0.2 | Native Rust | Pinocchio 0.10 |
 | --- | ---: | ---: | ---: | ---: |
-| counter.initialize | 4,533 | 6,573 | 4,601 | 3,186 |
-| counter.increment | 926 | 2,323 | 857 | 113 |
-| vault.open | 4,536 | 6,627 | 4,613 | 3,185 |
-| vault.deposit | 2,436 | 4,355 | 2,832 | 1,377 |
-| vault.withdraw | 1,394 | 3,628 | 1,176 | 370 |
-| vault.shut | 1,190 | 2,024 | 950 | 167 |
-| binary, counter / vault | 29.9 / 33.6 KB | 145.2 / 158.9 KB | 27.9 / 35.0 KB | 19.6 / 22.9 KB |
+| counter.initialize | 3,048 | 6,573 | 4,601 | 3,186 |
+| counter.increment | 143 | 2,323 | 857 | 113 |
+| vault.open | 3,062 | 6,627 | 4,613 | 3,185 |
+| vault.deposit | 1,358 | 4,355 | 2,832 | 1,377 |
+| vault.withdraw | 352 | 3,628 | 1,176 | 370 |
+| vault.shut | 201 | 2,024 | 950 | 167 |
+| binary, counter / vault | 12.3 / 16.1 KB | 145.2 / 158.9 KB | 27.9 / 35.0 KB | 19.6 / 22.9 KB |
 
-`initialize` and `open` include the PDA bump search, which costs the same in every implementation. Most of the
-remaining gap to Pinocchio comes from TypeSol comparing 32-byte keys one byte at a time; this is the next
-optimization. Fewer compute units are not a safety claim. Beyond these numbers, the differential tests also check
+`initialize` and `open` include the PDA bump search, which costs the same in every implementation. The remaining gap
+to Pinocchio on the small instructions is the entry point: TypeSol fills a `SolAccountInfo` for every account up
+front (about 25 CU each), where Pinocchio reads accounts in place. Fewer compute units are not a safety claim. Beyond these numbers, the differential tests also check
 an escrow program against Anchor ([docs/testing.md](docs/testing.md)).
 
 ## How it is tested

@@ -44,7 +44,7 @@ __attribute__((noinline)) static uint64_t ix_increment(SolParameters *params) {
   (void)off;
   if (!ts_key_eq((&d_counter->authority), a_authority->key)) TS_FAIL(6000, "Error 6000 Unauthorized: Only the counter's authority can change it (counter.ts:21)");
   uint64_t t0;
-  if (__builtin_add_overflow(d_counter->count, arg_by, &t0)) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow (counter.ts:22)");
+  if (ts_add_overflow_u64(d_counter->count, arg_by, &t0)) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow (counter.ts:22)");
   d_counter->count = t0;
   return SUCCESS;
 }
@@ -66,21 +66,13 @@ __attribute__((noinline)) static uint64_t ix_assert_at_least(SolParameters *para
 #define TS_MAX_ACCOUNTS 32
 extern uint64_t entrypoint(const uint8_t *input) {
   SolAccountInfo ka[TS_MAX_ACCOUNTS];
-  SolParameters params = (SolParameters){.ka = ka};
+  SolParameters params;
+  params.ka = ka; /* ts_deserialize fills in the rest */
   if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSol: at most 32 accounts per instruction");
-  if (!sol_deserialize(input, &params, TS_MAX_ACCOUNTS)) return ERROR_INVALID_ARGUMENT;
+  ts_deserialize(input, &params);
   if (params.data_len < 8) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSol: instruction data too short");
-  {
-    static const uint8_t disc[8] = {175, 175, 109, 31, 13, 152, 155, 237};
-    if (params.data_len >= 8 && sol_memcmp(params.data, disc, 8) == 0) return ix_initialize(&params);
-  }
-  {
-    static const uint8_t disc[8] = {11, 18, 104, 9, 104, 174, 59, 33};
-    if (params.data_len >= 8 && sol_memcmp(params.data, disc, 8) == 0) return ix_increment(&params);
-  }
-  {
-    static const uint8_t disc[8] = {217, 17, 64, 130, 131, 210, 58, 81};
-    if (params.data_len >= 8 && sol_memcmp(params.data, disc, 8) == 0) return ix_assert_at_least(&params);
-  }
+  if (params.data_len >= 8 && ts_ld64(params.data) == 0xed9b980d1f6dafafULL) return ix_initialize(&params);
+  if (params.data_len >= 8 && ts_ld64(params.data) == 0x213bae680968120bULL) return ix_increment(&params);
+  if (params.data_len >= 8 && ts_ld64(params.data) == 0x513ad283824011d9ULL) return ix_assert_at_least(&params);
   TS_FAIL(TS_ERR_INSTRUCTION_NOT_FOUND, "TypeSol: unknown instruction");
 }

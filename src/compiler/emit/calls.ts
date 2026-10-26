@@ -199,13 +199,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const t = this.tmp("core");
         if (builtin === "coreAssetOwner") {
           this.line(`SolPubkey ${t};`);
-          this.line(`sol_memcpy(&${t}, ${acct}->data + 1, 32);`);
+          this.line(`ts_memcpy(&${t}, ${acct}->data + 1, 32);`);
           return { c: `(&${t})`, type: PUBKEY };
         }
         this.model.options.set("pubkey", PUBKEY);
         this.line(`${optC(PUBKEY)} ${t};`);
         this.line(`${t}.some = ${acct}->data[33] == 2 && ${acct}->data_len >= 66;`);
-        this.line(`if (${t}.some) sol_memcpy(&${t}.v, ${acct}->data + 34, 32); else sol_memset(&${t}.v, 0, 32);`);
+        this.line(`if (${t}.some) ts_memcpy(&${t}.v, ${acct}->data + 34, 32); else ts_memzero(&${t}.v, 32);`);
         return { c: t, type: { kind: "option", inner: PUBKEY } };
       }
       case "transferFee": {
@@ -231,7 +231,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const t = this.tmp("ext");
         this.line(`${optC(PUBKEY)} ${t};`);
         this.line(`${t}.some = ts_t22_key(${m}, ${type}, ${field}, &${t}.v);`);
-        this.line(`if (!${t}.some) sol_memset(&${t}.v, 0, 32);`);
+        this.line(`if (!${t}.some) ts_memzero(&${t}.v, 32);`);
         return { c: t, type: { kind: "option", inner: PUBKEY } };
       }
       case "hasExtension": {
@@ -413,7 +413,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
           const t = this.tmp("el");
           this.line(`${scalarStorageC(elem)} ${t};`);
-          this.line(`sol_memcpy(&${t}, ${l.c}.ptr + ${idx} * ${scalarSize(elem)}, ${scalarSize(elem)});`);
+          this.line(`ts_memcpy(&${t}, ${l.c}.ptr + ${idx} * ${scalarSize(elem)}, ${scalarSize(elem)});`);
           if (elem.kind === "pubkey") return { c: `(&${t})`, type: elem };
           if (elem.kind === "bool") {
             this.line(`if (${t} > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid bool in Vec argument");`);
@@ -496,7 +496,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!st) {
         this.line(`${fieldC(vt.elem)} ${t};`);
         this.writeAggregate({ lv: t, type: vt.elem, writable: true }, valueNode);
-        return (el) => this.line(`sol_memcpy(&${el.lv}, &${t}, sizeof(${t}));`);
+        return (el) => this.line(`ts_memcpy(&${el.lv}, &${t}, sizeof(${t}));`);
       }
       const val = this.ownedString(this.expect(this.expr(valueNode, st), st, valueNode));
       if (st.kind === "pubkey") this.line(`SolPubkey ${t} = *(${val.c});`);
@@ -660,7 +660,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       `if (${o} > ${acct}->data_len || ${acct}->data_len - ${o} < ${size}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: read past the end of the account data");`,
     );
     this.line(`${scalarStorageC(t)} ${out};`);
-    this.line(`sol_memcpy(&${out}, ${acct}->data + ${o}, ${size});`);
+    this.line(`ts_memcpy(&${out}, ${acct}->data + ${o}, ${size});`);
     if (t.kind === "pubkey") return { c: `(&${out})`, type: t };
     if (t.kind === "bool") {
       this.line(`if (${out} > 1) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: not a boolean");`);
@@ -683,7 +683,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`static const uint8_t ${disc}[8] = ${cBytes(s.accountDiscriminator)};`);
     this.line(`if (!ts_key_eq(${h}->owner, ${owner.c})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: account not owned by the expected program");`);
     this.line(`if (${h}->data_len < 8 + sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");`);
-    this.line(`if (sol_memcmp(${h}->data, ${disc}, 8) != 0) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");`);
+    this.line(`if (!ts_mem_eq(${h}->data, ${disc}, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");`);
     // Another program wrote these bytes: check bools, enums, option tags and string lengths like arguments.
     const view = `(*((TSS_${s.name} *)(${h}->data + 8)))`;
     for (const l of this.validation(view, { kind: "struct", name: s.name }, "", `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: malformed foreign account data")`))
@@ -791,7 +791,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const decl = type.kind === "array" ? storageDecl(type, `(*${t})`) : `${fieldC(type)} *${t}`;
     this.hoisted.push(`  ${decl} = NULL;`);
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
-    this.line(`sol_memcpy(${t}, &${lv}, ${n});`);
+    this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;
   }
 

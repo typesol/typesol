@@ -319,7 +319,7 @@ export abstract class StorageEmitter extends EmitterBase {
     const t = this.tmp("co");
     this.line(`${optC(PUBKEY)} ${t};`);
     this.line(`${t}.some = ts_read_le(${at}, 4) == 1;`);
-    this.line(`if (${t}.some) sol_memcpy(&${t}.v, ${at} + 4, 32); else sol_memset(&${t}.v, 0, 32);`);
+    this.line(`if (${t}.some) ts_memcpy(&${t}.v, ${at} + 4, 32); else ts_memzero(&${t}.v, 32);`);
     return { c: t, type: opt };
   }
 
@@ -433,7 +433,7 @@ export abstract class StorageEmitter extends EmitterBase {
     if (target.type.kind === "option" && target.type.inner.kind === "struct") {
       if (valueNode.kind === ts.SyntaxKind.NullKeyword) {
         this.line(`${target.lv}.some = 0;`);
-        this.line(`sol_memset(&${target.lv}.v, 0, sizeof(${target.lv}.v));`);
+        this.line(`ts_memzero(&${target.lv}.v, sizeof(${target.lv}.v));`);
         return;
       }
       // Another Option<same struct>: copy it whole (tag and value).
@@ -464,7 +464,7 @@ export abstract class StorageEmitter extends EmitterBase {
       // Build the new value in a temporary: its fields may read the old value of the target.
       const tmp = this.tmp("de");
       this.line(`TSE_${e.name} ${tmp};`);
-      this.line(`sol_memset(&${tmp}, 0, sizeof(${tmp}));`);
+      this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
       this.line(`${tmp}.tag = ${vi};`);
       for (const f of variant.fields) if (!given.has(f.name)) this.fail(valueNode, `missing field "${f.name}" of ${e.name}.${variant.name}`);
       // Fields are evaluated in source order, as in JS, straight into the temporary.
@@ -475,7 +475,7 @@ export abstract class StorageEmitter extends EmitterBase {
         if (vt) this.line(this.writeStorage(sub, this.expect(this.expr(ex, vt), vt, ex).c) + ";");
         else this.writeAggregate(sub, ex);
       }
-      this.line(`sol_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
     if (ts.isObjectLiteralExpression(valueNode)) {
@@ -500,7 +500,7 @@ export abstract class StorageEmitter extends EmitterBase {
         if (vt) this.line(this.writeStorage(sub, this.expect(this.expr(e, vt), vt, e).c) + ";");
         else this.writeAggregate(sub, e);
       }
-      this.line(`sol_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
     const src = this.ref(valueNode);
