@@ -17,9 +17,27 @@ const ASSETS = fileURLToPath(new URL("../assets/", import.meta.url));
 /** A usage problem: printed with the command's help, exit code 2. */
 class UsageError extends Error {}
 
+/** Where "SOL" starts in the banner art: "Type" is drawn in TypeScript blue, "SOL" in the Solana gradient. */
+const BANNER_SOL_COLUMN = 36;
+
 function banner(): string {
   const unicode = /utf-?8/i.test(process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || "UTF-8");
-  const art = readFileSync(path.join(ASSETS, unicode ? "logo-blocks.txt" : "logo-ascii.txt"), "utf8");
+  let art = readFileSync(path.join(ASSETS, unicode ? "logo-blocks.txt" : "logo-ascii.txt"), "utf8");
+  if (!process.env.NO_COLOR && process.env.TERM !== "dumb") {
+    const width = Math.max(...art.split("\n").map((l) => l.length));
+    const rgb = (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`;
+    const sol = (x: number) => {
+      const t = Math.min(1, Math.max(0, (x - BANNER_SOL_COLUMN) / Math.max(1, width - BANNER_SOL_COLUMN)));
+      return rgb(Math.round(0x99 + (0x14 - 0x99) * t), Math.round(0x45 + (0xf1 - 0x45) * t), Math.round(0xff + (0x95 - 0xff) * t));
+    };
+    art = art
+      .split("\n")
+      .map(
+        (line) =>
+          [...line].map((ch, x) => (ch === " " ? ch : (x < BANNER_SOL_COLUMN ? rgb(0x31, 0x78, 0xc6) : sol(x)) + ch)).join("") + (line ? "\x1b[0m" : ""),
+      )
+      .join("\n");
+  }
   return `\n${art}\n  TypeScript in, SBF out.  v${COMPILER_VERSION}\n`;
 }
 

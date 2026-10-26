@@ -6,6 +6,8 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Changed
+- The CLI banner spells TypeSOL, in TypeScript blue and the Solana gradient on terminals with color (`NO_COLOR`
+  turns it off).
 - The project is now spelled **TypeSOL**, in docs, CLI help and runtime messages (`TypeSOL: arithmetic overflow (file.ts:12)`). Tools that match log text on the old spelling need updating. The npm package and command stay `typesol`.
 
 ### Performance
