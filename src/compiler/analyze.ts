@@ -37,7 +37,7 @@ const RESERVED_FIELDS = new Set(["key", "lamports", "dataLen", "create", "equals
 
 /**
  * Struct fields and enum variants become C member names as written. C keywords and the object-like
- * macros of the Solana C SDK / TypeSol runtime would break or silently change the generated C.
+ * macros of the Solana C SDK / TypeSOL runtime would break or silently change the generated C.
  */
 const C_RESERVED = new Set([
   ..."auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while bool true false asm typeof".split(
@@ -132,7 +132,7 @@ export interface Analysis {
   /** TypeScript's checker: used for narrowing (which variant a data-enum value is in a branch). */
   checker: ts.TypeChecker;
   sourceFile: ts.SourceFile;
-  /** Every TypeSol file of the program, entry last. */
+  /** Every TypeSOL file of the program, entry last. */
   files: string[];
   /** Local identifier -> `typesol` export name, for imports. */
   imports: Map<string, string>;
@@ -175,7 +175,7 @@ function typecheck(entry: string): { program: ts.Program; sourceFile: ts.SourceF
   const sourceFile = program.getSourceFile(entry);
   if (!sourceFile) throw new CompileError([{ file: entry, line: 1, column: 1, message: "cannot read source file" }]);
 
-  // Every TypeSol source in the program (the entry and the files it imports), not lib declarations.
+  // Every TypeSOL source in the program (the entry and the files it imports), not lib declarations.
   const userFiles = program.getSourceFiles().filter((f) => !f.isDeclarationFile && path.resolve(f.fileName) !== LIB_PATH);
   const tsDiagnostics = userFiles.flatMap((f) => ts.getPreEmitDiagnostics(program, f));
   if (tsDiagnostics.length > 0) {
@@ -219,7 +219,7 @@ function checkImports(entry: string): void {
         const spec = (stmt.moduleSpecifier as ts.StringLiteral).text;
         if (spec === "typesol") continue;
         if (!isRelative(spec)) {
-          reporter.error(stmt, `only imports from "typesol" and relative TypeSol files ("./math") are allowed, got "${spec}"`);
+          reporter.error(stmt, `only imports from "typesol" and relative TypeSOL files ("./math") are allowed, got "${spec}"`);
           continue;
         }
         const target = resolveRelative(file, spec);
@@ -273,9 +273,9 @@ export function analyze(entry: string): Analysis {
 
   const isExported = (n: ts.Node) => ts.canHaveModifiers(n) && (ts.getModifiers(n) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
   const declare = (name: ts.Identifier, file: ts.SourceFile) => {
-    // These prefixes name the IDL types TypeSol generates for FixedString<N>, Option and data enums in account data.
+    // These prefixes name the IDL types TypeSOL generates for FixedString<N>, Option and data enums in account data.
     if (/^(FixedString\d|FixedOption_|FixedEnum_)/.test(name.text))
-      reporter.fail(name, `"${name.text}" is reserved for IDL types TypeSol generates; pick another name`);
+      reporter.fail(name, `"${name.text}" is reserved for IDL types TypeSOL generates; pick another name`);
     const prev = declared.get(name.text);
     if (prev) reporter.fail(name, `"${name.text}" is already declared in ${path.basename(prev)}; names are program-wide`);
     declared.set(name.text, file.fileName);
@@ -296,7 +296,7 @@ export function analyze(entry: string): Analysis {
           } else {
             // Structs, enums and helpers share one program-wide namespace in the generated C, so keep names.
             for (const el of bindings.elements)
-              if (el.propertyName) reporter.fail(el, `renaming imports from TypeSol files is not supported; import ${el.propertyName.text} as is`);
+              if (el.propertyName) reporter.fail(el, `renaming imports from TypeSOL files is not supported; import ${el.propertyName.text} as is`);
           }
         } else if (ts.isInterfaceDeclaration(stmt)) {
           if (!isExported(stmt)) reporter.fail(stmt, "structs must be exported");
@@ -369,7 +369,7 @@ export function analyze(entry: string): Analysis {
             if (d.type) pendingConstTypes.push({ def, type: d.type, imports });
           }
         } else {
-          reporter.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported at the top level of a TypeSol file`);
+          reporter.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported at the top level of a TypeSOL file`);
         }
       });
     }
@@ -438,7 +438,7 @@ export function analyze(entry: string): Analysis {
         );
     }
   if (instructions.length === 0 && reporter.diagnostics.length === 0)
-    reporter.error(sourceFile, "a TypeSol program needs at least one exported function (instruction) in its entry file");
+    reporter.error(sourceFile, "a TypeSOL program needs at least one exported function (instruction) in its entry file");
 
   const name = path.basename(sourceFile.fileName).replace(/\.ts$/, "");
   return {
@@ -484,7 +484,7 @@ function collectStructs(t: ValueType | FieldType, structs: Map<string, StructDef
 
 /**
  * Instruction-argument types beyond scalars: a fixed-size struct (`p: Point`), `FixedArray<T, N>`, or
- * `Vec<Struct>`. They are Borsh-identical to TypeSol's fixed layouts, so they are copied as is and validated.
+ * `Vec<Struct>`. They are Borsh-identical to TypeSOL's fixed layouts, so they are copied as is and validated.
  */
 export function resolveArgAggregate(node: ts.TypeNode, scope: TypeScope, structs: Map<string, StructDef>): ValueType | undefined {
   const fixed = (t: ts.TypeNode): FieldType | undefined => {

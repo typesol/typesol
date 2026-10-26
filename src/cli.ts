@@ -104,7 +104,7 @@ const COMMANDS: Record<string, Command> = {
   },
   check: {
     usage: "typesol check <program.ts>",
-    help: "Typecheck and validate the TypeSol subset without building.",
+    help: "Typecheck and validate the TypeSOL subset without building.",
     options: {},
     run(_, args) {
       const { model } = generate(mustExist(one(args, "<program.ts>")));
@@ -186,7 +186,7 @@ const COMMANDS: Record<string, Command> = {
   },
   cpi: {
     usage: "typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]",
-    help: "Generate TypeSol helpers that call another program's instructions, from its Anchor IDL (0.30+/1.x or TypeSol).",
+    help: "Generate TypeSOL helpers that call another program's instructions, from its Anchor IDL (0.30+/1.x or TypeSOL).",
     options: { out: { type: "string" }, prefix: { type: "string" }, address: { type: "string" } },
     run(v, args) {
       const file = one(args, "<idl.json>");
@@ -206,7 +206,7 @@ const COMMANDS: Record<string, Command> = {
     help: [
       "Rebuild and compare with a deployed binary (e.g. from `solana program dump`). Exit 0 on a match, 3 on a mismatch.",
       "The SBPF version is read from the deployed binary unless --sbpf is given. Reproducible builds need the same",
-      "TypeSol version and platform-tools as the original (see its <name>.build.json).",
+      "TypeSOL version and platform-tools as the original (see its <name>.build.json).",
     ].join("\n  "),
     options: { sbpf: { type: "string" } },
     run(v, args) {

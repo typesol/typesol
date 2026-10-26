@@ -76,7 +76,7 @@ export interface Local {
 }
 
 export const cBytes = (bytes: number[]) => `{${bytes.join(", ")}}`;
-/** C expressions that nothing in a TypeSol expression can change: temporaries, locals, arguments, account keys, constants. */
+/** C expressions that nothing in a TypeSOL expression can change: temporaries, locals, arguments, account keys, constants. */
 export const isStable = (c: string) =>
   /^\w+$/.test(c) || /^\(&\w+\)$/.test(c) || /^\w+->key$/.test(c) || /^\(\(uint8_t\)\d+\)$/.test(c) || /^\(?-?\d+U?LL\)?$/.test(c);
 

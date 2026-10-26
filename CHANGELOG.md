@@ -1,9 +1,12 @@
 # Changelog
 
-TypeSol follows [semantic versioning](https://semver.org/) with the 0.x rules described in CONTRIBUTING.md:
+TypeSOL follows [semantic versioning](https://semver.org/) with the 0.x rules described in CONTRIBUTING.md:
 until 1.0, a minor version may change the language, the IDL layout or error codes, and says so here.
 
 ## Unreleased
+
+### Changed
+- The project is now spelled **TypeSOL**, in docs, CLI help and runtime messages (`TypeSOL: arithmetic overflow (file.ts:12)`). Tools that match log text on the old spelling need updating. The npm package and command stay `typesol`.
 
 ### Performance
 Same checks, error codes and account state; fewer compute units and smaller binaries. counter.increment 926 → 143 CU,

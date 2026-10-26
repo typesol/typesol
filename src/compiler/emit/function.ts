@@ -19,7 +19,7 @@ export class FunctionEmitter extends StatementEmitter {
         this.line(`TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + 8);`);
     for (const stmt of h.node.body!.statements) this.reporter.guard(() => this.statement(stmt));
     // A helper with a result must return one; falling off the end would leave it unset.
-    const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSol: ${h.name} ended without returning a value");` : `  return SUCCESS;`;
+    const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${h.name} ended without returning a value");` : `  return SUCCESS;`;
     return [`${helperSignature(h)} {`, ...this.hoisted, ...this.lines, end, `}`].join("\n");
   }
 
@@ -29,7 +29,7 @@ export class FunctionEmitter extends StatementEmitter {
     head.push(`__attribute__((noinline)) static uint64_t ix_${ix.name}(SolParameters *params) {`);
     const n = ix.accounts.length;
     if (n > MAX_ACCOUNTS) this.reporter.fail(ix.node, `instructions may take at most ${MAX_ACCOUNTS} accounts`);
-    head.push(`  if (params->ka_num < ${n}) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSol: not enough accounts");`);
+    head.push(`  if (params->ka_num < ${n}) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");`);
 
     for (const a of ix.accounts) {
       const v = `a_${a.name}`;
@@ -46,7 +46,7 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "instructionsSysvar") head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
       if (k.kind === "eventAuthority") head.push(`  uint8_t eb_${a.name};`, `  TS_TRY(ts_check_event_authority(${v}, params->program_id, &eb_${a.name}));`);
       if (k.kind === "selfProgram")
-        head.push(`  if (!ts_key_eq(${v}->key, params->program_id)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSol: expected this program");`);
+        head.push(`  if (!ts_key_eq(${v}->key, params->program_id)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: expected this program");`);
       if (k.kind === "programData") head.push(`  TS_TRY(ts_check_program_data(${v}, params->program_id));`);
       if (k.kind === "pyth") head.push(`  uint64_t pm_${a.name}; bool pf_${a.name};`, `  TS_TRY(ts_pyth_message(${v}, &pm_${a.name}, &pf_${a.name}));`);
       if (k.kind === "switchboard") head.push(`  TS_TRY(ts_check_switchboard(${v}, ${k.devnet}));`);
@@ -121,14 +121,14 @@ export class FunctionEmitter extends StatementEmitter {
           .map((a) => `a_${a.name} && `)
           .join("");
         head.push(
-          `  if (${present}ts_key_eq(a_${writable[i].name}->key, a_${writable[j].name}->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSol: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
+          `  if (${present}ts_key_eq(a_${writable[i].name}->key, a_${writable[j].name}->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
         );
       }
 
     // Arguments: Borsh, read sequentially (strings make later offsets dynamic).
     if (ix.args.length) head.push(`  uint64_t off = ${ix.discriminator.length};`);
     const need = (bytes: string) =>
-      head.push(`  if (params->data_len < off + ${bytes}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: instruction data too short");`);
+      head.push(`  if (params->data_len < off + ${bytes}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
     for (const a of ix.args) {
       const at = `params->data + off`;
       if (a.type.kind === "string") {
@@ -137,7 +137,7 @@ export class FunctionEmitter extends StatementEmitter {
         need(`arg_${a.name}__len`);
         head.push(`  TS_Str arg_${a.name} = ts_str(${at}, arg_${a.name}__len);`, `  off += arg_${a.name}__len;`);
         head.push(
-          `  if (!ts_utf8_valid(arg_${a.name}.ptr, arg_${a.name}.len)) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid UTF-8 in a string argument");`,
+          `  if (!ts_utf8_valid(arg_${a.name}.ptr, arg_${a.name}.len)) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid UTF-8 in a string argument");`,
         );
       } else if (a.type.kind === "pubkey") {
         need("32");
@@ -145,26 +145,26 @@ export class FunctionEmitter extends StatementEmitter {
       } else if (a.type.kind === "bool") {
         need("1");
         head.push(`  uint8_t arg_${a.name}__raw = *(${at});`, `  off += 1;`);
-        head.push(`  if (arg_${a.name}__raw > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid bool argument");`);
+        head.push(`  if (arg_${a.name}__raw > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid bool argument");`);
         head.push(`  bool arg_${a.name} = arg_${a.name}__raw == 1;`);
       } else if (a.type.kind === "enum") {
         need("1");
         const n = this.model.enums.get(a.type.name)!.variants.length;
         head.push(`  uint8_t arg_${a.name} = *(${at});`, `  off += 1;`);
-        head.push(`  if (arg_${a.name} >= ${n}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid enum argument");`);
+        head.push(`  if (arg_${a.name} >= ${n}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid enum argument");`);
       } else if (a.type.kind === "option") {
         // Borsh Option: one tag byte, then the value only when Some.
         const inner = a.type.inner;
         const size = scalarSize(inner);
         need("1");
         head.push(`  ${optC(inner)} arg_${a.name} = {0};`, `  uint8_t arg_${a.name}__tag = *(${at});`, `  off += 1;`);
-        head.push(`  if (arg_${a.name}__tag > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid option argument");`);
+        head.push(`  if (arg_${a.name}__tag > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid option argument");`);
         head.push(`  if (arg_${a.name}__tag == 1) {`);
-        head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: instruction data too short");`);
+        head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
         head.push(`    arg_${a.name}.some = 1;`, `    ts_memcpy(&arg_${a.name}.v, ${at}, ${size});`, `    off += ${size};`);
         if (inner.kind === "bool" || inner.kind === "enum") {
           const max = inner.kind === "bool" ? 2 : this.model.enums.get(inner.name)!.variants.length;
-          head.push(`    if (arg_${a.name}.v >= ${max}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid option argument");`);
+          head.push(`    if (arg_${a.name}.v >= ${max}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid option argument");`);
         }
         head.push(`  }`);
       } else if (a.type.kind === "vecArg") {
@@ -202,18 +202,18 @@ export class FunctionEmitter extends StatementEmitter {
             if (!isScalar(f.type))
               this.reporter.fail(a.node, `${e.name}.${variant.name}.${f.name}: enum arguments carry integers, booleans, Pubkeys and enums`);
             const size = scalarSize(f.type as ScalarType);
-            head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: instruction data too short");`);
+            head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
             head.push(`    ts_memcpy(&${v}.v.${variant.name}.${f.name}, params->data + off, ${size});`, `    off += ${size};`);
             if (f.type.kind === "bool")
-              head.push(`    if (${v}.v.${variant.name}.${f.name} > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid bool argument");`);
+              head.push(`    if (${v}.v.${variant.name}.${f.name} > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid bool argument");`);
             if (f.type.kind === "enum")
               head.push(
-                `    if (${v}.v.${variant.name}.${f.name} >= ${this.model.enums.get(f.type.name)!.variants.length}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid enum argument");`,
+                `    if (${v}.v.${variant.name}.${f.name} >= ${this.model.enums.get(f.type.name)!.variants.length}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid enum argument");`,
               );
           }
           head.push(`    break; }`);
         });
-        head.push(`  default: TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid enum argument");`, `  }`);
+        head.push(`  default: TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid enum argument");`, `  }`);
         head.push(`  TSE_${e.name} *arg_${a.name} = &${v};`);
       } else if (a.type.kind !== "int") {
         this.reporter.fail(a.node, `unsupported argument type ${typeName(a.type)}`);
@@ -235,7 +235,7 @@ export class FunctionEmitter extends StatementEmitter {
       this.reporter.error(this.accounts.get(name)!.node, `Init account "${name}" is never created; call ${name}.create(payer, seeds)`);
 
     const end = ix.returns
-      ? [`  TS_FAIL(TS_ERR_NO_RETURN, "TypeSol: ${ix.name} ended without returning a value");`]
+      ? [`  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${ix.name} ended without returning a value");`]
       : [...this.epilogue().map((l) => `  ${l}`), `  return SUCCESS;`];
     return [...head, ...this.hoisted, ...this.lines, ...end, `}`].join("\n");
   }
@@ -264,27 +264,27 @@ export class FunctionEmitter extends StatementEmitter {
         if (k === "token")
           out.push(
             f === "mint"
-              ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSol: ${a.name} is not a token account of ${f}");`
-              : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSol: ${a.name} is not owned by ${f}");`,
+              ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${f}");`
+              : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${f}");`,
           );
         else if (k === "mint") {
           const at = f === "mintAuthority" ? 0 : 46;
           const code = f === "mintAuthority" ? "TS_ERR_MINT_AUTHORITY" : "TS_ERR_FREEZE_AUTHORITY";
           out.push(
-            `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), a_${f}->key)) TS_FAIL(${code}, "TypeSol: ${f} is not the ${f} of ${a.name}");`,
+            `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), a_${f}->key)) TS_FAIL(${code}, "TypeSOL: ${f} is not the ${f} of ${a.name}");`,
           );
-        } else out.push(`  if (!ts_key_eq(&d_${a.name}->${f}, a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSol: ${a.name}.${f} must be the ${f} account");`);
+        } else out.push(`  if (!ts_key_eq(&d_${a.name}->${f}, a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
       }
       if (c.owner) {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
-          `  if (!ts_key_eq(a_${a.name}->owner, &co_${a.name})) TS_FAIL(TS_ERR_CONSTRAINT_OWNER, "TypeSol: ${a.name} is not owned by the expected program");`,
+          `  if (!ts_key_eq(a_${a.name}->owner, &co_${a.name})) TS_FAIL(TS_ERR_CONSTRAINT_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
         );
       }
-      if (c.executable) out.push(`  if (!a_${a.name}->executable) TS_FAIL(TS_ERR_CONSTRAINT_EXECUTABLE, "TypeSol: ${a.name} must be an executable program");`);
+      if (c.executable) out.push(`  if (!a_${a.name}->executable) TS_FAIL(TS_ERR_CONSTRAINT_EXECUTABLE, "TypeSOL: ${a.name} must be an executable program");`);
       if (c.address) {
         out.push(`  static const SolPubkey ca_${a.name} = {${cBytes(c.address.bytes)}};`);
-        out.push(`  if (!ts_key_eq(a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSol: ${a.name} is not the expected address");`);
+        out.push(`  if (!ts_key_eq(a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not the expected address");`);
       }
       if (c.ata) {
         // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
@@ -297,15 +297,15 @@ export class FunctionEmitter extends StatementEmitter {
         out.push(`  { SolPubkey ata_${a.name};`);
         out.push(`    TS_TRY(ts_ata_address(a_${c.ata.owner}->key, a_${c.ata.mint}->key, ${program}, &ata_${a.name}));`);
         out.push(
-          `    if (!ts_key_eq(&ata_${a.name}, a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSol: ${a.name} is not the associated token account of ${c.ata.owner} and ${c.ata.mint}"); }`,
+          `    if (!ts_key_eq(&ata_${a.name}, a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${c.ata.owner} and ${c.ata.mint}"); }`,
         );
         // The address alone is not enough: legacy SPL Token lets an ATA's owner be reassigned.
         if (k === "token") {
           out.push(
-            `  if (!ts_key_eq(ts_token_mint(a_${a.name}), a_${c.ata.mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSol: ${a.name} is not a token account of ${c.ata.mint}");`,
+            `  if (!ts_key_eq(ts_token_mint(a_${a.name}), a_${c.ata.mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${c.ata.mint}");`,
           );
           out.push(
-            `  if (!ts_key_eq(ts_token_owner(a_${a.name}), a_${c.ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSol: ${a.name} is not owned by ${c.ata.owner}");`,
+            `  if (!ts_key_eq(ts_token_owner(a_${a.name}), a_${c.ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${c.ata.owner}");`,
           );
         }
         const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
@@ -371,7 +371,7 @@ export class FunctionEmitter extends StatementEmitter {
         } else {
           out.push(`  { SolPubkey pda_${a.name}; uint8_t b_${a.name};`);
           out.push(
-            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &b_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSol: ${a.name} is not the expected PDA"); }`,
+            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &b_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
           );
         }
       }

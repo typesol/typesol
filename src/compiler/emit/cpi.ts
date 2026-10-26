@@ -762,7 +762,7 @@ export abstract class CpiEmitter extends CallEmitter {
       // fixed-size ones included, so nothing lands past the buffer.
       if (bytes === undefined) dynamic = true;
       else fixed += bytes;
-      if (dynamic) this.line(`if (${len} + ${n} > ${max}) TS_FAIL(${errorCode}, "TypeSol: ${what} too large");`);
+      if (dynamic) this.line(`if (${len} + ${n} > ${max}) TS_FAIL(${errorCode}, "TypeSOL: ${what} too large");`);
       this.line(`ts_memcpy(${buf} + ${len}, ${src}, ${n});`);
       this.line(`${len} += ${n};`);
     };

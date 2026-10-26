@@ -1,6 +1,6 @@
 /**
  * Writes solana-test-validator `--account` fixtures: a Pyth PriceUpdateV2 and a Switchboard pull feed
- * laid out exactly as the TypeSol runtime reads them, stamped with the current time.
+ * laid out exactly as the TypeSOL runtime reads them, stamped with the current time.
  *   node scripts/localnet-fixtures.ts <outDir>
  * Prints `<pythAddress> <switchboardAddress>`.
  */

@@ -10,10 +10,10 @@
 
 **Write Solana programs in TypeScript. Ship native SBF.**
 
-TypeSol compiles a TypeScript subset straight to Solana bytecode. It does not use an interpreter or a VM on chain, and
+TypeSOL compiles a TypeScript subset straight to Solana bytecode. It does not use an interpreter or a VM on chain, and
 it does not generate Rust. Your `.ts` file is typechecked by the TypeScript compiler, lowered to C, and built with the
 same LLVM toolchain that `cargo-build-sbf` uses. Every build also writes an **Anchor-compatible IDL**, so Anchor,
-Codama and explorer tooling work with TypeSol programs unchanged.
+Codama and explorer tooling work with TypeSOL programs unchanged.
 
 - **One language, end to end.** You write the program, its tests and its client in TypeScript, and your editor gives
   you completion and type errors.
@@ -21,7 +21,7 @@ Codama and explorer tooling work with TypeSol programs unchanged.
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.
-- **Small and fast.** On the same programs, TypeSol uses 6–46% of Anchor's compute units, with binaries about 10×
+- **Small and fast.** On the same programs, TypeSOL uses 6–46% of Anchor's compute units, with binaries about 10×
   smaller. It is faster than native Rust and close to hand-tuned Pinocchio (see the [numbers](#numbers)).
 - **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` checks a deployed program
   against its source.
@@ -29,7 +29,7 @@ Codama and explorer tooling work with TypeSol programs unchanged.
 ## At a glance
 
 <table>
-<tr><th>TypeSol — <code>counter.ts</code></th><th>Anchor — <code>lib.rs</code></th></tr>
+<tr><th>TypeSOL — <code>counter.ts</code></th><th>Anchor — <code>lib.rs</code></th></tr>
 <tr><td valign="top">
 
 ```ts
@@ -123,7 +123,7 @@ transactions to both and compares the results.
 
 ## Quick start
 
-TypeSol is not on npm yet. Install it from this repository:
+TypeSOL is not on npm yet. Install it from this repository:
 
 ```sh
 git clone https://github.com/typesol/typesol.git && cd typesol
@@ -131,7 +131,7 @@ pnpm install && pnpm build && npm link       # puts `typesol` on your PATH
 ```
 
 You also need the Agave CLI (`sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`). Run
-`cargo-build-sbf --version` once; this downloads the platform-tools that TypeSol compiles with. Rust is not needed.
+`cargo-build-sbf --version` once; this downloads the platform-tools that TypeSOL compiles with. Rust is not needed.
 
 ```sh
 typesol init my-app --name counter      # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
@@ -152,8 +152,8 @@ counter.ts ─▶ tsc typecheck ─▶ subset check ─▶ C + typesol_rt.h ─�
 ```
 
 1. **Typecheck.** The TypeScript compiler checks your code against [`lib/typesol.d.ts`](lib/typesol.d.ts), which
-   declares every TypeSol type and built-in.
-2. **Subset check.** TypeSol rejects anything outside the language (floats, closures, classes, `any`, foreign imports)
+   declares every TypeSOL type and built-in.
+2. **Subset check.** TypeSOL rejects anything outside the language (floats, closures, classes, `any`, foreign imports)
    with a `file:line:col` diagnostic. Nothing is half-supported.
 3. **Lower.** Instruction bodies become C. Account validation, checked arithmetic, Borsh encoding and CPI plumbing
    come from [`runtime/typesol_rt.h`](runtime/typesol_rt.h).
@@ -161,7 +161,7 @@ counter.ts ─▶ tsc typecheck ─▶ subset check ─▶ C + typesol_rt.h ─�
    `--sbpf`).
 
 Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts:21)`, or
-`TypeSol: arithmetic overflow (vault.ts:42)`.
+`TypeSOL: arithmetic overflow (vault.ts:42)`.
 
 ## What you can write
 
@@ -174,7 +174,7 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | **CPIs** | System, SPL Token, Token-2022 (including extension reads and metadata), ATA, Metaplex Token Metadata, Core, Bubblegum. Generic `invoke` with PDA signing, return data, and typed bindings generated from any Anchor IDL (`typesol cpi`) |
 | **Events** | `emit` (log-based) and `emitCpi` (Anchor `emit_cpi!`, through a self-CPI) |
 | **Crypto & oracles** | `sha256`, `keccak256`, Merkle proofs, Ed25519 and secp256k1 signature checks, Pyth pull oracle, Switchboard |
-| **Interfaces** | custom discriminators (`@discriminator`), so a TypeSol program can be a Token-2022 transfer hook |
+| **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook |
 
 The full reference, with every type, check and built-in, is in [docs/language.md](docs/language.md).
 
@@ -208,7 +208,7 @@ The same counter and vault programs, written four ways. All four use the same in
 and checks. They get identical transactions in LiteSVM and must end in identical account state. The table shows mean
 compute units per call:
 
-| Instruction | TypeSol | Anchor 1.0.2 | Native Rust | Pinocchio 0.10 |
+| Instruction | TypeSOL | Anchor 1.0.2 | Native Rust | Pinocchio 0.10 |
 | --- | ---: | ---: | ---: | ---: |
 | counter.initialize | 3,048 | 6,573 | 4,601 | 3,186 |
 | counter.increment | 143 | 2,323 | 857 | 113 |
@@ -219,7 +219,7 @@ compute units per call:
 | binary, counter / vault | 12.3 / 16.1 KB | 145.2 / 158.9 KB | 27.9 / 35.0 KB | 19.6 / 22.9 KB |
 
 `initialize` and `open` include the PDA bump search, which costs the same in every implementation. The remaining gap
-to Pinocchio on the small instructions is the entry point: TypeSol fills a `SolAccountInfo` for every account up
+to Pinocchio on the small instructions is the entry point: TypeSOL fills a `SolAccountInfo` for every account up
 front (about 25 CU each), where Pinocchio reads accounts in place. Fewer compute units are not a safety claim. Beyond these numbers, the differential tests also check
 an escrow program against Anchor ([docs/testing.md](docs/testing.md)).
 
@@ -231,7 +231,7 @@ an escrow program against Anchor ([docs/testing.md](docs/testing.md)).
 - **Randomized tests** against independent oracles:
   - Arithmetic at every integer width is checked against BigInt.
   - Stateful vault, escrow and ledger runs are checked against a TypeScript model.
-  - Differential runs send the same transactions to TypeSol and to the Anchor twins and compare outcomes, account
+  - Differential runs send the same transactions to TypeSOL and to the Anchor twins and compare outcomes, account
     contents and balances.
 - **Localnet smoke test.** A smoke script deploys every example to a local validator and drives it end to end.
 
@@ -256,7 +256,7 @@ Details are in [docs/testing.md](docs/testing.md).
 **0.10 is a release candidate.**
 - The compiler, runtime and tooling have been through internal security reviews and are covered by the tests above.
 - They have **not been audited by an independent firm**. Do not put significant value behind programs built with
-  TypeSol until such an audit is published.
+  TypeSOL until such an audit is published.
 - Audit your own programs as you would any Solana program.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
@@ -268,7 +268,7 @@ Not supported yet: see the end of [docs/language.md](docs/language.md#not-suppor
 - The Agave CLI with platform-tools.
 - macOS or Linux. On Windows, use WSL2.
 
-TypeSol finds the SDK under `~/.local/share/solana/install/active_release` or next to `cargo-build-sbf` on `PATH`. Set
+TypeSOL finds the SDK under `~/.local/share/solana/install/active_release` or next to `cargo-build-sbf` on `PATH`. Set
 `TYPESOL_SBF_SDK` to override the location. See [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Contributing

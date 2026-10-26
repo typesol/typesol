@@ -11,7 +11,7 @@ const COMPRESSION = address("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK");
 const NOOP = address("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
 const programs = (f: string) => fileURLToPath(new URL(`./programs/${f}`, import.meta.url));
 
-// Metaplex programs are not redistributed with TypeSol (Metaplex NFT license): `pnpm fetch:programs` downloads them.
+// Metaplex programs are not redistributed with TypeSOL (Metaplex NFT license): `pnpm fetch:programs` downloads them.
 const HAVE_MPL = ["mpl_core.so", "mpl_bubblegum.so"].every((f) => existsSync(programs(f)));
 
 describe.skipIf(!HAVE_MPL)("Metaplex Core and Bubblegum (test/fixtures/metaplex.ts)", () => {

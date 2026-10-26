@@ -331,7 +331,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const [expected, stale, dec] = this.lowerInOrder(args.slice(1), [PUBKEY, U64, U8]);
         const t = this.tmp("sb");
         this.line(`int64_t ${t};`);
-        this.line(`if (!ts_key_eq(a_${f.name}->key, ${expected.c})) TS_FAIL(TS_ERR_ORACLE, "TypeSol: not the expected Switchboard feed");`);
+        this.line(`if (!ts_key_eq(a_${f.name}->key, ${expected.c})) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: not the expected Switchboard feed");`);
         this.line(`TS_TRY(ts_switchboard_value(a_${f.name}, ${stale.c}, ${dec.c}, &${t}));`);
         return { c: t, type: I64 };
       }
@@ -416,12 +416,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`ts_memcpy(&${t}, ${l.c}.ptr + ${idx} * ${scalarSize(elem)}, ${scalarSize(elem)});`);
           if (elem.kind === "pubkey") return { c: `(&${t})`, type: elem };
           if (elem.kind === "bool") {
-            this.line(`if (${t} > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid bool in Vec argument");`);
+            this.line(`if (${t} > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid bool in Vec argument");`);
             return { c: `(${t} != 0)`, type: elem };
           }
           if (elem.kind === "enum")
             this.line(
-              `if (${t} >= ${this.model.enums.get(elem.name)!.variants.length}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid enum in Vec argument");`,
+              `if (${t} >= ${this.model.enums.get(elem.name)!.variants.length}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid enum in Vec argument");`,
             );
           return { c: t, type: elem };
         }
@@ -545,7 +545,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const st = this.storageValueType(vt.elem);
         const n = this.tmp("n");
         this.line(`uint64_t ${n} = (uint64_t)${info.len};`);
-        this.line(`if (${n} == 0) TS_FAIL(TS_ERR_INDEX, "TypeSol: pop() on an empty Vec");`);
+        this.line(`if (${n} == 0) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pop() on an empty Vec");`);
         // Structs and arrays are dropped (pop() as a statement); read .get(length - 1) first to keep one.
         let result: Value | undefined;
         if (st) {
@@ -657,17 +657,17 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const out = this.tmp("rd");
     this.line(`uint64_t ${o} = ${off.c};`);
     this.line(
-      `if (${o} > ${acct}->data_len || ${acct}->data_len - ${o} < ${size}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: read past the end of the account data");`,
+      `if (${o} > ${acct}->data_len || ${acct}->data_len - ${o} < ${size}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: read past the end of the account data");`,
     );
     this.line(`${scalarStorageC(t)} ${out};`);
     this.line(`ts_memcpy(&${out}, ${acct}->data + ${o}, ${size});`);
     if (t.kind === "pubkey") return { c: `(&${out})`, type: t };
     if (t.kind === "bool") {
-      this.line(`if (${out} > 1) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: not a boolean");`);
+      this.line(`if (${out} > 1) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: not a boolean");`);
       return { c: `(${out} != 0)`, type: BOOL };
     }
     if (t.kind === "enum")
-      this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: invalid enum value");`);
+      this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: invalid enum value");`);
     return { c: out, type: t };
   }
 
@@ -681,12 +681,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const owner = this.expect(this.expr(node.arguments[1], PUBKEY), PUBKEY, node.arguments[1]);
     const disc = this.tmp("disc");
     this.line(`static const uint8_t ${disc}[8] = ${cBytes(s.accountDiscriminator)};`);
-    this.line(`if (!ts_key_eq(${h}->owner, ${owner.c})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: account not owned by the expected program");`);
-    this.line(`if (${h}->data_len < 8 + sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");`);
-    this.line(`if (!ts_mem_eq(${h}->data, ${disc}, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");`);
+    this.line(`if (!ts_key_eq(${h}->owner, ${owner.c})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by the expected program");`);
+    this.line(`if (${h}->data_len < 8 + sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
+    this.line(`if (!ts_mem_eq(${h}->data, ${disc}, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");`);
     // Another program wrote these bytes: check bools, enums, option tags and string lengths like arguments.
     const view = `(*((TSS_${s.name} *)(${h}->data + 8)))`;
-    for (const l of this.validation(view, { kind: "struct", name: s.name }, "", `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: malformed foreign account data")`))
+    for (const l of this.validation(view, { kind: "struct", name: s.name }, "", `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: malformed foreign account data")`))
       this.line(l.trim());
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: false } };
   }
@@ -838,13 +838,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (t.kind === "bool") {
       this.line(`uint8_t ${out};`);
       this.line(`TS_TRY(ts_return_data(a_${program.name}, &${out}, 1));`);
-      this.line(`if (${out} > 1) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSol: invalid bool return data");`);
+      this.line(`if (${out} > 1) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid bool return data");`);
       return { c: `(${out} == 1)`, type: BOOL };
     }
     if (t.kind === "enum") {
       this.line(`uint8_t ${out};`);
       this.line(`TS_TRY(ts_return_data(a_${program.name}, &${out}, 1));`);
-      this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSol: invalid enum return data");`);
+      this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid enum return data");`);
       return { c: out, type: t };
     }
     this.line(`${INT_INFO[t.name].c} ${out};`);

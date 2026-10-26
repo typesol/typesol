@@ -81,7 +81,7 @@ describe("typesol cpi: helpers generated from an IDL", () => {
     expect(Buffer.from(owner).equals(Buffer.from(getAddressEncoder().encode(wallet)))).toBe(true);
   });
 
-  it("maps TypeSol IDLs too: structs with fixed layouts become interfaces, unsupported shapes are reported", async () => {
+  it("maps TypeSOL IDLs too: structs with fixed layouts become interfaces, unsupported shapes are reported", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-cpigen-ts-"));
     const out = build(fileURLToPath(new URL("./fixtures/structargs.ts", import.meta.url)), dir, "11111111111111111111111111111112");
     const res = generateCpi(out.idl as unknown as Idl, { prefix: "book" });
@@ -95,7 +95,7 @@ describe("typesol cpi: helpers generated from an IDL", () => {
       `import { type AccountInfo, type Mut, type Program, signer } from "typesol";\nimport { type Order, bookPlace } from "./book_cpi";\nexport function go(book: Mut<AccountInfo>, p: Program<"11111111111111111111111111111112">, order: Order): void { bookPlace(p, book, order, signer([])); }\n`,
     );
     expect(() => generate(path.join(dir, "main.ts"))).not.toThrow();
-    // Strings inside structs have no fixed TypeSol layout: such instructions are left out with a reason.
+    // Strings inside structs have no fixed TypeSOL layout: such instructions are left out with a reason.
     const odd = generateCpi({
       address: "11111111111111111111111111111112",
       metadata: { name: "odd" },

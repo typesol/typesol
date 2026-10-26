@@ -1,9 +1,9 @@
 /**
- * TypeSol language surface.
+ * TypeSOL language surface.
  *
- * These declarations exist so TypeSol sources typecheck under plain `tsc` and get
- * editor completion. They have no runtime: the TypeSol compiler reads the source,
- * enforces the TypeSol subset, and emits a native Solana SBF program.
+ * These declarations exist so TypeSOL sources typecheck under plain `tsc` and get
+ * editor completion. They have no runtime: the TypeSOL compiler reads the source,
+ * enforces the TypeSOL subset, and emits a native Solana SBF program.
  *
  * Integer types are all `bigint` to TypeScript. The compiler tracks the declared
  * width itself, rejects `number`, and checks every arithmetic operation for
@@ -606,7 +606,7 @@ export declare function hex(literal: string): Bytes;
  * Instruction data pieces, Borsh-encoded: integers little-endian at their declared width, booleans 1 byte,
  * Pubkeys/Hashes 32 bytes, strings u32 length + UTF-8, Options a tag byte + value, structs and FixedArrays
  * their fixed layout, unit enum values 1 byte, data enums as Borsh enums, Vec arguments u32 length + elements.
- * (`number` is there for unit enum values such as `Color.Red`; TypeSol integers are bigints.)
+ * (`number` is there for unit enum values such as `Color.Red`; TypeSOL integers are bigints.)
  */
 export type CpiData = bigint | boolean | Pubkey | Hash | string | null | Bytes | object | number;
 

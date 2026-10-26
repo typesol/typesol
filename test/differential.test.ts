@@ -54,7 +54,7 @@ interface Side {
 
 /**
  * Outcome classes that must agree. User errors (6000+) must match exactly; framework account
- * rejections may use different codes (TypeSol 3xxx vs Anchor 2xxx/3xxx) but must both reject.
+ * rejections may use different codes (TypeSOL 3xxx vs Anchor 2xxx/3xxx) but must both reject.
  */
 function classify(res: TransactionMetadata | FailedTransactionMetadata, side: Side): string {
   if (!(res instanceof FailedTransactionMetadata)) return "ok";
@@ -84,7 +84,7 @@ async function twin(name: keyof typeof ANCHOR_IDS): Promise<[Side, Side]> {
   const ts = await deployExample(name);
   const svm = new LiteSVM();
   svm.addProgramFromFile(ANCHOR_IDS[name], `${ANCHOR_DIR}anchor_${name}.so`);
-  // Same ABI: TypeSol's IDL coder encodes instructions and decodes accounts for the Anchor twin too.
+  // Same ABI: TypeSOL's IDL coder encodes instructions and decodes accounts for the Anchor twin too.
   const anchor: Deployed = { svm, programId: ANCHOR_IDS[name], coder: ts.coder, idl: ts.idl };
   const anchorOverflow = { counter: 6002, vault: 6003, escrow: -1 }[name];
   return [

@@ -39,7 +39,7 @@ jobs:
         run: |
           [ -x ~/.local/share/solana/install/active_release/bin/solana ] || sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-      - name: Install platform-tools (the clang TypeSol compiles with)
+      - name: Install platform-tools (the clang TypeSOL compiles with)
         run: |
           sdk=~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf
           # Pinned (the version Agave 3.1.10 uses), with retries: the download can fail transiently.

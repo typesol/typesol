@@ -75,8 +75,10 @@ describe(`model-based fuzzing (seed ${SEED}, ${STEPS} steps)`, () => {
           stats.opens++;
         }
       } else if (action === "deposit") {
+        // The fee comes out first; the System transfer then needs the whole amount (custom error 1, insufficient funds).
+        const spendable = (svm.getBalance(users[actor].address) ?? 0n) - FEE;
         res = await send(svm, users[actor], [ix(d, "deposit", { amount: new BN(amount.toString()) }, [me, v, { address: SYSTEM_PROGRAM }])]);
-        want = !open ? 3012 : amount === 0n ? 6001 : !owner ? 6000 : "ok";
+        want = !open ? 3012 : amount === 0n ? 6001 : !owner ? 6000 : amount > spendable ? 1 : "ok";
         if (want === "ok") {
           model[target]! += amount;
           stats.deposits++;

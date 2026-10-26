@@ -1,5 +1,5 @@
 name: Feature request
-description: A type, built-in, CPI or command TypeSol does not support yet.
+description: A type, built-in, CPI or command TypeSOL does not support yet.
 labels: [enhancement]
 body:
   - type: textarea
