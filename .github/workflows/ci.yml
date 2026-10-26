@@ -34,12 +34,16 @@ jobs:
           path: |
             ~/.local/share/solana
             ~/.cache/solana
-          key: agave-3.1.10-${{ runner.os }}
+          key: agave-3.1.10-tools-${{ runner.os }}
       - name: Install Agave CLI
         run: |
           [ -x ~/.local/share/solana/install/active_release/bin/solana ] || sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-      - run: cargo-build-sbf --force-tools-install --version || cargo-build-sbf --version
+      - name: Install platform-tools (the clang TypeSol compiles with)
+        run: |
+          sdk=~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf
+          [ -x "$sdk/dependencies/platform-tools/llvm/bin/clang" ] || cargo-build-sbf --install-only
+          "$sdk/dependencies/platform-tools/llvm/bin/clang" --version | head -1
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint # scripts/ typecheck against dist/
