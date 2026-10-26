@@ -240,7 +240,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
             const t = this.tmp("ua");
             this.line(`${optC(PUBKEY)} ${t};`);
             this.line(`${t}.some = ${v}->data[12] == 1;`);
-            this.line(`if (${t}.some) sol_memcpy(&${t}.v, ${v}->data + 13, 32); else sol_memset(&${t}.v, 0, 32);`);
+            this.line(`if (${t}.some) ts_memcpy(&${t}.v, ${v}->data + 13, 32); else ts_memzero(&${t}.v, 32);`);
             return { c: t, type: { kind: "option", inner: PUBKEY } };
           }
         }
@@ -520,13 +520,15 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const overflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow")`;
     switch (op) {
       case K.PlusToken:
-        this.line(`if (__builtin_add_overflow(${left.c}, ${right.c}, &${t})) ${overflow};`);
+        // u64 through the runtime helpers: one compare instead of a materialized carry flag on SBF.
+        this.line(`if (${type.name === "u64" ? "ts_add_overflow_u64" : "__builtin_add_overflow"}(${left.c}, ${right.c}, &${t})) ${overflow};`);
         break;
       case K.MinusToken:
-        this.line(`if (__builtin_sub_overflow(${left.c}, ${right.c}, &${t})) ${overflow};`);
+        this.line(`if (${type.name === "u64" ? "ts_sub_overflow_u64" : "__builtin_sub_overflow"}(${left.c}, ${right.c}, &${t})) ${overflow};`);
         break;
       case K.AsteriskToken:
-        this.line(`if (__builtin_mul_overflow(${left.c}, ${right.c}, &${t})) ${overflow};`);
+        // u64: skips the 128-bit __multi3 call when both factors fit in 32 bits (see ts_mul_overflow_u64).
+        this.line(`if (${type.name === "u64" ? "ts_mul_overflow_u64" : "__builtin_mul_overflow"}(${left.c}, ${right.c}, &${t})) ${overflow};`);
         break;
       case K.SlashToken:
       case K.PercentToken: {

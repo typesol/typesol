@@ -32,9 +32,9 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/compiler/model.ts` | The data model shared by every stage (`ProgramModel`, `Instruction`, `ParamKind`, `FieldType`, `ValueType`) and small type utilities. |
 | `src/compiler/emit/` | Code generation (see below). |
 | `src/compiler/idl.ts` | Turns the model into an Anchor IDL: accounts with `pda`, `relations`, `address` and `optional`, plus types, events, errors and docs. |
-| `src/compiler/toolchain.ts` | Finds the Agave SDK and runs clang and lld with the SDK's flags. |
+| `src/compiler/toolchain.ts` | Finds the Agave SDK and runs clang and lld with the SDK's flags, plus per-function sections, `--gc-sections` and `--strip-all` so unused code and symbol tables stay out of the binary. |
 | `src/compiler/diagnostics.ts` | `Reporter` and `CompileError`: diagnostics with file, line and column. |
-| `runtime/typesol_rt.h` | The C runtime: error codes, account checks, checked math, Borsh helpers, CPIs (System, Token, Token-2022, ATA, Metaplex), oracles and the heap allocator. Header-only and `static inline`, so unused code is dropped. |
+| `runtime/typesol_rt.h` | The C runtime: error codes, word-wise memory helpers, the entry point's input parser (`ts_deserialize`), account checks, checked math, Borsh helpers, CPIs (System, Token, Token-2022, ATA, Metaplex), oracles and the heap allocator. Header-only and `static inline`, so unused code is dropped. |
 | `src/workspace.ts` | `typesol.json` projects, program keypairs, `typesol init` templates and deploy arguments. |
 | `src/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSol CPI helpers. |
 | `src/idlpublish.ts` | `typesol idl publish` through the Program Metadata program. |
@@ -74,6 +74,10 @@ These invariants are easy to break. Each one has tests.
   invokes another program, because the callee may resize accounts.
 - **Runtime messages carry the source location.** `line()` appends `(file.ts:line)` to every `"TypeSol: …"`
   message.
+- **No SDK byte loops.** Generated code and the runtime compare, copy and zero memory with `ts_key_eq`, `ts_mem_eq`,
+  `ts_memcpy` and `ts_memzero` (8 bytes per instruction), not `sol_memcmp`, `sol_memcpy`, `sol_memset` or
+  `SolPubkey_same`. `ts_bytes_cmp` stays byte-wise because it orders, not just compares. Checked u64 arithmetic uses
+  `ts_add/sub/mul_overflow_u64`, which clang lowers to fewer instructions than the builtins on SBF.
 - **Heap use is bounded.** The heap is a bump allocator (32 KiB by default) and is never freed. Anything that runs in
   a loop must not allocate on every pass; hoist a reusable buffer instead (see `snapshotPlace()`).
 
