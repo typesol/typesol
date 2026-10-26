@@ -3,3 +3,8 @@
 allowBuilds:
   bufferutil: false
   utf-8-validate: false
+# Security fixes in dev-only transitive dependencies of @anchor-lang/core (Dependabot): jayson 5 no longer pulls in
+# stream-json or uuid, and toml 5.0.1 fixes the parser advisories. Both keep the APIs Anchor and web3.js use.
+overrides:
+  jayson: ^5.0.0
+  toml: ^5.0.1
