@@ -29,7 +29,7 @@ function priceUpdate(o: { price: bigint; expo: number; publish: bigint; full?: b
   return Buffer.concat([data, Buffer.alloc(134 - data.length)]);
 }
 
-/** PullFeedAccountData with only the fields TypeSol reads filled in (result.value / num_samples / slot). */
+/** PullFeedAccountData with only the fields TypeSOL reads filled in (result.value / num_samples / slot). */
 function pullFeed(o: { value: bigint; samples: number; slot: bigint }) {
   const data = Buffer.alloc(8 + 3200);
   Buffer.from(SB_DISC).copy(data, 0);

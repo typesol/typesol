@@ -59,7 +59,7 @@ describe("multi-file programs", () => {
         "lib.ts": `import { type u64 } from "typesol";\nexport function one(): u64 { return 1n; }`,
         "main.ts": `${T}\nimport { one as uno } from "./lib";\nexport function f(): void { uno(); }`,
       },
-      /renaming imports from TypeSol files/,
+      /renaming imports from TypeSOL files/,
     ],
     ["missing files", { "main.ts": `${T}\nimport { x } from "./nope";\nexport function f(): void {}` }, /cannot find "\.\/nope"/],
     [
@@ -87,7 +87,7 @@ describe("multi-file programs", () => {
       },
       /"pay" is already declared in lib\.ts/,
     ],
-    ["package imports", { "main.ts": `${T}\nimport { x } from "lodash";\nexport function f(): void {}` }, /relative TypeSol files/],
+    ["package imports", { "main.ts": `${T}\nimport { x } from "lodash";\nexport function f(): void {}` }, /relative TypeSOL files/],
     [
       "instructions in library files are helpers and must follow helper rules",
       {

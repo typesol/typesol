@@ -17,11 +17,11 @@ export { SBPF_VERSIONS, type Sbpf } from "./toolchain.js";
 export interface Generated {
   model: ProgramModel;
   c: string;
-  /** The TypeSol source files of the program (entry and relative imports). */
+  /** The TypeSOL source files of the program (entry and relative imports). */
   files: string[];
 }
 
-/** Typecheck, enforce the TypeSol subset, and generate C. Throws CompileError with every diagnostic. */
+/** Typecheck, enforce the TypeSOL subset, and generate C. Throws CompileError with every diagnostic. */
 export function generate(entry: string, opts: EmitOptions = {}): Generated {
   const analysis = analyze(entry);
   analysis.reporter.throwIfAny();

@@ -1,5 +1,5 @@
 /*
- * TypeSol runtime support for generated programs.
+ * TypeSOL runtime support for generated programs.
  *
  * Every generated program includes this header. It holds the error codes, the
  * account checks the compiler emits by default, and thin wrappers over the
@@ -10,8 +10,8 @@
 
 /*
  * ---- Error codes (returned as Custom(n)) --------------------------------
- * Where Anchor has a framework error with the same meaning, TypeSol uses Anchor's number, so Anchor and
- * Codama clients name failures correctly. TypeSol-only conditions live in 5100-5199, which Anchor leaves
+ * Where Anchor has a framework error with the same meaning, TypeSOL uses Anchor's number, so Anchor and
+ * Codama clients name failures correctly. TypeSOL-only conditions live in 5100-5199, which Anchor leaves
  * unused. User errors start at 6000 as in Anchor.
  */
 #define TS_ERR_INSTRUCTION_MISSING 100     /* InstructionMissing */
@@ -197,7 +197,7 @@ static inline TS_Str ts_fstr_view(const uint8_t *base, uint64_t cap) {
   return ts_str(base + 4, len > cap ? cap : len);
 }
 static inline uint64_t ts_fstr_set(uint8_t *base, uint64_t cap, TS_Str v) {
-  if (v.len > cap) TS_FAIL(TS_ERR_STRING_TOO_LONG, "TypeSol: string longer than the field capacity");
+  if (v.len > cap) TS_FAIL(TS_ERR_STRING_TOO_LONG, "TypeSOL: string longer than the field capacity");
   uint32_t len = (uint32_t)v.len;
   ts_memcpy(base, &len, 4);
   ts_memcpy(base + 4, v.ptr, v.len);
@@ -270,29 +270,29 @@ static inline __attribute__((always_inline)) bool ts_key_eq(const SolPubkey *a, 
 }
 
 static inline uint64_t ts_check_signer(const SolAccountInfo *a) {
-  if (!a->is_signer) TS_FAIL(TS_ERR_NOT_SIGNER, "TypeSol: account must sign");
+  if (!a->is_signer) TS_FAIL(TS_ERR_NOT_SIGNER, "TypeSOL: account must sign");
   return SUCCESS;
 }
 
 static inline uint64_t ts_check_writable(const SolAccountInfo *a) {
-  if (!a->is_writable) TS_FAIL(TS_ERR_NOT_WRITABLE, "TypeSol: account must be writable");
+  if (!a->is_writable) TS_FAIL(TS_ERR_NOT_WRITABLE, "TypeSOL: account must be writable");
   return SUCCESS;
 }
 
 static inline uint64_t ts_check_program_account(const SolAccountInfo *a, const SolPubkey *program_id,
                                                 const uint8_t disc[8], uint64_t size) {
   /* Like Anchor: an empty system account (never created, or closed) is "not initialized". */
-  if (*a->lamports == 0 && ts_key_eq(a->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_INITIALIZED, "TypeSol: account is not initialized");
-  if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: account not owned by this program");
-  if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");
-  if (!ts_mem_eq(a->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");
+  if (*a->lamports == 0 && ts_key_eq(a->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_INITIALIZED, "TypeSOL: account is not initialized");
+  if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
+  if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
+  if (!ts_mem_eq(a->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
   return SUCCESS;
 }
 
 /* An account ending in Vec<T>: data must be exactly fixed part + len * element size. */
 static inline uint64_t ts_check_vec_len(const SolAccountInfo *a, uint64_t fixed, uint32_t len, uint64_t elem) {
   if (a->data_len != 8 + fixed + (uint64_t)len * elem)
-    TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account size does not match its Vec length");
+    TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec length");
   return SUCCESS;
 }
 
@@ -300,17 +300,17 @@ static inline uint64_t ts_check_vec_len(const SolAccountInfo *a, uint64_t fixed,
 static inline uint64_t ts_check_unaliased(const SolParameters *params, const SolAccountInfo *a) {
   for (uint64_t i = 0; i < params->ka_num; i++)
     if (&params->ka[i] != a && ts_key_eq(params->ka[i].key, a->key))
-      TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSol: account passed more than once");
+      TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
   return SUCCESS;
 }
 
 static inline uint64_t ts_check_address(const SolAccountInfo *a, const SolPubkey *expected) {
-  if (!ts_key_eq(a->key, expected)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSol: unexpected program address");
+  if (!ts_key_eq(a->key, expected)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: unexpected program address");
   return SUCCESS;
 }
 
 static inline uint64_t ts_check_executable(const SolAccountInfo *a) {
-  if (!a->executable) TS_FAIL(TS_ERR_NOT_EXECUTABLE, "TypeSol: account is not an executable program");
+  if (!a->executable) TS_FAIL(TS_ERR_NOT_EXECUTABLE, "TypeSOL: account is not an executable program");
   return SUCCESS;
 }
 
@@ -332,8 +332,8 @@ static inline uint64_t ts_check_token_account(const SolAccountInfo *a) {
   else if (ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID))
     ok = a->data_len == TS_TOKEN_ACCOUNT_LEN ||
          (a->data_len > TS_TOKEN_ACCOUNT_LEN && a->data_len != TS_MULTISIG_LEN && a->data[TS_TOKEN_ACCOUNT_LEN] == 2);
-  else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: token account not owned by a token program");
-  if (!ok || a->data[108] == 0) TS_FAIL(TS_ERR_TOKEN_ACCOUNT, "TypeSol: not an initialized token account");
+  else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: token account not owned by a token program");
+  if (!ok || a->data[108] == 0) TS_FAIL(TS_ERR_TOKEN_ACCOUNT, "TypeSOL: not an initialized token account");
   return SUCCESS;
 }
 /* Mint layout: mint_authority COption[0..36] supply[36..44] decimals[44] is_initialized[45] freeze[46..82] */
@@ -343,12 +343,12 @@ static inline uint64_t ts_check_mint(const SolAccountInfo *a) {
   else if (ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID))
     ok = a->data_len == TS_MINT_LEN ||
          (a->data_len > TS_TOKEN_ACCOUNT_LEN && a->data_len != TS_MULTISIG_LEN && a->data[TS_TOKEN_ACCOUNT_LEN] == 1);
-  else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: mint not owned by a token program");
-  if (!ok || a->data[45] != 1) TS_FAIL(TS_ERR_MINT, "TypeSol: not an initialized mint");
+  else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: mint not owned by a token program");
+  if (!ok || a->data[45] != 1) TS_FAIL(TS_ERR_MINT, "TypeSOL: not an initialized mint");
   return SUCCESS;
 }
 static inline uint64_t ts_check_token_program(const SolAccountInfo *a) {
-  if (!ts_is_token_program(a->key)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSol: not a token program");
+  if (!ts_is_token_program(a->key)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: not a token program");
   return SUCCESS;
 }
 static inline const SolPubkey *ts_token_mint(const SolAccountInfo *a) { return (const SolPubkey *)a->data; }
@@ -374,10 +374,10 @@ uint64_t sol_get_clock_sysvar(void *ret);
 static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
   /* Rent { lamports_per_byte_year: u64, exemption_threshold: f64, burn_percent: u8 } */
   uint64_t rent[3] = {0};
-  if (sol_get_rent_sysvar(rent) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSol: rent sysvar unavailable");
+  if (sol_get_rent_sysvar(rent) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: rent sysvar unavailable");
   uint64_t bytes, per_year;
   if (ts_add_overflow_u64(data_len, 128, &bytes) || ts_mul_overflow_u64(bytes, rent[0], &per_year))
-    TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
+    TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
   /* Fast path, bit-identical to the double math below: when the threshold is a positive whole number t (2.0 on
      every cluster) and per_year * t < 2^53, both factors and the product are exact doubles, so the integer product
      is the answer. Soft-float multiplication and conversions cost hundreds of CU; anything else takes that path. */
@@ -392,7 +392,7 @@ static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
   double threshold;
   ts_memcpy(&threshold, &rent[1], 8);
   double lamports = (double)per_year * threshold;
-  if (lamports >= 18446744073709551615.0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
+  if (lamports >= 18446744073709551615.0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
   *out = (uint64_t)lamports;
   return SUCCESS;
 }
@@ -400,7 +400,7 @@ static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
 /* Clock sysvar word `i`: 0 slot, 2 epoch (u64). */
 static inline uint64_t ts_clock_u64(int i, uint64_t *out) {
   uint64_t clock[5] = {0};
-  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSol: clock sysvar unavailable");
+  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
   *out = clock[i];
   return SUCCESS;
 }
@@ -408,13 +408,13 @@ static inline uint64_t ts_clock_u64(int i, uint64_t *out) {
 /* BPF upgradeable loader (BPFLoaderUpgradeab1e…) and this program's ProgramData account, PDA [program_id]. */
 static const SolPubkey TS_BPF_UPGRADEABLE_LOADER_ID = {{2, 168, 246, 145, 78, 136, 161, 176, 226, 16, 21, 62, 247, 99, 174, 43, 0, 194, 185, 61, 22, 193, 36, 210, 192, 83, 122, 16, 4, 128, 0, 0}};
 static inline uint64_t ts_check_program_data(const SolAccountInfo *a, const SolPubkey *program_id) {
-  if (!ts_key_eq(a->owner, &TS_BPF_UPGRADEABLE_LOADER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not owned by the upgradeable loader");
-  if (a->data_len < 45 || ts_read_le(a->data, 4) != 3) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: not a ProgramData account");
+  if (!ts_key_eq(a->owner, &TS_BPF_UPGRADEABLE_LOADER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not owned by the upgradeable loader");
+  if (a->data_len < 45 || ts_read_le(a->data, 4) != 3) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: not a ProgramData account");
   SolSignerSeed seed = {(const uint8_t *)program_id, 32};
   SolPubkey expected;
   uint8_t bump;
   if (sol_try_find_program_address(&seed, 1, &TS_BPF_UPGRADEABLE_LOADER_ID, &expected, &bump) != SUCCESS || !ts_key_eq(&expected, a->key))
-    TS_FAIL(TS_ERR_ADDRESS, "TypeSol: not this program's ProgramData account");
+    TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: not this program's ProgramData account");
   return SUCCESS;
 }
 
@@ -424,12 +424,12 @@ static inline uint64_t ts_check_event_authority(const SolAccountInfo *a, const S
   SolSignerSeed seed = {(const uint8_t *)"__event_authority", 17};
   SolPubkey expected;
   if (sol_try_find_program_address(&seed, 1, program_id, &expected, bump) != SUCCESS || !ts_key_eq(&expected, a->key))
-    TS_FAIL(TS_ERR_SEEDS, "TypeSol: not this program's event authority");
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: not this program's event authority");
   return SUCCESS;
 }
 static inline uint64_t ts_event_dispatch(SolParameters *params) {
-  if (params->ka_num < 1) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSol: not enough accounts");
-  if (!params->ka[0].is_signer) TS_FAIL(TS_ERR_CONSTRAINT_SIGNER, "TypeSol: the event authority must sign");
+  if (params->ka_num < 1) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");
+  if (!params->ka[0].is_signer) TS_FAIL(TS_ERR_CONSTRAINT_SIGNER, "TypeSOL: the event authority must sign");
   uint8_t bump;
   return ts_check_event_authority(&params->ka[0], params->program_id, &bump);
 }
@@ -437,7 +437,7 @@ static inline uint64_t ts_event_dispatch(SolParameters *params) {
 static inline uint64_t ts_now(int64_t *out) {
   /* Clock { slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp } */
   uint64_t clock[5] = {0};
-  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSol: clock sysvar unavailable");
+  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
   *out = (int64_t)clock[4];
   return SUCCESS;
 }
@@ -448,12 +448,12 @@ static inline uint64_t ts_now(int64_t *out) {
  * the discriminator is written here so the account can never be initialized twice.
  */
 static inline uint64_t ts_init_zeroed(SolAccountInfo *a, const SolPubkey *program_id, const uint8_t disc[8], uint64_t size) {
-  if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: account not owned by this program");
-  if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");
-  if (ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSol: account already initialized");
+  if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
+  if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
+  if (ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already initialized");
   uint64_t need;
   TS_TRY(ts_minimum_balance(a->data_len, &need));
-  if (*a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSol: account is not rent-exempt");
+  if (*a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSOL: account is not rent-exempt");
   ts_memcpy(a->data, disc, 8);
   return SUCCESS;
 }
@@ -463,7 +463,7 @@ static inline uint64_t ts_require_pda(const SolAccountInfo *a, const SolSignerSe
                                       const SolPubkey *program_id) {
   SolPubkey derived;
   if (sol_create_program_address(seeds, n, program_id, &derived) != SUCCESS || !ts_key_eq(&derived, a->key))
-    TS_FAIL(TS_ERR_SEEDS, "TypeSol: PDA seeds do not match account");
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
   return SUCCESS;
 }
 
@@ -490,9 +490,9 @@ static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *paye
   uint8_t bump;
   if (sol_try_find_program_address(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
       !ts_key_eq(&derived, acct->key))
-    TS_FAIL(TS_ERR_SEEDS, "TypeSol: PDA seeds do not match account");
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
   if (acct->data_len != 0 || !ts_key_eq(acct->owner, &TS_SYSTEM_PROGRAM_ID))
-    TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSol: account already exists");
+    TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already exists");
   uint64_t lamports;
   TS_TRY(ts_minimum_balance(space, &lamports));
   seeds[n].addr = &bump;
@@ -541,7 +541,7 @@ static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *paye
 static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct, uint64_t new_len,
                                  uint64_t entry_len) {
   if (new_len > entry_len + MAX_PERMITTED_DATA_INCREASE)
-    TS_FAIL(TS_ERR_REALLOC, "TypeSol: account would grow more than 10 KiB in one instruction");
+    TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
   uint64_t old_len = acct->data_len;
   if (new_len > old_len) {
     /* The payer always funds the extra rent, even when the account already holds enough lamports: those may be
@@ -550,7 +550,7 @@ static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, S
     TS_TRY(ts_minimum_balance(old_len, &old_rent));
     TS_TRY(ts_minimum_balance(new_len, &new_rent));
     if (new_rent > old_rent) {
-      if (payer == NULL) TS_FAIL(TS_ERR_REALLOC, "TypeSol: growing an account needs a payer");
+      if (payer == NULL) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: growing an account needs a payer");
       TS_TRY(ts_system_transfer(params, payer, acct, new_rent - old_rent));
     }
     ts_memzero(acct->data + old_len, new_len - old_len);
@@ -567,7 +567,7 @@ static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, S
 /* realloc(): resize, keep at least `min_len`, refund the rent no longer needed to the payer on shrink. */
 static inline uint64_t ts_realloc(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct, uint64_t new_len,
                                   uint64_t entry_len, uint64_t min_len) {
-  if (new_len < min_len) TS_FAIL(TS_ERR_REALLOC, "TypeSol: realloc below the account's struct size");
+  if (new_len < min_len) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: realloc below the account's struct size");
   /* Shrinking leaves every lamport in the account: who paid which rent is unknown here, so refunding the caller
      would let anyone grow-then-shrink their way into other people's deposits. The program can move the freed
      rent out itself (lamports), under its own authorization. */
@@ -582,9 +582,9 @@ static inline uint64_t ts_create_pda_if_needed(SolParameters *params, SolAccount
     uint8_t bump;
     if (sol_try_find_program_address(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
         !ts_key_eq(&derived, acct->key))
-      TS_FAIL(TS_ERR_SEEDS, "TypeSol: PDA seeds do not match account");
-    if (acct->data_len < space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: account data too small");
-    if (!ts_mem_eq(acct->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: account discriminator mismatch");
+      TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
+    if (acct->data_len < space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
+    if (!ts_mem_eq(acct->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
     *bump_out = bump;
     *created = false;
     return SUCCESS;
@@ -597,7 +597,7 @@ static inline uint64_t ts_create_pda_if_needed(SolParameters *params, SolAccount
 static inline uint64_t ts_close(SolAccountInfo *acct, SolAccountInfo *dest) {
   uint64_t total;
   if (ts_add_overflow_u64(*dest->lamports, *acct->lamports, &total))
-    TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
+    TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
   *dest->lamports = total;
   *acct->lamports = 0;
   ts_memzero(acct->data, acct->data_len);
@@ -620,16 +620,16 @@ static inline uint64_t ts_cpi(SolParameters *params, const SolAccountInfo *progr
    simply have no extensions; a Token-2022 multisig or a foreign account is refused. */
 static inline uint64_t ts_t22_layout(const SolAccountInfo *a, uint8_t want) {
   bool t22 = ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID);
-  if (!t22 && !ts_key_eq(a->owner, &TS_TOKEN_PROGRAM_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not a token program account");
+  if (!t22 && !ts_key_eq(a->owner, &TS_TOKEN_PROGRAM_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a token program account");
   uint64_t n = a->data_len;
-  if (n == TS_MULTISIG_LEN) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: a multisig, not a mint or token account");
+  if (n == TS_MULTISIG_LEN) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: a multisig, not a mint or token account");
   uint8_t kind;
   if (n == TS_MINT_LEN) kind = 1;
   else if (n == TS_TOKEN_ACCOUNT_LEN) kind = 2;
   else if (t22 && n > TS_TOKEN_ACCOUNT_LEN) kind = a->data[TS_TOKEN_ACCOUNT_LEN];
   else kind = 0;
   if ((kind != 1 && kind != 2) || (want != 0 && kind != want))
-    TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, want == 1 ? "TypeSol: not a mint" : "TypeSol: not a mint or token account");
+    TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, want == 1 ? "TypeSOL: not a mint" : "TypeSOL: not a mint or token account");
   return SUCCESS;
 }
 
@@ -683,8 +683,8 @@ static const SolPubkey TS_BUBBLEGUM_ID = {{152, 139, 128, 235, 121, 53, 40, 105,
 
 /* A Core asset (Key::AssetV1 = 1, owner at 1, update authority enum at 33: 2 = Collection + key). */
 static inline uint64_t ts_core_asset(const SolAccountInfo *a) {
-  if (!ts_key_eq(a->owner, &TS_MPL_CORE_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not a Metaplex Core account");
-  if (a->data_len < 34 || a->data[0] != 1) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: not a Metaplex Core asset");
+  if (!ts_key_eq(a->owner, &TS_MPL_CORE_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Metaplex Core account");
+  if (a->data_len < 34 || a->data[0] != 1) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: not a Metaplex Core asset");
   return SUCCESS;
 }
 
@@ -749,7 +749,7 @@ static inline uint64_t ts_return_data(const SolAccountInfo *program, uint8_t *ou
   SolPubkey from;
   uint64_t n = sol_get_return_data(buf, sizeof(buf), &from);
   if (n != size || !ts_key_eq(&from, program->key))
-    TS_FAIL(TS_ERR_RETURN_DATA, "TypeSol: missing or mismatched return data");
+    TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: missing or mismatched return data");
   ts_memcpy(out, buf, size);
   return SUCCESS;
 }
@@ -869,7 +869,7 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
   uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
   uint64_t at = *next == 0 ? 8 : *next;
   at = (at + 7) & ~(uint64_t)7;
-  if (at + n > TS_HEAP_LENGTH) TS_FAIL(TS_ERR_HEAP, "TypeSol: out of heap");
+  if (at + n > TS_HEAP_LENGTH) TS_FAIL(TS_ERR_HEAP, "TypeSOL: out of heap");
   *next = at + n;
   *out = (uint8_t *)(HEAP_START_ADDRESS + at);
   return SUCCESS;
@@ -896,11 +896,11 @@ static inline uint64_t ts_str_copy(TS_Str a, TS_Str *out) {
 
 /* floor or ceil of a * b / c through a 128-bit product; fails on c == 0 or a result above u64. */
 static inline uint64_t ts_mul_div(uint64_t a, uint64_t b, uint64_t c, bool ceil, uint64_t *out) {
-  if (c == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSol: division by zero");
+  if (c == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");
   unsigned __int128 p = (unsigned __int128)a * b;
   unsigned __int128 q = p / c;
   if (ceil && p % c != 0) q += 1;
-  if (q > UINT64_MAX) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow");
+  if (q > UINT64_MAX) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
   *out = (uint64_t)q;
   return SUCCESS;
 }
@@ -977,14 +977,14 @@ static const uint8_t TS_PYTH_PRICE_UPDATE_DISC[8] = {34, 241, 35, 99, 157, 126, 
  * prev_publish_time i64, ema_price i64, ema_conf u64 } | posted_slot u64. Returns the message offset.
  */
 static inline uint64_t ts_pyth_message(const SolAccountInfo *a, uint64_t *msg, bool *full) {
-  if (!ts_key_eq(a->owner, &TS_PYTH_RECEIVER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not a Pyth price update (owner)");
+  if (!ts_key_eq(a->owner, &TS_PYTH_RECEIVER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Pyth price update (owner)");
   if (a->data_len < 8 + 32 + 1 + 84 || !ts_mem_eq(a->data, TS_PYTH_PRICE_UPDATE_DISC, 8))
-    TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: not a Pyth PriceUpdateV2 account");
+    TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: not a Pyth PriceUpdateV2 account");
   uint8_t level = a->data[40];
   if (level == 0) *msg = 42;
   else if (level == 1) *msg = 41;
-  else TS_FAIL(TS_ERR_ORACLE, "TypeSol: bad Pyth verification level");
-  if (a->data_len < *msg + 84) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSol: Pyth price update too small");
+  else TS_FAIL(TS_ERR_ORACLE, "TypeSOL: bad Pyth verification level");
+  if (a->data_len < *msg + 84) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: Pyth price update too small");
   *full = level == 1;
   return SUCCESS;
 }
@@ -999,14 +999,14 @@ static inline uint64_t ts_pyth_price(const SolAccountInfo *a, const SolPubkey *f
   uint64_t m;
   bool full;
   TS_TRY(ts_pyth_message(a, &m, &full));
-  if (!full) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Pyth update is not fully verified");
-  if (!ts_mem_eq(a->data + m, feed, 32)) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Pyth feed id mismatch");
+  if (!full) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Pyth update is not fully verified");
+  if (!ts_mem_eq(a->data + m, feed, 32)) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Pyth feed id mismatch");
   int64_t now;
   TS_TRY(ts_now(&now));
   int64_t published = ts_le_i64(a->data + m + 52);
   int64_t deadline;
   if (__builtin_add_overflow(published, (int64_t)(max_age > INT64_MAX ? INT64_MAX : max_age), &deadline)) deadline = INT64_MAX;
-  if (deadline < now) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Pyth price is too old");
+  if (deadline < now) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Pyth price is too old");
   *out = ts_le_i64(a->data + m + 32);
   return SUCCESS;
 }
@@ -1022,9 +1022,9 @@ static const uint8_t TS_SWITCHBOARD_FEED_DISC[8] = {196, 27, 108, 196, 10, 215, 
 
 static inline uint64_t ts_check_switchboard(const SolAccountInfo *a, bool devnet) {
   if (!ts_key_eq(a->owner, devnet ? &TS_SWITCHBOARD_DEVNET_ID : &TS_SWITCHBOARD_MAINNET_ID))
-    TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSol: not a Switchboard feed (owner)");
+    TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Switchboard feed (owner)");
   if (a->data_len < TS_SB_RESULT_SLOT + 8 || !ts_mem_eq(a->data, TS_SWITCHBOARD_FEED_DISC, 8))
-    TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSol: not a Switchboard PullFeedAccountData account");
+    TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: not a Switchboard PullFeedAccountData account");
   return SUCCESS;
 }
 
@@ -1033,20 +1033,20 @@ static inline uint64_t ts_check_switchboard(const SolAccountInfo *a, bool devnet
  * and was produced within `max_stale_slots` slots of now.
  */
 static inline uint64_t ts_switchboard_value(const SolAccountInfo *a, uint64_t max_stale_slots, uint8_t decimals, int64_t *out) {
-  if (decimals > 18) TS_FAIL(TS_ERR_ORACLE, "TypeSol: at most 18 decimals");
-  if (a->data[TS_SB_RESULT_SAMPLES] == 0) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Switchboard feed has no samples");
+  if (decimals > 18) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: at most 18 decimals");
+  if (a->data[TS_SB_RESULT_SAMPLES] == 0) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Switchboard feed has no samples");
   uint64_t clock[5] = {0};
-  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSol: clock sysvar unavailable");
+  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
   uint64_t slot = (uint64_t)ts_le_i64(a->data + TS_SB_RESULT_SLOT);
   uint64_t fresh_until;
   if (__builtin_add_overflow(slot, max_stale_slots, &fresh_until)) fresh_until = UINT64_MAX;
-  if (fresh_until < clock[0]) TS_FAIL(TS_ERR_ORACLE, "TypeSol: Switchboard value is stale");
+  if (fresh_until < clock[0]) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Switchboard value is stale");
   __int128 v;
   ts_memcpy(&v, a->data + TS_SB_RESULT_VALUE, 16);
   __int128 scale = 1;
   for (int i = decimals; i < 18; i++) scale *= 10;
   __int128 r = v / scale;
-  if (r > (__int128)INT64_MAX || r < (__int128)INT64_MIN) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: oracle value does not fit in i64");
+  if (r > (__int128)INT64_MAX || r < (__int128)INT64_MIN) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: oracle value does not fit in i64");
   *out = (int64_t)r;
   return SUCCESS;
 }
@@ -1060,7 +1060,7 @@ static inline uint64_t ts_ata_address(const SolPubkey *owner, const SolPubkey *m
   SolSignerSeed seeds[3] = {{(const uint8_t *)owner, 32}, {(const uint8_t *)token_program, 32}, {(const uint8_t *)mint, 32}};
   uint8_t bump;
   if (sol_try_find_program_address(seeds, 3, &TS_ATA_PROGRAM_ID, out, &bump) != SUCCESS)
-    TS_FAIL(TS_ERR_SEEDS, "TypeSol: cannot derive the associated token address");
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: cannot derive the associated token address");
   return SUCCESS;
 }
 
@@ -1110,7 +1110,7 @@ static inline uint64_t ts_metadata_address(const SolPubkey *mint, SolPubkey *out
   SolSignerSeed seeds[3] = {{(const uint8_t *)"metadata", 8}, {(const uint8_t *)&TS_MPL_METADATA_ID, 32}, {(const uint8_t *)mint, 32}};
   uint8_t bump;
   if (sol_try_find_program_address(seeds, 3, &TS_MPL_METADATA_ID, out, &bump) != SUCCESS)
-    TS_FAIL(TS_ERR_SEEDS, "TypeSol: cannot derive the metadata address");
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: cannot derive the metadata address");
   return SUCCESS;
 }
 

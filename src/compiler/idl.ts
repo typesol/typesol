@@ -111,13 +111,13 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
   return entry;
 }
 
-/** Anchor IDL (spec 0.1.0) so existing Anchor / Codama clients can talk to TypeSol programs. */
+/** Anchor IDL (spec 0.1.0) so existing Anchor / Codama clients can talk to TypeSOL programs. */
 export function buildIdl(model: ProgramModel, address: string, version = "0.1.0") {
   const structs = [...model.structs.values()];
   const usedStructs = structs.filter((s) => model.accountStructs.has(s.name) || model.events.has(s.name) || s.size !== undefined);
   return {
     address,
-    metadata: { name: model.name, version, spec: "0.1.0", description: "Built with TypeSol" },
+    metadata: { name: model.name, version, spec: "0.1.0", description: "Built with TypeSOL" },
     instructions: model.instructions.map((ix) => ({
       name: ix.name,
       ...docsOf(ix.node),
@@ -157,7 +157,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         {
           name: fixedEnumName(e.name),
           docs: [
-            `TypeSol ${e.name} in account data: \`tag\` is the variant index, \`payload\` the variant's fields (Borsh layout) padded to the largest variant.`,
+            `TypeSOL ${e.name} in account data: \`tag\` is the variant index, \`payload\` the variant's fields (Borsh layout) padded to the largest variant.`,
           ],
           type: {
             kind: "struct",
@@ -170,7 +170,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
       ]),
       ...[...model.options.values()].map((inner) => ({
         name: fixedOptionName(inner),
-        docs: [`TypeSol Option<${optionKey(inner)}> in account data: fixed size, \`value\` is zero when \`is_some\` is false.`],
+        docs: [`TypeSOL Option<${optionKey(inner)}> in account data: fixed size, \`value\` is zero when \`is_some\` is false.`],
         type: {
           kind: "struct",
           fields: [
@@ -183,7 +183,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         .sort((a, b) => a - b)
         .map((cap) => ({
           name: fstringTypeName(cap),
-          docs: [`TypeSol FixedString<${cap}>: UTF-8 bytes, \`len\` of them meaningful, zero-padded.`],
+          docs: [`TypeSOL FixedString<${cap}>: UTF-8 bytes, \`len\` of them meaningful, zero-padded.`],
           type: {
             kind: "struct",
             fields: [

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download the third-party program binaries the tests and scripts/localnet.sh use into test/programs/.
 # The Metaplex programs (Token Metadata, Core, Bubblegum) are under the Metaplex NFT Open Source License and are
-# not redistributed with TypeSol; the SPL / Program Metadata ones are Apache-2.0 and are kept in the repository.
+# not redistributed with TypeSOL; the SPL / Program Metadata ones are Apache-2.0 and are kept in the repository.
 # Uses the Solana CLI with the cluster you pass (default: devnet's public RPC). See test/programs/SOURCES.md.
 set -euo pipefail
 cd "$(dirname "$0")/../test/programs"

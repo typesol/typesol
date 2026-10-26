@@ -7,7 +7,7 @@ import { SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, pda, s
 
 const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 
-describe("Token-2022 transfer hook written in TypeSol (test/fixtures/hook.ts)", () => {
+describe("Token-2022 transfer hook written in TypeSOL (test/fixtures/hook.ts)", () => {
   let d: Deployed;
   beforeAll(async () => {
     d = await deployFile(fileURLToPath(new URL("./fixtures/hook.ts", import.meta.url)));

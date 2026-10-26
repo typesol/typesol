@@ -10,7 +10,7 @@ import { EmitterBase } from "./base.js";
  */
 export abstract class StorageEmitter extends EmitterBase {
   /** C lines rejecting malformed fixed-layout data at `lv`: bools, enums, option tags, string lengths, enum tags. */
-  protected validation(lv: string, t: FieldType, pad: string, fail = `TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSol: invalid argument data")`): string[] {
+  protected validation(lv: string, t: FieldType, pad: string, fail = `TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid argument data")`): string[] {
     switch (t.kind) {
       case "bool":
         return [`${pad}if (${lv} > 1) ${fail};`];
@@ -271,14 +271,14 @@ export abstract class StorageEmitter extends EmitterBase {
           this.fail(node, `narrow this ${e.name} to one variant first: "${field}" is laid out differently in ${names.join(" and ")}`);
         // TypeScript proved the variant set; this runtime check is the backstop.
         const cond = located.map((l) => `${base.lv}.tag != ${l.vi}`).join(" && ");
-        this.line(`if (${cond}) TS_FAIL(TS_ERR_ENUM_VARIANT, "TypeSol: ${e.name} is not ${names.join("/")}");`);
+        this.line(`if (${cond}) TS_FAIL(TS_ERR_ENUM_VARIANT, "TypeSOL: ${e.name} is not ${names.join("/")}");`);
         return { ...base, lv: `${base.lv}.v.${first.name}.${first.f.name}`, type: first.f.type, path: undefined, vec: undefined };
       }
       if (base && base.type.kind === "option" && base.type.inner.kind === "struct") {
         const s = this.model.structs.get(base.type.inner.name)!;
         const f = s.fields.find((x) => x.name === field);
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
-        this.line(`if (!${base.lv}.some) TS_FAIL(TS_ERR_UNWRAP, "TypeSol: option is empty");`);
+        this.line(`if (!${base.lv}.some) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: option is empty");`);
         return { ...base, lv: `${base.lv}.v.${f.name}`, type: f.type, path: undefined, vec: undefined };
       }
       if (base && base.type.kind === "struct") {
@@ -348,14 +348,14 @@ export abstract class StorageEmitter extends EmitterBase {
     const idx = v.literal !== undefined ? this.literal(v.literal, U64, n) : v;
     if (idx.type.kind !== "int") this.fail(n, "array index must be an integer");
     const t = this.tmp("idx");
-    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) TS_FAIL(TS_ERR_INDEX, "TypeSol: array index out of bounds");`);
-    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) TS_FAIL(TS_ERR_INDEX, "TypeSol: array index out of bounds");`);
+    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
+    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
     this.line(`uint64_t ${t} = (uint64_t)(${idx.c});`);
     return t;
   }
 
   protected checkIndex(t: string, len: string) {
-    this.line(`if (${t} >= ${len}) TS_FAIL(TS_ERR_INDEX, "TypeSol: array index out of bounds");`);
+    this.line(`if (${t} >= ${len}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
   }
 
   /** Bounds-checked index into a temporary. `len` is a C expression. */
@@ -364,10 +364,10 @@ export abstract class StorageEmitter extends EmitterBase {
     const idx = v.literal !== undefined ? this.literal(v.literal, U64, n) : v;
     if (idx.type.kind !== "int") this.fail(n, "array index must be an integer");
     const t = this.tmp("idx");
-    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) TS_FAIL(TS_ERR_INDEX, "TypeSol: array index out of bounds");`);
-    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) TS_FAIL(TS_ERR_INDEX, "TypeSol: array index out of bounds");`);
+    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
+    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
     this.line(`uint64_t ${t} = (uint64_t)(${idx.c});`);
-    this.line(`if (${t} >= ${typeof len === "number" ? `${len}ULL` : len}) TS_FAIL(TS_ERR_INDEX, "TypeSol: array index out of bounds");`);
+    this.line(`if (${t} >= ${typeof len === "number" ? `${len}ULL` : len}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
     return t;
   }
 

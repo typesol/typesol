@@ -674,7 +674,7 @@ assert(bestAsk.returnData?.readBigUInt64LE() === 103n, "best ask is the partly f
   if (await account(MPL)) {
     const metaPda = await pda(MPL, [utf8("metadata"), key(MPL), key(splMint.mint)]);
     await send("Metaplex CreateMetadataAccountV3 via CPI", [
-      ix(tk, "name_metaplex", { name: "TypeSol", symbol: "DEMO", uri: "https://example.com/m.json" }, [
+      ix(tk, "name_metaplex", { name: "TypeSOL", symbol: "DEMO", uri: "https://example.com/m.json" }, [
         me,
         { address: splMint.issuer },
         { address: splMint.mint },
@@ -683,18 +683,18 @@ assert(bestAsk.returnData?.readBigUInt64LE() === 103n, "best ask is the partly f
         { address: MPL },
       ]),
     ]);
-    assert(Buffer.from((await account(metaPda))!.data[0], "base64").includes(Buffer.from("TypeSol")), "Metaplex metadata written");
+    assert(Buffer.from((await account(metaPda))!.data[0], "base64").includes(Buffer.from("TypeSOL")), "Metaplex metadata written");
   } else console.log("  --  Token Metadata not loaded (pnpm fetch:programs)");
   const t22Mint = await kitMint(T22, true);
   await send("Token-2022 metadata extension via CPI", [
-    ix(tk, "name_token2022", { name: "TypeSol Coin", symbol: "DEMO", uri: "https://example.com/coin.json" }, [
+    ix(tk, "name_token2022", { name: "TypeSOL Coin", symbol: "DEMO", uri: "https://example.com/coin.json" }, [
       { address: deployer.address, signer: deployer },
       { address: t22Mint.issuer },
       { address: t22Mint.mint, writable: true },
       { address: T22 },
     ]),
   ]);
-  assert(Buffer.from((await account(t22Mint.mint))!.data[0], "base64").includes(Buffer.from("TypeSol Coin")), "Token-2022 metadata written");
+  assert(Buffer.from((await account(t22Mint.mint))!.data[0], "base64").includes(Buffer.from("TypeSOL Coin")), "Token-2022 metadata written");
 }
 
 {

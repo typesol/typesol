@@ -13,4 +13,4 @@ Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Sol
 | `mpl_bubblegum.so` | `BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY` | metaplex-foundation/mpl-bubblegum | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `e054423179cc57281d5c2fc9fdb7e3cfcf2ef70cdbb0c4d36ab52696e51157b1` |
 
 Tests that need a missing binary are skipped. The binaries change when their upstream programs are upgraded on devnet,
-so a fresh fetch may hash differently; TypeSol only relies on their public instruction layouts.
+so a fresh fetch may hash differently; TypeSOL only relies on their public instruction layouts.

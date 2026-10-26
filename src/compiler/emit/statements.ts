@@ -57,7 +57,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     if (ts.isDoStatement(stmt) || ts.isForOfStatement(stmt) || ts.isForInStatement(stmt))
       this.fail(stmt, "only for (init; cond; step) and while loops are supported");
-    this.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported in TypeSol`);
+    this.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported in TypeSOL`);
   }
 
   protected returnStatement(stmt: ts.ReturnStatement) {

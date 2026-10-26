@@ -38,7 +38,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if ((inner as { kind: string }).kind === "struct") this.fail(node, "read the fields of an Option<struct> after checking it is not null");
     const t = this.tmp("opt");
     this.line(`${optC(inner)} ${t} = ${v.c};`);
-    this.line(`if (!${t}.some) TS_FAIL(TS_ERR_UNWRAP, "TypeSol: option is empty");`);
+    this.line(`if (!${t}.some) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: option is empty");`);
     void node;
     if (inner.kind === "pubkey") return { c: `(&${t}.v)`, type: inner };
     if (inner.kind === "bool") return { c: `(${t}.v != 0)`, type: inner };
@@ -64,8 +64,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       this.fail(
         node,
         /^\d+$/.test(node.text)
-          ? `use a bigint literal (${node.text}n): TypeSol integers are bigints`
-          : "TypeSol has no floating-point numbers: use integers in base units (e.g. lamports, or a fixed-point scale)",
+          ? `use a bigint literal (${node.text}n): TypeSOL integers are bigints`
+          : "TypeSOL has no floating-point numbers: use integers in base units (e.g. lamports, or a fixed-point scale)",
       );
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       const len = Buffer.byteLength(node.text, "utf8");
@@ -159,7 +159,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (!v) this.fail(node, "this call does not produce a value");
       return v;
     }
-    this.fail(node, `${ts.SyntaxKind[node.kind]} is not supported in TypeSol expressions`);
+    this.fail(node, `${ts.SyntaxKind[node.kind]} is not supported in TypeSOL expressions`);
   }
 
   protected property(node: ts.PropertyAccessExpression): Value {
@@ -517,7 +517,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const t = this.tmp();
     const K = ts.SyntaxKind;
     this.line(`${ct} ${t};`);
-    const overflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: arithmetic overflow")`;
+    const overflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow")`;
     switch (op) {
       case K.PlusToken:
         // u64 through the runtime helpers: one compare instead of a materialized carry flag on SBF.
@@ -532,7 +532,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         break;
       case K.SlashToken:
       case K.PercentToken: {
-        this.line(`if (${right.c} == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSol: division by zero");`);
+        this.line(`if (${right.c} == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");`);
         if (INT_INFO[type.name].signed) this.line(`if (${left.c} == ${intLiteral(INT_INFO[type.name].min, type.name)} && ${right.c} == -1) ${overflow};`);
         this.line(`${t} = ${left.c} ${op === K.SlashToken ? "/" : "%"} ${right.c};`);
         break;
@@ -550,7 +550,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const bits = INT_INFO[type.name].bytes * 8;
         const sh = this.tmp("sh");
         const rinfo = INT_INFO[right.type.name];
-        this.line(`if (${rinfo.signed ? `${right.c} < 0 || ` : ""}${right.c} >= ${bits}) TS_FAIL(TS_ERR_OVERFLOW, "TypeSol: shift amount out of range");`);
+        this.line(`if (${rinfo.signed ? `${right.c} < 0 || ` : ""}${right.c} >= ${bits}) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range");`);
         this.line(`uint64_t ${sh} = (uint64_t)(${right.c});`);
         if (op === K.GreaterThanGreaterThanToken) this.line(`${t} = (${ct})(${left.c} >> ${sh});`);
         else {
@@ -576,7 +576,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (from.min < target.min) conds.push(`${v.c} < ${intLiteral(target.min, v.type.name)}`);
     if (from.max > target.max) conds.push(`${v.c} > ${intLiteral(target.max, v.type.name)}`);
     const t = this.tmp();
-    if (conds.length) this.line(`if (${conds.join(" || ")}) TS_FAIL(TS_ERR_CAST, "TypeSol: value does not fit in ${to.name}");`);
+    if (conds.length) this.line(`if (${conds.join(" || ")}) TS_FAIL(TS_ERR_CAST, "TypeSOL: value does not fit in ${to.name}");`);
     this.line(`${target.c} ${t} = (${target.c})${v.c};`);
     return { c: t, type: to };
   }

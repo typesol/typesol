@@ -13,7 +13,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | `typesol emit-c <file.ts> [--out <file.c>] [--profile]` | Print or write the generated C. |
 | `typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <cli config>] [--dry-run] [--sbpf …]` | Build, then `solana program deploy --use-rpc` at the program keypair's address. Deploying again upgrades (the payer must be the upgrade authority). `--dry-run` builds and prints the commands. Needs `solana` on PATH. |
 | `typesol idl publish [<program>…] [--url <rpc>] [--keypair <authority.json>] [--config <cli config>] [--non-canonical]` | Compile (the binary is not rebuilt), then write each IDL to the Program Metadata program (seed `idl`). Canonical IDLs must be signed by the upgrade authority. Defaults come from the Solana CLI config (`~/.config/solana/cli/config.yml`). |
-| `typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]` | Generate TypeSol helpers that call another program from its IDL. Unsupported instructions are listed on stderr. |
+| `typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]` | Generate TypeSOL helpers that call another program from its IDL. Unsupported instructions are listed on stderr. |
 | `typesol verify <program\|file.ts> <deployed.so> [--sbpf …]` | Rebuild and compare with a deployed binary (`solana program dump`); trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given. |
 | `typesol profile <logs.txt\|-> [--program <id>]` | Compute units per TypeScript line from the logs of a `--profile` build's transaction (exit 1 when the logs have no markers). |
 | `typesol help <command>` | Same as `typesol <command> --help`. |

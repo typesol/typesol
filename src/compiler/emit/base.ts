@@ -74,8 +74,8 @@ export abstract class EmitterBase {
   protected line(s: string) {
     // After a CPI the callee may have resized or created accounts: refresh the cached lengths from the input buffer.
     const cpi = /^(TS_TRY\()?(sol_invoke|ts_cpi\(|ts_token_|ts_ata_create|ts_mpl_|ts_t22_init_metadata|ts_system_transfer|ts_init_extra_metas)/.test(s.trim());
-    // Runtime failures name the TypeScript line they come from: "TypeSol: arithmetic overflow (vault.ts:42)".
-    if (this.where) s = s.replace(/"TypeSol: ((?:[^"\\]|\\.)*)"\)/g, (_, msg: string) => `"TypeSol: ${msg} (${cString(this.where!).slice(1, -1)})")`);
+    // Runtime failures name the TypeScript line they come from: "TypeSOL: arithmetic overflow (vault.ts:42)".
+    if (this.where) s = s.replace(/"TypeSOL: ((?:[^"\\]|\\.)*)"\)/g, (_, msg: string) => `"TypeSOL: ${msg} (${cString(this.where!).slice(1, -1)})")`);
     this.lines.push("  ".repeat(this.indent) + s);
     if (cpi) this.lines.push("  ".repeat(this.indent) + "ts_refresh_lens(params);");
   }
@@ -136,7 +136,7 @@ export abstract class EmitterBase {
     return { c: t, type: v.type };
   }
 
-  /** Reject `a?.b` / `f?.()`: there is no undefined in TypeSol. */
+  /** Reject `a?.b` / `f?.()`: there is no undefined in TypeSOL. */
   protected noOptionalChain(node: ts.Node) {
     if ((ts.isPropertyAccessExpression(node) || ts.isCallExpression(node) || ts.isElementAccessExpression(node)) && node.questionDotToken)
       this.fail(node, "optional chaining (?.) is not supported; check `x !== null` first");
@@ -177,7 +177,7 @@ export abstract class EmitterBase {
 
   protected assertUsable(a: AccountParam, node: ts.Node) {
     // TypeScript makes you check `x !== null` first; this is the runtime backstop.
-    if (a.optional) this.line(`if (a_${a.name} == NULL) TS_FAIL(TS_ERR_ACCOUNT_MISSING, "TypeSol: optional account ${a.name} was not passed");`);
+    if (a.optional) this.line(`if (a_${a.name} == NULL) TS_FAIL(TS_ERR_ACCOUNT_MISSING, "TypeSOL: optional account ${a.name} was not passed");`);
     if ((a.kind.kind === "init" || a.kind.kind === "initIfNeeded") && !this.created.has(a.name))
       this.fail(node, `"${a.name}" is used before ${a.name}.${a.kind.kind === "init" ? "create" : "createIfNeeded"}(...) runs`);
   }

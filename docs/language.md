@@ -1,10 +1,10 @@
-# The TypeSol language
+# The TypeSOL language
 
 The full reference. For a tour, start with the [README](../README.md).
 
 ## Types and statements
 
-| Concept | TypeSol |
+| Concept | TypeSOL |
 | --- | --- |
 | Instruction | an exported function returning `void`, or one integer / boolean / `Pubkey` (sent as return data, `returns` in the IDL) |
 | Account data | an exported `interface` with fixed-size fields; interfaces nest (`home: Point`, `trail: FixedArray<Point, 4>`) |
@@ -37,7 +37,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `switch` | on integers (up to 64 bits), enums and data-enum `.kind`, with JS `break` / fallthrough; case labels are literals, constants or enum members |
 | Hashing & signatures | `sha256(...)`, `keccak256(...)` → `Hash`; `merkleVerify(leaf, proof: Vec<Hash>, root)` (sorted-pair keccak, OpenZeppelin convention); `verifyEd25519(instructionsSysvar, signer, message)` checks an Ed25519 precompile instruction in the same transaction; `verifySecp256k1(keccak256(...message) | ethMessageHash(message), recoveryId, r, s, ethAddress)` (the hash must be computed in the program; a passed-in hash could be forged) |
 | Oracles | `pythPrice(update: PythPriceUpdate, feedId, maxAgeSeconds)` (fully verified, feed-matched, fresh); raw `update.price / conf / exponent / publishTime`; `switchboardValue(feed: SwitchboardFeed, expectedFeed, maxStaleSlots, decimals)` (the feed must be the expected one: anyone can create feeds) (mainnet program unless `SwitchboardFeed<"devnet">`) |
-| Multiple files | `import { Side, min } from "./math"` — structs, enums, constants and helpers can live in other files; only the entry file's exported functions are instructions; names are program-wide, so imports from TypeSol files cannot be renamed; error codes number imported files first |
+| Multiple files | `import { Side, min } from "./math"` — structs, enums, constants and helpers can live in other files; only the entry file's exported functions are instructions; names are program-wide, so imports from TypeSOL files cannot be renamed; error codes number imported files first |
 | Loops | `for (let i = 0n; i < n; i++)`, `while`, `break`, `continue` — bounded by the compute budget |
 | Helpers | non-exported functions (and every function of an imported file): take values, structs, Vec arguments, `SignerSeeds` and accounts the instruction already checked (`Signer`, `AccountInfo`/`AccountMeta`, `Mut<T>`, token accounts, programs); return a scalar or `void`; no recursion. Helpers cannot grow Vecs (only instructions know the entry size) |
 | Evaluation order | operands and arguments are read left to right, as in JS, even when a later one changes account data (`v.length + v.pop()`) |
@@ -100,7 +100,7 @@ account written through `.lamports` or `loadAccountMut` is another account of th
 ## Implementing another program's interface (transfer hooks)
 
 `/** @discriminator spl-transfer-hook-interface:execute */` above an instruction replaces its Anchor discriminator with
-sha256(preimage)[..8] (or `@discriminator 0x…` for raw bytes), so a TypeSol program can be a Token-2022 transfer hook:
+sha256(preimage)[..8] (or `@discriminator 0x…` for raw bytes), so a TypeSOL program can be a Token-2022 transfer hook:
 `execute(source, mint, destination, owner, extraMetas, amount)` plus `initExtraAccountMetas(payer, account, mint, systemProgram)`
 for the validation account. See `test/fixtures/hook.ts`.
 
@@ -125,8 +125,8 @@ invoke(systemProgram, [writableSigner(treasury), writable(recipient)], [u32(2n),
 
 Typed calls from an IDL: `typesol cpi other.json --out other_cpi.ts` writes one helper per instruction
 (`vaultDeposit(program, owner, vault, systemProgram, amount, seeds)`), with the account flags, discriminator and
-argument encoding taken from the IDL (Anchor 0.30+ / 1.x, or TypeSol's own). Call it with `signer([...seeds, bump])`
-when a PDA of your program signs, or `signer([])`. Instructions whose arguments have no Borsh-identical TypeSol type
+argument encoding taken from the IDL (Anchor 0.30+ / 1.x, or TypeSOL's own). Call it with `signer([...seeds, bump])`
+when a PDA of your program signs, or `signer([])`. Instructions whose arguments have no Borsh-identical TypeSOL type
 (strings or Options inside structs, data-carrying enums) are listed and left out.
 
 ## PDAs in the IDL

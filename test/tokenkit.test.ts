@@ -11,7 +11,7 @@ const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 const ATA_PROGRAM = address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const MPL = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
-// Metaplex programs are not redistributed with TypeSol (Metaplex NFT license): `pnpm fetch:programs` downloads them.
+// Metaplex programs are not redistributed with TypeSOL (Metaplex NFT license): `pnpm fetch:programs` downloads them.
 const MPL_SO = fileURLToPath(new URL("./programs/mpl_token_metadata.so", import.meta.url));
 const HAVE_MPL = existsSync(MPL_SO);
 
@@ -122,7 +122,7 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
     expectOk(await send(d.svm, admin, [getTransferSolInstruction({ source: admin, destination: mint, amount: lamports(10_000_000n) })]));
     expectOk(
       await send(d.svm, admin, [
-        ix(d, "name_token2022", { name: "TypeSol Coin", symbol: "DEMO", uri: "https://example.com/coin.json" }, [
+        ix(d, "name_token2022", { name: "TypeSOL Coin", symbol: "DEMO", uri: "https://example.com/coin.json" }, [
           { address: admin.address, signer: admin },
           { address: issuer },
           { address: mint, writable: true },
@@ -131,7 +131,7 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
       ]),
     );
     const data = Buffer.from((d.svm.getAccount(mint) as { data: Uint8Array }).data);
-    expect(data.includes(Buffer.from("TypeSol Coin"))).toBe(true);
+    expect(data.includes(Buffer.from("TypeSOL Coin"))).toBe(true);
     expect(data.includes(Buffer.from("DEMO"))).toBe(true);
     expect(data.includes(Buffer.from("https://example.com/coin.json"))).toBe(true);
   });
@@ -140,7 +140,7 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
     const { admin, mint, issuer } = await issuerWith(TOKEN_PROGRAM);
     const [metadata] = await pda(MPL, ["metadata", MPL, mint]);
     const name = (target: Address, who: KeyPairSigner = admin) =>
-      ix(d, "name_metaplex", { name: "TypeSol", symbol: "DEMO", uri: "https://example.com/m.json" }, [
+      ix(d, "name_metaplex", { name: "TypeSOL", symbol: "DEMO", uri: "https://example.com/m.json" }, [
         { address: who.address, signer: who, writable: true },
         { address: issuer },
         { address: mint },
@@ -154,7 +154,7 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
     expect(acct.exists && acct.programAddress).toBe(MPL);
     const data = Buffer.from(acct.data);
     expect(data[0]).toBe(4); // Key::MetadataV1
-    expect(data.includes(Buffer.from("TypeSol"))).toBe(true);
+    expect(data.includes(Buffer.from("TypeSOL"))).toBe(true);
     expect(data.includes(Buffer.from("https://example.com/m.json"))).toBe(true);
   });
 });

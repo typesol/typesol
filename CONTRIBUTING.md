@@ -23,12 +23,12 @@ a constraint or an error code.
 
 ## Versioning
 
-TypeSol uses semantic versioning. Before 1.0:
+TypeSOL uses semantic versioning. Before 1.0:
 - a **minor** release (0.x → 0.y) may change the language surface (`lib/typesol.d.ts`), the account/IDL layout of
   generated programs, or error codes — always listed under "Breaking" in CHANGELOG.md;
 - a **patch** release only fixes bugs without changing layouts or the meaning of valid programs.
 The TypeScript dependency is pinned exactly: it decides what type-checks, so it only changes in minor releases.
-Builds record the TypeSol, TypeScript and clang versions in `<name>.build.json`.
+Builds record the TypeSOL, TypeScript and clang versions in `<name>.build.json`.
 
 ## Code style
 

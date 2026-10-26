@@ -1,6 +1,6 @@
 # Security
 
-TypeSol generates programs that hold funds. Treat it accordingly.
+TypeSOL generates programs that hold funds. Treat it accordingly.
 
 ## Status
 
@@ -13,13 +13,13 @@ TypeSol generates programs that hold funds. Treat it accordingly.
 ## Reporting a vulnerability
 
 Please report privately, not in a public issue: use the **"Report a vulnerability"** button on
-https://github.com/typesol/typesol/security (GitHub private vulnerability reporting). Include a minimal TypeSol program and the steps that show the problem.
+https://github.com/typesol/typesol/security (GitHub private vulnerability reporting). Include a minimal TypeSOL program and the steps that show the problem.
 We aim to acknowledge reports within 3 days and to ship a fix or mitigation for confirmed issues as fast as
 their severity requires, with credit unless you prefer otherwise.
 
 ## What counts
 
-Anything where a program compiled by TypeSol behaves differently from its source and the documented semantics
+Anything where a program compiled by TypeSOL behaves differently from its source and the documented semantics
 in a way an attacker can use: missing or bypassable account checks, memory safety in the runtime, wrong
-arithmetic, IDL/encoding mismatches, unsafe defaults in the CLI. Bugs in programs written with TypeSol are the
+arithmetic, IDL/encoding mismatches, unsafe defaults in the CLI. Bugs in programs written with TypeSOL are the
 responsibility of their authors, unless the language made the safe version impossible or misleading.

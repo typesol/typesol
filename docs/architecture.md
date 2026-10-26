@@ -1,6 +1,6 @@
 # Architecture
 
-This document is for people changing TypeSol itself. To write programs with it, read the [README](../README.md) and
+This document is for people changing TypeSOL itself. To write programs with it, read the [README](../README.md) and
 the [language reference](language.md).
 
 ## Pipeline
@@ -36,7 +36,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/compiler/diagnostics.ts` | `Reporter` and `CompileError`: diagnostics with file, line and column. |
 | `runtime/typesol_rt.h` | The C runtime: error codes, word-wise memory helpers, the entry point's input parser (`ts_deserialize`), account checks, checked math, Borsh helpers, CPIs (System, Token, Token-2022, ATA, Metaplex), oracles and the heap allocator. Header-only and `static inline`, so unused code is dropped. |
 | `src/workspace.ts` | `typesol.json` projects, program keypairs, `typesol init` templates and deploy arguments. |
-| `src/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSol CPI helpers. |
+| `src/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSOL CPI helpers. |
 | `src/idlpublish.ts` | `typesol idl publish` through the Program Metadata program. |
 | `src/profile.ts` | Turns `--profile` logs into compute units per source line. |
 | `src/cli.ts` | Command parsing. Every command has strict options, `--help`, and exit codes 0 (success), 1 (failure), 2 (usage error) and 3 (verify mismatch). |
@@ -72,7 +72,7 @@ These invariants are easy to break. Each one has tests.
   Metaplex instructions all go through it.
 - **Account lengths are refreshed after every CPI.** `line()` appends `ts_refresh_lens(params)` after any line that
   invokes another program, because the callee may resize accounts.
-- **Runtime messages carry the source location.** `line()` appends `(file.ts:line)` to every `"TypeSol: …"`
+- **Runtime messages carry the source location.** `line()` appends `(file.ts:line)` to every `"TypeSOL: …"`
   message.
 - **No SDK byte loops.** Generated code and the runtime compare, copy and zero memory with `ts_key_eq`, `ts_mem_eq`,
   `ts_memcpy` and `ts_memzero` (8 bytes per instruction), not `sol_memcmp`, `sol_memcpy`, `sol_memset` or
