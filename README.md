@@ -210,17 +210,17 @@ compute units per call:
 
 | Instruction | TypeSOL | Anchor 1.0.2 | Native Rust | Pinocchio 0.10 |
 | --- | ---: | ---: | ---: | ---: |
-| counter.initialize | 3,048 | 6,573 | 4,601 | 3,186 |
-| counter.increment | 143 | 2,323 | 857 | 113 |
-| vault.open | 3,062 | 6,627 | 4,613 | 3,185 |
-| vault.deposit | 1,358 | 4,355 | 2,832 | 1,377 |
-| vault.withdraw | 352 | 3,628 | 1,176 | 370 |
-| vault.shut | 201 | 2,024 | 950 | 167 |
-| binary, counter / vault | 12.3 / 16.1 KB | 145.2 / 158.9 KB | 27.9 / 35.0 KB | 19.6 / 22.9 KB |
+| counter.initialize | 3,038 | 6,573 | 4,601 | 3,186 |
+| counter.increment | 116 | 2,323 | 857 | 113 |
+| vault.open | 3,052 | 6,627 | 4,613 | 3,185 |
+| vault.deposit | 1,319 | 4,355 | 2,832 | 1,377 |
+| vault.withdraw | 322 | 3,628 | 1,176 | 370 |
+| vault.shut | 168 | 2,024 | 950 | 167 |
+| binary, counter / vault | 12.9 / 16.4 KB | 145.2 / 158.9 KB | 27.9 / 35.0 KB | 19.6 / 22.9 KB |
 
-`initialize` and `open` include the PDA bump search, which costs the same in every implementation. The remaining gap
-to Pinocchio on the small instructions is the entry point: TypeSOL fills a `SolAccountInfo` for every account up
-front (about 25 CU each), where Pinocchio reads accounts in place. Fewer compute units are not a safety claim. Beyond these numbers, the differential tests also check
+`initialize` and `open` include the PDA bump search, which costs the same in every implementation. Like Pinocchio,
+TypeSOL reads accounts in place and builds CPI account records only for the accounts a call lists; it stays within
+a few compute units of Pinocchio on the smallest instructions. Fewer compute units are not a safety claim. Beyond these numbers, the differential tests also check
 an escrow program against Anchor ([docs/testing.md](docs/testing.md)).
 
 ## How it is tested

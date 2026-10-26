@@ -93,8 +93,10 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
 
   out.push(`#define TS_MAX_ACCOUNTS ${MAX_ACCOUNTS}`);
   out.push(`extern uint64_t entrypoint(const uint8_t *input) {`);
-  out.push(`  SolAccountInfo ka[TS_MAX_ACCOUNTS];`);
-  out.push(`  SolParameters params;`, `  params.ka = ka; /* ts_deserialize fills in the rest */`);
+  out.push(`  TsAccount *ka[TS_MAX_ACCOUNTS];`);
+  out.push(`  SolAccountInfo infos[TS_MAX_ACCOUNTS]; /* filled only by CPIs */`);
+  out.push(`  TsParams params;`, `  params.ka = ka; /* ts_deserialize fills in the rest */`);
+  out.push(`  params.infos = infos;`);
   // Clamping the count to what fits would make extra accounts silently vanish from remainingAccounts():
   // refuse more than the array holds instead (ts_deserialize relies on this bound).
   out.push(`  if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: at most ${MAX_ACCOUNTS} accounts per instruction");`);

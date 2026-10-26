@@ -547,7 +547,7 @@ export abstract class StorageEmitter extends EmitterBase {
       if (a) {
         this.assertUsable(a, node);
         if (!isWritable(a.kind)) this.fail(node, `"${a.name}" is read-only; declare it Mut<...> to change lamports`);
-        return { type: U64, read: `(*a_${a.name}->lamports)`, write: (c) => `*a_${a.name}->lamports = ${c}` };
+        return { type: U64, read: `a_${a.name}->lamports`, write: (c) => `a_${a.name}->lamports = ${c}` };
       }
     }
     if (ts.isPropertyAccessExpression(node) && node.name.text === "lamports") {
@@ -557,7 +557,7 @@ export abstract class StorageEmitter extends EmitterBase {
         // also another (declared or remaining) account, which would let one balance be counted twice.
         this.line(`TS_TRY(ts_check_writable(${h}));`);
         this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
-        return { type: U64, read: `(*${h}->lamports)`, write: (c) => `*${h}->lamports = ${c}` };
+        return { type: U64, read: `${h}->lamports`, write: (c) => `${h}->lamports = ${c}` };
       }
     }
     const r = this.ref(node);

@@ -9,9 +9,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - The project is now spelled **TypeSOL**, in docs, CLI help and runtime messages (`TypeSOL: arithmetic overflow (file.ts:12)`). Tools that match log text on the old spelling need updating. The npm package and command stay `typesol`.
 
 ### Performance
-Same checks, error codes and account state; fewer compute units and smaller binaries. counter.increment 926 → 143 CU,
-vault.withdraw 1,394 → 352, vault.shut 1,190 → 201, vault.deposit 2,436 → 1,358; counter / vault binaries
-29.9 / 33.6 KB → 12.3 / 16.1 KB (see the README numbers).
+Same checks, error codes and account state; fewer compute units and smaller binaries. counter.increment 926 → 116 CU,
+vault.withdraw 1,394 → 322, vault.shut 1,190 → 168, vault.deposit 2,436 → 1,319; counter / vault binaries
+29.9 / 33.6 KB → 12.9 / 16.4 KB (see the README numbers).
+- Accounts are read in place. Generated code works on `TsAccount`, the loader's serialized account record, so the
+  entry point stores one pointer per account instead of filling a `SolAccountInfo` (about 14 CU per account), and
+  lengths a CPI changes no longer need refreshing afterwards. CPIs build `SolAccountInfo` records only for the
+  accounts they list (`ts_invoke`). `invoke` now takes at most 32 accounts.
 - Pubkey, discriminator and other byte comparisons, copies and zeroing work 8 bytes at a time (`ts_key_eq`,
   `ts_mem_eq`, `ts_memcpy`, `ts_memzero`) instead of the SDK's byte loops.
 - Instruction dispatch compares an 8-byte discriminator as one u64.

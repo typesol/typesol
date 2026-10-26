@@ -179,11 +179,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (h) {
       switch (field) {
         case "key":
-          return { c: `${h}->key`, type: PUBKEY };
+          return { c: `&${h}->key`, type: PUBKEY };
         case "owner":
-          return { c: `${h}->owner`, type: PUBKEY };
+          return { c: `&${h}->owner`, type: PUBKEY };
         case "lamports":
-          return { c: `(*${h}->lamports)`, type: U64 };
+          return { c: `${h}->lamports`, type: U64 };
         case "dataLen":
           return { c: `${h}->data_len`, type: U64 };
         case "isSigner":
@@ -198,8 +198,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (a) {
         this.assertUsable(a, node);
         const v = `a_${a.name}`;
-        if (field === "key") return { c: `${v}->key`, type: PUBKEY };
-        if (field === "lamports") return { c: `(*${v}->lamports)`, type: U64 };
+        if (field === "key") return { c: `&${v}->key`, type: PUBKEY };
+        if (field === "lamports") return { c: `${v}->lamports`, type: U64 };
         if (field === "dataLen") return { c: `${v}->data_len`, type: U64 };
         if (field === "pdaBump") {
           const b = this.bumps.get(a.name);
@@ -220,7 +220,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           if (field === "isNative") return { c: `(ts_read_le(${v}->data + 109, 4) == 1)`, type: BOOL };
           if (field === "delegatedAmount") return { c: `ts_read_le(${v}->data + 121, 8)`, type: U64 };
           if (field === "closeAuthority") return this.coptionKey(`${v}->data + 129`);
-          if (field === "tokenProgram") return { c: `${v}->owner`, type: PUBKEY };
+          if (field === "tokenProgram") return { c: `&${v}->owner`, type: PUBKEY };
         }
         if (k.kind === "pyth") {
           // Raw fields of the update; pythPrice() is the checked read.
@@ -250,11 +250,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           // mint_authority COption<Pubkey> @0, freeze_authority COption<Pubkey> @46.
           if (field === "mintAuthority") return this.coptionKey(`${v}->data`);
           if (field === "freezeAuthority") return this.coptionKey(`${v}->data + 46`);
-          if (field === "tokenProgram") return { c: `${v}->owner`, type: PUBKEY };
+          if (field === "tokenProgram") return { c: `&${v}->owner`, type: PUBKEY };
         }
         // Struct accounts are always ours; their own fields (an `owner` field is common) take these names.
         if (k.kind === "info" || k.kind === "signer" || k.kind === "program") {
-          if (field === "owner") return { c: `${v}->owner`, type: PUBKEY };
+          if (field === "owner") return { c: `&${v}->owner`, type: PUBKEY };
           if (field === "executable") return { c: `${v}->executable`, type: BOOL };
         }
         const r = this.ref(node);

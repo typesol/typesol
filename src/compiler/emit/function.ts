@@ -26,14 +26,14 @@ export class FunctionEmitter extends StatementEmitter {
   emitInstruction(): string {
     const ix = this.ix!;
     const head: string[] = [];
-    head.push(`__attribute__((noinline)) static uint64_t ix_${ix.name}(SolParameters *params) {`);
+    head.push(`__attribute__((noinline)) static uint64_t ix_${ix.name}(TsParams *params) {`);
     const n = ix.accounts.length;
     if (n > MAX_ACCOUNTS) this.reporter.fail(ix.node, `instructions may take at most ${MAX_ACCOUNTS} accounts`);
     head.push(`  if (params->ka_num < ${n}) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");`);
 
     for (const a of ix.accounts) {
       const v = `a_${a.name}`;
-      head.push(`  SolAccountInfo *${v} = &params->ka[${a.index}];`);
+      head.push(`  TsAccount *${v} = params->ka[${a.index}];`);
       const start = head.length;
       const k = a.kind;
       if (k.kind === "signer") head.push(`  TS_TRY(ts_check_signer(${v}));`);
@@ -46,7 +46,7 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "instructionsSysvar") head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
       if (k.kind === "eventAuthority") head.push(`  uint8_t eb_${a.name};`, `  TS_TRY(ts_check_event_authority(${v}, params->program_id, &eb_${a.name}));`);
       if (k.kind === "selfProgram")
-        head.push(`  if (!ts_key_eq(${v}->key, params->program_id)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: expected this program");`);
+        head.push(`  if (!ts_key_eq(&${v}->key, params->program_id)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: expected this program");`);
       if (k.kind === "programData") head.push(`  TS_TRY(ts_check_program_data(${v}, params->program_id));`);
       if (k.kind === "pyth") head.push(`  uint64_t pm_${a.name}; bool pf_${a.name};`, `  TS_TRY(ts_pyth_message(${v}, &pm_${a.name}, &pf_${a.name}));`);
       if (k.kind === "switchboard") head.push(`  TS_TRY(ts_check_switchboard(${v}, ${k.devnet}));`);
@@ -98,7 +98,7 @@ export class FunctionEmitter extends StatementEmitter {
       if (a.optional) {
         // Left out (this program's id in its slot, Anchor's convention): NULL, and none of its checks run.
         const lines = head.splice(start);
-        head.push(`  if (ts_key_eq(${v}->key, params->program_id)) ${v} = NULL;`);
+        head.push(`  if (ts_key_eq(&${v}->key, params->program_id)) ${v} = NULL;`);
         const inside: string[] = [];
         for (const l of lines) {
           const m = /^  ((?:TSS_\w+ \*d_\w+)|(?:uint64_t entry_\w+)) = (.*);$/.exec(l);
@@ -121,7 +121,7 @@ export class FunctionEmitter extends StatementEmitter {
           .map((a) => `a_${a.name} && `)
           .join("");
         head.push(
-          `  if (${present}ts_key_eq(a_${writable[i].name}->key, a_${writable[j].name}->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
+          `  if (${present}ts_key_eq(&a_${writable[i].name}->key, &a_${writable[j].name}->key)) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
         );
       }
 
@@ -264,48 +264,48 @@ export class FunctionEmitter extends StatementEmitter {
         if (k === "token")
           out.push(
             f === "mint"
-              ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${f}");`
-              : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${f}");`,
+              ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${f}");`
+              : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${f}");`,
           );
         else if (k === "mint") {
           const at = f === "mintAuthority" ? 0 : 46;
           const code = f === "mintAuthority" ? "TS_ERR_MINT_AUTHORITY" : "TS_ERR_FREEZE_AUTHORITY";
           out.push(
-            `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), a_${f}->key)) TS_FAIL(${code}, "TypeSOL: ${f} is not the ${f} of ${a.name}");`,
+            `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), &a_${f}->key)) TS_FAIL(${code}, "TypeSOL: ${f} is not the ${f} of ${a.name}");`,
           );
-        } else out.push(`  if (!ts_key_eq(&d_${a.name}->${f}, a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
+        } else out.push(`  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
       }
       if (c.owner) {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
-          `  if (!ts_key_eq(a_${a.name}->owner, &co_${a.name})) TS_FAIL(TS_ERR_CONSTRAINT_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
+          `  if (!ts_key_eq(&a_${a.name}->owner, &co_${a.name})) TS_FAIL(TS_ERR_CONSTRAINT_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
         );
       }
       if (c.executable) out.push(`  if (!a_${a.name}->executable) TS_FAIL(TS_ERR_CONSTRAINT_EXECUTABLE, "TypeSOL: ${a.name} must be an executable program");`);
       if (c.address) {
         out.push(`  static const SolPubkey ca_${a.name} = {${cBytes(c.address.bytes)}};`);
-        out.push(`  if (!ts_key_eq(a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not the expected address");`);
+        out.push(`  if (!ts_key_eq(&a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not the expected address");`);
       }
       if (c.ata) {
         // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
-        let program = `a_${a.name}->owner`;
+        let program = `&a_${a.name}->owner`;
         if (k !== "token") {
           const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
           if (!tp) this.reporter.fail(a.node, "Ata<AccountInfo, …> needs a token program parameter to derive the address");
-          program = `a_${tp.name}->key`;
+          program = `&a_${tp.name}->key`;
         }
         out.push(`  { SolPubkey ata_${a.name};`);
-        out.push(`    TS_TRY(ts_ata_address(a_${c.ata.owner}->key, a_${c.ata.mint}->key, ${program}, &ata_${a.name}));`);
+        out.push(`    TS_TRY(ts_ata_address(&a_${c.ata.owner}->key, &a_${c.ata.mint}->key, ${program}, &ata_${a.name}));`);
         out.push(
-          `    if (!ts_key_eq(&ata_${a.name}, a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${c.ata.owner} and ${c.ata.mint}"); }`,
+          `    if (!ts_key_eq(&ata_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${c.ata.owner} and ${c.ata.mint}"); }`,
         );
         // The address alone is not enough: legacy SPL Token lets an ATA's owner be reassigned.
         if (k === "token") {
           out.push(
-            `  if (!ts_key_eq(ts_token_mint(a_${a.name}), a_${c.ata.mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${c.ata.mint}");`,
+            `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${c.ata.mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${c.ata.mint}");`,
           );
           out.push(
-            `  if (!ts_key_eq(ts_token_owner(a_${a.name}), a_${c.ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${c.ata.owner}");`,
+            `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${c.ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${c.ata.owner}");`,
           );
         }
         const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
@@ -333,7 +333,7 @@ export class FunctionEmitter extends StatementEmitter {
           const arg = ref ? ix.args.find((o) => o.name === ref) : undefined;
           if (ref && !acct && !arg) this.reporter.fail(a.node, `Seeds: "@${ref}" is neither an account parameter nor an argument`);
           if (acct) {
-            parts.push(`{(const uint8_t *)a_${n}->key, 32}`);
+            parts.push(`{(const uint8_t *)&a_${n}->key, 32}`);
             idl.push({ kind: "account", path: snakeCase(n) });
           } else if (arg) {
             const t = arg.type;
@@ -355,7 +355,7 @@ export class FunctionEmitter extends StatementEmitter {
         if (p?.startsWith("@")) {
           const pa = ix.accounts.find((o) => o.name === p.slice(1));
           if (!pa) this.reporter.fail(a.node, `Seeds program: "${p}" is not an account parameter`);
-          program = `a_${pa.name}->key`;
+          program = `&a_${pa.name}->key`;
           ix.pdaPrograms.set(a.name, { kind: "account", path: snakeCase(pa.name) });
         } else if (p) {
           const bytes = [...decodeAddress(p)!];
@@ -371,7 +371,7 @@ export class FunctionEmitter extends StatementEmitter {
         } else {
           out.push(`  { SolPubkey pda_${a.name}; uint8_t b_${a.name};`);
           out.push(
-            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &b_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
+            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &b_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
           );
         }
       }

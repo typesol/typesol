@@ -78,7 +78,7 @@ export interface Local {
 export const cBytes = (bytes: number[]) => `{${bytes.join(", ")}}`;
 /** C expressions that nothing in a TypeSOL expression can change: temporaries, locals, arguments, account keys, constants. */
 export const isStable = (c: string) =>
-  /^\w+$/.test(c) || /^\(&\w+\)$/.test(c) || /^\w+->key$/.test(c) || /^\(\(uint8_t\)\d+\)$/.test(c) || /^\(?-?\d+U?LL\)?$/.test(c);
+  /^\w+$/.test(c) || /^\(&\w+\)$/.test(c) || /^&\w+->key$/.test(c) || /^\(\(uint8_t\)\d+\)$/.test(c) || /^\(?-?\d+U?LL\)?$/.test(c);
 
 /** A C string literal of the UTF-8 bytes. Octal escapes (at most three digits) cannot swallow following characters. */
 export const cString = (s: string) =>
@@ -123,7 +123,7 @@ export function valueC(t: ValueType): string {
     case "vecArg":
       return "TS_VecArg";
     case "account":
-      return "SolAccountInfo *";
+      return "TsAccount *";
     case "structRef":
       return `TSS_${t.struct} *`;
     case "enumRef":
@@ -240,9 +240,9 @@ export function accountMismatch(have: ParamKind, want: ParamKind): string | unde
 
 /** Helpers get the instruction's parameters (for CPIs and accounts), then their own, then the result slot. */
 export function helperSignature(h: Helper): string {
-  const params = ["SolParameters *params"];
+  const params = ["TsParams *params"];
   for (const p of h.params) {
-    if (p.account) params.push(`SolAccountInfo *a_${p.name}`);
+    if (p.account) params.push(`TsAccount *a_${p.name}`);
     else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
     else if (p.type.kind === "pubkey")
       params.push(`SolPubkey p_${p.name}`); // by value: a copy taken at the call

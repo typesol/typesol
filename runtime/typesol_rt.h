@@ -216,49 +216,92 @@ typedef struct {
  * The loader's serialized input: u64 account count, then per account either a duplicate marker (u8 index of the
  * earlier account, 7 bytes padding) or u8 0xff, is_signer, is_writable, executable, 4 bytes padding, key, owner,
  * lamports, data_len, data, 10 KiB realloc room, padding to 8, rent_epoch; then u64 data length, data, program id.
- * Same result as the SDK's sol_deserialize, minus its per-account "past the array" branch: the entry point has
+ *
+ * Generated code reads every account in place: a TsAccount is the serialized record itself, so parsing the input
+ * stores one pointer per account instead of copying each field into a SolAccountInfo. Writes to lamports, owner,
+ * data_len and data land directly where the runtime reads them back. A duplicate points at the earlier record.
+ */
+typedef struct {
+  uint8_t dup; /* 0xff (not a duplicate) */
+  bool is_signer;
+  bool is_writable;
+  bool executable;
+  uint8_t padding[4];
+  SolPubkey key;
+  SolPubkey owner;
+  uint64_t lamports;
+  uint64_t data_len;
+  uint8_t data[];
+} TsAccount;
+_Static_assert(__builtin_offsetof(TsAccount, key) == 8 && __builtin_offsetof(TsAccount, owner) == 40 &&
+                   __builtin_offsetof(TsAccount, lamports) == 72 && __builtin_offsetof(TsAccount, data_len) == 80 &&
+                   __builtin_offsetof(TsAccount, data) == 88,
+               "TsAccount layout");
+
+typedef struct {
+  TsAccount **ka;        /* ka_num entries */
+  uint64_t ka_num;
+  const uint8_t *data;   /* instruction data */
+  uint64_t data_len;
+  const SolPubkey *program_id;
+  SolAccountInfo *infos; /* scratch for CPI account lists (ts_invoke), one per account */
+} TsParams;
+
+/*
+ * Same bounds as the SDK's sol_deserialize, minus its per-account "past the array" branch: the entry point has
  * already refused counts above TS_MAX_ACCOUNTS (the size of `params->ka`), so every account fits.
  */
-static inline __attribute__((always_inline)) void ts_deserialize(const uint8_t *input, SolParameters *params) {
+static inline __attribute__((always_inline)) void ts_deserialize(const uint8_t *input, TsParams *params) {
   uint64_t n = *(const uint64_t *)input;
   input += 8;
   params->ka_num = n;
   for (uint64_t i = 0; i < n; i++) {
-    SolAccountInfo *a = &params->ka[i];
     uint8_t dup = input[0];
     if (dup != UINT8_MAX) {
-      ts_memcpy(a, &params->ka[dup], sizeof(*a)); /* the loader only ever points back at an earlier account */
+      params->ka[i] = params->ka[dup]; /* the loader only ever points back at an earlier account */
       input += 8;
       continue;
     }
-    /* is_signer, is_writable, executable: the loader writes each as exactly 0 or 1, so the bytes are valid bools
-       as they are and need no normalizing branches. One 4-byte move copies all three (the fourth byte lands in the
-       struct's tail padding). */
-    _Static_assert(__builtin_offsetof(SolAccountInfo, executable) == __builtin_offsetof(SolAccountInfo, is_signer) + 2 &&
-                       __builtin_offsetof(SolAccountInfo, is_signer) + 4 <= sizeof(SolAccountInfo),
-                   "SolAccountInfo flag layout");
-    *(ts_u32_unaligned *)&a->is_signer = *(const ts_u32_unaligned *)(input + 1);
-    a->key = (SolPubkey *)(input + 8);
-    a->owner = (SolPubkey *)(input + 40);
-    a->lamports = (uint64_t *)(input + 72);
-    uint64_t len = *(const uint64_t *)(input + 80);
-    a->data_len = len;
-    a->data = (uint8_t *)(input + 88);
-    input = (const uint8_t *)(((uint64_t)(input + 88 + len + MAX_PERMITTED_DATA_INCREASE) + 7) & ~(uint64_t)7);
-    a->rent_epoch = *(const uint64_t *)input;
-    input += 8;
+    TsAccount *a = (TsAccount *)input;
+    params->ka[i] = a;
+    input = (const uint8_t *)(((uint64_t)(input + 88 + a->data_len + MAX_PERMITTED_DATA_INCREASE) + 7) & ~(uint64_t)7) + 8;
   }
   params->data_len = *(const uint64_t *)input;
   params->data = input + 8;
   params->program_id = (const SolPubkey *)(input + 8 + params->data_len);
 }
 
-/* ---- Account checks ------------------------------------------------------ */
-/* After a CPI: every account's length as the runtime left it (the serialized length precedes the data). */
-static inline void ts_refresh_lens(SolParameters *params) {
-  for (uint64_t i = 0; i < params->ka_num; i++) params->ka[i].data_len = *(const uint64_t *)(params->ka[i].data - 8);
+/*
+ * ---- CPI account lists -----------------------------------------------------
+ * sol_invoke_signed takes SolAccountInfo records. They are built at the call, and only for the accounts the
+ * instruction lists: every SolAccountMeta the runtime and generated code build points at the key inside an account
+ * record (&a->key), so the record starts 8 bytes before it. Keys, owners, lamports and data point into the input,
+ * which the runtime updates after the call. `params->infos` (room for every account) is the scratch space.
+ */
+static inline __attribute__((always_inline)) void ts_info(const TsAccount *a, SolAccountInfo *out) {
+  out->key = (SolPubkey *)&a->key;
+  out->lamports = (uint64_t *)&a->lamports;
+  out->data_len = a->data_len;
+  out->data = (uint8_t *)a->data;
+  out->owner = (SolPubkey *)&a->owner;
+  out->rent_epoch = 0; /* not read by the runtime (Pinocchio passes 0 too) */
+  /* is_signer, is_writable, executable: adjacent in both layouts, so one 4-byte move copies all three (the fourth
+     byte lands in SolAccountInfo's tail padding). */
+  _Static_assert(__builtin_offsetof(SolAccountInfo, executable) == __builtin_offsetof(SolAccountInfo, is_signer) + 2 &&
+                     __builtin_offsetof(SolAccountInfo, is_signer) + 4 <= sizeof(SolAccountInfo),
+                 "SolAccountInfo flag layout");
+  *(ts_u32_unaligned *)&out->is_signer = *(const ts_u32_unaligned *)&a->is_signer;
 }
 
+static inline __attribute__((always_inline)) uint64_t ts_invoke(TsParams *params, const SolInstruction *ix, const SolSignerSeeds *signers, int nsigners) {
+  /* At most TS_MAX_ACCOUNTS metas (the compiler refuses longer lists), the size of `params->infos`. A repeated
+     account gets a record per mention, which the runtime accepts. */
+  SolAccountInfo *infos = params->infos;
+  for (uint64_t i = 0; i < ix->account_len; i++) ts_info((const TsAccount *)((const uint8_t *)ix->accounts[i].pubkey - 8), &infos[i]);
+  return sol_invoke_signed(ix, infos, ix->account_len, signers, nsigners);
+}
+
+/* ---- Account checks ------------------------------------------------------ */
 /* Copy between two places of the same type: distinct, or the very same place (then nothing to do). */
 static inline void ts_copy(void *dst, const void *src, uint64_t n) {
   if (dst != src) ts_memcpy(dst, src, n);
@@ -269,47 +312,48 @@ static inline __attribute__((always_inline)) bool ts_key_eq(const SolPubkey *a, 
          ts_ld64(a->x + 24) == ts_ld64(b->x + 24);
 }
 
-static inline uint64_t ts_check_signer(const SolAccountInfo *a) {
+static inline uint64_t ts_check_signer(const TsAccount *a) {
   if (!a->is_signer) TS_FAIL(TS_ERR_NOT_SIGNER, "TypeSOL: account must sign");
   return SUCCESS;
 }
 
-static inline uint64_t ts_check_writable(const SolAccountInfo *a) {
+static inline uint64_t ts_check_writable(const TsAccount *a) {
   if (!a->is_writable) TS_FAIL(TS_ERR_NOT_WRITABLE, "TypeSOL: account must be writable");
   return SUCCESS;
 }
 
-static inline uint64_t ts_check_program_account(const SolAccountInfo *a, const SolPubkey *program_id,
+static inline uint64_t ts_check_program_account(const TsAccount *a, const SolPubkey *program_id,
                                                 const uint8_t disc[8], uint64_t size) {
   /* Like Anchor: an empty system account (never created, or closed) is "not initialized". */
-  if (*a->lamports == 0 && ts_key_eq(a->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_INITIALIZED, "TypeSOL: account is not initialized");
-  if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
+  if (a->lamports == 0 && ts_key_eq(&a->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_INITIALIZED, "TypeSOL: account is not initialized");
+  if (!ts_key_eq(&a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
   if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
   if (!ts_mem_eq(a->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
   return SUCCESS;
 }
 
 /* An account ending in Vec<T>: data must be exactly fixed part + len * element size. */
-static inline uint64_t ts_check_vec_len(const SolAccountInfo *a, uint64_t fixed, uint32_t len, uint64_t elem) {
+static inline uint64_t ts_check_vec_len(const TsAccount *a, uint64_t fixed, uint32_t len, uint64_t elem) {
   if (a->data_len != 8 + fixed + (uint64_t)len * elem)
     TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec length");
   return SUCCESS;
 }
 
 /* No other account in the instruction may be the same account (for loadAccountMut). */
-static inline uint64_t ts_check_unaliased(const SolParameters *params, const SolAccountInfo *a) {
-  for (uint64_t i = 0; i < params->ka_num; i++)
-    if (&params->ka[i] != a && ts_key_eq(params->ka[i].key, a->key))
-      TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
+static inline uint64_t ts_check_unaliased(const TsParams *params, const TsAccount *a) {
+  /* The loader passes each account once and marks repeats as duplicates, which share its record. */
+  uint64_t seen = 0;
+  for (uint64_t i = 0; i < params->ka_num; i++) seen += params->ka[i] == a;
+  if (seen > 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
   return SUCCESS;
 }
 
-static inline uint64_t ts_check_address(const SolAccountInfo *a, const SolPubkey *expected) {
-  if (!ts_key_eq(a->key, expected)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: unexpected program address");
+static inline uint64_t ts_check_address(const TsAccount *a, const SolPubkey *expected) {
+  if (!ts_key_eq(&a->key, expected)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: unexpected program address");
   return SUCCESS;
 }
 
-static inline uint64_t ts_check_executable(const SolAccountInfo *a) {
+static inline uint64_t ts_check_executable(const TsAccount *a) {
   if (!a->executable) TS_FAIL(TS_ERR_NOT_EXECUTABLE, "TypeSOL: account is not an executable program");
   return SUCCESS;
 }
@@ -326,10 +370,10 @@ static inline bool ts_is_token_program(const SolPubkey *k) {
 }
 /* A Token-2022 Multisig is 355 bytes and its signer bytes are attacker-chosen: never accept that length. */
 #define TS_MULTISIG_LEN 355
-static inline uint64_t ts_check_token_account(const SolAccountInfo *a) {
+static inline uint64_t ts_check_token_account(const TsAccount *a) {
   bool ok = false;
-  if (ts_key_eq(a->owner, &TS_TOKEN_PROGRAM_ID)) ok = a->data_len == TS_TOKEN_ACCOUNT_LEN;
-  else if (ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID))
+  if (ts_key_eq(&a->owner, &TS_TOKEN_PROGRAM_ID)) ok = a->data_len == TS_TOKEN_ACCOUNT_LEN;
+  else if (ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID))
     ok = a->data_len == TS_TOKEN_ACCOUNT_LEN ||
          (a->data_len > TS_TOKEN_ACCOUNT_LEN && a->data_len != TS_MULTISIG_LEN && a->data[TS_TOKEN_ACCOUNT_LEN] == 2);
   else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: token account not owned by a token program");
@@ -337,23 +381,23 @@ static inline uint64_t ts_check_token_account(const SolAccountInfo *a) {
   return SUCCESS;
 }
 /* Mint layout: mint_authority COption[0..36] supply[36..44] decimals[44] is_initialized[45] freeze[46..82] */
-static inline uint64_t ts_check_mint(const SolAccountInfo *a) {
+static inline uint64_t ts_check_mint(const TsAccount *a) {
   bool ok = false;
-  if (ts_key_eq(a->owner, &TS_TOKEN_PROGRAM_ID)) ok = a->data_len == TS_MINT_LEN;
-  else if (ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID))
+  if (ts_key_eq(&a->owner, &TS_TOKEN_PROGRAM_ID)) ok = a->data_len == TS_MINT_LEN;
+  else if (ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID))
     ok = a->data_len == TS_MINT_LEN ||
          (a->data_len > TS_TOKEN_ACCOUNT_LEN && a->data_len != TS_MULTISIG_LEN && a->data[TS_TOKEN_ACCOUNT_LEN] == 1);
   else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: mint not owned by a token program");
   if (!ok || a->data[45] != 1) TS_FAIL(TS_ERR_MINT, "TypeSOL: not an initialized mint");
   return SUCCESS;
 }
-static inline uint64_t ts_check_token_program(const SolAccountInfo *a) {
-  if (!ts_is_token_program(a->key)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: not a token program");
+static inline uint64_t ts_check_token_program(const TsAccount *a) {
+  if (!ts_is_token_program(&a->key)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: not a token program");
   return SUCCESS;
 }
-static inline const SolPubkey *ts_token_mint(const SolAccountInfo *a) { return (const SolPubkey *)a->data; }
-static inline const SolPubkey *ts_token_owner(const SolAccountInfo *a) { return (const SolPubkey *)(a->data + 32); }
-static inline uint64_t ts_token_amount(const SolAccountInfo *a) {
+static inline const SolPubkey *ts_token_mint(const TsAccount *a) { return (const SolPubkey *)a->data; }
+static inline const SolPubkey *ts_token_owner(const TsAccount *a) { return (const SolPubkey *)(a->data + 32); }
+static inline uint64_t ts_token_amount(const TsAccount *a) {
   uint64_t v;
   ts_memcpy(&v, a->data + 64, 8);
   return v;
@@ -407,31 +451,31 @@ static inline uint64_t ts_clock_u64(int i, uint64_t *out) {
 
 /* BPF upgradeable loader (BPFLoaderUpgradeab1e…) and this program's ProgramData account, PDA [program_id]. */
 static const SolPubkey TS_BPF_UPGRADEABLE_LOADER_ID = {{2, 168, 246, 145, 78, 136, 161, 176, 226, 16, 21, 62, 247, 99, 174, 43, 0, 194, 185, 61, 22, 193, 36, 210, 192, 83, 122, 16, 4, 128, 0, 0}};
-static inline uint64_t ts_check_program_data(const SolAccountInfo *a, const SolPubkey *program_id) {
-  if (!ts_key_eq(a->owner, &TS_BPF_UPGRADEABLE_LOADER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not owned by the upgradeable loader");
+static inline uint64_t ts_check_program_data(const TsAccount *a, const SolPubkey *program_id) {
+  if (!ts_key_eq(&a->owner, &TS_BPF_UPGRADEABLE_LOADER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not owned by the upgradeable loader");
   if (a->data_len < 45 || ts_read_le(a->data, 4) != 3) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: not a ProgramData account");
   SolSignerSeed seed = {(const uint8_t *)program_id, 32};
   SolPubkey expected;
   uint8_t bump;
-  if (sol_try_find_program_address(&seed, 1, &TS_BPF_UPGRADEABLE_LOADER_ID, &expected, &bump) != SUCCESS || !ts_key_eq(&expected, a->key))
+  if (sol_try_find_program_address(&seed, 1, &TS_BPF_UPGRADEABLE_LOADER_ID, &expected, &bump) != SUCCESS || !ts_key_eq(&expected, &a->key))
     TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: not this program's ProgramData account");
   return SUCCESS;
 }
 
 /* Anchor emit_cpi: the instruction-data tag of self-CPI events and the authority PDA ["__event_authority"]. */
 static const uint8_t TS_EVENT_IX_TAG[8] = {0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d};
-static inline uint64_t ts_check_event_authority(const SolAccountInfo *a, const SolPubkey *program_id, uint8_t *bump) {
+static inline uint64_t ts_check_event_authority(const TsAccount *a, const SolPubkey *program_id, uint8_t *bump) {
   SolSignerSeed seed = {(const uint8_t *)"__event_authority", 17};
   SolPubkey expected;
-  if (sol_try_find_program_address(&seed, 1, program_id, &expected, bump) != SUCCESS || !ts_key_eq(&expected, a->key))
+  if (sol_try_find_program_address(&seed, 1, program_id, &expected, bump) != SUCCESS || !ts_key_eq(&expected, &a->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: not this program's event authority");
   return SUCCESS;
 }
-static inline uint64_t ts_event_dispatch(SolParameters *params) {
+static inline uint64_t ts_event_dispatch(TsParams *params) {
   if (params->ka_num < 1) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");
-  if (!params->ka[0].is_signer) TS_FAIL(TS_ERR_CONSTRAINT_SIGNER, "TypeSOL: the event authority must sign");
+  if (!params->ka[0]->is_signer) TS_FAIL(TS_ERR_CONSTRAINT_SIGNER, "TypeSOL: the event authority must sign");
   uint8_t bump;
-  return ts_check_event_authority(&params->ka[0], params->program_id, &bump);
+  return ts_check_event_authority(params->ka[0], params->program_id, &bump);
 }
 
 static inline uint64_t ts_now(int64_t *out) {
@@ -447,51 +491,51 @@ static inline uint64_t ts_now(int64_t *out) {
  * to this program. It must be writable, rent-exempt, big enough and still all-zero in its discriminator;
  * the discriminator is written here so the account can never be initialized twice.
  */
-static inline uint64_t ts_init_zeroed(SolAccountInfo *a, const SolPubkey *program_id, const uint8_t disc[8], uint64_t size) {
-  if (!ts_key_eq(a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
+static inline uint64_t ts_init_zeroed(TsAccount *a, const SolPubkey *program_id, const uint8_t disc[8], uint64_t size) {
+  if (!ts_key_eq(&a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
   if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
   if (ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already initialized");
   uint64_t need;
   TS_TRY(ts_minimum_balance(a->data_len, &need));
-  if (*a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSOL: account is not rent-exempt");
+  if (a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSOL: account is not rent-exempt");
   ts_memcpy(a->data, disc, 8);
   return SUCCESS;
 }
 
 /* ---- PDA ----------------------------------------------------------------- */
-static inline uint64_t ts_require_pda(const SolAccountInfo *a, const SolSignerSeed *seeds, int n,
+static inline uint64_t ts_require_pda(const TsAccount *a, const SolSignerSeed *seeds, int n,
                                       const SolPubkey *program_id) {
   SolPubkey derived;
-  if (sol_create_program_address(seeds, n, program_id, &derived) != SUCCESS || !ts_key_eq(&derived, a->key))
+  if (sol_create_program_address(seeds, n, program_id, &derived) != SUCCESS || !ts_key_eq(&derived, &a->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
   return SUCCESS;
 }
 
 /* ---- System program CPIs ------------------------------------------------- */
-static inline uint64_t ts_system_transfer(SolParameters *params, SolAccountInfo *from, SolAccountInfo *to,
+static inline uint64_t ts_system_transfer(TsParams *params, TsAccount *from, TsAccount *to,
                                           uint64_t lamports) {
   uint8_t data[12];
   uint32_t tag = 2;
   ts_memcpy(data, &tag, 4);
   ts_memcpy(data + 4, &lamports, 8);
-  SolAccountMeta metas[2] = {{from->key, true, true}, {to->key, true, false}};
+  SolAccountMeta metas[2] = {{&from->key, true, true}, {&to->key, true, false}};
   SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
-  return sol_invoke(&ix, params->ka, params->ka_num);
+  return ts_invoke(params, &ix, NULL, 0);
 }
 
 /*
  * Create `acct` as a PDA of this program. `seeds` must have room for one extra
  * entry: the bump is appended there. Writes the discriminator on success.
  */
-static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct,
+static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccount *acct,
                                      SolSignerSeed *seeds, int n, const uint8_t disc[8], uint64_t space,
                                      uint8_t *bump_out) {
   SolPubkey derived;
   uint8_t bump;
   if (sol_try_find_program_address(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
-      !ts_key_eq(&derived, acct->key))
+      !ts_key_eq(&derived, &acct->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
-  if (acct->data_len != 0 || !ts_key_eq(acct->owner, &TS_SYSTEM_PROGRAM_ID))
+  if (acct->data_len != 0 || !ts_key_eq(&acct->owner, &TS_SYSTEM_PROGRAM_ID))
     TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already exists");
   uint64_t lamports;
   TS_TRY(ts_minimum_balance(space, &lamports));
@@ -499,32 +543,32 @@ static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *paye
   seeds[n].len = 1;
   SolSignerSeeds signer = {seeds, (uint64_t)(n + 1)};
 
-  if (*acct->lamports == 0) {
+  if (acct->lamports == 0) {
     uint8_t data[52];
     uint32_t tag = 0; /* CreateAccount */
     ts_memcpy(data, &tag, 4);
     ts_memcpy(data + 4, &lamports, 8);
     ts_memcpy(data + 12, &space, 8);
     ts_memcpy(data + 20, params->program_id, 32);
-    SolAccountMeta metas[2] = {{payer->key, true, true}, {acct->key, true, true}};
+    SolAccountMeta metas[2] = {{&payer->key, true, true}, {&acct->key, true, true}};
     SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
-    TS_TRY(sol_invoke_signed(&ix, params->ka, params->ka_num, &signer, 1));
+    TS_TRY(ts_invoke(params, &ix, &signer, 1));
   } else {
     /* Someone pre-funded the address (CreateAccount would fail): top up, allocate, assign. */
-    if (*acct->lamports < lamports) TS_TRY(ts_system_transfer(params, payer, acct, lamports - *acct->lamports));
+    if (acct->lamports < lamports) TS_TRY(ts_system_transfer(params, payer, acct, lamports - acct->lamports));
     uint8_t alloc[12];
     uint32_t alloc_tag = 8; /* Allocate */
     ts_memcpy(alloc, &alloc_tag, 4);
     ts_memcpy(alloc + 4, &space, 8);
-    SolAccountMeta one[1] = {{acct->key, true, true}};
+    SolAccountMeta one[1] = {{&acct->key, true, true}};
     SolInstruction alloc_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, alloc, sizeof(alloc)};
-    TS_TRY(sol_invoke_signed(&alloc_ix, params->ka, params->ka_num, &signer, 1));
+    TS_TRY(ts_invoke(params, &alloc_ix, &signer, 1));
     uint8_t assign[36];
     uint32_t assign_tag = 1; /* Assign */
     ts_memcpy(assign, &assign_tag, 4);
     ts_memcpy(assign + 4, params->program_id, 32);
     SolInstruction assign_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, assign, sizeof(assign)};
-    TS_TRY(sol_invoke_signed(&assign_ix, params->ka, params->ka_num, &signer, 1));
+    TS_TRY(ts_invoke(params, &assign_ix, &signer, 1));
   }
 
   acct->data_len = space;
@@ -538,7 +582,7 @@ static inline uint64_t ts_create_pda(SolParameters *params, SolAccountInfo *paye
  * size the account had when the instruction started; new bytes are zeroed. When growing, `payer`
  * tops up the rent-exempt minimum through the System Program.
  */
-static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct, uint64_t new_len,
+static inline uint64_t ts_resize(TsParams *params, TsAccount *payer, TsAccount *acct, uint64_t new_len,
                                  uint64_t entry_len) {
   if (new_len > entry_len + MAX_PERMITTED_DATA_INCREASE)
     TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
@@ -555,7 +599,6 @@ static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, S
     }
     ts_memzero(acct->data + old_len, new_len - old_len);
   }
-  *(uint64_t *)(acct->data - 8) = new_len; /* serialized data length */
   acct->data_len = new_len;
   return SUCCESS;
 }
@@ -565,7 +608,7 @@ static inline uint64_t ts_resize(SolParameters *params, SolAccountInfo *payer, S
  * account of the right type (owner, discriminator, size). The PDA is re-derived either way.
  */
 /* realloc(): resize, keep at least `min_len`, refund the rent no longer needed to the payer on shrink. */
-static inline uint64_t ts_realloc(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct, uint64_t new_len,
+static inline uint64_t ts_realloc(TsParams *params, TsAccount *payer, TsAccount *acct, uint64_t new_len,
                                   uint64_t entry_len, uint64_t min_len) {
   if (new_len < min_len) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: realloc below the account's struct size");
   /* Shrinking leaves every lamport in the account: who paid which rent is unknown here, so refunding the caller
@@ -574,14 +617,14 @@ static inline uint64_t ts_realloc(SolParameters *params, SolAccountInfo *payer, 
   return ts_resize(params, payer, acct, new_len, entry_len);
 }
 
-static inline uint64_t ts_create_pda_if_needed(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct,
+static inline uint64_t ts_create_pda_if_needed(TsParams *params, TsAccount *payer, TsAccount *acct,
                                                SolSignerSeed *seeds, int n, const uint8_t disc[8], uint64_t space,
                                                uint8_t *bump_out, bool *created) {
-  if (ts_key_eq(acct->owner, params->program_id)) {
+  if (ts_key_eq(&acct->owner, params->program_id)) {
     SolPubkey derived;
     uint8_t bump;
     if (sol_try_find_program_address(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
-        !ts_key_eq(&derived, acct->key))
+        !ts_key_eq(&derived, &acct->key))
       TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
     if (acct->data_len < space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
     if (!ts_mem_eq(acct->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
@@ -594,33 +637,32 @@ static inline uint64_t ts_create_pda_if_needed(SolParameters *params, SolAccount
 }
 
 /* Move every lamport to `dest`, zero the data, shrink to 0 and hand back to System. */
-static inline uint64_t ts_close(SolAccountInfo *acct, SolAccountInfo *dest) {
+static inline uint64_t ts_close(TsAccount *acct, TsAccount *dest) {
   uint64_t total;
-  if (ts_add_overflow_u64(*dest->lamports, *acct->lamports, &total))
+  if (ts_add_overflow_u64(dest->lamports, acct->lamports, &total))
     TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
-  *dest->lamports = total;
-  *acct->lamports = 0;
+  dest->lamports = total;
+  acct->lamports = 0;
   ts_memzero(acct->data, acct->data_len);
-  *(uint64_t *)(acct->data - 8) = 0; /* serialized data length */
   acct->data_len = 0;
-  ts_memcpy(acct->owner, &TS_SYSTEM_PROGRAM_ID, 32);
+  ts_memcpy(&acct->owner, &TS_SYSTEM_PROGRAM_ID, 32);
   return SUCCESS;
 }
 
 /* A CPI to `program` (an account passed in), signed by one PDA when `nseeds` > 0. */
-static inline uint64_t ts_cpi(SolParameters *params, const SolAccountInfo *program, uint8_t *data, uint64_t len,
+static inline uint64_t ts_cpi(TsParams *params, const TsAccount *program, uint8_t *data, uint64_t len,
                               SolAccountMeta *metas, uint64_t n, const SolSignerSeed *seeds, int nseeds) {
-  SolInstruction ix = {program->key, metas, n, data, len};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, n, data, len};
   SolSignerSeeds signer = {seeds, (uint64_t)nseeds};
-  return sol_invoke_signed(&ix, params->ka, params->ka_num, &signer, nseeds > 0 ? 1 : 0);
+  return ts_invoke(params, &ix, &signer, nseeds > 0 ? 1 : 0);
 }
 
 /* ---- Token-2022 extensions (TLV after the 165-byte base and the account-type byte) ---- */
 /* `a` must be a token-program mint (want 1) or account (want 2), or either (want 0): legacy SPL Token accounts
    simply have no extensions; a Token-2022 multisig or a foreign account is refused. */
-static inline uint64_t ts_t22_layout(const SolAccountInfo *a, uint8_t want) {
-  bool t22 = ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID);
-  if (!t22 && !ts_key_eq(a->owner, &TS_TOKEN_PROGRAM_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a token program account");
+static inline uint64_t ts_t22_layout(const TsAccount *a, uint8_t want) {
+  bool t22 = ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID);
+  if (!t22 && !ts_key_eq(&a->owner, &TS_TOKEN_PROGRAM_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a token program account");
   uint64_t n = a->data_len;
   if (n == TS_MULTISIG_LEN) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: a multisig, not a mint or token account");
   uint8_t kind;
@@ -633,8 +675,8 @@ static inline uint64_t ts_t22_layout(const SolAccountInfo *a, uint8_t want) {
   return SUCCESS;
 }
 
-static inline bool ts_t22_ext(const SolAccountInfo *a, uint16_t type, uint64_t *off, uint64_t *len) {
-  if (!ts_key_eq(a->owner, &TS_TOKEN_2022_PROGRAM_ID) || a->data_len <= TS_TOKEN_ACCOUNT_LEN + 1) return false;
+static inline bool ts_t22_ext(const TsAccount *a, uint16_t type, uint64_t *off, uint64_t *len) {
+  if (!ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID) || a->data_len <= TS_TOKEN_ACCOUNT_LEN + 1) return false;
   uint64_t at = TS_TOKEN_ACCOUNT_LEN + 1;
   while (at + 4 <= a->data_len) {
     uint16_t t = (uint16_t)ts_read_le(a->data + at, 2);
@@ -652,7 +694,7 @@ static inline bool ts_t22_ext(const SolAccountInfo *a, uint16_t type, uint64_t *
 }
 
 /* An OptionalNonZeroPubkey at `field` of extension `type` (zero means none). */
-static inline bool ts_t22_key(const SolAccountInfo *a, uint16_t type, uint64_t field, SolPubkey *out) {
+static inline bool ts_t22_key(const TsAccount *a, uint16_t type, uint64_t field, SolPubkey *out) {
   uint64_t off, len;
   if (!ts_t22_ext(a, type, &off, &len) || len < field + 32) return false;
   ts_memcpy(out, a->data + off + field, 32);
@@ -661,7 +703,7 @@ static inline bool ts_t22_key(const SolAccountInfo *a, uint16_t type, uint64_t f
 }
 
 /* The transfer fee on `amount` for the current epoch (TransferFeeConfig, extension 1), like spl-token-2022. */
-static inline uint64_t ts_t22_transfer_fee(const SolAccountInfo *mint, uint64_t amount, uint64_t *out) {
+static inline uint64_t ts_t22_transfer_fee(const TsAccount *mint, uint64_t amount, uint64_t *out) {
   uint64_t off, len;
   *out = 0;
   if (!ts_t22_ext(mint, 1, &off, &len) || len < 108) return SUCCESS;
@@ -682,73 +724,73 @@ static const SolPubkey TS_MPL_CORE_ID = {{175, 84, 171, 16, 189, 151, 165, 66, 1
 static const SolPubkey TS_BUBBLEGUM_ID = {{152, 139, 128, 235, 121, 53, 40, 105, 178, 36, 116, 95, 89, 221, 191, 138, 38, 88, 202, 19, 220, 104, 129, 33, 38, 53, 28, 174, 7, 193, 165, 165}};
 
 /* A Core asset (Key::AssetV1 = 1, owner at 1, update authority enum at 33: 2 = Collection + key). */
-static inline uint64_t ts_core_asset(const SolAccountInfo *a) {
-  if (!ts_key_eq(a->owner, &TS_MPL_CORE_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Metaplex Core account");
+static inline uint64_t ts_core_asset(const TsAccount *a) {
+  if (!ts_key_eq(&a->owner, &TS_MPL_CORE_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Metaplex Core account");
   if (a->data_len < 34 || a->data[0] != 1) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: not a Metaplex Core asset");
   return SUCCESS;
 }
 
 /* ---- SPL Token / Token-2022 CPIs ---------------------------------------- */
 /* `program` is the token program account passed in (Tokenkeg or Token-2022). */
-static inline uint64_t ts_token_cpi(SolParameters *params, const SolAccountInfo *program, uint8_t *data, uint64_t len,
+static inline uint64_t ts_token_cpi(TsParams *params, const TsAccount *program, uint8_t *data, uint64_t len,
                                     SolAccountMeta *metas, uint64_t n, const SolSignerSeed *seeds, int nseeds) {
-  SolInstruction ix = {program->key, metas, n, data, len};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, n, data, len};
   SolSignerSeeds signer = {seeds, (uint64_t)nseeds};
-  return sol_invoke_signed(&ix, params->ka, params->ka_num, &signer, nseeds > 0 ? 1 : 0);
+  return ts_invoke(params, &ix, &signer, nseeds > 0 ? 1 : 0);
 }
 
-static inline uint64_t ts_token_transfer(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *from,
-                                         SolAccountInfo *to, SolAccountInfo *authority, uint64_t amount,
+static inline uint64_t ts_token_transfer(TsParams *params, const TsAccount *program, TsAccount *from,
+                                         TsAccount *to, TsAccount *authority, uint64_t amount,
                                          const SolSignerSeed *seeds, int n) {
   uint8_t data[9] = {3}; /* Transfer */
   ts_memcpy(data + 1, &amount, 8);
-  SolAccountMeta metas[3] = {{from->key, true, false}, {to->key, true, false}, {authority->key, false, true}};
+  SolAccountMeta metas[3] = {{&from->key, true, false}, {&to->key, true, false}, {&authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
 
-static inline uint64_t ts_token_transfer_checked(SolParameters *params, const SolAccountInfo *program,
-                                                 SolAccountInfo *from, SolAccountInfo *mint, SolAccountInfo *to,
-                                                 SolAccountInfo *authority, uint64_t amount, const SolSignerSeed *seeds,
+static inline uint64_t ts_token_transfer_checked(TsParams *params, const TsAccount *program,
+                                                 TsAccount *from, TsAccount *mint, TsAccount *to,
+                                                 TsAccount *authority, uint64_t amount, const SolSignerSeed *seeds,
                                                  int n) {
   uint8_t data[10] = {12}; /* TransferChecked */
   ts_memcpy(data + 1, &amount, 8);
   data[9] = mint->data[44];
   SolAccountMeta metas[4] = {
-      {from->key, true, false}, {mint->key, false, false}, {to->key, true, false}, {authority->key, false, true}};
+      {&from->key, true, false}, {&mint->key, false, false}, {&to->key, true, false}, {&authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 4, seeds, n);
 }
 
-static inline uint64_t ts_token_mint_to(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *mint,
-                                        SolAccountInfo *to, SolAccountInfo *authority, uint64_t amount,
+static inline uint64_t ts_token_mint_to(TsParams *params, const TsAccount *program, TsAccount *mint,
+                                        TsAccount *to, TsAccount *authority, uint64_t amount,
                                         const SolSignerSeed *seeds, int n) {
   uint8_t data[9] = {7}; /* MintTo */
   ts_memcpy(data + 1, &amount, 8);
-  SolAccountMeta metas[3] = {{mint->key, true, false}, {to->key, true, false}, {authority->key, false, true}};
+  SolAccountMeta metas[3] = {{&mint->key, true, false}, {&to->key, true, false}, {&authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
 
-static inline uint64_t ts_token_burn(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *from,
-                                     SolAccountInfo *mint, SolAccountInfo *authority, uint64_t amount,
+static inline uint64_t ts_token_burn(TsParams *params, const TsAccount *program, TsAccount *from,
+                                     TsAccount *mint, TsAccount *authority, uint64_t amount,
                                      const SolSignerSeed *seeds, int n) {
   uint8_t data[9] = {8}; /* Burn */
   ts_memcpy(data + 1, &amount, 8);
-  SolAccountMeta metas[3] = {{from->key, true, false}, {mint->key, true, false}, {authority->key, false, true}};
+  SolAccountMeta metas[3] = {{&from->key, true, false}, {&mint->key, true, false}, {&authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
 
-static inline uint64_t ts_token_close(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *account,
-                                      SolAccountInfo *dest, SolAccountInfo *authority, const SolSignerSeed *seeds, int n) {
+static inline uint64_t ts_token_close(TsParams *params, const TsAccount *program, TsAccount *account,
+                                      TsAccount *dest, TsAccount *authority, const SolSignerSeed *seeds, int n) {
   uint8_t data[1] = {9}; /* CloseAccount */
-  SolAccountMeta metas[3] = {{account->key, true, false}, {dest->key, true, false}, {authority->key, false, true}};
+  SolAccountMeta metas[3] = {{&account->key, true, false}, {&dest->key, true, false}, {&authority->key, false, true}};
   return ts_token_cpi(params, program, data, sizeof(data), metas, 3, seeds, n);
 }
 
 /* ---- Return data ----------------------------------------------------------- */
-static inline uint64_t ts_return_data(const SolAccountInfo *program, uint8_t *out, uint64_t size) {
+static inline uint64_t ts_return_data(const TsAccount *program, uint8_t *out, uint64_t size) {
   uint8_t buf[32];
   SolPubkey from;
   uint64_t n = sol_get_return_data(buf, sizeof(buf), &from);
-  if (n != size || !ts_key_eq(&from, program->key))
+  if (n != size || !ts_key_eq(&from, &program->key))
     TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: missing or mismatched return data");
   ts_memcpy(out, buf, size);
   return SUCCESS;
@@ -798,7 +840,7 @@ static inline bool ts_merkle_verify(const SolPubkey *leaf, const uint8_t *proof,
  * The precompile has already checked the signature itself; we check it was over our pubkey and
  * message, with offsets pointing into the precompile's own data (instruction index 0xFFFF).
  */
-static inline bool ts_ed25519_verified(const SolAccountInfo *ixs, const SolPubkey *signer, TS_Str message) {
+static inline bool ts_ed25519_verified(const TsAccount *ixs, const SolPubkey *signer, TS_Str message) {
   const uint8_t *d = ixs->data;
   uint64_t len = ixs->data_len;
   if (len < 2) return false;
@@ -976,8 +1018,8 @@ static const uint8_t TS_PYTH_PRICE_UPDATE_DISC[8] = {34, 241, 35, 99, 157, 126, 
  * 1 Full = 1 byte) | PriceFeedMessage { feed_id 32, price i64, conf u64, exponent i32, publish_time i64,
  * prev_publish_time i64, ema_price i64, ema_conf u64 } | posted_slot u64. Returns the message offset.
  */
-static inline uint64_t ts_pyth_message(const SolAccountInfo *a, uint64_t *msg, bool *full) {
-  if (!ts_key_eq(a->owner, &TS_PYTH_RECEIVER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Pyth price update (owner)");
+static inline uint64_t ts_pyth_message(const TsAccount *a, uint64_t *msg, bool *full) {
+  if (!ts_key_eq(&a->owner, &TS_PYTH_RECEIVER_ID)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Pyth price update (owner)");
   if (a->data_len < 8 + 32 + 1 + 84 || !ts_mem_eq(a->data, TS_PYTH_PRICE_UPDATE_DISC, 8))
     TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: not a Pyth PriceUpdateV2 account");
   uint8_t level = a->data[40];
@@ -995,7 +1037,7 @@ static inline int64_t ts_le_i64(const uint8_t *p) {
 }
 
 /* Like get_price_no_older_than: fully verified, matching feed id, publish_time + max_age >= now. */
-static inline uint64_t ts_pyth_price(const SolAccountInfo *a, const SolPubkey *feed, uint64_t max_age, int64_t *out) {
+static inline uint64_t ts_pyth_price(const TsAccount *a, const SolPubkey *feed, uint64_t max_age, int64_t *out) {
   uint64_t m;
   bool full;
   TS_TRY(ts_pyth_message(a, &m, &full));
@@ -1020,8 +1062,8 @@ static const uint8_t TS_SWITCHBOARD_FEED_DISC[8] = {196, 27, 108, 196, 10, 215, 
 #define TS_SB_RESULT_SAMPLES (8 + 2256 + 96)
 #define TS_SB_RESULT_SLOT (8 + 2256 + 104)
 
-static inline uint64_t ts_check_switchboard(const SolAccountInfo *a, bool devnet) {
-  if (!ts_key_eq(a->owner, devnet ? &TS_SWITCHBOARD_DEVNET_ID : &TS_SWITCHBOARD_MAINNET_ID))
+static inline uint64_t ts_check_switchboard(const TsAccount *a, bool devnet) {
+  if (!ts_key_eq(&a->owner, devnet ? &TS_SWITCHBOARD_DEVNET_ID : &TS_SWITCHBOARD_MAINNET_ID))
     TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Switchboard feed (owner)");
   if (a->data_len < TS_SB_RESULT_SLOT + 8 || !ts_mem_eq(a->data, TS_SWITCHBOARD_FEED_DISC, 8))
     TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: not a Switchboard PullFeedAccountData account");
@@ -1032,7 +1074,7 @@ static inline uint64_t ts_check_switchboard(const SolAccountInfo *a, bool devnet
  * The feed's current result (an 18-decimal fixed-point i128) scaled to `decimals`, if it has samples
  * and was produced within `max_stale_slots` slots of now.
  */
-static inline uint64_t ts_switchboard_value(const SolAccountInfo *a, uint64_t max_stale_slots, uint8_t decimals, int64_t *out) {
+static inline uint64_t ts_switchboard_value(const TsAccount *a, uint64_t max_stale_slots, uint8_t decimals, int64_t *out) {
   if (decimals > 18) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: at most 18 decimals");
   if (a->data[TS_SB_RESULT_SAMPLES] == 0) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Switchboard feed has no samples");
   uint64_t clock[5] = {0};
@@ -1065,14 +1107,14 @@ static inline uint64_t ts_ata_address(const SolPubkey *owner, const SolPubkey *m
 }
 
 /* Create (or, idempotent, keep) the ATA of `owner` for `mint`. Data: [] = Create, [1] = CreateIdempotent. */
-static inline uint64_t ts_ata_create(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *payer, SolAccountInfo *ata,
-                                     SolAccountInfo *owner, SolAccountInfo *mint, SolAccountInfo *system, SolAccountInfo *token_program,
+static inline uint64_t ts_ata_create(TsParams *params, const TsAccount *program, TsAccount *payer, TsAccount *ata,
+                                     TsAccount *owner, TsAccount *mint, TsAccount *system, TsAccount *token_program,
                                      bool idempotent) {
   uint8_t data[1] = {1};
-  SolAccountMeta metas[6] = {{payer->key, true, true},  {ata->key, true, false},    {owner->key, false, false},
-                             {mint->key, false, false}, {system->key, false, false}, {token_program->key, false, false}};
-  SolInstruction ix = {program->key, metas, 6, data, idempotent ? 1 : 0};
-  return sol_invoke(&ix, params->ka, params->ka_num);
+  SolAccountMeta metas[6] = {{&payer->key, true, true},  {&ata->key, true, false},    {&owner->key, false, false},
+                             {&mint->key, false, false}, {&system->key, false, false}, {&token_program->key, false, false}};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, 6, data, idempotent ? 1 : 0};
+  return ts_invoke(params, &ix, NULL, 0);
 }
 
 /* Append a Borsh string to a heap buffer. */
@@ -1088,8 +1130,8 @@ static inline void ts_put_str(uint8_t *buf, uint64_t *at, TS_Str s) {
  * points at itself: data = sha256("spl_token_metadata_interface:initialize_account")[..8] | name | symbol | uri.
  * Accounts: metadata (the mint, writable), update authority, mint, mint authority (signer).
  */
-static inline uint64_t ts_t22_init_metadata(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *mint,
-                                            SolAccountInfo *update_authority, SolAccountInfo *mint_authority, TS_Str name,
+static inline uint64_t ts_t22_init_metadata(TsParams *params, const TsAccount *program, TsAccount *mint,
+                                            TsAccount *update_authority, TsAccount *mint_authority, TS_Str name,
                                             TS_Str symbol, TS_Str uri, const SolSignerSeed *seeds, int n) {
   uint8_t *data;
   TS_TRY(ts_alloc(8 + 12 + name.len + symbol.len + uri.len, &data));
@@ -1099,10 +1141,10 @@ static inline uint64_t ts_t22_init_metadata(SolParameters *params, const SolAcco
   ts_put_str(data, &at, name);
   ts_put_str(data, &at, symbol);
   ts_put_str(data, &at, uri);
-  SolAccountMeta metas[4] = {{mint->key, true, false}, {update_authority->key, false, false}, {mint->key, false, false}, {mint_authority->key, false, true}};
-  SolInstruction ix = {program->key, metas, 4, data, at};
+  SolAccountMeta metas[4] = {{&mint->key, true, false}, {&update_authority->key, false, false}, {&mint->key, false, false}, {&mint_authority->key, false, true}};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, 4, data, at};
   SolSignerSeeds signer = {seeds, (uint64_t)n};
-  return sol_invoke_signed(&ix, params->ka, params->ka_num, &signer, n > 0 ? 1 : 0);
+  return ts_invoke(params, &ix, &signer, n > 0 ? 1 : 0);
 }
 
 /* Metaplex metadata PDA: ["metadata", program, mint] under Token Metadata. */
@@ -1119,9 +1161,9 @@ static inline uint64_t ts_metadata_address(const SolPubkey *mint, SolPubkey *out
  * creators None, collection None, uses None }, is_mutable bool, collection_details None.
  * Accounts: metadata (w), mint, mint authority (s), payer (ws), update authority, system program.
  */
-static inline uint64_t ts_mpl_create_v3(SolParameters *params, const SolAccountInfo *program, SolAccountInfo *metadata,
-                                        SolAccountInfo *mint, SolAccountInfo *mint_authority, SolAccountInfo *payer,
-                                        SolAccountInfo *update_authority, SolAccountInfo *system, TS_Str name, TS_Str symbol,
+static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *program, TsAccount *metadata,
+                                        TsAccount *mint, TsAccount *mint_authority, TsAccount *payer,
+                                        TsAccount *update_authority, TsAccount *system, TS_Str name, TS_Str symbol,
                                         TS_Str uri, uint16_t fee_bps, bool is_mutable, const SolSignerSeed *seeds, int n) {
   uint8_t *data;
   TS_TRY(ts_alloc(1 + 12 + name.len + symbol.len + uri.len + 2 + 3 + 1 + 1, &data));
@@ -1137,13 +1179,13 @@ static inline uint64_t ts_mpl_create_v3(SolParameters *params, const SolAccountI
   data[at++] = 0; /* uses: None */
   data[at++] = is_mutable ? 1 : 0;
   data[at++] = 0; /* collection_details: None */
-  bool ua_signs = update_authority->is_signer || ts_key_eq(update_authority->key, mint_authority->key);
-  SolAccountMeta metas[6] = {{metadata->key, true, false},          {mint->key, false, false},
-                             {mint_authority->key, false, true},     {payer->key, true, true},
-                             {update_authority->key, false, ua_signs}, {system->key, false, false}};
-  SolInstruction ix = {program->key, metas, 6, data, at};
+  bool ua_signs = update_authority->is_signer || ts_key_eq(&update_authority->key, &mint_authority->key);
+  SolAccountMeta metas[6] = {{&metadata->key, true, false},          {&mint->key, false, false},
+                             {&mint_authority->key, false, true},     {&payer->key, true, true},
+                             {&update_authority->key, false, ua_signs}, {&system->key, false, false}};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, 6, data, at};
   SolSignerSeeds signer = {seeds, (uint64_t)n};
-  return sol_invoke_signed(&ix, params->ka, params->ka_num, &signer, n > 0 ? 1 : 0);
+  return ts_invoke(params, &ix, &signer, n > 0 ? 1 : 0);
 }
 
 /*
@@ -1151,7 +1193,7 @@ static inline uint64_t ts_mpl_create_v3(SolParameters *params, const SolAccountI
  * ["extra-account-metas", mint]: TLV = execute discriminator | u32 length 4 | u32 count 0.
  */
 static const uint8_t TS_TRANSFER_HOOK_EXECUTE_DISC[8] = {105, 37, 101, 197, 75, 251, 102, 26};
-static inline uint64_t ts_init_extra_metas(SolParameters *params, SolAccountInfo *payer, SolAccountInfo *acct, const SolPubkey *mint) {
+static inline uint64_t ts_init_extra_metas(TsParams *params, TsAccount *payer, TsAccount *acct, const SolPubkey *mint) {
   SolSignerSeed seeds[3] = {{(const uint8_t *)"extra-account-metas", 19}, {(const uint8_t *)mint, 32}};
   uint8_t bump;
   /* 16 bytes in total: the 8-byte discriminator slot holds the execute discriminator. */
