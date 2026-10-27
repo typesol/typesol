@@ -2,7 +2,7 @@
 import { generateKeyPairSigner } from "@solana/kit";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
-import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
+import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
 import { deployPort, tokenBalance } from "./ports-helpers.js";
 import { ataFor, hookMint, hookedTransfer, validationAccount } from "./hook-helpers.js";
 
@@ -95,5 +95,64 @@ describe("port: tokens/token-2022/transfer-hook/account-data-as-seed", () => {
         await hookedTransfer(d.programId, { source, mint, destination, authority: payer, amount: 1n }, [{ address: other, writable: true }]),
       ]),
     ).toBeInstanceOf(FailedTransactionMetadata);
+  });
+});
+
+describe("port: tokens/token-2022/transfer-hook/transfer-switch", () => {
+  it("lets a sender transfer only while the admin has their switch on", async () => {
+    const d = await deployPort("tokens/token-2022/transfer-hook/transfer-switch.ts", "FjcHckEgXcBhFmSGai3FRpDLiT6hbpV893n8iTxVd81g");
+    const { svm } = d;
+    const admin = await fundedSigner(svm);
+    const [adminConfig] = await pda(d.programId, ["admin-config"]);
+    const configure = (who: typeof admin, next: string) =>
+      send(svm, who, [
+        ix(d, "configure_admin", {}, [
+          { address: who.address, signer: who, writable: true },
+          { address: next, writable: true },
+          { address: adminConfig, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    // First configuration: anyone may set the admin. Naming yourself (admin == new_admin, both writable) is refused by
+    // TypeSOL's aliasing check (2040), so the deployer names the admin key.
+    const deployer = await fundedSigner(svm);
+    expect(customError(await configure(deployer, deployer.address))).toBe(2040);
+    expectOk(await configure(deployer, admin.address));
+    const stranger = await fundedSigner(svm);
+    expect(customError(await configure(stranger, (await generateKeyPairSigner()).address))).toBe(6002);
+    expect(customError(await configure(admin, admin.address))).toBe(2040);
+
+    const mint = await hookMint(svm, admin, d.programId);
+    expectOk(
+      await send(svm, admin, [
+        ix(d, "initialize_extra_account_metas_list", {}, [
+          { address: admin.address, signer: admin, writable: true },
+          { address: mint },
+          { address: await validationAccount(d.programId, mint), writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    const sender = await fundedSigner(svm);
+    const source = await ataFor(svm, admin, sender.address, mint, 10n);
+    const destination = await ataFor(svm, admin, (await generateKeyPairSigner()).address, mint, 0n);
+    const [senderSwitch] = await pda(d.programId, [sender.address]);
+    const toggle = (on: boolean) =>
+      send(svm, admin, [
+        ix(d, "switch_", { on }, [
+          { address: admin.address, signer: admin, writable: true },
+          { address: sender.address, writable: true },
+          { address: adminConfig },
+          { address: senderSwitch, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    const transfer = async () =>
+      send(svm, sender, [await hookedTransfer(d.programId, { source, mint, destination, authority: sender, amount: 1n }, [{ address: senderSwitch }])]);
+    expectOk(await toggle(false));
+    expect(customError(await transfer())).toBe(6001);
+    expectOk(await toggle(true));
+    expectOk(await transfer());
+    expect(tokenBalance(svm, destination)).toBe(1n);
   });
 });
