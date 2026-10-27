@@ -10,8 +10,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   enum field of a struct account parameter, including the account's own (`Seeds<Mut<Offer>, ["offer", "@maker",
   "@offer.id"], "bump">`), like Anchor's `seeds = [pool.amm.as_ref(), …]`. Recorded in the IDL as account paths
   (`pool.amm`).
+- Structs with no fields, for marker accounts that are only a discriminator (Anchor `#[account] pub struct
+  NftAuthority {}`).
 
 ### Tooling
+- Ports: the eight remaining program-examples that had not been attempted are ported: basics/repository-layout and
+  token-2022 cpi-guard, group, immutable-owner, interest-bearing, memo-transfer, metadata and nft-meta-data-pointer
+  (all PARTIAL; test/ports/README.md lists the differences). Every one of the 46 programs is now ported or blocked
+  by a named construct.
 - Ports: token-swap is now PORTED (its `amm`, `pool`, authority and liquidity-mint PDAs are all checked
   declaratively, with no bump arguments); escrow and token-fundraiser check their PDAs declaratively instead of with
   `requirePda` in the body.

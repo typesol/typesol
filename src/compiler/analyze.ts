@@ -654,7 +654,6 @@ function analyzeStructs(
           reporter.fail(m, "a Vec<T> field must be the last field of the struct (its length changes the account size)");
         fields.push({ name, type });
       }
-      if (fields.length === 0) reporter.fail(decl, "structs need at least one field");
       checkSnakeDuplicates(
         decl.members.map((m) => ({ name: (m.name as ts.Identifier).text, node: m })),
         "fields",
