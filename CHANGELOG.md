@@ -6,6 +6,8 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Object destructuring: `const { owner, pos: p } = acct` (`let` for scalars) from a name or a field path, read like
+  `acct.owner` (scalars copied, nested structs referenced). Rest elements, defaults and nested patterns are refused.
 - Instructions can return a fixed-size struct as return data (a literal, a stored struct or a helper's result), at
   most 1024 bytes. It goes out in its fixed layout, which the IDL describes under `returns`, so Anchor clients and the
   generated TypeScript client decode it.
