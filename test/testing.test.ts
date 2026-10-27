@@ -20,12 +20,30 @@ describe("typesol/testing", () => {
     expect(t.balance(bank)).toBeGreaterThan(0n);
   });
 
+  it("derives PDA accounts from the IDL's seeds when they are left out", async () => {
+    const d = await deployFile(fixture("optional"));
+    const t = programHarness(d.svm, d.programId, d.idl as never);
+    const owner = await t.wallet();
+    t.ok(await t.send(owner, t.ix("open", {}, { owner }))); // bank = PDA ["bank", owner]
+    const bank = await t.pda("bank", owner);
+    expect((await t.account<{ owner: string }>("Bank", bank))?.owner).toBe(owner.address);
+
+    const f = await deployFile(fixture("forof"));
+    const u = programHarness(f.svm, f.programId, f.idl as never);
+    const admin = await u.wallet();
+    const who = (await u.wallet()).address;
+    u.ok(await u.send(admin, u.ix("setup", {}, { admin }))); // created at its PDA: derived
+    const ledger = await u.pda("ledger", admin);
+    u.ok(await u.send(admin, u.ix("add", { who, amount: 5n }, { admin, ledger }))); // no seeds in this instruction: passed
+    expect((await u.account<{ entries: { amount: bigint }[] }>("Ledger", ledger))?.entries[0].amount).toBe(5n);
+  });
+
   it("says what is wrong with an instruction it cannot build", async () => {
     const d = await deployFile(fixture("optional"));
     const t = programHarness(d.svm, d.programId, d.idl as never);
     const owner = await t.wallet();
     expect(() => t.ix("nope")).toThrow(/no instruction "nope"/);
-    expect(() => t.ix("open", {}, { owner })).toThrow(/account "bank" is required/);
+    expect(() => t.ix("open", {}, {})).toThrow(/account "owner" is required/);
     expect(() => t.ix("open", {}, { owner, bank: owner.address, extra: owner.address })).toThrow(/has no account "extra"/);
     expect(() => t.errorCode(t.ok as never)).toThrow();
   });

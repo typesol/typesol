@@ -26,7 +26,8 @@ it("counts", async () => {
 `t.ix(name, args, accounts, remaining?)` builds one instruction.
 
 - **Accounts by name**, in camelCase or snake_case. Their signer and writable flags come from the IDL, and accounts
-  with a fixed address (the System Program, token programs, sysvars) are filled in. Pass a keypair for an account that
+  with a fixed address (the System Program, token programs, sysvars) are filled in, as are PDAs whose seeds are
+  constants, arguments or other accounts' keys (`t.ix("initialize", {}, { authority: alice })` derives `counter`). Pass a keypair for an account that
   signs, an address otherwise, and `null` to leave an optional account out.
 - **Arguments as plain values:** bigints or numbers for integers, address strings for Pubkeys, `null` for an empty
   Option, objects for structs (camelCase or snake_case fields), arrays for Vecs.
