@@ -409,10 +409,64 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     return type.kind === "pubkey" ? { c: `(&${t})`, type } : { c: t, type };
   }
 
+  /**
+   * `a ** b` on integers, every multiplication checked (5100 on overflow, like `*`). A literal exponent unrolls by
+   * squaring at compile time; otherwise a square-and-multiply loop runs, squaring only while bits remain (a square
+   * that overflows then would make the result overflow too). A negative exponent aborts, as JS throws a RangeError.
+   */
+  protected power(node: ts.BinaryExpression, hint?: ValueType): Value {
+    let base = this.expr(node.left, hint?.kind === "int" ? hint : undefined);
+    const exp = this.expr(node.right);
+    if (base.literal !== undefined) base = this.literal(base.literal, hint?.kind === "int" ? hint : U64, node.left);
+    if (base.type.kind !== "int") this.fail(node.left, "** needs an integer base");
+    const type = base.type;
+    const ct = INT_INFO[type.name].c;
+    const K = ts.SyntaxKind;
+    if (exp.literal !== undefined) {
+      if (exp.literal < 0n) this.fail(node.right, "the exponent of ** cannot be negative");
+      if (exp.literal > 255n)
+        this.fail(node.right, "the exponent of ** must be at most 255 when it is a literal (larger ones always overflow unless the base is 0 or 1)");
+      const n = exp.literal;
+      if (n === 0n) return this.literal(1n, type, node);
+      // Bits from high to low: square, then multiply by the base when the bit is set.
+      const b = this.tmp("pb");
+      this.line(`${ct} ${b} = ${base.c};`);
+      let acc: Value = { c: b, type };
+      const bits = n.toString(2);
+      for (const bit of bits.slice(1)) {
+        acc = this.arith(K.AsteriskToken, acc, acc, node);
+        if (bit === "1") acc = this.arith(K.AsteriskToken, acc, { c: b, type }, node);
+      }
+      return acc;
+    }
+    if (exp.type.kind !== "int") this.fail(node.right, "the exponent of ** must be an integer");
+    const r = this.tmp("pr");
+    const sq = this.tmp("ps");
+    const e = this.tmp("pe");
+    this.line(`${ct} ${r} = 1;`);
+    this.line(`${ct} ${sq} = ${base.c};`);
+    if (INT_INFO[exp.type.name].signed) this.line(`if (${exp.c} < 0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: negative exponent");`);
+    this.line(
+      `${INT_INFO[exp.type.name].bytes === 16 ? "unsigned __int128" : "uint64_t"} ${e} = (${INT_INFO[exp.type.name].bytes === 16 ? "unsigned __int128" : "uint64_t"})(${exp.c});`,
+    );
+    this.line(`while (${e}) {`);
+    this.block(() => {
+      this.line(`if (${e} & 1) {`);
+      this.block(() => this.line(`${r} = ${this.arith(K.AsteriskToken, { c: r, type }, { c: sq, type }, node).c};`));
+      this.line(`}`);
+      this.line(`${e} >>= 1;`);
+      this.line(`if (${e}) {`);
+      this.block(() => this.line(`${sq} = ${this.arith(K.AsteriskToken, { c: sq, type }, { c: sq, type }, node).c};`));
+      this.line(`}`);
+    });
+    this.line(`}`);
+    return { c: r, type };
+  }
+
   protected binary(node: ts.BinaryExpression, hint?: ValueType): Value {
     const op = node.operatorToken.kind;
     const K = ts.SyntaxKind;
-    if (op === K.AsteriskAsteriskToken) this.fail(node.operatorToken, "** is not supported; multiply, or use mulDiv/isqrt");
+    if (op === K.AsteriskAsteriskToken) return this.power(node, hint);
     if (op === K.QuestionQuestionToken) return this.nullish(node, hint);
     if (op === K.AmpersandAmpersandToken || op === K.BarBarToken) {
       const left = this.expect(this.expr(node.left, BOOL), BOOL, node.left);

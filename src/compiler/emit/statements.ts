@@ -411,6 +411,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       };
       const base = compound[op];
       if (base !== undefined) return this.assign(e.left, e.right, base);
+      if (op === ts.SyntaxKind.AsteriskAsteriskEqualsToken) this.fail(e.operatorToken, "write x = x ** n instead of **=");
     }
     if (
       (ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) &&
