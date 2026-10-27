@@ -10,7 +10,6 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   enum field of a struct account parameter, including the account's own (`Seeds<Mut<Offer>, ["offer", "@maker",
   "@offer.id"], "bump">`), like Anchor's `seeds = [pool.amm.as_ref(), …]`. Recorded in the IDL as account paths
   (`pool.amm`).
-
 - Structs with no fields, for marker accounts that are only a discriminator (Anchor `#[account] pub struct
   NftAuthority {}`).
 
