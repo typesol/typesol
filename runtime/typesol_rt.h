@@ -1211,15 +1211,19 @@ static inline uint64_t ts_metadata_address(const SolPubkey *mint, SolPubkey *out
 
 /*
  * Metaplex CreateMetadataAccountV3 (instruction 33): DataV2 { name, symbol, uri, seller_fee_basis_points u16,
- * creators None, collection None, uses None }, is_mutable bool, collection_details None.
+ * creators Option<Vec<Creator>>, collection Option<Collection>, uses None }, is_mutable bool, collection_details None.
+ * `creators` holds `ncreators` packed Creator records (address, verified, share: 34 bytes); ncreators < 0 is None.
+ * `collection` (NULL for None) is written unverified, as Metaplex requires at creation.
  * Accounts: metadata (w), mint, mint authority (s), payer (ws), update authority, system program.
  */
 static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *program, TsAccount *metadata,
                                         TsAccount *mint, TsAccount *mint_authority, TsAccount *payer,
                                         TsAccount *update_authority, TsAccount *system, TS_Str name, TS_Str symbol,
-                                        TS_Str uri, uint16_t fee_bps, bool is_mutable, const SolSignerSeed *seeds, int n) {
+                                        TS_Str uri, uint16_t fee_bps, bool is_mutable, const uint8_t *creators, int ncreators,
+                                        const SolPubkey *collection, const SolSignerSeed *seeds, int n) {
   uint8_t *data;
-  TS_TRY(ts_alloc(1 + 12 + name.len + symbol.len + uri.len + 2 + 3 + 1 + 1, &data));
+  uint64_t ncr = ncreators > 0 ? (uint64_t)ncreators : 0;
+  TS_TRY(ts_alloc(1 + 12 + name.len + symbol.len + uri.len + 2 + (1 + 4 + 34 * ncr) + (1 + 33) + 1 + 1 + 1, &data));
   uint64_t at = 0;
   data[at++] = 33;
   ts_put_str(data, &at, name);
@@ -1227,8 +1231,24 @@ static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *progr
   ts_put_str(data, &at, uri);
   ts_memcpy(data + at, &fee_bps, 2);
   at += 2;
-  data[at++] = 0; /* creators: None */
-  data[at++] = 0; /* collection: None */
+  if (ncreators < 0) {
+    data[at++] = 0; /* creators: None */
+  } else {
+    data[at++] = 1;
+    uint32_t count = (uint32_t)ncreators;
+    ts_memcpy(data + at, &count, 4);
+    at += 4;
+    ts_memcpy(data + at, creators, 34 * ncr);
+    at += 34 * ncr;
+  }
+  if (collection) {
+    data[at++] = 1;
+    data[at++] = 0; /* verified: false */
+    ts_memcpy(data + at, collection, 32);
+    at += 32;
+  } else {
+    data[at++] = 0; /* collection: None */
+  }
   data[at++] = 0; /* uses: None */
   data[at++] = is_mutable ? 1 : 0;
   data[at++] = 0; /* collection_details: None */

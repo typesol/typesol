@@ -76,7 +76,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `SystemProgram`, `TokenProgram`, `Token2022Program` | exact program address |
 | `TokenInterface` | either token program |
 | `AssociatedTokenProgram` | `create` / `createIdempotent` CPIs; `associatedTokenAddress(owner, mint, tokenProgram)` |
-| `TokenMetadataProgram` | Metaplex `createV3(...)` (CreateMetadataAccountV3); `metadataAddress(mint)` |
+| `TokenMetadataProgram` | Metaplex `createV3(...)` (CreateMetadataAccountV3), optionally with `{ creators: [{ address, verified, share }], collection: mint }` after `isMutable` (1–5 creators, shares adding up to 100; the collection is written unverified); `metadataAddress(mint)` |
 | `InstructionsSysvar`, `PythPriceUpdate`, `SwitchboardFeed` | exact address / owner program + discriminator |
 | `Program<"Address…">` | exact program address + executable |
 | `UncheckedProgram` | executable only — check `.key` yourself |
@@ -147,7 +147,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
 inside a helper, data-enum arguments carrying structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
-128-bit integers, `mulDiv` beyond u64, Token Metadata creators/collections, Core plugins, Bubblegum v2 / collections /
+128-bit integers, `mulDiv` beyond u64, Token Metadata collection verification, Core plugins, Bubblegum v2 / collections /
 transfers, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.
 
