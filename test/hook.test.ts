@@ -1,11 +1,9 @@
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as t22 from "@solana-program/token-2022";
-import { type Address, AccountRole, address, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, AccountRole, generateKeyPairSigner, lamports } from "@solana/kit";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, pda, send, type Deployed } from "./harness.js";
-
-const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
+import { SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, pda, send, type Deployed, TOKEN_2022 } from "./harness.js";
 
 describe("Token-2022 transfer hook written in TypeSOL (test/fixtures/hook.ts)", () => {
   let d: Deployed;

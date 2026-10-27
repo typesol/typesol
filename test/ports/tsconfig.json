@@ -1,0 +1,5 @@
+{
+  "extends": "../../examples/tsconfig.json",
+  "compilerOptions": { "paths": { "typesol": ["../../lib/typesol.d.ts"] } },
+  "include": ["**/*.ts"]
+}

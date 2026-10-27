@@ -1,7 +1,7 @@
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as spl from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
-import { type Address, type KeyPairSigner, address, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   BN,
@@ -17,9 +17,8 @@ import {
   send,
   type Deployed,
   acct,
+  TOKEN_2022,
 } from "./harness.js";
-
-const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 
 describe("examples/minter.ts on SPL Token and Token-2022", () => {
   let d: Deployed;
