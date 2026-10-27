@@ -785,9 +785,15 @@ function analyzeStructs(
 function analyzeHelper(fn: ts.FunctionDeclaration, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Helper {
   if (!fn.name || !fn.body) reporter.fail(fn, "helper functions need a name and a body");
   if (fn.typeParameters?.length || fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generic or generators");
-  if (!fn.type) reporter.fail(fn.name, "helper functions need an explicit return type (void, an integer, boolean or Pubkey)");
-  const returns = fn.type.kind === ts.SyntaxKind.VoidKeyword ? undefined : resolveScalarType(fn.type, scope);
-  if (fn.type.kind !== ts.SyntaxKind.VoidKeyword && !returns) reporter.fail(fn.type, "helpers return void, an integer, boolean or Pubkey");
+  if (!fn.type) reporter.fail(fn.name, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
+  let returns: Helper["returns"] = fn.type.kind === ts.SyntaxKind.VoidKeyword ? undefined : resolveScalarType(fn.type, scope);
+  if (fn.type.kind !== ts.SyntaxKind.VoidKeyword && !returns) {
+    const s = ts.isTypeReferenceNode(fn.type) && ts.isIdentifier(fn.type.typeName) && !fn.type.typeArguments ? structs.get(fn.type.typeName.text) : undefined;
+    if (s && (s.size === undefined || s.vec))
+      reporter.fail(fn.type, `${s.name} has variable-size fields and cannot be returned; return a struct of fixed size`);
+    if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey or a struct");
+    returns = { kind: "struct", name: s.name };
+  }
   const params = fn.parameters.map((p) => {
     if (!ts.isIdentifier(p.name) || !p.type || p.initializer || p.questionToken || p.dotDotDotToken)
       reporter.fail(p, "parameters need a plain name and an explicit type");

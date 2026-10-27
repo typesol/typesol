@@ -249,7 +249,7 @@ export function helperSignature(h: Helper): string {
     else if (p.type.kind === "arrayArg") params.push(storageDecl(p.type.array, `(*p_${p.name})`));
     else params.push(`${valueC(p.type)} p_${p.name}`);
   }
-  if (h.returns) params.push(`${scalarC(h.returns)} *ret`);
+  if (h.returns) params.push(h.returns.kind === "struct" ? `TSS_${h.returns.name} *ret` : `${scalarC(h.returns)} *ret`);
   return `static uint64_t fn_${h.name}(${params.join(", ")})`;
 }
 
