@@ -15,7 +15,7 @@
  *
  * Needs `litesvm` and `@anchor-lang/core`, which `typesol init` projects have.
  */
-import { BN, BorshCoder, type Idl } from "@anchor-lang/core";
+import anchor, { type Idl } from "@anchor-lang/core";
 import {
   type Address,
   type Instruction,
@@ -37,6 +37,11 @@ import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
+
+// @anchor-lang/core is CommonJS: Node 22 cannot import its classes by name from an installed ES module.
+const { BN, BorshCoder } = anchor;
+type BN = InstanceType<typeof BN>;
+type BorshCoder = InstanceType<typeof BorshCoder>;
 
 export type Result = TransactionMetadata | FailedTransactionMetadata;
 /** An account for an instruction: an address, a keypair (which then signs), or null to leave an optional one out. */
