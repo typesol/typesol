@@ -91,6 +91,102 @@ describe.skipIf(!HAVE_MPL)("Metaplex Core and Bubblegum (test/fixtures/metaplex.
     expect(d.svm.getAccount(asset.address).exists ? acct(d.svm, asset.address).data.length : 0).toBeLessThanOrEqual(1); // burned (Core leaves a 1-byte tombstone)
   });
 
+  it("creates assets and collections with plugins, and adds, updates and removes plugins", async () => {
+    const payer = await fundedSigner(d.svm);
+    const owner = await fundedSigner(d.svm);
+    const asset = await generateKeyPairSigner();
+    const has = (a: Address, text: string) => Buffer.from(acct(d.svm, a).data).includes(Buffer.from(text));
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "mint_with_plugins", { level: "seven" }, [
+          { address: asset.address, signer: asset, writable: true },
+          { address: studio },
+          { address: payer.address, signer: payer, writable: true },
+          { address: owner.address },
+          { address: CORE },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    const data = Buffer.from(acct(d.svm, asset.address).data);
+    expect(getAddressDecoder().decode(data.subarray(1, 33))).toBe(owner.address);
+    expect(has(asset.address, "level") && has(asset.address, "seven")).toBe(true);
+    // Royalties: Plugin::Royalties (0), 500 bps, one creator (the studio) at 100%.
+    const royalties = Buffer.concat([Buffer.from([0, 0xf4, 0x01, 1, 0, 0, 0]), Buffer.from(getAddressEncoder().encode(studio)), Buffer.from([100, 0])]);
+    expect(data.includes(royalties)).toBe(true);
+
+    const next = await fundedSigner(d.svm);
+    const transfer = async () => {
+      // A plain Core TransferV1 from the owner (data: discriminator 14, compression proof None).
+      const { getTransferV1Instruction } = await import("./mpl-core-ix.js");
+      return send(d.svm, owner, [getTransferV1Instruction(asset.address, owner.address, next.address)]);
+    };
+    const studioFreeze = (frozen: boolean) =>
+      send(d.svm, payer, [
+        ix(d, "studio_freeze", { frozen }, [
+          { address: asset.address, writable: true },
+          { address: payer.address, signer: payer, writable: true },
+          { address: studio },
+          { address: CORE },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    expectOk(await studioFreeze(true));
+    expect(customError(await transfer())).toBeGreaterThan(0); // permanently frozen by the studio
+    expectOk(await studioFreeze(false));
+
+    const ownerFreeze = (cycle: boolean) =>
+      send(d.svm, owner, [
+        ix(d, "owner_freeze", { cycle }, [
+          { address: asset.address, writable: true },
+          { address: owner.address, signer: owner, writable: true },
+          { address: CORE },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    expectOk(await ownerFreeze(true)); // added, thawed and removed
+    expectOk(await ownerFreeze(false)); // added again (so the remove above worked), frozen
+    expect(customError(await transfer())).toBeGreaterThan(0);
+    expectOk(
+      await send(d.svm, owner, [
+        ix(d, "owner_thaw", {}, [
+          { address: asset.address, writable: true },
+          { address: owner.address, signer: owner, writable: true },
+          { address: CORE },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expectOk(await transfer()); // thawed: the same transfer goes through
+    expect(getAddressDecoder().decode(Buffer.from(acct(d.svm, asset.address).data).subarray(1, 33))).toBe(next.address);
+
+    const collection = await generateKeyPairSigner();
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "plugin_collection", {}, [
+          { address: collection.address, signer: collection, writable: true },
+          { address: payer.address, signer: payer, writable: true },
+          { address: CORE },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(has(collection.address, "season")).toBe(true);
+    const season = Buffer.from(acct(d.svm, collection.address).data);
+    expect(season[season.indexOf(Buffer.from("season")) + 6 + 4]).toBe("2".charCodeAt(0)); // updated from "1"
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "drop_collection_attributes", {}, [
+          { address: collection.address, writable: true },
+          { address: payer.address, signer: payer, writable: true },
+          { address: CORE },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(has(collection.address, "season")).toBe(false);
+  });
+
   it("creates a Bubblegum tree owned by the PDA and mints a compressed NFT", async () => {
     const payer = await fundedSigner(d.svm, 50n);
     const tree = await generateKeyPairSigner();

@@ -492,8 +492,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
-        if (target?.kind.kind === "coreProgram") return this.coreOp(node, target, method);
-        if (target?.kind.kind === "bubblegumProgram") return this.bubblegumOp(node, target, method);
+        // Each Metaplex CPI in its own C block: its data buffer's stack slot is reused by the next one.
+        if (target?.kind.kind === "coreProgram" || target?.kind.kind === "bubblegumProgram") {
+          const t = target;
+          this.line("{");
+          this.block(() => (t.kind.kind === "coreProgram" ? this.coreOp(node, t, method) : this.bubblegumOp(node, t, method)));
+          this.line("}");
+          return undefined;
+        }
       }
     }
     if (ts.isPropertyAccessExpression(callee) && ts.isCallExpression(callee.expression) && this.exportName(callee.expression.expression) === "fixedArray")

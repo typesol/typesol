@@ -508,9 +508,34 @@ export declare function emitCpi<T>(event: T, eventAuthority: EventAuthority, sel
  * account out. Accounts that sign (the new asset/collection, authorities) are keypair Signers, or PDAs of this
  * program covered by `signerSeeds`.
  */
+/**
+ * Who manages a Metaplex Core plugin: `"owner"`, `"updateAuthority"`, `"none"` (nobody: fixed), or an address. Left out,
+ * the plugin type's default (the owner for owner-managed plugins, the update authority for the others).
+ */
+export type CorePluginAuthority = "none" | "owner" | "updateAuthority" | Pubkey;
+/** A Metaplex Core plugin, written as an object literal (Core's Plugin enum, with its authority when it is added). */
+export type CorePlugin = (
+  | { kind: "Royalties"; basisPoints: u16; creators: { address: Pubkey; percentage: u8 }[] }
+  | { kind: "FreezeDelegate"; frozen: boolean }
+  | { kind: "BurnDelegate" }
+  | { kind: "TransferDelegate" }
+  | { kind: "UpdateDelegate"; additionalDelegates?: Pubkey[] }
+  | { kind: "PermanentFreezeDelegate"; frozen: boolean }
+  | { kind: "Attributes"; attributes: { key: string; value: string }[] }
+  | { kind: "PermanentTransferDelegate" }
+  | { kind: "PermanentBurnDelegate" }
+  | { kind: "Edition"; number: u32 }
+  | { kind: "AddBlocker" }
+  | { kind: "ImmutableMetadata" }
+) & { authority?: CorePluginAuthority };
+export type CorePluginKind = CorePlugin["kind"] | "MasterEdition";
+
 export interface MplCoreProgram extends AccountMeta {
   readonly __mpl_core: void;
-  /** CreateV1. In a collection, `authority` is the collection's update authority; `owner` defaults to the payer. */
+  /**
+   * CreateV1. In a collection, `authority` is the collection's update authority; `owner` defaults to the payer.
+   * `plugins` (a literal list, one of each kind) are created with the asset.
+   */
   createAsset(
     asset: AccountMeta,
     collection: AccountMeta | null,
@@ -522,6 +547,18 @@ export interface MplCoreProgram extends AccountMeta {
     uri: string,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  createAsset(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    authority: AccountMeta | null,
+    payer: Mut<Signer>,
+    owner: AccountMeta | null,
+    systemProgram: SystemProgram,
+    name: string,
+    uri: string,
+    plugins: CorePlugin[],
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   createCollection(
     collection: AccountMeta,
     updateAuthority: AccountMeta | null,
@@ -529,6 +566,70 @@ export interface MplCoreProgram extends AccountMeta {
     systemProgram: SystemProgram,
     name: string,
     uri: string,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** With plugins every asset of the collection inherits (Royalties, PermanentFreezeDelegate, …). */
+  createCollection(
+    collection: AccountMeta,
+    updateAuthority: AccountMeta | null,
+    payer: Mut<Signer>,
+    systemProgram: SystemProgram,
+    name: string,
+    uri: string,
+    plugins: CorePlugin[],
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** AddPluginV1, signed by `authority` (`null`: the payer): the owner for owner-managed plugins, else the update authority. */
+  addPlugin(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    plugin: CorePlugin,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** UpdatePluginV1: new values for a plugin the asset has (no `authority`), e.g. `{ kind: "FreezeDelegate", frozen: true }`. */
+  updatePlugin(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    plugin: CorePlugin,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  removePlugin(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    kind: CorePluginKind,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  addCollectionPlugin(
+    collection: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    plugin: CorePlugin,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  updateCollectionPlugin(
+    collection: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    plugin: CorePlugin,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  removeCollectionPlugin(
+    collection: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    kind: CorePluginKind,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
   /** TransferV1, signed by the owner (or a delegate) as `authority` (`null`: the payer). */

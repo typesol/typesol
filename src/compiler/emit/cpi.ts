@@ -34,6 +34,34 @@ import {
 } from "./shared.js";
 import { CallEmitter } from "./calls.js";
 
+/** One piece of a Metaplex instruction's Borsh data: fixed bytes, or a value lowered and serialized in source order. */
+type MplField = { bytes: number[] } | { value: ts.Expression; type: ValueType };
+
+/** Metaplex Core's Plugin / PluginType enums, in order (VerifiedCreators and later are not supported). */
+const CORE_PLUGINS = [
+  "Royalties",
+  "FreezeDelegate",
+  "BurnDelegate",
+  "TransferDelegate",
+  "UpdateDelegate",
+  "PermanentFreezeDelegate",
+  "Attributes",
+  "PermanentTransferDelegate",
+  "PermanentBurnDelegate",
+  "Edition",
+  "MasterEdition",
+  "AddBlocker",
+  "ImmutableMetadata",
+] as const;
+const CORE_PLUGIN_FIELDS: Record<string, string[]> = {
+  Royalties: ["basisPoints", "creators"],
+  FreezeDelegate: ["frozen"],
+  PermanentFreezeDelegate: ["frozen"],
+  UpdateDelegate: ["additionalDelegates"],
+  Attributes: ["attributes"],
+  Edition: ["number"],
+};
+
 /**
  * Other programs: PDAs and seeds, account creation, System/Token/ATA/Metaplex CPIs, generic invoke, Borsh
  * serialization and events.
@@ -767,7 +795,7 @@ export abstract class CpiEmitter extends CallEmitter {
   }
 
   /** Borsh fields into a fresh buffer: raw bytes ("u8:N" style) or lowered values. */
-  protected mplData(at: ts.Node, max: number, fields: ({ bytes: number[] } | { value: ts.Expression; type: ValueType })[]) {
+  protected mplData(at: ts.Node, max: number, fields: MplField[]) {
     const { buf, len, put, finish } = this.byteBuffer("mpl", max, "TS_ERR_INSTRUCTION_DATA", "Metaplex instruction");
     for (const f of fields) {
       if ("bytes" in f) {
@@ -780,17 +808,138 @@ export abstract class CpiEmitter extends CallEmitter {
     return { buf, len };
   }
 
-  /** Metaplex Core: createAsset, createCollection, transferAsset, burnAsset (no plugins). */
+  /**
+   * Borsh of one Metaplex Core plugin literal (`{ kind: "FreezeDelegate", frozen: true, authority?: … }`): the Plugin
+   * enum, then (`withAuthority`) the Option<PluginAuthority> that CreateV1's PluginAuthorityPair and AddPluginV1 take.
+   */
+  protected corePlugin(n: ts.Expression, withAuthority: boolean): MplField[] {
+    if (!ts.isObjectLiteralExpression(n)) this.fail(n, 'a Core plugin is an object literal: { kind: "FreezeDelegate", frozen: false }');
+    const props = new Map<string, ts.Expression>();
+    for (const q of n.properties) {
+      if (ts.isPropertyAssignment(q) && ts.isIdentifier(q.name)) props.set(q.name.text, q.initializer);
+      else if (ts.isShorthandPropertyAssignment(q)) props.set(q.name.text, q.name);
+      else this.fail(q, "write plugin fields as name: value");
+    }
+    const kindNode = props.get("kind");
+    if (!kindNode || !ts.isStringLiteral(kindNode)) this.fail(n, 'a Core plugin needs kind: "Royalties" | "FreezeDelegate" | …');
+    const kind = kindNode.text;
+    const index = CORE_PLUGINS.indexOf(kind as never);
+    if (index < 0) this.fail(kindNode, `Core plugins are ${CORE_PLUGINS.join(", ")}`);
+    if (kind === "MasterEdition") this.fail(kindNode, "the MasterEdition plugin is not supported yet (removePlugin can remove one)");
+    const known = new Set(["kind", "authority", ...(CORE_PLUGIN_FIELDS[kind] ?? [])]);
+    for (const [k, v] of props) if (!known.has(k)) this.fail(v, `${kind} has no field ${k}`);
+    const need = (k: string) => props.get(k) ?? this.fail(n, `${kind} needs ${k}`);
+    const list = (k: string, max: number) => {
+      const e = need(k);
+      if (!ts.isArrayLiteralExpression(e)) this.fail(e, `${k} is an array literal`);
+      if (e.elements.length > max) this.fail(e, `at most ${max} entries in ${k}`);
+      return e.elements;
+    };
+    const u32 = (x: number) => [x & 0xff, (x >> 8) & 0xff, (x >> 16) & 0xff, x >>> 24];
+    const fields: MplField[] = [{ bytes: [index] }];
+    switch (kind) {
+      case "Royalties": {
+        const bps = need("basisPoints");
+        if (ts.isBigIntLiteral(bps) && BigInt(bps.text.slice(0, -1)) > 10000n) this.fail(bps, "basisPoints is at most 10000 (100%)");
+        fields.push({ value: bps, type: { kind: "int", name: "u16" } });
+        const creators = list("creators", 5);
+        fields.push({ bytes: u32(creators.length) });
+        let sum = 0n;
+        let constant = true;
+        for (const c of creators) {
+          if (!ts.isObjectLiteralExpression(c)) this.fail(c, "a creator is { address, percentage }");
+          const get = (k: string) => {
+            const q = c.properties.find(
+              (x) => (ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === k,
+            );
+            if (!q) this.fail(c, `a creator needs ${k}`);
+            return ts.isPropertyAssignment(q) ? q.initializer : (q as ts.ShorthandPropertyAssignment).name;
+          };
+          const pct = get("percentage");
+          if (ts.isBigIntLiteral(pct)) sum += BigInt(pct.text.slice(0, -1));
+          else constant = false;
+          fields.push({ value: get("address"), type: PUBKEY }, { value: pct, type: U8 });
+        }
+        if (constant && creators.length && sum !== 100n) this.fail(need("creators"), `creator percentages add up to ${sum}; Core requires 100`);
+        fields.push({ bytes: [0] }); // rule_set: RuleSet::None
+        break;
+      }
+      case "FreezeDelegate":
+      case "PermanentFreezeDelegate":
+        fields.push({ value: need("frozen"), type: BOOL });
+        break;
+      case "UpdateDelegate": {
+        const keys = props.has("additionalDelegates") ? list("additionalDelegates", 8) : [];
+        fields.push({ bytes: u32(keys.length) }, ...keys.map((k) => ({ value: k, type: PUBKEY })));
+        break;
+      }
+      case "Attributes": {
+        const attrs = list("attributes", 32);
+        fields.push({ bytes: u32(attrs.length) });
+        for (const at of attrs) {
+          if (!ts.isObjectLiteralExpression(at)) this.fail(at, "an attribute is { key, value }");
+          for (const k of ["key", "value"]) {
+            const q = at.properties.find(
+              (x) => (ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === k,
+            );
+            if (!q) this.fail(at, `an attribute needs ${k}`);
+            fields.push({ value: ts.isPropertyAssignment(q) ? q.initializer : (q as ts.ShorthandPropertyAssignment).name, type: STRING });
+          }
+        }
+        break;
+      }
+      case "Edition":
+        fields.push({ value: need("number"), type: { kind: "int", name: "u32" } });
+        break;
+    }
+    const auth = props.get("authority");
+    if (!withAuthority) {
+      if (auth) this.fail(auth, "a plugin's authority is set when it is added; change it with Core's approve / revoke");
+      return fields;
+    }
+    if (!auth)
+      fields.push({ bytes: [0] }); // the plugin type's default authority
+    else if (ts.isStringLiteral(auth)) {
+      const i = ["none", "owner", "updateAuthority"].indexOf(auth.text);
+      if (i < 0) this.fail(auth, 'authority is "none", "owner", "updateAuthority" or a Pubkey');
+      fields.push({ bytes: [1, i] });
+    } else fields.push({ bytes: [1, 3] }, { value: auth, type: PUBKEY });
+    return fields;
+  }
+
+  /** CreateV1 / CreateCollectionV1 plugins: Option<Vec<PluginAuthorityPair>>. */
+  protected corePluginList(n: ts.Expression | undefined): MplField[] {
+    if (!n) return [{ bytes: [0] }];
+    const els = (n as ts.ArrayLiteralExpression).elements;
+    if (els.length > 16) this.fail(n, "at most 16 plugins");
+    const kinds = els.map((e) =>
+      ts.isObjectLiteralExpression(e) ? e.properties.find((q) => q.name && ts.isIdentifier(q.name) && q.name.text === "kind") : undefined,
+    );
+    const seen = new Set<string>();
+    kinds.forEach((k, i) => {
+      const lit = k && ts.isPropertyAssignment(k) && ts.isStringLiteral(k.initializer) ? k.initializer.text : undefined;
+      if (lit && seen.has(lit)) this.fail(els[i], `${lit} is listed twice; an asset has one plugin of each kind`);
+      if (lit) seen.add(lit);
+    });
+    return [{ bytes: [1, els.length & 0xff, 0, 0, 0] }, ...els.flatMap((e) => this.corePlugin(e, true))];
+  }
+
+  /** Metaplex Core: assets and collections (with plugins), plugins added, updated and removed, transfer and burn. */
   protected coreOp(node: ts.CallExpression, core: AccountParam, method: string): undefined {
     const a = node.arguments;
     const p = `a_${core.name}`;
     const seedsAt = (i: number) => (a[i] ? this.signingSeeds(a[i]) : { name: "NULL", count: 0 });
     const str = (n: ts.Expression) => ({ value: n, type: STRING });
+    // An array literal of object literals after the uri is the plugin list; the signer seeds come after it.
+    const isPlugins = (n: ts.Expression | undefined) =>
+      !!n && ts.isArrayLiteralExpression(n) && (n.elements.length === 0 || n.elements.every((e) => ts.isObjectLiteralExpression(e)));
+    const self: [string, boolean, boolean] = [p, false, false];
     switch (method) {
       case "createAsset": {
         // CreateV1: asset, collection, authority, payer, owner, updateAuthority, systemProgram, logWrapper.
-        if (a.length !== 8 && a.length !== 9)
-          this.fail(node, "createAsset(asset, collection | null, authority | null, payer, owner | null, systemProgram, name, uri, signerSeeds?)");
+        const plugins = isPlugins(a[8]) ? a[8] : undefined;
+        if (a.length < 8 || a.length > (plugins ? 10 : 9))
+          this.fail(node, "createAsset(asset, collection | null, authority | null, payer, owner | null, systemProgram, name, uri, plugins?, signerSeeds?)");
         const metas = [
           this.mplMeta(a[0], core, "the asset", true, true),
           this.mplMeta(a[1], core, "the collection", true, false),
@@ -801,22 +950,61 @@ export abstract class CpiEmitter extends CallEmitter {
           this.mplMeta(a[5], core, "the system program", false, false),
           [p, false, false] as [string, boolean, boolean],
         ];
-        const data = this.mplData(node, 1024, [{ bytes: [0, 0] }, str(a[6]), str(a[7]), { bytes: [0] }]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(8));
+        const data = this.mplData(node, 2048, [{ bytes: [0, 0] }, str(a[6]), str(a[7]), ...this.corePluginList(plugins)]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(plugins ? 9 : 8));
         return undefined;
       }
       case "createCollection": {
         // CreateCollectionV1: collection, updateAuthority, payer, systemProgram.
-        if (a.length !== 6 && a.length !== 7)
-          this.fail(node, "createCollection(collection, updateAuthority | null, payer, systemProgram, name, uri, signerSeeds?)");
+        const plugins = isPlugins(a[6]) ? a[6] : undefined;
+        if (a.length < 6 || a.length > (plugins ? 8 : 7))
+          this.fail(node, "createCollection(collection, updateAuthority | null, payer, systemProgram, name, uri, plugins?, signerSeeds?)");
         const metas = [
           this.mplMeta(a[0], core, "the collection", true, true),
           this.mplMeta(a[1], core, "the update authority", false, false),
           this.mplMeta(a[2], core, "the payer", true, true),
           this.mplMeta(a[3], core, "the system program", false, false),
         ];
-        const data = this.mplData(node, 1024, [{ bytes: [1] }, str(a[4]), str(a[5]), { bytes: [0] }]);
+        const data = this.mplData(node, 2048, [{ bytes: [1] }, str(a[4]), str(a[5]), ...this.corePluginList(plugins)]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(plugins ? 7 : 6));
+        return undefined;
+      }
+      case "addPlugin":
+      case "updatePlugin":
+      case "removePlugin": {
+        // Add/Remove/UpdatePluginV1: asset, collection, payer, authority, systemProgram, logWrapper.
+        const last = method === "removePlugin" ? "kind" : "plugin";
+        if (a.length !== 6 && a.length !== 7)
+          this.fail(node, `${method}(asset, collection | null, payer, authority | null, systemProgram, ${last}, signerSeeds?)`);
+        const metas = [
+          this.mplMeta(a[0], core, "the asset", true, false),
+          this.mplMeta(a[1], core, "the collection", true, false),
+          this.mplMeta(a[2], core, "the payer", true, true),
+          this.mplMeta(a[3], core, "the authority", false, true),
+          this.mplMeta(a[4], core, "the system program", false, false),
+          self,
+        ];
+        const body = method === "removePlugin" ? [this.corePluginType(a[5])] : this.corePlugin(a[5], method === "addPlugin");
+        const data = this.mplData(node, 2048, [{ bytes: [{ addPlugin: 2, removePlugin: 4, updatePlugin: 6 }[method]] }, ...body]);
         this.cpi(p, metas, data.buf, data.len, seedsAt(6));
+        return undefined;
+      }
+      case "addCollectionPlugin":
+      case "updateCollectionPlugin":
+      case "removeCollectionPlugin": {
+        // Add/Remove/UpdateCollectionPluginV1: collection, payer, authority, systemProgram, logWrapper.
+        const last = method === "removeCollectionPlugin" ? "kind" : "plugin";
+        if (a.length !== 5 && a.length !== 6) this.fail(node, `${method}(collection, payer, authority | null, systemProgram, ${last}, signerSeeds?)`);
+        const metas = [
+          this.mplMeta(a[0], core, "the collection", true, false),
+          this.mplMeta(a[1], core, "the payer", true, true),
+          this.mplMeta(a[2], core, "the authority", false, true),
+          this.mplMeta(a[3], core, "the system program", false, false),
+          self,
+        ];
+        const body = method === "removeCollectionPlugin" ? [this.corePluginType(a[4])] : this.corePlugin(a[4], method === "addCollectionPlugin");
+        const data = this.mplData(node, 2048, [{ bytes: [{ addCollectionPlugin: 3, removeCollectionPlugin: 5, updateCollectionPlugin: 7 }[method]] }, ...body]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(5));
         return undefined;
       }
       case "transferAsset": {
@@ -851,7 +1039,18 @@ export abstract class CpiEmitter extends CallEmitter {
         return undefined;
       }
     }
-    this.fail(node.expression, `Metaplex Core supports createAsset, createCollection, transferAsset and burnAsset, not ${method}`);
+    this.fail(
+      node.expression,
+      `Metaplex Core supports createAsset, createCollection, addPlugin, updatePlugin, removePlugin (and the Collection forms), transferAsset and burnAsset, not ${method}`,
+    );
+  }
+
+  /** PluginType (u8) from a kind string literal: removePlugin(…, "FreezeDelegate"). */
+  protected corePluginType(n: ts.Expression): MplField {
+    if (!ts.isStringLiteral(n)) this.fail(n, 'name the plugin kind as a string literal: "FreezeDelegate"');
+    const i = CORE_PLUGINS.indexOf(n.text as never);
+    if (i < 0) this.fail(n, `Core plugins are ${CORE_PLUGINS.join(", ")}`);
+    return { bytes: [i] };
   }
 
   /** Bubblegum (compressed NFTs on SPL account compression): createTree, mint (MintV1, no collection, no creators). */
