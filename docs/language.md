@@ -32,7 +32,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Other programs' accounts | `const pool = loadForeign<Pool>(account, AMM_PROGRAM)` — owner, `account:Pool` discriminator and size checked (3007 / 3002 / 3003); `readData<u64>(account, offset)` for raw little-endian reads (bounds-checked, 3003) |
 | Ternaries | `const fee = vip ? 0n : 30n` — only the chosen branch runs |
 | Constants | top-level `const SEED = "vault"`, `const FEE: u16 = 30n`, `const ON = true` — inlined, usable as seeds (and described in the IDL) |
-| Data enums | `export type Action = { kind: "Deposit"; amount: u64 } \| { kind: "Pause" }` — `a.kind === "Deposit"`, `switch (a.kind)`, TypeScript narrowing picks the variant (checked again at runtime, 5112); Borsh enums in arguments/events, fixed `{ tag, payload }` in account data |
+| Data enums | `export type Action = { kind: "Deposit"; amount: u64 } \| { kind: "Pause" }` — `a.kind === "Deposit"`, `switch (a.kind)`, TypeScript narrowing picks the variant (checked again at runtime, 5112); Borsh enums in arguments/events, fixed `{ tag, payload }` in account data. A variant may hold a `string` (`{ kind: "Say"; text: string }`): such an enum works in arguments, events and locals (Borsh, as Anchor encodes it) but not in account data |
 | Option of structs | `home: Option<Point>` in account data — `=== null`, `p.home.x` after narrowing, `p.home = null` / `{ x, y }` |
 | Strings at runtime | `"hello, " + name`, `` `#${n}` `` — built on the 32 KiB heap (5110 when full) |
 | `switch` | on integers (up to 64 bits), enums and data-enum `.kind`, with JS `break` / fallthrough; case labels are literals, constants or enum members |
@@ -146,7 +146,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 ## Not supported yet
 
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
-inside a helper, data-enum arguments carrying strings/structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
+inside a helper, data-enum arguments carrying structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
 128-bit integers, `mulDiv` beyond u64, Token Metadata creators/collections, Core plugins, Bubblegum v2 / collections /
 transfers, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.

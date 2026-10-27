@@ -697,7 +697,7 @@ function analyzeStructs(
           const problem = cNameProblem(p.name.text);
           if (problem) reporter.fail(p.name, problem);
           const t = fieldType(p.type);
-          if (t.kind === "string" || t.kind === "vec") reporter.fail(p.type, "variant fields must have a fixed size (use FixedString<N>)");
+          if (t.kind === "vec") reporter.fail(p.type, "variant fields must have a fixed size (a Vec cannot be one; use FixedArray<T, N>)");
           fields.push({ name: p.name.text, type: t });
         }
         if (!vname || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(vname)) reporter.fail(m, 'each variant needs kind: "Name" (an identifier)');
@@ -734,10 +734,29 @@ function analyzeStructs(
         if (state.get(`enum:${e.name}`) === "visiting") reporter.fail(at, `data enum ${e.name} contains itself`);
         if (state.get(`enum:${e.name}`) !== "done") {
           state.set(`enum:${e.name}`, "visiting");
-          for (const v of e.variants) v.size = v.fields.reduce((sum, f) => sum + sizeOf(f.type, e.node)!, 0);
+          // A string field is a TS_Str view (16 bytes) in the C payload and makes the enum variable-size.
+          const fieldSize = (f: FieldType): number => {
+            if (f.kind === "string") {
+              e.variable = true;
+              return 16;
+            }
+            if (f.kind === "dataEnum") {
+              const inner = dataEnums.get(f.name);
+              const size = sizeOf(f, e.node);
+              if (inner?.variable) {
+                e.variable = true;
+                return 1 + inner.payload;
+              }
+              return size!;
+            }
+            return sizeOf(f, e.node)!;
+          };
+          for (const v of e.variants) v.size = v.fields.reduce((sum, f) => sum + fieldSize(f.type), 0);
           e.payload = Math.max(0, ...e.variants.map((v) => v.size));
           state.set(`enum:${e.name}`, "done");
         }
+        // Variable enums have no fixed layout: a struct holding one is event-only, like one holding a string.
+        if (e.variable) return undefined;
         return 1 + e.payload;
       }
       case "vec":

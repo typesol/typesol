@@ -6,6 +6,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Data-enum variants can hold a `string` (`type Cmd = { kind: "Say"; text: string } | …`), as Anchor enums with `String`
+  payloads: Borsh in instruction arguments and events, a value in code (a copy when built from account text), refused
+  in account data. The IDL describes them as Borsh enums only.
 - `typesol port <idl.json>`: a TypeSOL program skeleton from an Anchor IDL (structs, enums, errors, one function per
   instruction with its accounts and arguments). Discriminators, account names and error codes are kept, so existing
   clients keep working where layouts match; notes list where Anchor's Borsh layout differs. Round-trips every example

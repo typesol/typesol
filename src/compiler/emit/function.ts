@@ -202,8 +202,18 @@ export class FunctionEmitter extends StatementEmitter {
         e.variants.forEach((variant, i) => {
           head.push(`  case ${i}: {`);
           for (const f of variant.fields) {
+            if (f.type.kind === "string") {
+              // Borsh String: u32 length, then UTF-8 bytes, kept as a view of the instruction data.
+              const lv = `${v}.v.${variant.name}.${f.name}`;
+              head.push(`    if (params->data_len < off + 4) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
+              head.push(`    { uint32_t n = (uint32_t)ts_read_le(params->data + off, 4); off += 4;`);
+              head.push(`      if (params->data_len < off + n) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
+              head.push(`      ${lv} = ts_str(params->data + off, n); off += n; }`);
+              head.push(`    if (!ts_utf8_valid(${lv}.ptr, ${lv}.len)) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid UTF-8 in a string argument");`);
+              continue;
+            }
             if (!isScalar(f.type))
-              this.reporter.fail(a.node, `${e.name}.${variant.name}.${f.name}: enum arguments carry integers, booleans, Pubkeys and enums`);
+              this.reporter.fail(a.node, `${e.name}.${variant.name}.${f.name}: enum arguments carry integers, booleans, Pubkeys, enums and strings`);
             const size = scalarSize(f.type as ScalarType);
             head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
             head.push(`    ts_memcpy(&${v}.v.${variant.name}.${f.name}, params->data + off, ${size});`, `    off += ${size};`);
