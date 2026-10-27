@@ -16,7 +16,8 @@
   <a href="https://typesol.com/docs/">Docs</a> ·
   <a href="https://typesol.com/docs/changelog/">Changelog</a> ·
   <a href="#numbers">Benchmarks</a> ·
-  <a href="docs/language.md">Language reference</a>
+  <a href="docs/language.md">Language reference</a> ·
+  <a href="https://x.com/type_sol">X</a>
 </p>
 
 TypeSOL compiles a TypeScript subset straight to Solana bytecode. It does not use an interpreter or a VM on chain, and
