@@ -343,7 +343,8 @@ export type InitIfNeeded<T> = T extends TokenAccount
  * Declarative constraints, checked before your code runs (like Anchor's account attributes):
  *  - `HasOne<Mut<Vault>, "owner">`: vault.owner must be the key of the parameter named `owner` (union for several).
  *  - `Seeds<Mut<Vault>, ["vault", "@owner"], "bump">`: the account must be the PDA of these seeds; "@name" is an
- *    account parameter (its key) or an argument (its bytes), anything else a literal string; the bump is an optional u8 field.
+ *    account parameter (its key) or an argument (its bytes), "@acct.field" a Pubkey, integer or unit enum field of a struct
+ *    account parameter (this account's own fields too), anything else a literal string; the bump is an optional u8 field.
  *    A fourth argument derives the PDA under another program: `Seeds<AccountInfo, ["metadata", "@mint"], never, "@tokenMetadata">`
  *    ("@param" names a program parameter, or give a base58 address).
  *  - `CloseTo<Mut<Vault>, "owner">`: close the account into `owner` when the instruction succeeds.

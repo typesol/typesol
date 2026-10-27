@@ -1,18 +1,8 @@
 // Port of tokens/token-swap @ de09019; see test/ports/README.md.
 //
-// PARTIAL:
-//  - interface: Anchor signs for `pool_authority` with `ctx.bumps.pool_authority` (the canonical bump found by
-//    `seeds = [...], bump`) and checks `mint_liquidity` against seeds built from `pool.amm` (a field). TypeSOL Seeds<>
-//    constraints can name parameters and arguments but not another account's fields, so `deposit_liquidity` and
-//    `withdraw_liquidity` take `authority_bump` / `liquidity_bump` arguments checked with requirePda (`create_pool`
-//    and `swap_exact_tokens_for_tokens` use the bump their Seeds<> check finds, `pdaBump`). The authority stays the
-//    canonical PDA in every instruction: `create_pool` and `swap` check it with Seeds<> (swap's pool has
-//    `has_one = amm`); in `deposit` and `withdraw` it must be the liquidity mint's mint authority, and the only
-//    liquidity mint at that PDA is the one `create_pool` made, with the canonical authority (only this program can
-//    sign for its PDAs).
-//  - Anchor also re-derives `amm` (seeds = [amm.id]) and `pool` (seeds = [pool.amm, pool.mint_a, pool.mint_b]) with
-//    find_program_address; every Amm/Pool account is created at exactly that canonical address by create_amm /
-//    create_pool, so those re-derivations can never fail and are not repeated.
+// PORTED: every PDA Anchor checks is checked declaratively, including the seeds taken from account fields
+// (`amm.id`, `pool.amm`, `pool.mint_a`, `pool.mint_b` → "@amm.id", "@pool.amm", …), and every PDA signs with the
+// bump its check found (`pdaBump`, Anchor's `ctx.bumps`).
 // Token amounts are re-read after the CPIs (TypeSOL reads account data live), like Anchor's `reload()`.
 import {
   type InitIfNeeded,
@@ -37,7 +27,6 @@ import {
   log,
   rentExempt,
   require,
-  requirePda,
   signer,
   u128,
   u64,
@@ -53,7 +42,7 @@ export function createAmm(amm: Init<Amm>, admin: AccountInfo, payer: Mut<Signer>
 }
 
 export function createPool(
-  amm: Account<Amm>,
+  amm: Seeds<Account<Amm>, ["@amm.id"]>,
   pool: Init<Pool>,
   poolAuthority: Seeds<AccountInfo, ["@amm", "@mintA", "@mintB", "authority"]>,
   mintLiquidity: Seeds<Mut<AccountInfo>, ["@amm", "@mintA", "@mintB", "liquidity"]>,
@@ -83,10 +72,10 @@ export function createPool(
 }
 
 export function depositLiquidity(
-  pool: HasOne<Account<Pool>, "mintA" | "mintB">,
-  poolAuthority: AccountInfo,
+  pool: Seeds<HasOne<Account<Pool>, "mintA" | "mintB">, ["@pool.amm", "@pool.mintA", "@pool.mintB"]>,
+  poolAuthority: Seeds<AccountInfo, ["@pool.amm", "@mintA", "@mintB", "authority"]>,
   depositor: Signer,
-  mintLiquidity: Mut<Mint>,
+  mintLiquidity: Seeds<Mut<Mint>, ["@pool.amm", "@mintA", "@mintB", "liquidity"]>,
   mintA: Mint,
   mintB: Mint,
   poolAccountA: Ata<Mut<TokenAccount>, "poolAuthority", "mintA">,
@@ -100,11 +89,7 @@ export function depositLiquidity(
   systemProgram: SystemProgram,
   amountA: u64,
   amountB: u64,
-  authorityBump: u8,
-  liquidityBump: u8,
 ): void {
-  requirePda(poolAuthority, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED], authorityBump);
-  requirePda(mintLiquidity, [pool.amm, mintA.key, mintB.key, LIQUIDITY_SEED], liquidityBump);
   require(mintLiquidity.mintAuthority === poolAuthority.key, TutorialError.WrongPoolAuthority);
   depositorAccountLiquidity.createIfNeeded(payer);
 
@@ -129,15 +114,21 @@ export function depositLiquidity(
   }
   tokenProgram.transfer(depositorAccountA, poolAccountA, depositor, a);
   tokenProgram.transfer(depositorAccountB, poolAccountB, depositor, b);
-  tokenProgram.mintTo(mintLiquidity, depositorAccountLiquidity, poolAuthority, liquidity, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED, authorityBump]);
+  tokenProgram.mintTo(mintLiquidity, depositorAccountLiquidity, poolAuthority, liquidity, [
+    pool.amm,
+    mintA.key,
+    mintB.key,
+    AUTHORITY_SEED,
+    poolAuthority.pdaBump,
+  ]);
 }
 
 export function withdrawLiquidity(
-  amm: Account<Amm>,
-  pool: HasOne<Account<Pool>, "mintA" | "mintB">,
-  poolAuthority: AccountInfo,
+  amm: Seeds<Account<Amm>, ["@amm.id"]>,
+  pool: Seeds<HasOne<Account<Pool>, "mintA" | "mintB">, ["@pool.amm", "@pool.mintA", "@pool.mintB"]>,
+  poolAuthority: Seeds<AccountInfo, ["@pool.amm", "@mintA", "@mintB", "authority"]>,
   depositor: Signer,
-  mintLiquidity: Mut<Mint>,
+  mintLiquidity: Seeds<Mut<Mint>, ["@pool.amm", "@mintA", "@mintB", "liquidity"]>,
   mintA: Mut<Mint>,
   mintB: Mut<Mint>,
   poolAccountA: Ata<Mut<TokenAccount>, "poolAuthority", "mintA">,
@@ -150,25 +141,21 @@ export function withdrawLiquidity(
   associatedTokenProgram: AssociatedTokenProgram,
   systemProgram: SystemProgram,
   amount: u64,
-  authorityBump: u8,
-  liquidityBump: u8,
 ): void {
-  requirePda(poolAuthority, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED], authorityBump);
-  requirePda(mintLiquidity, [pool.amm, mintA.key, mintB.key, LIQUIDITY_SEED], liquidityBump);
   require(mintLiquidity.mintAuthority === poolAuthority.key, TutorialError.WrongPoolAuthority);
   depositorAccountA.createIfNeeded(payer);
   depositorAccountB.createIfNeeded(payer);
   const amountA = u64((u128(amount) * u128(poolAccountA.amount)) / (u128(mintLiquidity.supply) + u128(MINIMUM_LIQUIDITY)));
-  tokenProgram.transfer(poolAccountA, depositorAccountA, poolAuthority, amountA, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED, authorityBump]);
+  tokenProgram.transfer(poolAccountA, depositorAccountA, poolAuthority, amountA, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED, poolAuthority.pdaBump]);
   const amountB = u64((u128(amount) * u128(poolAccountB.amount)) / (u128(mintLiquidity.supply) + u128(MINIMUM_LIQUIDITY)));
-  tokenProgram.transfer(poolAccountB, depositorAccountB, poolAuthority, amountB, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED, authorityBump]);
+  tokenProgram.transfer(poolAccountB, depositorAccountB, poolAuthority, amountB, [pool.amm, mintA.key, mintB.key, AUTHORITY_SEED, poolAuthority.pdaBump]);
   tokenProgram.burn(depositorAccountLiquidity, mintLiquidity, depositor, amount);
 }
 
 export function swapExactTokensForTokens(
-  amm: Account<Amm>,
-  pool: HasOne<Account<Pool>, "amm" | "mintA" | "mintB">,
-  poolAuthority: Seeds<AccountInfo, ["@amm", "@mintA", "@mintB", "authority"]>,
+  amm: Seeds<Account<Amm>, ["@amm.id"]>,
+  pool: Seeds<HasOne<Account<Pool>, "amm" | "mintA" | "mintB">, ["@pool.amm", "@pool.mintA", "@pool.mintB"]>,
+  poolAuthority: Seeds<AccountInfo, ["@pool.amm", "@mintA", "@mintB", "authority"]>,
   trader: Signer,
   mintA: Mint,
   mintB: Mint,

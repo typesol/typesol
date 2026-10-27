@@ -1,7 +1,7 @@
 // Port of tokens/token-fundraiser @ de09019; see test/ports/README.md.
 //
 // PORTED: `check_contributions` pays into `maker_ata`, created with Ata<InitIfNeeded<TokenAccount>, …>. The fundraiser
-// PDA seeded with its own `maker` field is checked with requirePda in `contribute`. The elapsed-days value is converted
+// PDA seeded with its own `maker` field is checked declaratively in `contribute` ("@fundraiser.maker"). The elapsed-days value is converted
 // with a checked u16() where Rust uses a wrapping `as u16` (they differ only after ~179 years).
 import {
   type AccountInfo,
@@ -25,7 +25,6 @@ import {
   now,
   readonlySigner,
   require,
-  requirePda,
   u16,
   u64,
   u8,
@@ -99,7 +98,7 @@ export function initialize(
 export function contribute(
   contributor: Mut<Signer>,
   mintToRaise: Owner<Mint, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">,
-  fundraiser: HasOne<Mut<Fundraiser>, "mintToRaise">,
+  fundraiser: Seeds<HasOne<Mut<Fundraiser>, "mintToRaise">, ["fundraiser", "@fundraiser.maker"], "bump">,
   contributorAccount: InitIfNeeded<Contributor>,
   contributorAta: Ata<Mut<TokenAccount>, "contributor", "mintToRaise">,
   vault: Ata<Mut<TokenAccount>, "fundraiser", "mintToRaise">,
@@ -107,7 +106,6 @@ export function contribute(
   systemProgram: SystemProgram,
   amount: u64,
 ): void {
-  requirePda(fundraiser, ["fundraiser", fundraiser.maker], fundraiser.bump);
   contributorAccount.createIfNeeded(contributor, ["contributor", fundraiser.key, contributor.key]);
   const cap = (fundraiser.amountToRaise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER;
   require(amount >= pow(1n, mintToRaise.decimals), FundraiserError.ContributionTooSmall);

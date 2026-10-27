@@ -60,7 +60,7 @@ Status:
 | `tokens/token-2022/transfer-hook/transfer-cost` | | BLOCKED | extra accounts in the ExtraAccountMetaList |
 | `tokens/token-2022/transfer-hook/transfer-switch` | | BLOCKED | an extra account in the ExtraAccountMetaList |
 | `tokens/token-fundraiser` | `tokens/token-fundraiser.ts` | PORTED | elapsed days use a checked `u16()` where Rust wraps (`as u16`); they differ only after ~179 years |
-| `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PARTIAL | `deposit_liquidity` / `withdraw_liquidity` take authority and liquidity bump arguments (their seeds use a field of `pool`) |
+| `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PORTED | |
 | `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PARTIAL | address log lines are two lines |
 
 "Hand-encoded" means the port builds the instruction with `invoke` because TypeSOL has no builtin for it, or because

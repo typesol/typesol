@@ -244,8 +244,8 @@ describe("port: tokens/token-swap", () => {
     const holderA = await fundAta(svm, admin, admin.address, mintA, SUPPLY);
     const holderB = await fundAta(svm, admin, admin.address, mintB, SUPPLY);
     const [pool] = await pda(d.programId, [amm, mintA, mintB]);
-    const [authority, authorityBump] = await pda(d.programId, [amm, mintA, mintB, "authority"]);
-    const [mintLiquidity, liquidityBump] = await pda(d.programId, [amm, mintA, mintB, "liquidity"]);
+    const [authority] = await pda(d.programId, [amm, mintA, mintB, "authority"]);
+    const [mintLiquidity] = await pda(d.programId, [amm, mintA, mintB, "liquidity"]);
     const poolA = await ataOf(authority, mintA);
     const poolB = await ataOf(authority, mintB);
     const liquidityAccount = await ataOf(admin.address, mintLiquidity);
@@ -277,30 +277,25 @@ describe("port: tokens/token-swap", () => {
       ]);
     const deposit = (a: bigint, b: bigint) =>
       send(svm, admin, [
-        ix(
-          d,
-          "deposit_liquidity",
-          { amount_a: new BN(a.toString()), amount_b: new BN(b.toString()), authority_bump: authorityBump, liquidity_bump: liquidityBump },
-          [
-            { address: pool },
-            { address: authority },
-            { address: admin.address, signer: admin },
-            { address: mintLiquidity, writable: true },
-            { address: mintA },
-            { address: mintB },
-            { address: poolA, writable: true },
-            { address: poolB, writable: true },
-            { address: liquidityAccount, writable: true },
-            { address: holderA, writable: true },
-            { address: holderB, writable: true },
-            { address: admin.address, signer: admin, writable: true },
-            { address: TOKEN_PROGRAM },
-            { address: ATA_PROGRAM },
-            { address: SYSTEM_PROGRAM },
-          ],
-        ),
+        ix(d, "deposit_liquidity", { amount_a: new BN(a.toString()), amount_b: new BN(b.toString()) }, [
+          { address: pool },
+          { address: authority },
+          { address: admin.address, signer: admin },
+          { address: mintLiquidity, writable: true },
+          { address: mintA },
+          { address: mintB },
+          { address: poolA, writable: true },
+          { address: poolB, writable: true },
+          { address: liquidityAccount, writable: true },
+          { address: holderA, writable: true },
+          { address: holderB, writable: true },
+          { address: admin.address, signer: admin, writable: true },
+          { address: TOKEN_PROGRAM },
+          { address: ATA_PROGRAM },
+          { address: SYSTEM_PROGRAM },
+        ]),
       ]);
-    type Alt = { authority?: Address; bump?: number; poolA?: Address; poolB?: Address };
+    type Alt = { authority?: Address; poolA?: Address; poolB?: Address };
     const swap = (swapA: boolean, input: bigint, minOut: bigint, alt: Alt = {}) =>
       send(svm, admin, [
         ix(d, "swap_exact_tokens_for_tokens", { swap_a: swapA, input_amount: new BN(input.toString()), min_output_amount: new BN(minOut.toString()) }, [
@@ -322,7 +317,7 @@ describe("port: tokens/token-swap", () => {
       ]);
     const withdraw = (amount: bigint, alt: Alt = {}) =>
       send(svm, admin, [
-        ix(d, "withdraw_liquidity", { amount: new BN(amount.toString()), authority_bump: alt.bump ?? authorityBump, liquidity_bump: liquidityBump }, [
+        ix(d, "withdraw_liquidity", { amount: new BN(amount.toString()) }, [
           { address: amm },
           { address: pool },
           { address: alt.authority ?? authority },
@@ -384,9 +379,7 @@ describe("port: tokens/token-swap", () => {
     const outA = quote(300_000n, 5_500_000n - outB, 1_200_000n);
     expectOk(await s.swap(false, 300_000n, 100n));
     expect(tokenBalance(s.svm, s.holderA)).toBe(a0 - 100_000n + outA);
-    // A non-canonical authority bump does not derive the pool authority (withdraw takes the bump as an argument).
     const [, bump] = await pda(s.d.programId, [s.amm, s.mintA, s.mintB, "authority"]);
-    expect(customError(await s.withdraw(1n, { bump: bump - 1 }))).toBe(2006);
     // A non-canonical authority PDA with vaults someone funded is refused too (Anchor's find_program_address check).
     const fake = await nonCanonicalPda(s.d.programId, [addrBytes(s.amm), addrBytes(s.mintA), addrBytes(s.mintB), Buffer.from("authority")], bump);
     const alt = {
@@ -395,7 +388,7 @@ describe("port: tokens/token-swap", () => {
       poolB: await fundAta(s.svm, s.admin, fake.authority, s.mintB, 10n),
     };
     expect(customError(await s.swap(true, 1_000n, 1n, alt))).toBe(2006);
-    expect(customError(await s.withdraw(1n, alt))).toBe(6006);
+    expect(customError(await s.withdraw(1n, alt))).toBe(2006);
 
     const lp = tokenBalance(s.svm, s.liquidityAccount)!;
     expectOk(await s.withdraw(lp));

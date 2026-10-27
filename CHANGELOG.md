@@ -5,6 +5,17 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- PDA seeds from account fields: `Seeds<…, ["@pool.amm", "@mintA", "authority"]>` takes a Pubkey, integer or unit
+  enum field of a struct account parameter, including the account's own (`Seeds<Mut<Offer>, ["offer", "@maker",
+  "@offer.id"], "bump">`), like Anchor's `seeds = [pool.amm.as_ref(), …]`. Recorded in the IDL as account paths
+  (`pool.amm`).
+
+### Tooling
+- Ports: token-swap is now PORTED (its `amm`, `pool`, authority and liquidity-mint PDAs are all checked
+  declaratively, with no bump arguments); escrow and token-fundraiser check their PDAs declaratively instead of with
+  `requirePda` in the body.
+
 ## 0.12.1 — 2026-10-27
 
 No change to the compiler, the runtime or the generated code.
