@@ -48,6 +48,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `typesol idl publish --url` accepts the Solana CLI's cluster monikers (`mainnet-beta`, `devnet`, …).
 
 ### Fixed
+- `createV3` evaluates its arguments in source order (a creator share computed by a helper that changes account text
+  no longer changes the name or fee read before it).
+- `typesol/testing` converts data-enum variants with fields (`{ Say: { text, times: 2n } }`) like structs.
 - Data-enum strings (unreleased) after review: assigning account text into a local enum's string field now takes a copy
   (it kept a view that changed with the account), and an enum nested in another's variant is described as Borsh in the
   IDL (the IDL referred to a fixed form it never emitted, so Anchor clients could not load it).

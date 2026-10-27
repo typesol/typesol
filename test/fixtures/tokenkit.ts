@@ -1,4 +1,5 @@
 import {
+  type FixedString,
   type Account,
   type AccountInfo,
   type AssociatedTokenProgram,
@@ -11,6 +12,7 @@ import {
   type Token2022Program,
   type TokenInterface,
   type TokenMetadataProgram,
+  type u16,
   type u8,
   associatedTokenAddress,
   metadataAddress,
@@ -97,5 +99,39 @@ export function nameWithCreators(
     },
     ["issuer", issuer.mint, issuer.bump],
   );
+}
+
+/** Text and a fee in an account, to check createV3 reads its arguments in source order. */
+export interface Note {
+  bump: u8;
+  title: FixedString<16>;
+  fee: u16;
+}
+
+export function noteSetup(admin: Mut<Signer>, note: Init<Note>, systemProgram: SystemProgram): void {
+  note.bump = note.create(admin, ["note", admin.key]);
+  note.title = "before";
+  note.fee = 111n;
+}
+
+function rewrite(note: Mut<Note>): u8 {
+  note.title = "after";
+  note.fee = 999n;
+  return 100n;
+}
+
+/** name and fee are read before the creators' share (which rewrites the note), as JS evaluates them. */
+export function nameInOrder(
+  payer: Mut<Signer>,
+  issuer: Account<Issuer>,
+  mint: Mint,
+  metadata: Mut<AccountInfo>,
+  systemProgram: SystemProgram,
+  metadataProgram: TokenMetadataProgram,
+  note: Mut<Note>,
+): void {
+  metadataProgram.createV3(metadata, mint, issuer, payer, issuer, systemProgram, note.title, "S", "U", note.fee, true, {
+    creators: [{ address: payer.key, verified: false, share: rewrite(note) }],
+  }, ["issuer", issuer.mint, issuer.bump]);
 }
 

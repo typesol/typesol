@@ -1,8 +1,8 @@
 // Port of tokens/nft-operations @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - builtin gap: TypeSOL's Token Metadata support is createV3 without creators / collection / collection details,
-//    and has no CreateMasterEditionV3 or Verify. CreateMetadataAccountV3 (with a verified creator, a collection,
+//  - builtin gap: TypeSOL's createV3 takes creators and an unverified collection but not CollectionDetails, and has
+//    no CreateMasterEditionV3 or Verify. CreateMetadataAccountV3 (with a verified creator, a collection,
 //    CollectionDetails::V1), CreateMasterEditionV3 and Verify(CollectionV1) are hand-encoded (`invoke`) with the
 //    same accounts and Borsh data as the mpl-token-metadata CPI builders. The new mint and its ATA are created in the
 //    body, so MintTo is hand-encoded as well.
