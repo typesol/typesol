@@ -14,6 +14,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `acct.pdaBump` on `Seeds<…>` accounts (Anchor `ctx.bumps`): the stored bump field when the constraint names one,
   otherwise the canonical bump the check found. Programs no longer need a bump argument to sign as a PDA they check.
 
+### Changed
+- Published on npm as **`@typesol/cli`** (npm refuses the unscoped name `typesol` as too similar to other packages).
+  Programs still import from `"typesol"`: `typesol init` adds the package under that name
+  (`"typesol": "npm:@typesol/cli@^…"`), and existing projects can do the same with
+  `npm install -D typesol@npm:@typesol/cli`. The command stays `typesol`.
+
 ### Tooling
 - Ports: escrow, token-2022/basics, token-fundraiser and pda-rent-payer are now PORTED (same interface as upstream);
   transfer-tokens, pda-mint-authority, nft-operations, token-swap, merkle-tree-token-claimer and

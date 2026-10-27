@@ -141,23 +141,20 @@ transactions to both and compares the results.
 
 ## Quick start
 
-TypeSOL is not on npm yet. Install it from this repository:
+You need Node.js 22.12 or later and the Agave CLI (`sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`).
+Run `cargo-build-sbf --version` once; this downloads the platform-tools that TypeSOL compiles with. Rust is not needed.
 
 ```sh
-git clone https://github.com/typesol/typesol.git && cd typesol
-pnpm install && pnpm build && npm link       # puts `typesol` on your PATH
+npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
+cd my-app && npm install
+npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
+npx typesol build                             # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
+npx typesol deploy --url http://127.0.0.1:8899 --keypair ~/.config/solana/id.json
 ```
 
-You also need the Agave CLI (`sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`). Run
-`cargo-build-sbf --version` once; this downloads the platform-tools that TypeSOL compiles with. Rust is not needed.
-
-```sh
-typesol init my-app --name counter      # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
-cd my-app && npm install ../typesol      # path to your clone (later: plain `npm install`)
-npm test                                # builds the program and runs it in LiteSVM, an in-process Solana runtime
-typesol build                           # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
-typesol deploy --url http://127.0.0.1:8899 --keypair ~/.config/solana/id.json
-```
+The npm package is [`@typesol/cli`](https://www.npmjs.com/package/@typesol/cli). Projects install it under the name
+`typesol`, which is what programs import (`import { … } from "typesol"`); `typesol init` sets that up. To add it to an
+existing project: `npm install -D typesol@npm:@typesol/cli`.
 
 Deploying again upgrades the program in place. Keep `target/deploy/<name>-keypair.json`: that keypair is your
 program's address.
