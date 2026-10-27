@@ -6,7 +6,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 
 | Command | What it does |
 | --- | --- |
-| `typesol init [<dir>] [--name <program>]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`. Refuses to overwrite files. |
+| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`. The template picks the program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). Refuses to overwrite files. |
 | `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json`. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a missing or different keypair. |
 | `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile]` | Outside a project (or a file that is not one of its programs): build that file. A project program's `.ts` builds as that program. |
 | `typesol check <file.ts>` | Type-check and validate without building. |

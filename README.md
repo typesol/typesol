@@ -152,6 +152,9 @@ npx typesol build                             # target/counter/{counter.so, coun
 npx typesol deploy --url http://127.0.0.1:8899 --keypair ~/.config/solana/id.json
 ```
 
+`--template vault` or `--template escrow` starts from a SOL vault or an SPL token escrow instead of the counter, each
+with a passing LiteSVM test.
+
 The npm package is [`@typesol/cli`](https://www.npmjs.com/package/@typesol/cli). Projects install it under the name
 `typesol`, which is what programs import (`import { … } from "typesol"`); `typesol init` sets that up. To add it to an
 existing project: `npm install -D typesol@npm:@typesol/cli`.
