@@ -192,3 +192,35 @@ export function bigText(): u64 {
   require(s === "340282366920938463463374607431768211455|-170141183460469231731687303715884105728", "text");
   return byteLength(s);
 }
+
+/** a ** b at every width (checked like *; a negative exponent aborts). */
+export function powU8(a: u8, b: u8): u8 {
+  return a ** b;
+}
+export function powU16(a: u16, b: u16): u16 {
+  return a ** b;
+}
+export function powU32(a: u32, b: u32): u32 {
+  return a ** b;
+}
+export function powU64(a: u64, b: u64): u64 {
+  return a ** b;
+}
+export function powU128(a: u128, b: u128): u128 {
+  return a ** b;
+}
+export function powI8(a: i8, b: i8): i8 {
+  return a ** b;
+}
+export function powI16(a: i16, b: i16): i16 {
+  return a ** b;
+}
+export function powI32(a: i32, b: i32): i32 {
+  return a ** b;
+}
+export function powI64(a: i64, b: i64): i64 {
+  return a ** b;
+}
+export function powI128(a: i128, b: i128): i128 {
+  return a ** b;
+}
