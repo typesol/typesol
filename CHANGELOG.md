@@ -5,6 +5,15 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Performance
+- PDAs are derived with the `sol_sha256` and `sol_curve_validate_point` syscalls instead of
+  `sol_try_find_program_address` / `sol_create_program_address` (1,500 CU per bump tried): the
+  same addresses, bumps and limits (16 seeds to check, 15 to search, 32 bytes each). `init` with seeds, `Seeds<…>`,
+  `create`, `signer` and `findProgramAddress` all use it. Benchmarks: counter.initialize 3,030 → 1,872 CU,
+  escrow.make 5,974 → 3,638; in the official examples escrow take_offer 14,519 → 7,117 and close_user 1,728 → 586.
+  Binaries grow 0.4–1.2 KB. New tests compare it with @solana/kit's derivation over random seeds, canonical bumps
+  below 255 and on-curve bumps.
+
 ## 0.13.0 — 2026-10-27
 
 Every program in solana-developers/program-examples now ports to TypeSOL: PDA seeds from account fields, remaining

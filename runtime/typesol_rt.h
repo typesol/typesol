@@ -305,6 +305,55 @@ static inline __attribute__((always_inline)) uint64_t ts_invoke(TsParams *params
   return sol_invoke_signed(ix, infos, ix->account_len, signers, nsigners);
 }
 
+/*
+ * ---- Program derived addresses ------------------------------------------------
+ * The same addresses sol_create_program_address / sol_try_find_program_address compute — sha256 of the seeds, the
+ * program id and "ProgramDerivedAddress", valid only off the ed25519 curve — from the sha256 and curve-validation
+ * syscalls, which cost a fraction of the 1500 compute units the PDA syscalls charge per attempt. The seed limits are the
+ * syscalls' (at most 16 seeds of at most 32 bytes, the bump included), and so is the result for every input.
+ */
+uint64_t sol_curve_validate_point(uint64_t curve_id, const uint8_t *point, uint8_t *result);
+#define TS_MAX_PDA_SEEDS 16
+
+/* The address of `seeds` (and `bump`, when given) under `program`; false when it lies on the curve (no PDA). */
+static inline bool ts_pda_hash(const SolSignerSeed *seeds, int n, const uint8_t *bump, const SolPubkey *program, SolPubkey *out) {
+  SolBytes parts[TS_MAX_PDA_SEEDS + 2];
+  int k = 0;
+  for (int i = 0; i < n; i++) parts[k++] = (SolBytes){seeds[i].addr, seeds[i].len};
+  if (bump) parts[k++] = (SolBytes){bump, 1};
+  parts[k++] = (SolBytes){program->x, 32};
+  parts[k++] = (SolBytes){(const uint8_t *)"ProgramDerivedAddress", 21};
+  sol_sha256(parts, k, out->x);
+  uint8_t ignored;
+  return sol_curve_validate_point(0 /* CURVE25519_EDWARDS */, out->x, &ignored) != 0; /* 0: a valid curve point */
+}
+
+static inline bool ts_pda_seeds_ok(const SolSignerSeed *seeds, int n, int max) {
+  if (n > max) return false;
+  for (int i = 0; i < n; i++)
+    if (seeds[i].len > 32) return false;
+  return true;
+}
+
+/* sol_create_program_address: the bump is the last of `seeds`. */
+static inline uint64_t ts_create_pda_address(const SolSignerSeed *seeds, int n, const SolPubkey *program, SolPubkey *out) {
+  if (!ts_pda_seeds_ok(seeds, n, TS_MAX_PDA_SEEDS) || !ts_pda_hash(seeds, n, NULL, program, out)) return 1; /* not SUCCESS: the PDA syscalls fail the same inputs */
+  return SUCCESS;
+}
+
+/* sol_try_find_program_address: the canonical (highest) bump. */
+static inline uint64_t ts_find_pda(const SolSignerSeed *seeds, int n, const SolPubkey *program, SolPubkey *out, uint8_t *bump_out) {
+  if (!ts_pda_seeds_ok(seeds, n, TS_MAX_PDA_SEEDS - 1)) return 1; /* not SUCCESS: the PDA syscalls fail the same inputs */
+  for (int b = 255; b >= 0; b--) {
+    uint8_t bump = (uint8_t)b;
+    if (ts_pda_hash(seeds, n, &bump, program, out)) {
+      *bump_out = bump;
+      return SUCCESS;
+    }
+  }
+  return 1; /* not SUCCESS: the PDA syscalls fail the same inputs */
+}
+
 /* ---- Account checks ------------------------------------------------------ */
 /* Copy between two places of the same type: distinct, or the very same place (then nothing to do). */
 static inline void ts_copy(void *dst, const void *src, uint64_t n) {
@@ -461,7 +510,7 @@ static inline uint64_t ts_check_program_data(const TsAccount *a, const SolPubkey
   SolSignerSeed seed = {(const uint8_t *)program_id, 32};
   SolPubkey expected;
   uint8_t bump;
-  if (sol_try_find_program_address(&seed, 1, &TS_BPF_UPGRADEABLE_LOADER_ID, &expected, &bump) != SUCCESS || !ts_key_eq(&expected, &a->key))
+  if (ts_find_pda(&seed, 1, &TS_BPF_UPGRADEABLE_LOADER_ID, &expected, &bump) != SUCCESS || !ts_key_eq(&expected, &a->key))
     TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: not this program's ProgramData account");
   return SUCCESS;
 }
@@ -471,7 +520,7 @@ static const uint8_t TS_EVENT_IX_TAG[8] = {0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0
 static inline uint64_t ts_check_event_authority(const TsAccount *a, const SolPubkey *program_id, uint8_t *bump) {
   SolSignerSeed seed = {(const uint8_t *)"__event_authority", 17};
   SolPubkey expected;
-  if (sol_try_find_program_address(&seed, 1, program_id, &expected, bump) != SUCCESS || !ts_key_eq(&expected, &a->key))
+  if (ts_find_pda(&seed, 1, program_id, &expected, bump) != SUCCESS || !ts_key_eq(&expected, &a->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: not this program's event authority");
   return SUCCESS;
 }
@@ -510,7 +559,7 @@ static inline uint64_t ts_init_zeroed(TsAccount *a, const SolPubkey *program_id,
 static inline uint64_t ts_require_pda(const TsAccount *a, const SolSignerSeed *seeds, int n,
                                       const SolPubkey *program_id) {
   SolPubkey derived;
-  if (sol_create_program_address(seeds, n, program_id, &derived) != SUCCESS || !ts_key_eq(&derived, &a->key))
+  if (ts_create_pda_address(seeds, n, program_id, &derived) != SUCCESS || !ts_key_eq(&derived, &a->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
   return SUCCESS;
 }
@@ -536,7 +585,7 @@ static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccou
                                      uint8_t *bump_out) {
   SolPubkey derived;
   uint8_t bump;
-  if (sol_try_find_program_address(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
+  if (ts_find_pda(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
       !ts_key_eq(&derived, &acct->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
   if (acct->data_len != 0 || !ts_key_eq(&acct->owner, &TS_SYSTEM_PROGRAM_ID))
@@ -627,7 +676,7 @@ static inline uint64_t ts_create_pda_if_needed(TsParams *params, TsAccount *paye
   if (ts_key_eq(&acct->owner, params->program_id)) {
     SolPubkey derived;
     uint8_t bump;
-    if (sol_try_find_program_address(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
+    if (ts_find_pda(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
         !ts_key_eq(&derived, &acct->key))
       TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
     if (acct->data_len < space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
@@ -1105,7 +1154,7 @@ static const SolPubkey TS_MPL_METADATA_ID = {{11,112,101,177,227,209,124,69,56,1
 static inline uint64_t ts_ata_address(const SolPubkey *owner, const SolPubkey *mint, const SolPubkey *token_program, SolPubkey *out) {
   SolSignerSeed seeds[3] = {{(const uint8_t *)owner, 32}, {(const uint8_t *)token_program, 32}, {(const uint8_t *)mint, 32}};
   uint8_t bump;
-  if (sol_try_find_program_address(seeds, 3, &TS_ATA_PROGRAM_ID, out, &bump) != SUCCESS)
+  if (ts_find_pda(seeds, 3, &TS_ATA_PROGRAM_ID, out, &bump) != SUCCESS)
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: cannot derive the associated token address");
   return SUCCESS;
 }
@@ -1155,7 +1204,7 @@ static inline uint64_t ts_t22_init_metadata(TsParams *params, const TsAccount *p
 static inline uint64_t ts_metadata_address(const SolPubkey *mint, SolPubkey *out) {
   SolSignerSeed seeds[3] = {{(const uint8_t *)"metadata", 8}, {(const uint8_t *)&TS_MPL_METADATA_ID, 32}, {(const uint8_t *)mint, 32}};
   uint8_t bump;
-  if (sol_try_find_program_address(seeds, 3, &TS_MPL_METADATA_ID, out, &bump) != SUCCESS)
+  if (ts_find_pda(seeds, 3, &TS_MPL_METADATA_ID, out, &bump) != SUCCESS)
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: cannot derive the metadata address");
   return SUCCESS;
 }
@@ -1225,7 +1274,7 @@ static inline uint64_t ts_update_extra_metas(TsParams *params, TsAccount *payer,
   SolSignerSeed seeds[2] = {{(const uint8_t *)"extra-account-metas", 19}, {(const uint8_t *)mint, 32}};
   SolPubkey pda;
   uint8_t bump;
-  if (sol_try_find_program_address(seeds, 2, params->program_id, &pda, &bump) != SUCCESS || !ts_key_eq(&pda, &acct->key))
+  if (ts_find_pda(seeds, 2, params->program_id, &pda, &bump) != SUCCESS || !ts_key_eq(&pda, &acct->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: not the mint's extra-account-metas PDA");
   if (!ts_key_eq(&acct->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: the extra-account-metas account is not this program's");
   if (acct->data_len < 16 || ts_ld64(acct->data) != ts_ld64(TS_TRANSFER_HOOK_EXECUTE_DISC))
