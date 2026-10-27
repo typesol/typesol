@@ -84,7 +84,7 @@ describe("FixedVec", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-fixedvec-"));
     const errors = (body: string) => {
       const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type Account, type FixedVec, type Mut, type Vec, type u64, fixedVec } from "typesol";\n${body}\n`);
+      writeFileSync(file, `import { type Account, type FixedVec, type Mut, type Vec, type u64, emit, fixedVec } from "typesol";\n${body}\n`);
       try {
         generate(file);
         return "";
@@ -97,6 +97,9 @@ describe("FixedVec", () => {
     expect(errors(`export interface S { a: FixedVec<u64, 0>; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/literal capacity/);
     expect(errors(`export interface S { a: FixedVec<string, 2> }\nexport function f(s: Account<S>): void {}`)).toMatch(/fixed size/);
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: S): void {}`)).toMatch(/only account data can/);
+    expect(errors(`export interface E { a: FixedVec<u64, 2> }\nexport function f(): void { emit<E>({ a: fixedVec([]) }); }`)).toMatch(
+      /not supported in events/,
+    );
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: Mut<S>): void { s.a = fixedVec([1n, 2n, 3n]); }`)).toMatch(/do not fit/);
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: Mut<S>): void { s.a.push(1n); s.a.set(0n, 2n); }`)).toBe("");
   });
