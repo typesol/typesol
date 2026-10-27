@@ -5,6 +5,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.14.0 — 2026-10-27
+
+PDAs are derived without the PDA syscalls, so instructions that create, check or search for PDAs use up to a few
+thousand fewer compute units. No language, IDL or error-code changes. Not externally audited (see SECURITY.md).
+
 ### Performance
 - PDAs are derived with the `sol_sha256` and `sol_curve_validate_point` syscalls instead of
   `sol_try_find_program_address` / `sol_create_program_address` (1,500 CU per bump tried): the
