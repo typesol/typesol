@@ -30,12 +30,22 @@ Status:
 | `basics/realloc` | `basics/realloc.ts` | PARTIAL | the keypair account is the PDA `["message", payer]`; `input: String` is a `Vec<u8>` (same bytes); `realloc::payer` lamports are settled explicitly |
 | `basics/repository-layout` | | NOT ATTEMPTED | a Rust module-layout demo with no account state: string arguments matched against in-program lists of structs with `String` fields |
 | `basics/transfer-sol` | `basics/transfer-sol.ts` | PORTED | |
+| `tokens/create-token` | `tokens/create-token.ts` | PARTIAL | the metadata address log line is two lines |
+| `tokens/escrow` | `tokens/escrow.ts` | PARTIAL | transfers into associated token accounts created in the instruction are hand-encoded `TransferChecked` |
+| `tokens/external-delegate-token-master` | `tokens/external-delegate-token-master.ts` | PARTIAL | keypair `init`; the Ethereum address is a left-padded `Hash`, the signature `r, s, recovery_id`; PDA bump argument; high-s signatures refused |
+| `tokens/merkle-tree-token-claimer` | `tokens/merkle-tree-token-claimer.ts` | PARTIAL | proof siblings are hashed as four u64 words each (same bytes); mint and transfer into created accounts are hand-encoded |
+| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | Token Metadata create (creators, collection), master edition and Verify are hand-encoded; bump argument; a wrong metadata account fails with 6000, not 3003 |
+| `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PARTIAL | mint bump argument; `MintTo` into the created ATA is hand-encoded; address log lines are two lines |
+| `tokens/token-fundraiser` | `tokens/token-fundraiser.ts` | PARTIAL | the payout into the `init_if_needed` maker ATA is a hand-encoded `Transfer` |
+| `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PARTIAL | authority and liquidity bump arguments; transfers and mints into created ATAs are hand-encoded |
+| `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PARTIAL | `MintTo` / `Transfer` into the created ATA are hand-encoded; address log lines are two lines |
 
 "Hand-encoded" means the port builds the instruction with `invoke` because TypeSOL has no builtin for it, or because
 the typed builtin needs a `TokenAccount` and the account is created in the same instruction (TypeSOL checks typed
 parameters before the body runs).
 
-Tests: `test/ports-basics.test.ts`.
+Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` (skipped without
+`pnpm fetch:programs`).
 
 ## License
 
