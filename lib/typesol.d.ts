@@ -84,8 +84,12 @@ export interface RemainingAccount {
   readonly isWritable: boolean;
 }
 
-/** The accounts a client passed beyond the instruction's declared parameters. */
-export interface RemainingAccounts {
+/**
+ * The accounts a client passed beyond the instruction's declared parameters. Spread them into a CPI's account list:
+ * `...remainingAccounts()` passes each with the flags it was passed with (Rust's `extend_from_slice`),
+ * `...readonly(rest)` / `...writable(rest)` pass them all with that role (a cNFT proof, a harvest's sources).
+ */
+export interface RemainingAccounts extends Iterable<CpiAccount> {
   readonly length: u64;
   get(index: bigint): RemainingAccount;
 }
@@ -611,7 +615,9 @@ export interface CpiAccount {
   readonly __cpi_account: void;
 }
 export declare function readonly(account: AccountMeta | RemainingAccount): CpiAccount;
+export declare function readonly(accounts: RemainingAccounts): Iterable<CpiAccount>;
 export declare function writable(account: AccountMeta | RemainingAccount): CpiAccount;
+export declare function writable(accounts: RemainingAccounts): Iterable<CpiAccount>;
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;
 

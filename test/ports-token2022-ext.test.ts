@@ -5,7 +5,7 @@ import { type Address, address, generateKeyPairSigner, getAddressEncoder, lampor
 import { createHash } from "node:crypto";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
-import { ATA_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
+import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
 import { ataOf, createMint, deployPort, fundAta, tokenBalance } from "./ports-helpers.js";
 
 const MEMO_PROGRAM = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
@@ -354,5 +354,85 @@ describe("port: tokens/token-2022/nft-meta-data-pointer", () => {
     expect(customError(await chop(sessionSigner, token, 4))).toBe(6001);
     setToken(stranger.address, nowTs + 3600n); // issued to someone else
     expect(customError(await chop(sessionSigner, token, 5))).toBe(6001);
+  });
+});
+
+describe("port: tokens/token-2022/transfer-fee", () => {
+  it("charges the transfer fee, harvests it from the remaining accounts, withdraws it and changes it", async () => {
+    const d = await deployPort("tokens/token-2022/transfer-fee.ts", "4evptdGtALCNT8uTxJhbWBRZpBE8w5oNtmgfSyfQu7td");
+    const { svm } = d;
+    const payer = await fundedSigner(svm);
+    const mint = await generateKeyPairSigner();
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "initialize", { transfer_fee_basis_points: 100, maximum_fee: new BN(1) }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint.address, signer: mint, writable: true },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    const senderAta = await fundAta(svm, payer, payer.address, mint.address, 300n, { tokenProgram: TOKEN_2022 });
+    const recipient = (await generateKeyPairSigner()).address;
+    const recipientAta = await ataOf(recipient, mint.address, TOKEN_2022);
+    const transfer = (amount: number) =>
+      send(svm, payer, [
+        ix(d, "transfer", { amount: new BN(amount) }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: recipient },
+          { address: mint.address, writable: true },
+          { address: senderAta, writable: true },
+          { address: recipientAta, writable: true },
+          { address: TOKEN_2022 },
+          { address: ATA_PROGRAM },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    const withheld = (a: Address) => {
+      const raw = (svm.getAccount(a) as { data: Uint8Array }).data;
+      const ext = (t22.getTokenDecoder().decode(raw).extensions as { value: { __kind: string; withheldAmount?: bigint }[] }).value;
+      return ext.find((e) => e.__kind === "TransferFeeAmount")!.withheldAmount;
+    };
+    const t1 = expectOk(await transfer(100)); // 1% of 100
+    expect(t1.logs()).toContain("Program log: fee amount 1");
+    expectOk(await transfer(200)); // 1% of 200 = 2, capped at the maximum fee of 1
+    expect(tokenBalance(svm, recipientAta)).toBe(298n);
+    expect(withheld(recipientAta)).toBe(2n);
+    // harvest: the recipient's account, plus an account that is not a token account (Token-2022 skips it).
+    const stray = (await generateKeyPairSigner()).address;
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "harvest", {}, [
+          { address: mint.address, writable: true },
+          { address: TOKEN_2022 },
+          { address: recipientAta, writable: true },
+          { address: stray },
+        ]),
+      ]),
+    );
+    expect(withheld(recipientAta)).toBe(0n);
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "withdraw", {}, [
+          { address: payer.address, signer: payer },
+          { address: mint.address, writable: true },
+          { address: senderAta, writable: true },
+          { address: TOKEN_2022 },
+        ]),
+      ]),
+    );
+    expect(tokenBalance(svm, senderAta)).toBe(2n);
+    // update_fee: the new fee applies from the next epoch (Token-2022 keeps the older one for the current epoch).
+    const update = (who: typeof payer) =>
+      send(svm, who, [
+        ix(d, "update_fee", { transfer_fee_basis_points: 0, maximum_fee: new BN(0) }, [
+          { address: who.address, signer: who },
+          { address: mint.address, writable: true },
+          { address: TOKEN_2022 },
+        ]),
+      ]);
+    expect(await update(await fundedSigner(svm))).toBeInstanceOf(FailedTransactionMetadata);
+    expectOk(await update(payer));
   });
 });
