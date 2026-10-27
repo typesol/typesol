@@ -5,6 +5,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Docs
+- README: the official escrow on mainnet-beta in all four versions, with each transaction's compute units linked to
+  Solscan; the TypeSOL program's IDL is published on chain.
+
 ## 0.14.0 — 2026-10-27
 
 PDAs are derived without the PDA syscalls, so instructions that create, check or search for PDAs use up to a few
