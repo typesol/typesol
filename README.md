@@ -162,7 +162,8 @@ existing project: `npm install -D typesol@npm:@typesol/cli`.
 Deploying again upgrades the program in place. Keep `target/deploy/<name>-keypair.json`: that keypair is your
 program's address.
 
-Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+Coming from Anchor: [docs/migrate-from-anchor.md](docs/migrate-from-anchor.md) maps every construct, and `typesol port`
+starts from your program's IDL. Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works

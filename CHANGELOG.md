@@ -57,6 +57,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `typesol/testing`: Options and FixedStrings in decoded accounts and return data come back as plain values; passing
   an address where an account must sign is reported up front.
 
+### Docs
+- docs/migrate-from-anchor.md: Anchor constructs, account data, code and tooling mapped to TypeSOL, with the `typesol port`
+  workflow and which account layouts differ.
+
 ## 0.15.0 — 2026-10-27
 
 Project templates for `typesol init`, a mainnet deployment guide, and clearer `typesol idl publish` failures. No
