@@ -81,8 +81,9 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     "-Wno-parentheses-equality",
     // Generated checks may be always true/false (`a === a`, `enumByte >= 256` for a 256-variant enum); that is not an error.
     "-Wno-tautological-compare",
-    // SBF gives every function a 4 KiB stack frame; past it the program corrupts memory instead of failing.
-    `-Wframe-larger-than=${STACK_FRAME}`,
+    // SBPF v0 gives every function a fixed 4 KiB stack frame; past it the program corrupts memory instead of failing.
+    // v1 and v2 grow frames dynamically, so the limit does not apply there.
+    ...(sbpf === "v0" ? [`-Wframe-larger-than=${STACK_FRAME}`] : []),
     "-O2",
     "-fno-builtin",
     // One section per function and constant, so the linker's --gc-sections can drop what nothing reaches.
@@ -137,9 +138,15 @@ function stackError(message: string): Error | undefined {
   // clang inlines helpers into their callers, so an instruction's frame includes theirs.
   const what = (fn: string) =>
     fn.startsWith("ix_") ? `instruction ${fn.slice(3)} (with the helpers inlined into it)` : fn.startsWith("fn_") ? `helper ${fn.slice(3)}()` : fn;
+  // Anything else clang reported in the same run stays in the message.
+  const rest = message
+    .split("\n")
+    .filter((l) => / error: /.test(l) && !/-Wframe-larger-than/.test(l))
+    .join("\n");
   return new Error(
-    over.map((m) => `${what(m[3])} needs ${m[1]} bytes of stack; SBF gives each function ${m[2]}`).join("\n") +
-      "\nKeep large structs and arrays in account data: bind them with const (a reference) instead of a typed local copy, or split the work into helpers.",
+    over.map((m) => `${what(m[3])} needs ${m[1]} bytes of stack; SBPF v0 gives each function ${m[2]}`).join("\n") +
+      "\nKeep large structs and arrays in account data: bind them with const (a reference) instead of a typed local copy, or split the work into helpers." +
+      (rest ? `\n${rest}` : ""),
   );
 }
 

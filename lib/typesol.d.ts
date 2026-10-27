@@ -606,16 +606,6 @@ interface TokenOps {
   mintTo(mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   burn(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   closeAccount(account: TokenAccount, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
-  /** Token-2022 only: write name/symbol/uri into a mint whose MetadataPointer points at itself (the mint needs lamports for the larger size). */
-  initializeMetadata(
-    mint: Mint,
-    updateAuthority: AccountMeta,
-    mintAuthority: AccountMeta,
-    name: string,
-    symbol: string,
-    uri: string,
-    signerSeeds?: Seed[] | SignerSeeds,
-  ): void;
   /** Let `delegate` move up to `amount` from `source`. */
   approve(source: TokenAccount, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   revoke(source: TokenAccount, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
@@ -629,6 +619,20 @@ interface TokenOps {
   initializeMint2(mint: AccountMeta, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): void;
   /** Initialize a token account created with systemProgram.createAccount (InitializeAccount3). */
   initializeAccount3(account: AccountMeta, mint: AccountMeta, owner: Pubkey): void;
+}
+
+/** Operations only Token-2022 has: on Token2022Program and TokenInterface, not on TokenProgram. */
+interface Token2022Ops {
+  /** Token-2022 only: write name/symbol/uri into a mint whose MetadataPointer points at itself (the mint needs lamports for the larger size). */
+  initializeMetadata(
+    mint: Mint,
+    updateAuthority: AccountMeta,
+    mintAuthority: AccountMeta,
+    name: string,
+    symbol: string,
+    uri: string,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
 
   // Token-2022 extensions, set up on a mint created with room for them, before initializeMint2 (or, for the token
   // account ones, before initializeAccount3). Token-2022 only: refused at compile time on TokenProgram.
@@ -662,12 +666,12 @@ export interface TokenProgram extends AccountMeta, TokenOps {
 }
 
 /** The Token-2022 program (TokenzQdB...). Its address is checked. */
-export interface Token2022Program extends AccountMeta, TokenOps {
+export interface Token2022Program extends AccountMeta, TokenOps, Token2022Ops {
   readonly __token2022: void;
 }
 
 /** Either token program. Token accounts and mints passed alongside must belong to the program given. */
-export interface TokenInterface extends AccountMeta, TokenOps {
+export interface TokenInterface extends AccountMeta, TokenOps, Token2022Ops {
   readonly __token_interface: void;
 }
 

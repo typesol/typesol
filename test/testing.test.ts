@@ -1,4 +1,9 @@
 // typesol/testing: accounts by name with the IDL's flags and fixed addresses, plain argument and result values.
+import { findAssociatedTokenPda } from "@solana-program/token-2022";
+import type { Address } from "@solana/kit";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { programHarness } from "../src/testing.js";
@@ -36,6 +41,29 @@ describe("typesol/testing", () => {
     const ledger = await u.pda("ledger", admin);
     u.ok(await u.send(admin, u.ix("add", { who, amount: 5n }, { admin, ledger }))); // no seeds in this instruction: passed
     expect((await u.account<{ entries: { amount: bigint }[] }>("Ledger", ledger))?.entries[0].amount).toBe(5n);
+  });
+
+  it("derives ATAs whose token program has a fixed address, and PDAs seeded by unit-enum arguments", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-testing-"));
+    const file = path.join(dir, "seeds.ts");
+    writeFileSync(
+      file,
+      `import { type AccountInfo, type Ata, type Mint, type Seeds, type Signer, type TokenAccount, type TokenProgram } from "typesol";
+export enum Side { Bid, Ask }
+export function holder(owner: AccountInfo, mint: Mint, ata: Ata<TokenAccount, "owner", "mint">, tokenProgram: TokenProgram): void {}
+export function book(payer: Signer, book: Seeds<AccountInfo, ["book", "@side"]>, side: Side): void {}
+`,
+    );
+    const d = await deployFile(file);
+    const t = programHarness(d.svm, d.programId, d.idl as never);
+    const owner = (await t.wallet()).address;
+    const mint = (await t.wallet()).address;
+    const built = t.ix("holder", {}, { owner, mint });
+    const [expected] = await findAssociatedTokenPda({ owner, mint, tokenProgram: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address });
+    expect(built.accounts![2].address).toBe(expected);
+    const payer = await t.wallet();
+    expect(t.ix("book", { side: 1 }, { payer }).accounts![1].address).toBe(await t.pda("book", Uint8Array.of(1)));
+    expect(t.ix("book", { side: { ask: {} } }, { payer }).accounts![1].address).toBe(await t.pda("book", Uint8Array.of(1)));
   });
 
   it("says what is wrong with an instruction it cannot build", async () => {

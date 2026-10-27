@@ -426,9 +426,13 @@ export abstract class CpiEmitter extends CallEmitter {
       case "initializeTransferFeeConfig": {
         const mint = mintOnly(5, "initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)");
         this.model.options.set("pubkey", PUBKEY);
-        const bps = this.expect(this.expr(a[3], U16), U16, a[3]);
-        this.line(`if (${bps.c} > 10000) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: transfer fee above 10000 basis points");`);
-        simple(26, [byte(0), value(a[1], optKey), value(a[2], optKey), (put) => this.serialize(bps, a[3], put), value(a[4], U64)], [[mint, true, false]], none);
+        // Arguments in source order, as JS evaluates them: the basis points are checked when they are read.
+        const bps = (put: Put) => {
+          const v = this.expect(this.expr(a[3], U16), U16, a[3]);
+          this.line(`if (${v.c} > 10000) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: transfer fee above 10000 basis points");`);
+          this.serialize(v, a[3], put);
+        };
+        simple(26, [byte(0), value(a[1], optKey), value(a[2], optKey), bps, value(a[4], U64)], [[mint, true, false]], none);
         return undefined;
       }
       case "initializeMintCloseAuthority": {

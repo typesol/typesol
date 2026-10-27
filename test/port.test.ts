@@ -1,5 +1,6 @@
 // typesol port: a skeleton from an IDL compiles, and keeps instruction discriminators, arguments, account flags,
 // account layouts and error codes. Round trip: example → IDL → port → compile → IDL.
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ import { build, generate } from "../src/compiler/index.js";
 import { generatePort, type PortIdl } from "../src/portgen.js";
 
 const ADDRESS = "11111111111111111111111111111112";
+const sighash = (preimage: string) => [...createHash("sha256").update(preimage).digest().subarray(0, 8)];
 const tmp = () => mkdtempSync(path.join(os.tmpdir(), "typesol-port-"));
 type AnyIdl = PortIdl & {
   instructions: {
@@ -84,11 +86,70 @@ describe("typesol port", () => {
     writeFileSync(file, source);
     const ported = buildIdl(generate(file).model, ADDRESS) as unknown as AnyIdl;
     expect(ported.instructions[0].discriminator).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(notes.join("\n")).toMatch(/Thing\.name: a Borsh String/);
-    expect(notes.join("\n")).toMatch(/Thing\.items: a Vec that is not the last field/);
-    expect(notes.join("\n")).toMatch(/Thing\.best: Option in account data/);
+    expect(notes.join("\n")).toMatch(/Thing\.name: Anchor encodes this String/);
+    expect(notes.join("\n")).toMatch(/Thing\.items: a Vec here/);
+    expect(notes.join("\n")).toMatch(/Thing\.best: an Option in account data/);
     expect(notes.join("\n")).toMatch(/errors: .*6100/);
     expect(notes.join("\n")).toMatch(/account Thing: its discriminator is not/);
+  });
+
+  it("compiles awkward IDLs: comment ends in docs, clashing names, reserved words, expressions, tuples, generics", () => {
+    const idl: PortIdl = {
+      metadata: { name: "9lives" },
+      constants: [
+        { name: "DAY", type: "i64", value: "60 * 60 * 24" },
+        { name: "MAX", type: "u64", value: "1_000" },
+      ],
+      instructions: [
+        {
+          name: "deposit",
+          docs: ["Deposit */ tokens"],
+          discriminator: sighash("global:deposit"),
+          accounts: [
+            { name: "amount", writable: true },
+            { name: "require", signer: true },
+            { name: "group", accounts: [{ name: "long", writable: true }] },
+          ],
+          args: [
+            { name: "amount", type: "u64" },
+            { name: "pair", type: { defined: { name: "Pair" } } },
+            { name: "act", type: { defined: { name: "Act" } } },
+          ],
+        },
+      ],
+      accounts: [{ name: "Market", discriminator: sighash("account:Market") }],
+      types: [
+        { name: "Pair", type: { kind: "struct", fields: ["u64", "u64"] as never } },
+        { name: "Wrap", generics: [{ kind: "type", name: "T" }], type: { kind: "struct", fields: [] } },
+        { name: "Act", type: { kind: "enum", variants: [{ name: "A", fields: ["u64", "bool"] as never }, { name: "B" }] } },
+        {
+          name: "Market",
+          type: {
+            kind: "struct",
+            fields: [
+              { name: "signed", type: "u8" },
+              { name: "blob", type: "bytes" },
+              { name: "last", type: { defined: { name: "Act" } } },
+              { name: "fee", type: { coption: "u64" } },
+            ],
+          },
+        },
+      ],
+    };
+    const { source, notes } = generatePort(idl);
+    const file = path.join(tmp(), "awkward.ts");
+    writeFileSync(file, source);
+    const ported = buildIdl(generate(file).model, ADDRESS) as unknown as AnyIdl;
+    expect(ported.instructions[0].discriminator).toEqual(sighash("global:deposit"));
+    expect(ported.instructions[0].accounts.map((a) => a.name)).toEqual(["amount", "require_value", "group_long"]);
+    const all = notes.join("\n");
+    expect(all).toMatch(/constant DAY = 60 \* 60 \* 24: not a literal/);
+    expect(all).toMatch(/arg "amount" renamed to "amountArg"/);
+    expect(all).toMatch(/Pair could not be ported/);
+    expect(all).toMatch(/Market\.blob: a Vec here/);
+    expect(all).toMatch(/Market\.last: Act is a data enum/);
+    expect(all).toMatch(/Market\.fee: a COption/);
+    expect(source).toContain("f0: u64; f1: boolean");
   });
 
   it("ports the Anchor vault IDL into a program that compiles", () => {

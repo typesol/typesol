@@ -49,7 +49,7 @@ const C_RESERVED = new Set([
 ]);
 
 /** Why a name cannot be used as a C member, or undefined when it can. */
-function cNameProblem(name: string): string | undefined {
+export function cNameProblem(name: string): string | undefined {
   if (name.includes("__") || name.startsWith("_")) return `"${name}": names starting with "_" or containing "__" are reserved for generated code`;
   if (name.includes("$")) return `"${name}": "$" is not allowed in names`;
   if (C_RESERVED.has(name) || /^(_[A-Z]|ERROR_|TS_|INT\d|UINT\d|ALT_BN128_|SECP256K1_|POSEIDON_|SHA256_|KECCAK_|BLAKE3_)/.test(name))

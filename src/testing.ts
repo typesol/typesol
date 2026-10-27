@@ -148,6 +148,17 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       const o = v as Record<string, unknown>;
       return Object.fromEntries(def.type.fields.map((f) => [f.name, toCoder(o[f.name] ?? o[camel(f.name)], f.type, `${where}.${f.name}`)]));
     }
+    // A unit enum as its index or variant name, as well as Anchor's { Variant: {} }.
+    const variants = (def?.type as { variants?: { name: string }[] } | undefined)?.variants;
+    const unitObject = typeof v === "object" && v !== null && Object.keys(v).length === 1 && !Object.values(v)[0];
+    const emptyObject = typeof v === "object" && v !== null && Object.keys(v).length === 1 && Object.keys(Object.values(v)[0] as object).length === 0;
+    if (def?.type.kind === "enum" && variants && (typeof v === "number" || typeof v === "bigint" || typeof v === "string" || unitObject || emptyObject)) {
+      const key = typeof v === "object" ? Object.keys(v as object)[0] : v;
+      const same = (x: { name: string }) => x.name === key || camel(x.name) === key || x.name.toLowerCase() === String(key).toLowerCase();
+      const i = typeof key === "string" ? variants.findIndex(same) : Number(key);
+      if (!variants[i]) throw new Error(`${where}: ${String(v)} is not a variant of ${type.defined.name}`);
+      return { [variants[i].name]: {} };
+    }
     return v;
   };
 
@@ -199,6 +210,17 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     if (type === "string") return new TextEncoder().encode(v as string);
     return undefined;
   };
+  /** A unit-enum argument as a seed: one byte, its variant index (given as the index or as Anchor's { Variant: {} }). */
+  const enumSeed = (v: unknown, type: IdlType): Uint8Array | undefined => {
+    if (typeof type !== "object" || !("defined" in type) || v === undefined || v === null) return undefined;
+    const def = types.get(type.defined.name) as { type: { kind: string; variants?: { name: string; fields?: unknown[] }[] } } | undefined;
+    const variants = def?.type.kind === "enum" ? def.type.variants : undefined;
+    if (!variants || variants.some((x) => x.fields?.length)) return undefined;
+    if (typeof v === "number" || typeof v === "bigint") return Uint8Array.of(Number(v));
+    const name = typeof v === "object" ? Object.keys(v as object)[0] : String(v);
+    const i = variants.findIndex((x) => x.name === name || camel(x.name) === name || x.name.toLowerCase() === String(name).toLowerCase());
+    return i < 0 ? undefined : Uint8Array.of(i);
+  };
 
   const seedBytes = (s: SeedInput): Uint8Array => {
     if (s instanceof Uint8Array) return s;
@@ -238,7 +260,8 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       // PDAs whose seeds are constants, arguments or other accounts' keys are filled in, as the generated client does.
       const addressOf = (name: string): Address | undefined => {
         const v = given.get(name);
-        return v === undefined || v === null ? undefined : isSigner(v) ? v.address : v;
+        if (v === undefined || v === null) return def.accounts.find((x) => x.name === name)?.address as Address | undefined; // fixed in the IDL
+        return isSigner(v) ? v.address : v;
       };
       for (let progress = true; progress;) {
         progress = false;
@@ -251,7 +274,8 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
               return at && new Uint8Array(enc.encode(at));
             }
             const arg = def.args.find((x) => x.name === s.path);
-            return arg && argSeed(argsIn[arg.name] ?? argsIn[camel(arg.name)], arg.type);
+            const value = arg && (argsIn[arg.name] ?? argsIn[camel(arg.name)]);
+            return arg && (argSeed(value, arg.type) ?? enumSeed(value, arg.type));
           };
           const seeds = a.pda.seeds.map(seed);
           const program = a.pda.program ? seed(a.pda.program) : new Uint8Array(enc.encode(programId));
