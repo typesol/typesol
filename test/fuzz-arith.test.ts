@@ -155,6 +155,53 @@ describe(`differential arithmetic fuzzing (seed ${SEED}, ${RUNS} runs per case)`
     });
   }
 
+  it("** matches BigInt at every width; overflow and negative exponents abort", async () => {
+    const rng = new Rng(SEED + 1009n);
+    const mismatches: string[] = [];
+    const seen = { ok: 0, overflow: 0 };
+    const powModel = (a: bigint, b: bigint, w: Width): Outcome => {
+      const { min, max } = range(w);
+      if (b < 0n) return { err: OVERFLOW };
+      // |a| <= 1 never grows; otherwise an exponent at or past the width always leaves the range.
+      if (a === 0n) return { ok: b === 0n ? 1n : 0n };
+      if (a === 1n) return { ok: 1n };
+      if (a === -1n) return { ok: b % 2n === 0n ? 1n : -1n };
+      if (b >= BigInt(w.bits)) return { err: OVERFLOW };
+      const r = a ** b;
+      return r < min || r > max ? { err: OVERFLOW } : { ok: r };
+    };
+    for (const [name, w] of [
+      ["pow_u8", { bits: 8, signed: false }],
+      ["pow_u16", { bits: 16, signed: false }],
+      ["pow_u32", { bits: 32, signed: false }],
+      ["pow_u64", { bits: 64, signed: false }],
+      ["pow_u128", { bits: 128, signed: false }],
+      ["pow_i8", { bits: 8, signed: true }],
+      ["pow_i16", { bits: 16, signed: true }],
+      ["pow_i32", { bits: 32, signed: true }],
+      ["pow_i64", { bits: 64, signed: true }],
+      ["pow_i128", { bits: 128, signed: true }],
+    ] as [string, Width][]) {
+      const { min, max } = range(w);
+      for (let i = 0; i < Math.max(20, RUNS / 5); i++) {
+        // Small bases and exponents near the width most of the time: that is where results cross the range.
+        const small = (lim: bigint) => (rng.next() % (2n * lim + 1n)) - (w.signed ? lim : 0n);
+        let a = rng.next() % 3n === 0n ? sample(rng, w) : small(17n);
+        if (a < min || a > max) a = 2n;
+        let b = rng.next() % 4n === 0n ? sample(rng, w) : rng.next() % BigInt(w.bits + 3);
+        if (b > max) b = max;
+        const got = outcome(await send(d.svm, payer, [ix(d, name, { a: new BN(a.toString()), b: new BN(b.toString()) }, [])]), w);
+        const want = powModel(a, b, w);
+        if (fmt(got) !== fmt(want)) mismatches.push(`${name} ${a} ** ${b}: chain ${fmt(got)}, model ${fmt(want)}`);
+        if ("ok" in got) seen.ok++;
+        else if (got.err === OVERFLOW) seen.overflow++;
+      }
+    }
+    expect(mismatches.slice(0, 5)).toEqual([]);
+    expect(seen.ok).toBeGreaterThan(20);
+    expect(seen.overflow).toBeGreaterThan(20);
+  });
+
   it("shifts by an amount of another type", async () => {
     const r = outcome(await send(d.svm, payer, [ix(d, "shift_mixed", { a: new BN(0xff), by: 8 }, [])]), { bits: 64, signed: false });
     expect(fmt(r)).toBe("ok 255");
