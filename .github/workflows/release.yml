@@ -1,6 +1,7 @@
 name: release
-# Publishes a tagged version to npm. Started by hand only (Actions → release → Run workflow): tags and GitHub Releases
-# never publish on their own. It builds and tests the tag, then publishes; publishing needs the "npm" environment's NPM_TOKEN.
+# Publishes a tagged version to npm as @typesol/cli. Started by hand only (Actions → release → Run workflow): tags and
+# GitHub Releases never publish on their own. It builds and tests the tag, then publishes through npm trusted publishing
+# (OIDC: npm trusts this workflow in the "npm" environment of typesol/typesol), so no npm token is stored anywhere.
 on:
   workflow_dispatch:
     inputs:
@@ -21,7 +22,7 @@ jobs:
     environment: npm
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing and provenance
     steps:
       - name: Check the version
         env:
@@ -33,8 +34,10 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: npm with trusted publishing (11.5.1 or later)
+        run: npm install -g npm@11.21.1 && npm --version
       - name: Install Agave CLI and platform-tools
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
@@ -52,5 +55,3 @@ jobs:
         run: for i in 1 2 3; do bash scripts/fetch-programs.sh devnet && break; sleep 20; done
       - run: pnpm test
       - run: npm publish --provenance --access public --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
