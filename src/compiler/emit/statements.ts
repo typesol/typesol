@@ -69,6 +69,13 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`return SUCCESS;`);
       return;
     }
+    if (returns.kind === "struct") {
+      // Helpers only: write the struct through the caller's out pointer (a literal, a place or another helper's result).
+      if (!stmt.expression) this.fail(stmt, `return a ${returns.name}`);
+      this.writeAggregate({ lv: "(*ret)", type: returns, writable: true }, stmt.expression);
+      this.line(`return SUCCESS;`);
+      return;
+    }
     if (!stmt.expression) this.fail(stmt, `return a ${typeName(returns)}`);
     const v = this.expect(this.expr(stmt.expression, returns), returns, stmt.expression);
     if (this.helper) this.line(returns.kind === "pubkey" ? `*ret = *(${v.c});` : `*ret = ${v.c};`);
@@ -413,8 +420,15 @@ export abstract class StatementEmitter extends CpiEmitter {
     const createsFirst = isCall && ts.isPropertyAccessExpression(valueNode.expression) && ["create", "createIfNeeded"].includes(valueNode.expression.name.text);
     let raw = createsFirst ? this.call(valueNode as ts.CallExpression, topLevel) : undefined;
     if (createsFirst && !raw) this.fail(valueNode, "this call does not produce a value");
+    // A helper's struct result is copied like any struct (the target first, as JS evaluates it first).
+    const structCall =
+      isCall && ts.isIdentifier((valueNode as ts.CallExpression).expression)
+        ? this.model.helpers.get(((valueNode as ts.CallExpression).expression as ts.Identifier).text)?.returns?.kind === "struct"
+        : false;
+    if (structCall && this.writesThroughVec(target) && this.helperTakesMutAccounts(valueNode as ts.CallExpression))
+      this.fail(target, "the right side calls a helper that may change this Vec; store its result in a local first");
     // Whole arrays / structs: copy between identical layouts.
-    const targetRef = isCall ? undefined : this.ref(target);
+    const targetRef = isCall && !structCall ? undefined : this.ref(target);
     if (
       targetRef &&
       (targetRef.type.kind === "array" ||

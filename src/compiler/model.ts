@@ -189,11 +189,12 @@ export interface HelperParam {
   node: ts.ParameterDeclaration;
 }
 
-/** A non-exported function (or any function of an imported file): values and accounts in, scalar or void out. */
+/** A non-exported function (or any function of an imported file): values and accounts in; void, a scalar or a struct out. */
 export interface Helper {
   name: string;
   params: HelperParam[];
-  returns: ScalarType | undefined;
+  /** A struct result is written through an out pointer (`TSS_<name> *ret`) that the caller provides. */
+  returns: ScalarType | { kind: "struct"; name: string } | undefined;
   node: ts.FunctionDeclaration;
   /** The declaring file's `typesol` imports (local name -> export name). */
   imports: Map<string, string>;

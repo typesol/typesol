@@ -831,6 +831,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
       return undefined;
     }
     const t = this.tmp();
+    if (h.returns.kind === "struct") {
+      // The result lives in a local the caller owns: a reference to it reads and copies like any struct.
+      this.line(`TSS_${h.returns.name} ${t};`);
+      this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);
+      return { c: `(&${t})`, type: { kind: "structRef", struct: h.returns.name, writable: true } };
+    }
     this.line(`${scalarC(h.returns)} ${t};`);
     this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);
     return h.returns.kind === "pubkey" ? { c: `(&${t})`, type: h.returns } : { c: t, type: h.returns };

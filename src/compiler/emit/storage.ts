@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { resolveScalarType } from "../analyze.js";
-import { INT_INFO, type FieldType, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
+import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, storageDecl } from "./shared.js";
 import { EmitterBase } from "./base.js";
 
@@ -9,6 +9,8 @@ import { EmitterBase } from "./base.js";
  * argument validation.
  */
 export abstract class StorageEmitter extends EmitterBase {
+  protected abstract callHelper(node: ts.CallExpression, h: Helper): Value | undefined;
+
   /** C lines rejecting malformed fixed-layout data at `lv`: bools, enums, option tags, string lengths, enum tags. */
   protected validation(lv: string, t: FieldType, pad: string, fail = `TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid argument data")`): string[] {
     switch (t.kind) {
@@ -223,6 +225,14 @@ export abstract class StorageEmitter extends EmitterBase {
   protected ref(node: ts.Expression): Ref | undefined {
     if (ts.isParenthesizedExpression(node)) return this.ref(node.expression);
     this.noOptionalChain(node);
+    // A helper's struct result: a local of the caller's, read and copied like any struct.
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const h = this.model.helpers.get(node.expression.text);
+      if (h?.returns?.kind === "struct" && !this.lookup(node.expression.text)) {
+        const v = this.callHelper(node, h)!;
+        return { lv: `(*${v.c})`, type: { kind: "struct", name: h.returns.name }, writable: true };
+      }
+    }
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       if (l && l.type.kind === "array") return { lv: l.c, type: l.type, writable: !l.readonly };
