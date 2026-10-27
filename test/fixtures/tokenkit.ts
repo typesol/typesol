@@ -63,3 +63,39 @@ export function nameMetaplex(
   require(metadata.key === metadataAddress(mint.key), "not the metadata PDA");
   metadataProgram.createV3(metadata, mint, issuer, payer, issuer, systemProgram, name, symbol, uri, 500n, true, ["issuer", issuer.mint, issuer.bump]);
 }
+
+/** Metaplex metadata with creators and a (not yet verified) collection. */
+export function nameWithCreators(
+  payer: Mut<Signer>,
+  issuer: Account<Issuer>,
+  mint: Mint,
+  metadata: Mut<AccountInfo>,
+  systemProgram: SystemProgram,
+  metadataProgram: TokenMetadataProgram,
+  artist: Pubkey,
+  collectionMint: Pubkey,
+): void {
+  require(payer.key === issuer.admin, "admin only");
+  metadataProgram.createV3(
+    metadata,
+    mint,
+    issuer,
+    payer,
+    issuer,
+    systemProgram,
+    "TypeSOL #1",
+    "TSOL",
+    "https://example.com/1.json",
+    250n,
+    false,
+    {
+      creators: [
+        { address: artist, verified: false, share: 70n },
+        { address: payer.key, verified: false, share: 30n },
+      ],
+      collection: collectionMint,
+    },
+    ["issuer", issuer.mint, issuer.bump],
+  );
+}
+

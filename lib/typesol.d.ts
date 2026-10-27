@@ -208,6 +208,13 @@ export interface AssociatedTokenProgram extends AccountMeta {
 /** The associated token account address of `owner` for `mint` under `tokenProgram`. */
 export declare function associatedTokenAddress(owner: Pubkey, mint: Pubkey, tokenProgram: Pubkey): Pubkey;
 
+/** A creator in Metaplex metadata. `verified` can only be true for the update authority when it signs. */
+export interface MetadataCreator {
+  address: Pubkey;
+  verified: boolean;
+  share: u8;
+}
+
 /** Metaplex Token Metadata (metaqbxx…). Its address is checked. */
 export interface TokenMetadataProgram extends AccountMeta {
   readonly __mpl_metadata: void;
@@ -224,6 +231,22 @@ export interface TokenMetadataProgram extends AccountMeta {
     uri: string,
     sellerFeeBasisPoints: u16,
     isMutable: boolean,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** With creators (1–5, shares adding up to 100) and/or an unverified collection mint. */
+  createV3(
+    metadata: AccountMeta,
+    mint: AccountMeta,
+    mintAuthority: AccountMeta,
+    payer: Mut<Signer>,
+    updateAuthority: AccountMeta,
+    systemProgram: SystemProgram,
+    name: string,
+    symbol: string,
+    uri: string,
+    sellerFeeBasisPoints: u16,
+    isMutable: boolean,
+    extras: { creators?: MetadataCreator[]; collection?: Pubkey },
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
 }

@@ -612,11 +612,12 @@ export abstract class CpiEmitter extends CallEmitter {
   protected metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
     if (method !== "createV3") this.fail(node.expression, "the Token Metadata program supports createV3");
     const a = node.arguments;
-    if (a.length !== 11 && a.length !== 12)
-      this.fail(
-        node,
-        "createV3(metadata, mint, mintAuthority, payer, updateAuthority, systemProgram, name, symbol, uri, sellerFeeBasisPoints, isMutable, signerSeeds?)",
-      );
+    const usage =
+      "createV3(metadata, mint, mintAuthority, payer, updateAuthority, systemProgram, name, symbol, uri, sellerFeeBasisPoints, isMutable, { creators?, collection? }?, signerSeeds?)";
+    // An object literal after isMutable carries the optional creators / collection; signerSeeds stays last.
+    const extras = a[11] && ts.isObjectLiteralExpression(a[11]) ? a[11] : undefined;
+    const seedsArg = extras ? a[12] : a[11];
+    if (a.length < 11 || a.length > (extras ? 13 : 12)) this.fail(node, usage);
     const [metadata, mint, mintAuth, payer, updateAuth, sys] = a.slice(0, 6).map((n, i) => this.accountParam(n, `account #${i + 1}`));
     if (!isWritable(metadata.kind)) this.fail(a[0], "the metadata account must be Mut<AccountInfo>");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[3], "the payer must be a Mut<Signer>");
@@ -624,9 +625,54 @@ export abstract class CpiEmitter extends CallEmitter {
     const [name, symbol, uri] = a.slice(6, 9).map((n) => this.expect(this.expr(n, STRING), STRING, n).c);
     const fee = this.expect(this.expr(a[9], { kind: "int", name: "u16" }), { kind: "int", name: "u16" }, a[9]);
     const mutable = this.expect(this.expr(a[10], BOOL), BOOL, a[10]);
-    const seeds = this.signerSeeds(a[11], mintAuth, a[2]);
+    let creators = "NULL";
+    let ncreators = "-1";
+    let collection = "NULL";
+    if (extras) {
+      for (const p of extras.properties) {
+        if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) this.fail(p, "use creators: [...] and collection: key");
+        if (p.name.text === "creators") {
+          if (!ts.isArrayLiteralExpression(p.initializer)) this.fail(p.initializer, "creators: [{ address, verified, share }, …] (an array literal)");
+          const list = p.initializer.elements;
+          if (list.length < 1 || list.length > 5) this.fail(p.initializer, "Metaplex takes 1 to 5 creators");
+          const buf = this.tmp("creators");
+          this.line(`uint8_t ${buf}[${34 * list.length}];`);
+          let shares = 0n;
+          let constant = true;
+          list.forEach((el, i) => {
+            if (!ts.isObjectLiteralExpression(el)) this.fail(el, "a creator is { address, verified, share }");
+            const field = (k: string) => {
+              const q = el.properties.find((x) => ts.isPropertyAssignment(x) && ts.isIdentifier(x.name) && x.name.text === k) as
+                ts.PropertyAssignment | undefined;
+              const sh = el.properties.find((x) => ts.isShorthandPropertyAssignment(x) && x.name.text === k) as ts.ShorthandPropertyAssignment | undefined;
+              if (!q && !sh) this.fail(el, `a creator needs ${k}`);
+              return q ? q.initializer : sh!.name;
+            };
+            const at = 34 * i;
+            const key = this.expect(this.expr(field("address"), PUBKEY), PUBKEY, el);
+            this.line(`ts_memcpy(${buf} + ${at}, ${key.c}, 32);`);
+            const verified = this.expect(this.expr(field("verified"), BOOL), BOOL, el);
+            this.line(`${buf}[${at + 32}] = (${verified.c}) ? 1 : 0;`);
+            const shareNode = field("share");
+            if (ts.isBigIntLiteral(shareNode)) shares += BigInt(shareNode.text.slice(0, -1));
+            else constant = false;
+            const share = this.expect(this.expr(shareNode, U8), U8, el);
+            this.line(`${buf}[${at + 33}] = (uint8_t)(${share.c});`);
+          });
+          if (constant && shares !== 100n) this.fail(p.initializer, `creator shares add up to ${shares}; Metaplex requires 100`);
+          creators = buf;
+          ncreators = String(list.length);
+        } else if (p.name.text === "collection") {
+          const key = this.expect(this.expr(p.initializer, PUBKEY), PUBKEY, p.initializer);
+          const t = this.tmp("coll");
+          this.line(`SolPubkey ${t} = *(${key.c});`);
+          collection = `&${t}`;
+        } else this.fail(p.name, `createV3 extras are creators and collection, not ${p.name.text}`);
+      }
+    }
+    const seeds = this.signerSeeds(seedsArg, mintAuth, a[2]);
     this.line(
-      `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name}, ${symbol}, ${uri}, ${fee.c}, ${mutable.c}, ${seeds.name}, ${seeds.count}));`,
+      `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name}, ${symbol}, ${uri}, ${fee.c}, ${mutable.c}, ${creators}, ${ncreators}, ${collection}, ${seeds.name}, ${seeds.count}));`,
     );
     return undefined;
   }

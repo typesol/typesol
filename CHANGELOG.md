@@ -6,6 +6,8 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Metaplex `createV3(…, isMutable, { creators, collection }, signerSeeds?)`: 1–5 creators (shares checked to add up to 100
+  when literal) and an unverified collection mint, checked against the real Token Metadata program.
 - Data-enum variants can hold a `string` (`type Cmd = { kind: "Say"; text: string } | …`), as Anchor enums with `String`
   payloads: Borsh in instruction arguments and events, a value in code (a copy when built from account text), refused
   in account data. The IDL describes them as Borsh enums only.

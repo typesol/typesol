@@ -1,3 +1,5 @@
+import { getAddressDecoder } from "@solana/kit";
+import { pk } from "./ports-helpers.js";
 import { existsSync } from "node:fs";
 import { getCreateAccountInstruction, getTransferSolInstruction } from "@solana-program/system";
 import * as spl from "@solana-program/token";
@@ -168,5 +170,61 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
     expect(data[0]).toBe(4); // Key::MetadataV1
     expect(data.includes(Buffer.from("TypeSOL"))).toBe(true);
     expect(data.includes(Buffer.from("https://example.com/m.json"))).toBe(true);
+  });
+
+  it.skipIf(!HAVE_MPL)("writes creators and an unverified collection into Metaplex metadata", async () => {
+    const { admin, mint, issuer } = await issuerWith(TOKEN_PROGRAM);
+    const [metadata] = await pda(MPL, ["metadata", MPL, mint]);
+    const artist = (await generateKeyPairSigner()).address;
+    const collectionMint = (await generateKeyPairSigner()).address;
+    expectOk(
+      await send(d.svm, admin, [
+        ix(d, "name_with_creators", { artist: pk(artist), collection_mint: pk(collectionMint) }, [
+          { address: admin.address, signer: admin, writable: true },
+          { address: issuer },
+          { address: mint },
+          { address: metadata, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: MPL },
+        ]),
+      ]),
+    );
+    // Metadata: key, update authority, mint, name, symbol, uri, fee, creators, primary sale, mutable, edition nonce,
+    // token standard, collection.
+    const acct = d.svm.getAccount(metadata) as { exists: boolean; data: Uint8Array };
+    const b = Buffer.from(acct.data);
+    let at = 1 + 32 + 32;
+    const str = () => {
+      const n = b.readUInt32LE(at);
+      const v = b
+        .subarray(at + 4, at + 4 + n)
+        .toString()
+        .replace(/\0+$/, "");
+      at += 4 + n;
+      return v;
+    };
+    const key = () => {
+      const v = getAddressDecoder().decode(b.subarray(at, at + 32));
+      at += 32;
+      return v;
+    };
+    expect([str(), str(), str()]).toEqual(["TypeSOL #1", "TSOL", "https://example.com/1.json"]);
+    expect(b.readUInt16LE(at)).toBe(250);
+    at += 2;
+    expect(b[at++]).toBe(1); // creators: Some
+    const n = b.readUInt32LE(at);
+    at += 4;
+    const creators = Array.from({ length: n }, () => ({ address: key(), verified: b[at++] === 1, share: b[at++] }));
+    expect(creators).toEqual([
+      { address: artist, verified: false, share: 70 },
+      { address: admin.address, verified: false, share: 30 },
+    ]);
+    at += 1; // primary sale happened
+    expect(b[at++]).toBe(0); // is_mutable: false
+    at += b[at] ? 2 : 1; // edition nonce
+    at += b[at] ? 2 : 1; // token standard
+    expect(b[at++]).toBe(1); // collection: Some
+    expect(b[at++]).toBe(0); // unverified
+    expect(key()).toBe(collectionMint);
   });
 });
