@@ -16,7 +16,8 @@
   <a href="https://typesol.com/docs/">Docs</a> ·
   <a href="https://typesol.com/docs/changelog/">Changelog</a> ·
   <a href="#numbers">Benchmarks</a> ·
-  <a href="docs/language.md">Language reference</a>
+  <a href="docs/language.md">Language reference</a> ·
+  <a href="https://x.com/type_sol">X</a>
 </p>
 
 TypeSOL compiles a TypeScript subset straight to Solana bytecode. It does not use an interpreter or a VM on chain, and
@@ -47,9 +48,7 @@ clients read TypeSOL programs unchanged.
 
 ## At a glance
 
-<table>
-<tr><th>TypeSOL — <code>counter.ts</code></th><th>Anchor — <code>lib.rs</code></th></tr>
-<tr><td valign="top">
+**`counter.ts`**: a complete program, 23 lines.
 
 ```ts
 import { type Init, type Mut, type Pubkey, type Signer,
@@ -81,7 +80,8 @@ export function increment(authority: Signer, counter: Mut<Counter>, by: u64): vo
 }
 ```
 
-</td><td valign="top">
+<details>
+<summary><b>The same program in Anchor</b>: 44 lines of Rust</summary>
 
 ```rust
 #[program]
@@ -134,8 +134,7 @@ pub enum CounterError {
 }
 ```
 
-</td></tr>
-</table>
+</details>
 
 Both programs accept the same instructions and store the same account layout. The test suite sends identical
 transactions to both and compares the results.
