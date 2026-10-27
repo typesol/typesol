@@ -150,12 +150,12 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/pda-mint-authority", () => {
     const d = await deployPort("tokens/pda-mint-authority.ts", "3LFrPHqwk5jMrmiz48BFj6NV2k4NjobgTe1jChzx3JGD");
     d.svm.addProgramFromFile(METADATA_PROGRAM, MPL_METADATA_SO);
     const payer = await fundedSigner(d.svm);
-    const [mint, mintBump] = await pda(d.programId, ["mint"]);
+    const [mint] = await pda(d.programId, ["mint"]);
     const [mintConfig] = await pda(d.programId, ["mint_config"]);
     const metadata = await metadataPda(mint);
     expectOk(
       await send(d.svm, payer, [
-        ix(d, "create_token", { token_name: META.name, token_symbol: META.symbol, token_uri: META.uri, mint_bump: mintBump }, [
+        ix(d, "create_token", { token_name: META.name, token_symbol: META.symbol, token_uri: META.uri }, [
           { address: payer.address, signer: payer, writable: true },
           { address: mint, writable: true },
           { address: metadata, writable: true },
@@ -171,9 +171,9 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/pda-mint-authority", () => {
     expect(m.mintAuthority).toEqual(some(mint));
     expect(m.freezeAuthority).toEqual(some(mint));
     expect(readMetadata(d.svm, metadata).updateAuthority).toBe(mint);
-    const mintFor = (who: typeof payer, bump = mintBump) =>
+    const mintFor = (who: typeof payer) =>
       send(d.svm, who, [
-        ix(d, "mint_token", { amount: new BN(100), mint_bump: bump }, [
+        ix(d, "mint_token", { amount: new BN(100) }, [
           { address: who.address, signer: who, writable: true },
           { address: mint, writable: true },
           { address: mintConfig },
@@ -187,7 +187,6 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/pda-mint-authority", () => {
     atas.set(payer.address, await ataOf(payer.address, mint));
     expectOk(await mintFor(payer));
     expect(tokenBalance(d.svm, atas.get(payer.address)!)).toBe(100n * 10n ** 9n);
-    expect(customError(await mintFor(payer, mintBump - 1))).toBe(2006);
     // Someone who did not create the token cannot mint.
     const stranger = await fundedSigner(d.svm);
     atas.set(stranger.address, await ataOf(stranger.address, mint));
@@ -233,7 +232,7 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/nft-operations", () => {
     const { svm } = d;
     svm.addProgramFromFile(METADATA_PROGRAM, MPL_METADATA_SO);
     const user = await fundedSigner(svm);
-    const [authority, bump] = await pda(d.programId, ["authority"]);
+    const [authority] = await pda(d.programId, ["authority"]);
     const edition = async (mint: Address) =>
       (await getProgramDerivedAddress({ programAddress: METADATA_PROGRAM, seeds: ["metadata", addrBytes(METADATA_PROGRAM), addrBytes(mint), "edition"] }))[0];
 
@@ -242,7 +241,7 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/nft-operations", () => {
     const collectionEdition = await edition(collection.address);
     expectOk(
       await send(svm, user, [
-        ix(d, "create_collection", { authority_bump: bump }, [
+        ix(d, "create_collection", {}, [
           { address: user.address, signer: user, writable: true },
           { address: collection.address, signer: collection, writable: true },
           { address: authority },
@@ -265,9 +264,9 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/nft-operations", () => {
 
     const nft = await generateKeyPairSigner();
     const nftMetadata = await metadataPda(nft.address);
-    const mintNft = async (b: number) =>
+    const mintNft = async () =>
       send(svm, user, [
-        ix(d, "mint_nft", { authority_bump: b }, [
+        ix(d, "mint_nft", {}, [
           { address: user.address, signer: user, writable: true },
           { address: nft.address, signer: nft, writable: true },
           { address: await ataOf(user.address, nft.address), writable: true },
@@ -281,14 +280,13 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/nft-operations", () => {
           { address: METADATA_PROGRAM },
         ]),
       ]);
-    expect(customError(await mintNft(bump - 1))).toBe(2006);
-    expectOk(await mintNft(bump));
+    expectOk(await mintNft());
     expect(tokenBalance(svm, await ataOf(user.address, nft.address))).toBe(1n);
     expect(parseMetadata(svm, nftMetadata).collection).toEqual({ verified: false, key: collection.address });
 
     const verify = (metadata: Address) =>
       send(svm, user, [
-        ix(d, "verify_collection", { authority_bump: bump }, [
+        ix(d, "verify_collection", {}, [
           { address: user.address, signer: user },
           { address: metadata, writable: true },
           { address: nft.address },

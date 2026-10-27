@@ -185,8 +185,8 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 
 | | |
 | --- | --- |
-| **Accounts** | `Signer`, `Account<T>`, `Mut<T>`, `Init<T>`, `InitIfNeeded<T>`, `Zeroed<T>` (up to 10 MiB), optional accounts (`A \| null`), token accounts and mints, programs, sysvars |
-| **Constraints** | `HasOne`, `Seeds` (also under another program), `CloseTo`, `Ata`, `Address`, `Owner`, `Executable`. They are checked before the body runs and recorded in the IDL |
+| **Accounts** | `Signer`, `Account<T>`, `Mut<T>`, `Init<T>`, `InitIfNeeded<T>` (PDAs and associated token accounts), `Zeroed<T>` (up to 10 MiB), optional accounts (`A \| null`), token accounts and mints, programs, sysvars |
+| **Constraints** | `HasOne`, `Seeds` (also under another program; `pdaBump` like `ctx.bumps`), `CloseTo`, `Ata`, `Address`, `Owner`, `Executable`. They are checked before the body runs and recorded in the IDL |
 | **Data** | `u8`…`u128`, `i8`…`i128`, `boolean`, `Pubkey`, `Hash`, nested structs, `FixedArray`, `FixedString`, `Option`, unit enums, data enums (discriminated unions), `Vec` that resizes its account |
 | **Control flow** | `if`, `for`, `while`, `switch` (with narrowing on data enums), ternaries, helper functions across multiple files |
 | **CPIs** | System, SPL Token, Token-2022 (including extension reads and metadata), ATA, Metaplex Token Metadata, Core, Bubblegum. Generic `invoke` with PDA signing, return data, and typed bindings generated from any Anchor IDL (`typesol cpi`) |

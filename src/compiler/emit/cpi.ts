@@ -165,6 +165,55 @@ export abstract class CpiEmitter extends CallEmitter {
     return { c: b, type: U8 };
   }
 
+  /**
+   * `ata.create(payer)` / `ata.createIfNeeded(payer)` on `Ata<Init|InitIfNeeded<TokenAccount>, "owner", "mint">`
+   * (Anchor's `init` / `init_if_needed` with `associated_token::…`). create always calls the ATA program's Create, which
+   * fails if the account exists. createIfNeeded calls it only when the account is still a System account (Anchor's
+   * test) and otherwise checks that the existing account is that ATA. Either way the account is then checked as an
+   * initialized token account of that mint and owner, and is a TokenAccount from here on.
+   */
+  protected createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined {
+    const ifNeeded = (target.kind as { init?: string }).init === "ifNeeded";
+    const call = `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}`;
+    if (!topLevel) this.fail(node, `${call}(...) must be a top-level statement of the instruction`);
+    if (this.created.has(target.name)) this.fail(node, `${target.name} is already created`);
+    if (node.arguments.length !== 1) this.fail(node, `${call}(payer) takes the payer`);
+    const payer = this.accountParam(node.arguments[0], "the payer");
+    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(node.arguments[0], "the payer must be a Mut<Signer>");
+    const need = (kind: string, what: string) => {
+      const p = this.ix!.accounts.find((o) => o.kind.kind === kind);
+      if (!p) this.fail(node, `${call}(...) needs ${what} parameter`);
+      return p;
+    };
+    const ataProgram = need("ataProgram", "an AssociatedTokenProgram");
+    const system = need("system", "a SystemProgram");
+    const tokenProgram = need("tokenProgram", "a token program (TokenProgram, Token2022Program or TokenInterface)");
+    const { owner, mint } = target.constraints.ata!;
+    const a = `a_${target.name}`;
+    const create = `TS_TRY(ts_ata_create(params, a_${ataProgram.name}, a_${payer.name}, ${a}, a_${owner}, a_${mint}, a_${system.name}, a_${tokenProgram.name}, false));`;
+    let result: Value | undefined;
+    if (ifNeeded) {
+      const created = this.tmp("created");
+      this.line(`bool ${created} = ts_key_eq(&${a}->owner, &TS_SYSTEM_PROGRAM_ID);`);
+      this.line(`if (${created}) {`);
+      this.line(`  ${create}`);
+      this.line(`} else {`);
+      this.line(`  SolPubkey ata_${target.name};`);
+      this.line(`  TS_TRY(ts_ata_address(&a_${owner}->key, &a_${mint}->key, &a_${tokenProgram.name}->key, &ata_${target.name}));`);
+      this.line(
+        `  if (!ts_key_eq(&ata_${target.name}, &${a}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${target.name} is not the associated token account of ${owner} and ${mint}");`,
+      );
+      this.line(`}`);
+      result = { c: created, type: BOOL };
+    } else this.line(create);
+    this.line(`TS_TRY(ts_check_token_account(${a}));`);
+    this.line(`if (!ts_key_eq(ts_token_mint(${a}), &a_${mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${target.name} is not a token account of ${mint}");`);
+    this.line(`if (!ts_key_eq(ts_token_owner(${a}), &a_${owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${target.name} is not owned by ${owner}");`);
+    this.created.add(target.name);
+    this.pendingInit.delete(target.name);
+    return result;
+  }
+
   protected systemTransfer(node: ts.CallExpression): undefined {
     if (node.arguments.length !== 3) this.fail(node, "transfer(from, to, lamports) takes three arguments");
     const [fromN, toN, amtN] = node.arguments;

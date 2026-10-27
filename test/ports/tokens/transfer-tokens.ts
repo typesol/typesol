@@ -1,15 +1,13 @@
 // Port of tokens/transfer-tokens @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - builtin gap: the recipient's associated token account is `init_if_needed`. An account created in the body is an
-//    AccountInfo to TypeSOL (TokenAccount parameters are checked before the body), so MintTo / Transfer into it are
-//    hand-encoded (`invoke`).
 //  - logs: lines that print an address print the label and the address on two lines (no Pubkeys in templates).
 import {
   type AccountInfo,
   type Address,
   type AssociatedTokenProgram,
   type Ata,
+  type InitIfNeeded,
   type Mint,
   type Mut,
   type Owner,
@@ -20,13 +18,10 @@ import {
   type TokenMetadataProgram,
   type TokenProgram,
   MINT_SIZE,
-  invoke,
   log,
-  readonlySigner,
   rentExempt,
   u8,
   u64,
-  writable,
 } from "typesol";
 
 /** amount * 10^decimals, checked. */
@@ -59,24 +54,19 @@ export function mintToken(
   mintAuthority: Mut<Signer>,
   recipient: Owner<AccountInfo, "11111111111111111111111111111111">,
   mintAccount: Mut<Mint>,
-  associatedTokenAccount: Ata<Mut<AccountInfo>, "recipient", "mintAccount">,
+  associatedTokenAccount: Ata<InitIfNeeded<TokenAccount>, "recipient", "mintAccount">,
   tokenProgram: TokenProgram,
   associatedTokenProgram: AssociatedTokenProgram,
   systemProgram: SystemProgram,
   amount: u64,
 ): void {
-  associatedTokenProgram.createIdempotent(mintAuthority, associatedTokenAccount, recipient, mintAccount, systemProgram, tokenProgram);
+  associatedTokenAccount.createIfNeeded(mintAuthority);
   log("Minting tokens to associated token account...");
   log("Mint: ");
   log(mintAccount.key);
   log("Token Address: ");
   log(associatedTokenAccount.key);
-  // SPL Token MintTo (instruction 7).
-  invoke(
-    tokenProgram,
-    [writable(mintAccount), writable(associatedTokenAccount), readonlySigner(mintAuthority)],
-    [u8(7n), withDecimals(amount, mintAccount.decimals)],
-  );
+  tokenProgram.mintTo(mintAccount, associatedTokenAccount, mintAuthority, withDecimals(amount, mintAccount.decimals));
   log("Token minted successfully.");
 }
 
@@ -85,13 +75,13 @@ export function transferTokens(
   recipient: Owner<AccountInfo, "11111111111111111111111111111111">,
   mintAccount: Mut<Mint>,
   senderTokenAccount: Ata<Mut<TokenAccount>, "sender", "mintAccount">,
-  recipientTokenAccount: Ata<Mut<AccountInfo>, "recipient", "mintAccount">,
+  recipientTokenAccount: Ata<InitIfNeeded<TokenAccount>, "recipient", "mintAccount">,
   tokenProgram: TokenProgram,
   associatedTokenProgram: AssociatedTokenProgram,
   systemProgram: SystemProgram,
   amount: u64,
 ): void {
-  associatedTokenProgram.createIdempotent(sender, recipientTokenAccount, recipient, mintAccount, systemProgram, tokenProgram);
+  recipientTokenAccount.createIfNeeded(sender);
   log("Transferring tokens...");
   log("Mint: ");
   log(mintAccount.key);
@@ -99,11 +89,6 @@ export function transferTokens(
   log(senderTokenAccount.key);
   log("To Token Address: ");
   log(recipientTokenAccount.key);
-  // SPL Token Transfer (instruction 3).
-  invoke(
-    tokenProgram,
-    [writable(senderTokenAccount), writable(recipientTokenAccount), readonlySigner(sender)],
-    [u8(3n), withDecimals(amount, mintAccount.decimals)],
-  );
+  tokenProgram.transfer(senderTokenAccount, recipientTokenAccount, sender, withDecimals(amount, mintAccount.decimals));
   log("Tokens transferred successfully.");
 }

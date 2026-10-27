@@ -5,6 +5,20 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `Ata<Init<TokenAccount>, "owner", "mint">` / `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">` (Anchor `init` /
+  `init_if_needed` with `associated_token::mint` and `associated_token::authority`): `acct.create(payer)` /
+  `acct.createIfNeeded(payer)` create the associated token account in the instruction, after which it is a typed
+  `TokenAccount` for the token CPIs. `createIfNeeded` skips the ATA program CPI when the account exists (checking its
+  address, mint and owner instead) and returns whether it created it. SPL Token and Token-2022.
+- `acct.pdaBump` on `Seeds<…>` accounts (Anchor `ctx.bumps`): the stored bump field when the constraint names one,
+  otherwise the canonical bump the check found. Programs no longer need a bump argument to sign as a PDA they check.
+
+### Tooling
+- Ports: escrow, token-2022/basics, token-fundraiser and pda-rent-payer are now PORTED (same interface as upstream);
+  transfer-tokens, pda-mint-authority, nft-operations, token-swap, merkle-tree-token-claimer and
+  external-delegate-token-master drop their hand-encoded token CPIs or bump arguments (test/ports/README.md).
+
 ## 0.11.0 — 2026-10-27
 
 Pinocchio-level code generation, a typed TypeScript client, and the release process the organization uses from now

@@ -24,7 +24,7 @@ Status:
 | `basics/cross-program-invocation` | `basics/cross-program-invocation/{hand,lever}.ts` | PARTIAL | `hand` is ported as is; `lever`'s keypair `init` is a client-allocated `Zeroed<PowerStatus>` |
 | `basics/favorites` | `basics/favorites.ts` | PARTIAL | `Vec<String>` argument and field are fixed-size `FixedString<50>` lists; the address and hobby list are not logged |
 | `basics/hello-solana` | `basics/hello-solana.ts` | PARTIAL | the program id log line is two lines (templates cannot format a Pubkey) |
-| `basics/pda-rent-payer` | `basics/pda-rent-payer.ts` | PARTIAL | the client passes the vault bump (`Seeds<>` does not expose `ctx.bumps`), checked canonical with `requirePda` |
+| `basics/pda-rent-payer` | `basics/pda-rent-payer.ts` | PORTED | |
 | `basics/processing-instructions` | `basics/processing-instructions.ts` | PORTED | |
 | `basics/program-derived-addresses` | `basics/program-derived-addresses.ts` | PORTED | |
 | `basics/realloc` | `basics/realloc.ts` | PARTIAL | the keypair account is the PDA `["message", payer]`; `input: String` is a `Vec<u8>` (same bytes); `realloc::payer` lamports are settled explicitly |
@@ -35,12 +35,12 @@ Status:
 | `compression/cutils` | | BLOCKED | first blocker: same construct as `cnft-burn` (Bubblegum `verify_leaf` with the proof as remaining accounts); it also hashes Bubblegum leaf schemas |
 | `oracles/pyth` | `oracles/pyth.ts` | PARTIAL | log lines differ (`{:?}` formatting); the account checks are the same |
 | `tokens/create-token` | `tokens/create-token.ts` | PARTIAL | the metadata address log line is two lines |
-| `tokens/escrow` | `tokens/escrow.ts` | PARTIAL | transfers into associated token accounts created in the instruction are hand-encoded `TransferChecked` |
-| `tokens/external-delegate-token-master` | `tokens/external-delegate-token-master.ts` | PARTIAL | keypair `init`; the Ethereum address is a left-padded `Hash`, the signature `r, s, recovery_id`; PDA bump argument; high-s signatures refused |
-| `tokens/merkle-tree-token-claimer` | `tokens/merkle-tree-token-claimer.ts` | PARTIAL | proof siblings are hashed as four u64 words each (same bytes); mint and transfer into created accounts are hand-encoded |
-| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | Token Metadata create (creators, collection), master edition and Verify are hand-encoded; bump argument; a wrong metadata account fails with 6000, not 3003 |
-| `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PARTIAL | mint bump argument; `MintTo` into the created ATA is hand-encoded; address log lines are two lines |
-| `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PARTIAL | bump arguments for the PDA mint and token account; `TransferChecked` into the created ATA is hand-encoded |
+| `tokens/escrow` | `tokens/escrow.ts` | PORTED | |
+| `tokens/external-delegate-token-master` | `tokens/external-delegate-token-master.ts` | PARTIAL | keypair `init`; the Ethereum address is a left-padded `Hash`, the signature `r, s, recovery_id`; high-s signatures refused |
+| `tokens/merkle-tree-token-claimer` | `tokens/merkle-tree-token-claimer.ts` | PARTIAL | proof siblings are hashed as four u64 words each (same bytes); the mint is created in the instruction, so the vault ATA is created with `createIdempotent` and `MintTo` into it is hand-encoded |
+| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | Token Metadata create (creators, collection), master edition and Verify are hand-encoded, and `MintTo` (the mint is created in the instruction); a wrong metadata account fails with 6000, not 3003 |
+| `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PARTIAL | address log lines are two lines |
+| `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PORTED | |
 | `tokens/token-2022/cpi-guard` | | NOT ATTEMPTED | one `TransferChecked` CPI that the client-enabled CPI guard must refuse |
 | `tokens/token-2022/default-account-state` | `tokens/token-2022/default-account-state.ts` | PARTIAL | DefaultAccountState instructions are hand-encoded (no Token-2022 extension builtins) |
 | `tokens/token-2022/group` | | NOT ATTEMPTED | a GroupPointer mint (hand-encoded extension instruction, as in the ported extension examples) |
@@ -59,13 +59,13 @@ Status:
 | `tokens/token-2022/transfer-hook/hello-world` | `tokens/token-2022/transfer-hook/hello-world.ts` | PARTIAL | InitializeTransferHook is hand-encoded; extension fields are read by walking the TLV list |
 | `tokens/token-2022/transfer-hook/transfer-cost` | | BLOCKED | extra accounts in the ExtraAccountMetaList |
 | `tokens/token-2022/transfer-hook/transfer-switch` | | BLOCKED | an extra account in the ExtraAccountMetaList |
-| `tokens/token-fundraiser` | `tokens/token-fundraiser.ts` | PARTIAL | the payout into the `init_if_needed` maker ATA is a hand-encoded `Transfer` |
-| `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PARTIAL | authority and liquidity bump arguments; transfers and mints into created ATAs are hand-encoded |
-| `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PARTIAL | `MintTo` / `Transfer` into the created ATA are hand-encoded; address log lines are two lines |
+| `tokens/token-fundraiser` | `tokens/token-fundraiser.ts` | PORTED | elapsed days use a checked `u16()` where Rust wraps (`as u16`); they differ only after ~179 years |
+| `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PARTIAL | `deposit_liquidity` / `withdraw_liquidity` take authority and liquidity bump arguments (their seeds use a field of `pool`) |
+| `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PARTIAL | address log lines are two lines |
 
 "Hand-encoded" means the port builds the instruction with `invoke` because TypeSOL has no builtin for it, or because
-the typed builtin needs a `TokenAccount` and the account is created in the same instruction (TypeSOL checks typed
-parameters before the body runs).
+the typed builtin needs a `Mint` or `TokenAccount` that is created in the same instruction without a TypeSOL wrapper
+for it (associated token accounts have one: `Ata<Init<TokenAccount>, …>` / `Ata<InitIfNeeded<TokenAccount>, …>`).
 
 Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` (skipped without
 `pnpm fetch:programs`), `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`, `test/ports-blocked.test.ts`.

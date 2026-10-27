@@ -1,10 +1,8 @@
 // Port of tokens/token-fundraiser @ de09019; see test/ports/README.md.
 //
-// PARTIAL (builtin gap): `check_contributions` pays into `maker_ata`, an associated token account Anchor creates
-// with `init_if_needed`. An account created in the body is an AccountInfo to TypeSOL (TokenAccount parameters are
-// checked before the body), so that one transfer is a hand-encoded SPL Transfer (`invoke`); every other CPI is typed.
-// The fundraiser PDA seeded with its own `maker` field is checked with requirePda in `contribute`. The elapsed-days
-// value is converted with a checked u16() where Rust uses a wrapping `as u16` (they differ only after ~179 years).
+// PORTED: `check_contributions` pays into `maker_ata`, created with Ata<InitIfNeeded<TokenAccount>, …>. The fundraiser
+// PDA seeded with its own `maker` field is checked with requirePda in `contribute`. The elapsed-days value is converted
+// with a checked u16() where Rust uses a wrapping `as u16` (they differ only after ~179 years).
 import {
   type AccountInfo,
   type AssociatedTokenProgram,
@@ -126,15 +124,14 @@ export function checkContributions(
   mintToRaise: Owner<Mint, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">,
   fundraiser: CloseTo<HasOne<Seeds<Mut<Fundraiser>, ["fundraiser", "@maker"], "bump">, "mintToRaise">, "maker">,
   vault: Ata<Mut<TokenAccount>, "fundraiser", "mintToRaise">,
-  makerAta: Ata<Mut<AccountInfo>, "maker", "mintToRaise">,
+  makerAta: Ata<InitIfNeeded<TokenAccount>, "maker", "mintToRaise">,
   tokenProgram: TokenProgram,
   systemProgram: SystemProgram,
   associatedTokenProgram: AssociatedTokenProgram,
 ): void {
-  associatedTokenProgram.createIdempotent(maker, makerAta, maker, mintToRaise, systemProgram, tokenProgram);
+  makerAta.createIfNeeded(maker);
   require(vault.amount >= fundraiser.amountToRaise, FundraiserError.TargetNotMet);
-  // SPL Token Transfer (instruction 3) from the vault, signed by the fundraiser PDA.
-  invoke(tokenProgram, [writable(vault), writable(makerAta), readonlySigner(fundraiser)], [u8(3n), vault.amount], ["fundraiser", maker.key, fundraiser.bump]);
+  tokenProgram.transfer(vault, makerAta, fundraiser, vault.amount, ["fundraiser", maker.key, fundraiser.bump]);
 }
 
 export function refund(

@@ -242,7 +242,7 @@ describe("port: basics/pda-rent-payer", () => {
   it("funds a rent vault PDA and lets it pay for new accounts", async () => {
     const d = await deployPort("basics/pda-rent-payer.ts", "7Hm9nsYVuBZ9rf8z9AMUHreZRv8Q4vLhqwdVTCawRZtA");
     const payer = await fundedSigner(d.svm);
-    const [vault, bump] = await pda(d.programId, ["rent_vault"]);
+    const [vault] = await pda(d.programId, ["rent_vault"]);
     expectOk(
       await send(d.svm, payer, [
         ix(d, "init_rent_vault", { fund_lamports: new BN(SOL.toString()) }, [
@@ -254,17 +254,15 @@ describe("port: basics/pda-rent-payer", () => {
     );
     expect(d.svm.getBalance(vault)).toBe(SOL);
     const fresh = await generateKeyPairSigner();
-    const create = (b: number) =>
+    const create = () =>
       send(d.svm, payer, [
-        ix(d, "create_new_account", { bump: b }, [
+        ix(d, "create_new_account", {}, [
           { address: fresh.address, signer: fresh, writable: true },
           { address: vault, writable: true },
           { address: SYSTEM_PROGRAM },
         ]),
       ]);
-    // Only the canonical bump is accepted.
-    expect(customError(await create(bump - 1))).toBe(2006);
-    expectOk(await create(bump));
+    expectOk(await create());
     const rent = d.svm.minimumBalanceForRentExemption(0n);
     expect(d.svm.getBalance(fresh.address)).toBe(rent);
     expect(d.svm.getBalance(vault)).toBe(SOL - rent);

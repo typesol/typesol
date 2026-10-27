@@ -42,27 +42,3 @@ export enum TutorialError {
   /** Not in the original: the pool authority is not the liquidity mint's authority (the canonical PDA). */
   WrongPoolAuthority = "The pool authority is not the canonical PDA",
 }
-
-/** SPL Token Transfer (instruction 3), for token accounts created in this instruction (AccountInfo to TypeSOL). */
-export function transfer(
-  tokenProgram: TokenProgram,
-  from: Mut<AccountMeta>,
-  to: Mut<AccountMeta>,
-  authority: AccountMeta,
-  amount: u64,
-  seeds: SignerSeeds,
-): void {
-  invoke(tokenProgram, [writable(from), writable(to), readonlySigner(authority)], [u8(3n), amount], seeds);
-}
-
-/** SPL Token MintTo (instruction 7) into a token account created in this instruction. */
-export function mintTo(
-  tokenProgram: TokenProgram,
-  mint: Mut<AccountMeta>,
-  to: Mut<AccountMeta>,
-  authority: AccountMeta,
-  amount: u64,
-  seeds: SignerSeeds,
-): void {
-  invoke(tokenProgram, [writable(mint), writable(to), readonlySigner(authority)], [u8(7n), amount], seeds);
-}
