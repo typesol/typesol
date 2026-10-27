@@ -10,6 +10,8 @@ dump() { [[ -f "$2" ]] || solana program dump -u "$url" "$1" "$2"; }
 dump metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s mpl_token_metadata.so
 dump CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d mpl_core.so
 dump BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY mpl_bubblegum.so
+dump mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW mpl_account_compression.so
+dump mnoopTCrg4p8ry25e4bcWA9XZjbNjMTfgYVGGEdRsf3 mpl_noop.so
 dump cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK spl_account_compression.so
 dump noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV spl_noop.so
 dump ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S program_metadata.so

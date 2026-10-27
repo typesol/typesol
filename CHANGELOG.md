@@ -6,6 +6,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Bubblegum V2: `createTreeV2`, `mintV2` (optionally into a Metaplex Core collection), `transferV2` and `burnV2`, which
+  take the leaf (root, data and creator hashes, nonce, index) and pass its Merkle proof on from the remaining accounts;
+  the Core `BubblegumV2` collection plugin. Checked against Bubblegum, mpl-account-compression, mpl-noop and Core
+  (`pnpm fetch:programs` now fetches the mpl-account-compression pair too).
 - Metaplex Core plugins: a literal plugin list in `createAsset` / `createCollection` (Royalties, freeze / burn / transfer /
   update delegates and their permanent forms, Attributes, Edition, AddBlocker, ImmutableMetadata, each with an optional
   authority), and `addPlugin`, `updatePlugin`, `removePlugin` with their collection forms, checked against the real Core

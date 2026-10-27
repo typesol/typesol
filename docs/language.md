@@ -52,7 +52,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Heap | 32 KiB by default; `const HEAP_SIZE_KIB = 64n` (32–256) lets the program use more, when clients add ComputeBudget `requestHeapFrame` |
 | Docs | JSDoc on instructions, `@param`, structs, fields and data enums becomes `docs` in the IDL |
 | Metaplex Core | `core: MplCoreProgram` — `createCollection`, `createAsset` (in a collection, PDA authorities via signerSeeds), `transferAsset`, `burnAsset` (`null` leaves an optional account out); plugins as a literal list after the uri (`[{ kind: "Royalties", basisPoints: 500n, creators: [{ address, percentage: 100n }] }, { kind: "PermanentFreezeDelegate", frozen: false, authority: studio.key }]`), and `addPlugin` / `updatePlugin` / `removePlugin(…, "FreezeDelegate")` with their `…CollectionPlugin` forms. Plugins: Royalties (no rule set), FreezeDelegate, BurnDelegate, TransferDelegate, UpdateDelegate, PermanentFreezeDelegate, Attributes, PermanentTransferDelegate, PermanentBurnDelegate, Edition, AddBlocker, ImmutableMetadata; `authority` is `"owner"`, `"updateAuthority"`, `"none"` or a Pubkey; `coreAssetOwner(asset)`, `coreAssetCollection(asset)` |
-| Compressed NFTs | `bubblegum: BubblegumProgram` — `createTree` (client-allocated tree on SPL Account Compression), `mint` (MintV1, no collection/creators) |
+| Compressed NFTs | `bubblegum: BubblegumProgram` — V1: `createTree` (client-allocated tree on SPL Account Compression), `mint` (MintV1, no collection/creators). V2 (trees on mpl-account-compression with mpl-noop): `createTreeV2`, `mintV2(…, { name, symbol, uri, sellerFeeBasisPoints, creators?, isMutable? }, { collection, authority, cpiSigner }?)` (into a Core collection that has the `BubblegumV2` plugin), `transferV2` and `burnV2` with the leaf `{ root, dataHash, creatorHash, assetDataHash?, flags?, nonce, index }` and its proof as `remainingAccounts()` / `rest.slice(a)` |
 
 ## Account parameters and the checks they emit
 
@@ -149,8 +149,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
 inside a helper, data-enum arguments carrying structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
-128-bit integers, `mulDiv` beyond u64, Core's MasterEdition / VerifiedCreators / Autograph plugins, royalty rule sets and external plugin adapters, Bubblegum v2 / collections /
-transfers, closures (local functions reading the enclosing function's variables), functions as values (callbacks,
+128-bit integers, `mulDiv` beyond u64, Core's MasterEdition / VerifiedCreators / Autograph plugins, royalty rule sets and external plugin adapters, Bubblegum V2 delegates / freezes / metadata updates / V1 transfers, closures (local functions reading the enclosing function's variables), functions as values (callbacks,
 `.map`), type parameters standing for structs, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.
 
