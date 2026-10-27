@@ -35,7 +35,7 @@ Status:
 | `tokens/escrow` | `tokens/escrow.ts` | PORTED | |
 | `tokens/external-delegate-token-master` | `tokens/external-delegate-token-master.ts` | PARTIAL | keypair `init`; the Ethereum address is a left-padded `Hash`, the signature `r, s, recovery_id`; high-s signatures refused |
 | `tokens/merkle-tree-token-claimer` | `tokens/merkle-tree-token-claimer.ts` | PARTIAL | proof siblings are hashed as four u64 words each (same bytes); the mint is created in the instruction, so the vault ATA is created with `createIdempotent` and `MintTo` into it is hand-encoded |
-| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | Token Metadata create (it needs CollectionDetails, which createV3 does not take), master edition and Verify are hand-encoded, and `MintTo` (the mint is created in the instruction); a wrong metadata account fails with 6000, not 3003 |
+| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | `MintTo` is hand-encoded (the mint is created in the instruction); a wrong metadata account fails with 6000, not 3003 |
 | `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PARTIAL | address log lines are two lines |
 | `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PORTED | |
 | `tokens/token-2022/cpi-guard` | `tokens/token-2022/cpi-guard.ts` | PARTIAL | the `init_if_needed` PDA token account is created in the body and `TransferChecked` into it is hand-encoded; `token::mint` fails with 6000, not 2014 |

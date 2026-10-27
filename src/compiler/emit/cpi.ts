@@ -610,10 +610,12 @@ export abstract class CpiEmitter extends CallEmitter {
   }
 
   protected metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
-    if (method !== "createV3") this.fail(node.expression, "the Token Metadata program supports createV3");
+    if (method === "createMasterEditionV3" || method === "verifyCollection") return this.metadataCollectionOp(node, program, method);
+    if (method !== "createV3")
+      this.fail(node.expression, `the Token Metadata program supports createV3, createMasterEditionV3 and verifyCollection, not ${method}`);
     const a = node.arguments;
     const usage =
-      "createV3(metadata, mint, mintAuthority, payer, updateAuthority, systemProgram, name, symbol, uri, sellerFeeBasisPoints, isMutable, { creators?, collection? }?, signerSeeds?)";
+      "createV3(metadata, mint, mintAuthority, payer, updateAuthority, systemProgram, name, symbol, uri, sellerFeeBasisPoints, isMutable, { creators?, collection?, isCollection? }?, signerSeeds?)";
     // An object literal after isMutable carries the optional creators / collection; signerSeeds stays last.
     const extras = a[11] && ts.isObjectLiteralExpression(a[11]) ? a[11] : undefined;
     const seedsArg = extras ? a[12] : a[11];
@@ -640,9 +642,10 @@ export abstract class CpiEmitter extends CallEmitter {
     let creators = "NULL";
     let ncreators = "-1";
     let collection = "NULL";
+    let sized = "false";
     if (extras) {
       for (const p of extras.properties) {
-        if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) this.fail(p, "use creators: [...] and collection: key");
+        if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) this.fail(p, "use creators: [...], collection: key and isCollection: boolean");
         if (p.name.text === "creators") {
           if (!ts.isArrayLiteralExpression(p.initializer)) this.fail(p.initializer, "creators: [{ address, verified, share }, …] (an array literal)");
           const list = p.initializer.elements;
@@ -679,15 +682,76 @@ export abstract class CpiEmitter extends CallEmitter {
           const t = this.tmp("coll");
           this.line(`SolPubkey ${t} = *(${key.c});`);
           collection = `&${t}`;
-        } else this.fail(p.name, `createV3 extras are creators and collection, not ${p.name.text}`);
+        } else if (p.name.text === "isCollection") {
+          const v = this.expect(this.expr(p.initializer, BOOL), BOOL, p.initializer);
+          const t = this.tmp("sized");
+          this.line(`bool ${t} = ${v.c};`);
+          sized = t;
+        } else this.fail(p.name, `createV3 extras are creators, collection and isCollection, not ${p.name.text}`);
       }
     }
     const seeds = this.signerSeeds(seedsArg, mintAuth, a[2]);
     settleAll(extrasMark);
     const [name, symbol, uri, fee, mutable] = slots.map((i) => vals[i]);
     this.line(
-      `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name.c}, ${symbol.c}, ${uri.c}, ${fee.c}, ${mutable.c}, ${creators}, ${ncreators}, ${collection}, ${seeds.name}, ${seeds.count}));`,
+      `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name.c}, ${symbol.c}, ${uri.c}, ${fee.c}, ${mutable.c}, ${creators}, ${ncreators}, ${collection}, ${sized}, ${seeds.name}, ${seeds.count}));`,
     );
+    return undefined;
+  }
+
+  /** CreateMasterEditionV3 (17) and Verify (52) with VerificationArgs::CollectionV1. */
+  protected metadataCollectionOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+    const a = node.arguments;
+    const p = `a_${program.name}`;
+    const seedsAt = (i: number) => (a[i] ? this.signingSeeds(a[i]) : { name: "NULL", count: 0 });
+    const acct = (i: number, what: string, w: boolean, s: boolean) => {
+      if (a[i]!.kind === ts.SyntaxKind.NullKeyword) this.fail(a[i]!, `pass ${what}`);
+      return this.mplMeta(a[i]!, program, what, w, s);
+    };
+    if (method === "createMasterEditionV3") {
+      if (a.length !== 9 && a.length !== 10)
+        this.fail(
+          node,
+          "createMasterEditionV3(edition, mint, updateAuthority, mintAuthority, payer, metadata, tokenProgram, systemProgram, maxSupply | null, signerSeeds?)",
+        );
+      const metas = [
+        acct(0, "the edition", true, false),
+        acct(1, "the mint", true, false),
+        acct(2, "the update authority", false, true),
+        acct(3, "the mint authority", false, true),
+        acct(4, "the payer", true, true),
+        acct(5, "the metadata", true, false),
+        acct(6, "the token program", false, false),
+        acct(7, "the system program", false, false),
+      ];
+      // max_supply: Option<u64>; Some(0) makes a one of one, None allows unlimited prints.
+      const data = this.mplData(
+        node,
+        16,
+        a[8]!.kind === ts.SyntaxKind.NullKeyword ? [{ bytes: [17, 0] }] : [{ bytes: [17, 1] }, { value: a[8]!, type: { kind: "int", name: "u64" } }],
+      );
+      this.cpi(p, metas, data.buf, data.len, seedsAt(9));
+      return undefined;
+    }
+    // Verify: authority, delegate record (absent: the program id), metadata, collection mint, collection metadata,
+    // collection master edition, system program, instructions sysvar.
+    if (a.length !== 7 && a.length !== 8)
+      this.fail(
+        node,
+        "verifyCollection(authority, metadata, collectionMint, collectionMetadata, collectionMasterEdition, systemProgram, instructionsSysvar, signerSeeds?)",
+      );
+    const metas = [
+      acct(0, "the collection authority", false, true),
+      [p, false, false] as [string, boolean, boolean],
+      acct(1, "the metadata", true, false),
+      acct(2, "the collection mint", false, false),
+      acct(3, "the collection metadata", true, false),
+      acct(4, "the collection master edition", false, false),
+      acct(5, "the system program", false, false),
+      acct(6, "the instructions sysvar", false, false),
+    ];
+    const data = this.mplData(node, 8, [{ bytes: [52, 1] }]);
+    this.cpi(p, metas, data.buf, data.len, seedsAt(7));
     return undefined;
   }
 

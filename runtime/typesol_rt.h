@@ -1209,9 +1209,21 @@ static inline uint64_t ts_metadata_address(const SolPubkey *mint, SolPubkey *out
   return SUCCESS;
 }
 
+static inline uint64_t ts_master_edition_address(const SolPubkey *mint, SolPubkey *out) {
+  SolSignerSeed seeds[4] = {{(const uint8_t *)"metadata", 8},
+                            {(const uint8_t *)&TS_MPL_METADATA_ID, 32},
+                            {(const uint8_t *)mint, 32},
+                            {(const uint8_t *)"edition", 7}};
+  uint8_t bump;
+  if (ts_find_pda(seeds, 4, &TS_MPL_METADATA_ID, out, &bump) != SUCCESS)
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: cannot derive the master edition address");
+  return SUCCESS;
+}
+
 /*
  * Metaplex CreateMetadataAccountV3 (instruction 33): DataV2 { name, symbol, uri, seller_fee_basis_points u16,
- * creators Option<Vec<Creator>>, collection Option<Collection>, uses None }, is_mutable bool, collection_details None.
+ * creators Option<Vec<Creator>>, collection Option<Collection>, uses None }, is_mutable bool, collection_details
+ * None, or Some(V1 { size: 0 }) when `sized_collection`.
  * `creators` holds `ncreators` packed Creator records (address, verified, share: 34 bytes); ncreators < 0 is None.
  * `collection` (NULL for None) is written unverified, as Metaplex requires at creation.
  * Accounts: metadata (w), mint, mint authority (s), payer (ws), update authority, system program.
@@ -1220,10 +1232,10 @@ static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *progr
                                         TsAccount *mint, TsAccount *mint_authority, TsAccount *payer,
                                         TsAccount *update_authority, TsAccount *system, TS_Str name, TS_Str symbol,
                                         TS_Str uri, uint16_t fee_bps, bool is_mutable, const uint8_t *creators, int ncreators,
-                                        const SolPubkey *collection, const SolSignerSeed *seeds, int n) {
+                                        const SolPubkey *collection, bool sized_collection, const SolSignerSeed *seeds, int n) {
   uint8_t *data;
   uint64_t ncr = ncreators > 0 ? (uint64_t)ncreators : 0;
-  TS_TRY(ts_alloc(1 + 12 + name.len + symbol.len + uri.len + 2 + (1 + 4 + 34 * ncr) + (1 + 33) + 1 + 1 + 1, &data));
+  TS_TRY(ts_alloc(1 + 12 + name.len + symbol.len + uri.len + 2 + (1 + 4 + 34 * ncr) + (1 + 33) + 1 + 1 + (1 + 9), &data));
   uint64_t at = 0;
   data[at++] = 33;
   ts_put_str(data, &at, name);
@@ -1251,7 +1263,15 @@ static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *progr
   }
   data[at++] = 0; /* uses: None */
   data[at++] = is_mutable ? 1 : 0;
-  data[at++] = 0; /* collection_details: None */
+  if (sized_collection) {
+    /* collection_details: Some(V1 { size: 0 }): this NFT is a collection items can be verified into */
+    data[at++] = 1;
+    data[at++] = 0;
+    ts_memzero(data + at, 8);
+    at += 8;
+  } else {
+    data[at++] = 0; /* collection_details: None */
+  }
   bool ua_signs = update_authority->is_signer || ts_key_eq(&update_authority->key, &mint_authority->key);
   SolAccountMeta metas[6] = {{&metadata->key, true, false},          {&mint->key, false, false},
                              {&mint_authority->key, false, true},     {&payer->key, true, true},
