@@ -92,8 +92,12 @@ export interface RemainingAccount {
 export interface RemainingAccounts extends Iterable<CpiAccount> {
   readonly length: u64;
   get(index: bigint): RemainingAccount;
-  /** Indexes start..end (end: all) of them, to spread into a CPI: `...readonly(rest.slice(0n, proofLength))`. */
-  slice(start: bigint, end?: bigint): RemainingAccounts;
+  /** Indexes start..end (end: all) of them, only to spread into a CPI: `...readonly(rest.slice(0n, proofLength))`. */
+  slice(start: bigint, end?: bigint): RemainingSlice;
+}
+/** Part of the remaining accounts (`rest.slice(a, b)`): spread it into a CPI's account list, directly or via readonly/writable. */
+export interface RemainingSlice extends Iterable<CpiAccount> {
+  readonly __remainingSlice: void;
 }
 export declare function remainingAccounts(): RemainingAccounts;
 
@@ -315,7 +319,8 @@ export type Account<T> = Readonly<T> & AccountMeta;
 /** Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. */
 export type Mut<T> = T & AccountMeta;
 
-export type Seed = string | Pubkey | bigint;
+/** A PDA seed: a string, a Pubkey, an integer (at its width) or a unit enum value (one byte). */
+export type Seed = string | Pubkey | bigint | number;
 
 /**
  * The seeds (with the bump) of one PDA signature, for helpers that sign CPIs: declare a `seeds: SignerSeeds`
@@ -619,9 +624,9 @@ export interface CpiAccount {
   readonly __cpi_account: void;
 }
 export declare function readonly(account: AccountMeta | RemainingAccount): CpiAccount;
-export declare function readonly(accounts: RemainingAccounts): Iterable<CpiAccount>;
+export declare function readonly(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
 export declare function writable(account: AccountMeta | RemainingAccount): CpiAccount;
-export declare function writable(accounts: RemainingAccounts): Iterable<CpiAccount>;
+export declare function writable(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;
 

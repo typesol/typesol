@@ -11,14 +11,6 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   `...writable(rest)`), and take part of them with `rest.slice(a, b)`. A CPI lists at most 32 accounts (5113); a slice
   out of range fails with 5104.
 - `findProgramAddress(seeds, program)`: the canonical PDA of another program at runtime.
-
-### Tooling
-- Ports: compression/cnft-burn, cnft-vault, cutils and token-2022/transfer-fee, blocked until now, are ported (PARTIAL;
-  test/ports/README.md). The compression ports run against Bubblegum, SPL Account Compression and Token Metadata, with
-  the leaf hashes, roots and proofs computed in the tests. Ports: 9 PORTED, 32 PARTIAL, 5 BLOCKED (all on transfer hooks
-  with extra accounts).
-
-### Added
 - PDA seeds from account fields: `Seeds<…, ["@pool.amm", "@mintA", "authority"]>` takes a Pubkey, integer or unit
   enum field of a struct account parameter, including the account's own (`Seeds<Mut<Offer>, ["offer", "@maker",
   "@offer.id"], "bump">`), like Anchor's `seeds = [pool.amm.as_ref(), …]`. Recorded in the IDL as account paths
@@ -27,6 +19,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   NftAuthority {}`).
 
 ### Tooling
+- Ports: compression/cnft-burn, cnft-vault, cutils and token-2022/transfer-fee, blocked until now, are ported (PARTIAL;
+  test/ports/README.md). The compression ports run against Bubblegum, SPL Account Compression and Token Metadata, with
+  the leaf hashes, roots and proofs computed in the tests. Ports: 9 PORTED, 32 PARTIAL, 5 BLOCKED (all on transfer hooks
+  with extra accounts).
 - Ports: the eight remaining program-examples that had not been attempted are ported: basics/repository-layout and
   token-2022 cpi-guard, group, immutable-owner, interest-bearing, memo-transfer, metadata and nft-meta-data-pointer
   (all PARTIAL; test/ports/README.md lists the differences). Every one of the 46 programs is now ported or blocked

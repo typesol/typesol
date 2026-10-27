@@ -1,5 +1,5 @@
 // Seeds<…, ["@acct.field"]>: PDA seeds taken from a struct account's fields (test/fixtures/seed-fields.ts).
-import { generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
+import { generateKeyPairSigner, getAddressDecoder, getAddressEncoder } from "@solana/kit";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CompileError, generate } from "../src/compiler/index.js";
 import { BN, SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { pk } from "./ports-helpers.js";
 
 const u64le = (n: bigint) => {
   const b = new Uint8Array(8);
@@ -46,6 +47,9 @@ describe("Seeds from account fields", () => {
     const [wrongTier] = await pda(d.programId, ["vault", payer.address, new Uint8Array([0])]);
     expect(customError(await send(d.svm, payer, [ix(d, "vault", {}, [{ address: book }, { address: wrongTier }])]))).toBe(2006);
     expect(getAddressEncoder().encode(vault).length).toBe(32);
+    // findProgramAddress with the enum field as a seed derives the same vault.
+    const found = expectOk(await send(d.svm, payer, [ix(d, "vault_address", { program: pk(d.programId) }, [{ address: book }])]));
+    expect(getAddressDecoder().decode(found.returnData().data())).toBe(vault);
   });
 
   it("records the field seeds in the IDL as account paths", () => {

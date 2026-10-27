@@ -493,6 +493,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     if (ts.isPropertyAccessExpression(callee) && ts.isCallExpression(callee.expression) && this.exportName(callee.expression.expression) === "fixedArray")
       this.fail(callee.expression, "fixedArray<T, N>(fill) is only allowed as a local declaration: const xs = fixedArray<u64, 4>(0n)");
+    if (ts.isPropertyAccessExpression(callee) && callee.name.text === "slice" && this.isRemaining(callee.expression))
+      this.fail(node, "rest.slice(a, b) is only for spreading into a CPI's accounts: invoke(p, [..., ...readonly(rest.slice(a, b))], data)");
     this.fail(node, "unsupported call");
   }
 

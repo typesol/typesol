@@ -1,4 +1,4 @@
-import { type Account, type AccountInfo, type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemProgram, type u8, type u64 } from "typesol";
+import { type Account, type AccountInfo, type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemProgram, type u8, type u64, findProgramAddress } from "typesol";
 
 export enum Tier {
   Basic,
@@ -27,4 +27,9 @@ export function touch(book: Seeds<Account<Book>, ["book", "@book.owner", "@book.
 /** Another account's PDA, seeded from the book's fields; returns the canonical bump found. */
 export function vault(book: Account<Book>, vault: Seeds<AccountInfo, ["vault", "@book.owner", "@book.tier"]>): u8 {
   return vault.pdaBump;
+}
+
+/** The vault's address re-derived in the program with the tier enum as a seed (one byte, as in Seeds<…>). */
+export function vaultAddress(book: Account<Book>, program: Pubkey): Pubkey {
+  return findProgramAddress(["vault", book.owner, book.tier], program);
 }
