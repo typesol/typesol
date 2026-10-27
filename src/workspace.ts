@@ -259,7 +259,8 @@ export function scaffold(dir: string, name: string): string[] {
           scripts: { build: "typesol build", test: "vitest run", typecheck: "tsc -p tsconfig.json", deploy: "typesol deploy" },
           engines: { node: ">=22.12" },
           devDependencies: {
-            typesol: `^${COMPILER_VERSION}`,
+            // Published as @typesol/cli, installed under the name programs import ("typesol", "typesol/workspace").
+            typesol: `npm:@typesol/cli@^${COMPILER_VERSION}`,
             "@types/node": "^22.0.0",
             typescript: "^6.0.3",
             "@anchor-lang/core": "^1.2.1",

@@ -74,10 +74,10 @@ jobs:
         run: |
           npm pack --pack-destination /tmp
           mkdir /tmp/consumer && cd /tmp/consumer && npm init -y >/dev/null
-          npm install /tmp/typesol-*.tgz
+          npm install /tmp/typesol-cli-*.tgz
           npx typesol --version
           npx typesol init app --name app && cd app
-          npm pkg set devDependencies.typesol=file:$(ls /tmp/typesol-*.tgz)
+          npm pkg set devDependencies.typesol=file:$(ls /tmp/typesol-cli-*.tgz)
           npm install
           npx typesol build
           npx tsc -p tsconfig.json

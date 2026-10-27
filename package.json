@@ -1,11 +1,11 @@
 {
-  "name": "typesol",
+  "name": "@typesol/cli",
   "version": "0.11.0",
   "description": "Compile a TypeScript-syntax language directly to Solana SBF programs.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "typesol": "./dist/cli.js"
+    "typesol": "dist/cli.js"
   },
   "types": "./lib/typesol.d.ts",
   "exports": {
@@ -102,5 +102,8 @@
   "bugs": {
     "url": "https://github.com/typesol/typesol/issues"
   },
-  "homepage": "https://typesol.com"
+  "homepage": "https://typesol.com",
+  "publishConfig": {
+    "access": "public"
+  }
 }
