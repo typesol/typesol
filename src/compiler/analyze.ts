@@ -954,7 +954,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
     const c = a.constraints;
     const refs = [
       ...c.hasOne,
-      ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1)),
+      ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1).split(".")[0]!),
       ...(c.seeds?.program?.startsWith("@") ? [c.seeds.program.slice(1)] : []),
       ...(c.closeTo ? [c.closeTo] : []),
       ...(c.ata

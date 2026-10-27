@@ -349,6 +349,23 @@ export class FunctionEmitter extends StatementEmitter {
           // "@name" refers to an account parameter (its key) or an argument (its bytes); anything else is a literal.
           const ref = raw.startsWith("@") ? raw.slice(1) : undefined;
           const n = ref ?? raw;
+          // "@acct.field": a field of a struct account parameter (its data was checked in the head), Anchor's
+          // `seeds = [pool.amm.as_ref()]`. The account may be this one (`seeds = [offer.id.to_le_bytes()]`).
+          if (ref?.includes(".")) {
+            const [owner, field, ...rest] = ref.split(".");
+            const o = ix.accounts.find((x) => x.name === owner);
+            if (!o || o.kind.kind !== "account" || rest.length)
+              this.reporter.fail(a.node, `Seeds: "@${ref}" must name a field of a struct account parameter ("@vault.owner")`);
+            const st = o.kind.struct;
+            const f = st.fields.find((x) => x.name === field);
+            if (!f) this.reporter.fail(a.node, `Seeds: ${st.name} has no field "${field}"`);
+            const t = f.type;
+            if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&d_${owner}->${field}, 32}`);
+            else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&d_${owner}->${field}, ${scalarSize(t)}}`);
+            else this.reporter.fail(a.node, `Seeds: field "${ref}" of type ${typeName(t)} cannot be a seed (use a Pubkey, an integer or a unit enum)`);
+            idl.push({ kind: "account", path: `${snakeCase(owner!)}.${snakeCase(field!)}`, account: st.name });
+            continue;
+          }
           const acct = ref ? ix.accounts.find((o) => o.name === ref) : undefined;
           const arg = ref ? ix.args.find((o) => o.name === ref) : undefined;
           if (ref && !acct && !arg) this.reporter.fail(a.node, `Seeds: "@${ref}" is neither an account parameter nor an argument`);
