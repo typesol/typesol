@@ -118,7 +118,8 @@ describe("Token-2022 extension initializers", () => {
     try {
       generate(file);
     } catch (e) {
-      expect((e as CompileError).diagnostics[0].message).toMatch(/Token-2022 extension; use Token2022Program/);
+      // TypeScript already refuses it: the classic program's type has no extension methods.
+      expect((e as CompileError).diagnostics[0].message).toMatch(/initializeNonTransferableMint' does not exist on type 'TokenProgram'/);
     }
   });
 });

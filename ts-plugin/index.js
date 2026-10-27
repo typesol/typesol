@@ -37,9 +37,23 @@ function init({ typescript: ts }) {
     const log = (m) => info.project.projectService.logger.info(`[typesol] ${m}`);
     const cache = new Map(); // fileName -> { text, found }
 
+    /** The entry's text plus the modification times of the .ts files beside it (its imports usually live there). */
+    function key(fileName, sf) {
+      const dir = path.dirname(path.resolve(fileName));
+      let stamps = "";
+      try {
+        for (const f of fs.readdirSync(dir).sort())
+          if (f.endsWith(".ts") && path.join(dir, f) !== path.resolve(fileName)) stamps += `${f}:${fs.statSync(path.join(dir, f)).mtimeMs};`;
+      } catch {
+        stamps = "";
+      }
+      return `${stamps}\n${sf.text}`;
+    }
+
     function typesolDiagnostics(fileName, sf) {
+      const k = key(fileName, sf);
       const hit = cache.get(fileName);
-      if (hit && hit.text === sf.text) return hit.found;
+      if (hit && hit.key === k) return hit.found;
       let found = [];
       try {
         const out = execFileSync(process.execPath, [CLI, "check", fileName, "--json", "--stdin"], {
@@ -60,7 +74,7 @@ function init({ typescript: ts }) {
           found = [];
         }
       }
-      cache.set(fileName, { text: sf.text, found });
+      cache.set(fileName, { key: k, found });
       return found;
     }
 

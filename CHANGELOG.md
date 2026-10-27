@@ -43,8 +43,17 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `typesol idl publish --url` accepts the Solana CLI's cluster monikers (`mainnet-beta`, `devnet`, …).
 
 ### Fixed
-- A function whose stack frame exceeds SBF's 4 KiB used to build and then corrupt memory at runtime (the toolchain
-  only printed a note). The build now fails, naming the instruction or helper and its frame size.
+- `typesol port` (unreleased) after review: comment terminators in docs, an account and an argument with the same
+  name, struct fields named like C keywords, constant expressions, `bytes`, tuple and generic types, and data enums /
+  COptions in account data (now noted as layout differences) no longer produce a skeleton that fails to compile or
+  silently differs. Type names are kept as written, so account discriminators match.
+- `typesol/testing` (unreleased): PDAs seeded by accounts with a fixed address (an ATA's token program) or by unit-enum
+  arguments are derived; unit enums can be passed as an index or a name.
+- The Token-2022 extension methods are typed on `Token2022Program` / `TokenInterface` only, so the editor flags them on
+  `TokenProgram`; `initializeTransferFeeConfig` evaluates its arguments in source order.
+- A function whose stack frame exceeds SBPF v0's 4 KiB used to build and then corrupt memory at runtime (the toolchain
+  only printed a note). The build now fails, naming the instruction or helper and its frame size (v1/v2 frames grow
+  dynamically and are not limited).
 - A struct returned by a helper and bound through a ternary (`const o = c ? mk(1n) : mk(2n)`) pointed at storage
   that ended with the branch, so the program read garbage (found in review, never released). The result now lives for
   the whole function.
