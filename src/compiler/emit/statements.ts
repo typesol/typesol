@@ -46,6 +46,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (ts.isReturnStatement(stmt)) return this.returnStatement(stmt);
     if (ts.isSwitchStatement(stmt)) return this.switchStatement(stmt);
     if (ts.isForStatement(stmt)) return this.forLoop(stmt);
+    if (ts.isForOfStatement(stmt)) return this.forOf(stmt);
     if (ts.isWhileStatement(stmt)) return this.loop(stmt.expression, stmt.statement, undefined);
     if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
       if (stmt.label) this.fail(stmt, "labeled break/continue is not supported");
@@ -55,8 +56,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(ts.isBreakStatement(stmt) ? `break;` : `goto ${this.loops.at(-1)};`);
       return;
     }
-    if (ts.isDoStatement(stmt) || ts.isForOfStatement(stmt) || ts.isForInStatement(stmt))
-      this.fail(stmt, "only for (init; cond; step) and while loops are supported");
+    if (ts.isDoStatement(stmt) || ts.isForInStatement(stmt))
+      this.fail(stmt, "only for (init; cond; step), for (const x of list) and while loops are supported");
     this.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported in TypeSOL`);
   }
 
@@ -151,6 +152,65 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.loop(stmt.condition, stmt.statement, stmt.incrementor);
     });
     this.line(`}`);
+  }
+
+  /**
+   * `for (const x of list)` over a Vec or FixedArray: an index loop that binds `x` as `const x = list.get(i)` would,
+   * so elements are values (scalars, strings) or references into the data (structs), with the same aliasing rules.
+   * As in JS, the length is read again before every step, so a body that pushes or pops sees the new length.
+   */
+  protected forOf(stmt: ts.ForOfStatement) {
+    if (stmt.awaitModifier) this.fail(stmt, "for await is not supported");
+    const list = stmt.initializer;
+    const d = ts.isVariableDeclarationList(list) && list.declarations.length === 1 ? list.declarations[0] : undefined;
+    if (!d || !(list.flags & ts.NodeFlags.Const) || !ts.isIdentifier(d.name) || d.type)
+      this.fail(stmt.initializer, "write for (const x of list): one const name, no type annotation");
+    if (this.isRemaining(stmt.expression)) this.fail(stmt.expression, "iterate remaining accounts with for (let i = 0n; i < rest.length; i++) and rest.get(i)");
+    // Synthetic `list.length` / `list.get(i)` nodes placed at the loop, so errors and checks point at the source.
+    const f = ts.factory;
+    const index = `__of${this.temp++}`;
+    const place = <T extends ts.Node>(n: T): T => {
+      ts.setTextRange(n, stmt.expression);
+      (n as { parent?: ts.Node }).parent = stmt;
+      return n;
+    };
+    const indexId = place(f.createIdentifier(index));
+    const length = place(f.createPropertyAccessExpression(stmt.expression, "length"));
+    const get = place(f.createCallExpression(place(f.createPropertyAccessExpression(stmt.expression, "get")), undefined, [indexId]));
+    // The element's declaration: the source's own name (so aliasing checks find its uses) bound to list.get(i).
+    const decl = f.createVariableDeclaration(d.name, undefined, undefined, get);
+    ts.setTextRange(decl, d);
+    (decl as { parent?: ts.Node }).parent = list;
+    const declList = { ...list, flags: ts.NodeFlags.Const, declarations: [decl] } as unknown as ts.VariableDeclarationList;
+
+    const ci = this.tmp("of_i");
+    const label = this.tmp("ts_continue_");
+    this.line(`{`);
+    this.block(() => {
+      this.line(`uint64_t ${ci} = 0;`);
+      this.scopes.at(-1)!.set(index, { c: ci, type: U64, mutable: false });
+      this.line(`while (1) {`);
+      this.block(() => {
+        const n = this.expect(this.expr(length, U64), U64, stmt.expression);
+        this.line(`if (!(${ci} < ${n.c})) break;`);
+        this.variable(declList);
+        this.loops.push(label);
+        this.line(`{`);
+        this.block(() => this.body(stmt.statement));
+        this.line(`}`);
+        this.loops.pop();
+        this.line(`${label}:;`);
+        this.line(`${ci}++;`);
+      });
+      this.line(`}`);
+    });
+    this.line(`}`);
+  }
+
+  /** Whether `e` is the remaining accounts (or a const bound to them). */
+  protected isRemaining(e: ts.Expression): boolean {
+    if (ts.isCallExpression(e) && this.exportName(e.expression) === "remainingAccounts") return true;
+    return ts.isIdentifier(e) && this.lookup(e.text)?.type.kind === "remaining";
   }
 
   /**

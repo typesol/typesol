@@ -6,6 +6,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `for (const x of list)` over a `Vec` (account field or argument) or a `FixedArray`: each `x` is what `list.get(i)`
+  gives (a value, or a reference into account data for structs, with the same aliasing checks), the length is read
+  again before every step as in JS, and `break` / `continue` work. Remaining accounts are still iterated by index.
 - `typesol verify <program>` without a `.so` reads the deployed program from the cluster (`--address`, or the address
   in `typesol.json`; `--url`, cluster monikers or the Solana CLI config) under loader v2, v3 or v4, prints its upgrade
   authority or that it is immutable and its last deploy slot, and compares the IDL published on chain with the built
