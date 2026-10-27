@@ -1,9 +1,13 @@
 // Ports of tokens/token-2022/transfer-hook/* with extra accounts (helpers in hook-helpers.ts).
-import { generateKeyPairSigner } from "@solana/kit";
+import { getTransferSolInstruction } from "@solana-program/system";
+import * as spl from "@solana-program/token";
+import { address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
-import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
-import { deployPort, tokenBalance } from "./ports-helpers.js";
+import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
+import { ataOf, deployPort, tokenBalance } from "./ports-helpers.js";
+
+const WSOL = address("So11111111111111111111111111111111111111112");
 import { ataFor, hookMint, hookedTransfer, validationAccount } from "./hook-helpers.js";
 
 describe("port: tokens/token-2022/transfer-hook/counter", () => {
@@ -154,5 +158,69 @@ describe("port: tokens/token-2022/transfer-hook/transfer-switch", () => {
     expectOk(await toggle(true));
     expectOk(await transfer());
     expect(tokenBalance(svm, destination)).toBe(1n);
+  });
+});
+
+describe("port: tokens/token-2022/transfer-hook/transfer-cost", () => {
+  it("charges the sender WSOL on every transfer through the hook's seven extra accounts", async () => {
+    const d = await deployPort("tokens/token-2022/transfer-hook/transfer-cost.ts", "FjcHckEgXcBhFmSGai3FRpDLiT6hbpV893n8iTxVd81g");
+    const { svm } = d;
+    const sender = await fundedSigner(svm, 20n);
+    // The native mint (absent from a fresh LiteSVM): an initialized SPL Token mint, 9 decimals, no authorities.
+    const mintData = new Uint8Array(82);
+    mintData[44] = 9;
+    mintData[45] = 1;
+    svm.setAccount({
+      address: WSOL,
+      data: mintData,
+      executable: false,
+      lamports: lamports(svm.minimumBalanceForRentExemption(82n)),
+      programAddress: TOKEN_PROGRAM,
+      space: 82n,
+    });
+    const [delegate] = await pda(d.programId, ["delegate"]);
+    const delegateWsol = await ataOf(delegate, WSOL);
+    const senderWsol = await ataOf(sender.address, WSOL);
+    expectOk(
+      await send(svm, sender, [
+        spl.getCreateAssociatedTokenIdempotentInstruction({ payer: sender, ata: delegateWsol, owner: delegate, mint: WSOL }),
+        spl.getCreateAssociatedTokenIdempotentInstruction({ payer: sender, ata: senderWsol, owner: sender.address, mint: WSOL }),
+        getTransferSolInstruction({ source: sender, destination: senderWsol, amount: 1_000_000n }),
+        spl.getSyncNativeInstruction({ account: senderWsol }),
+      ]),
+    );
+    const mint = await hookMint(svm, sender, d.programId);
+    const [counter] = await pda(d.programId, ["counter"]);
+    expectOk(
+      await send(svm, sender, [
+        ix(d, "initialize_extra_account_meta_list", {}, [
+          { address: sender.address, signer: sender, writable: true },
+          { address: await validationAccount(d.programId, mint), writable: true },
+          { address: mint },
+          { address: counter, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    const source = await ataFor(svm, sender, sender.address, mint, 100n);
+    const destination = await ataFor(svm, sender, (await generateKeyPairSigner()).address, mint, 0n);
+    const extra = [
+      { address: WSOL },
+      { address: TOKEN_PROGRAM },
+      { address: ATA_PROGRAM },
+      { address: delegate, writable: true },
+      { address: delegateWsol, writable: true },
+      { address: senderWsol, writable: true },
+      { address: counter, writable: true },
+    ];
+    const transfer = async (amount: bigint) =>
+      send(svm, sender, [await hookedTransfer(d.programId, { source, mint, destination, authority: sender, amount }, extra)]);
+    // Without the sender approving the delegate, the WSOL transfer inside the hook fails.
+    expect(await transfer(10n)).toBeInstanceOf(FailedTransactionMetadata);
+    expectOk(await send(svm, sender, [spl.getApproveInstruction({ source: senderWsol, delegate, owner: sender, amount: 1_000n })]));
+    const r = expectOk(await transfer(10n));
+    expect(r.logs()).toContain("Program log: This token has been transferred 1 times");
+    expect(tokenBalance(svm, delegateWsol)).toBe(10n);
+    expect(tokenBalance(svm, destination)).toBe(10n);
   });
 });
