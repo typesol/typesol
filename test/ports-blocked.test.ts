@@ -20,18 +20,6 @@ function compileErrors(name: string, source: string): string[] {
   return [];
 }
 
-/** Extending a CPI account list with every remaining account (how the originals pass cNFT proofs / harvest sources). */
-function remainingAccountsInCpi(name: string): string[] {
-  return compileErrors(
-    name,
-    `import { type AccountInfo, type Mut, type Signer, type UncheckedProgram, type u64, invoke, readonly, readonlySigner, remainingAccounts, writable, hex } from "typesol";
-export function burnCnft(leafOwner: Mut<Signer>, treeAuthority: Mut<AccountInfo>, merkleTree: Mut<AccountInfo>, logWrapper: AccountInfo, compressionProgram: AccountInfo, bubblegumProgram: UncheckedProgram, systemProgram: AccountInfo, nonce: u64): void {
-  const proof = remainingAccounts();
-  invoke(bubblegumProgram, [readonly(treeAuthority), readonlySigner(leafOwner), readonly(leafOwner), writable(merkleTree), readonly(logWrapper), readonly(compressionProgram), readonly(systemProgram), ...proof], [hex("746e1d386bdb2a5d"), nonce]);
-}`,
-  );
-}
-
 /** A transfer hook whose ExtraAccountMetaList holds an extra account. */
 function hookWithExtraAccount(name: string): string[] {
   return compileErrors(
@@ -46,27 +34,6 @@ export function initializeExtraAccountMetaList(payer: Mut<Signer>, extraMetas: M
 
 /** Each BLOCKED program, the upstream line that needs the construct, and the probe for it. */
 const BLOCKED: { program: string; source: string; construct: string; probe: (name: string) => string[]; refused: RegExp }[] = [
-  ...[
-    [
-      "compression/cnft-burn",
-      "cnft-burn/src/lib.rs:98 `for acc in ctx.remaining_accounts.iter() { accounts.push(AccountMeta::new_readonly(acc.key(), false)); }`",
-    ],
-    ["compression/cnft-vault", "cnft-vault/src/lib.rs:71 `accounts.extend_from_slice(remaining_accounts);`"],
-    [
-      "compression/cutils",
-      "cutils/src/actions/verify.rs:56 `for acc in ctx.remaining_accounts.iter() { accounts.push(AccountMeta::new_readonly(acc.key(), false)); }`",
-    ],
-    [
-      "tokens/token-2022/transfer-fee",
-      "transfer-fee/src/instructions/harvest.rs:18 `let sources = ctx.remaining_accounts.iter()…` passed to harvest_withheld_tokens_to_mint",
-    ],
-  ].map(([program, source]) => ({
-    program,
-    source,
-    construct: "a CPI account list extended with the remaining accounts",
-    probe: remainingAccountsInCpi,
-    refused: /must have a '\[Symbol.iterator\]\(\)' method|accounts must be an array literal/,
-  })),
   ...[
     ["tokens/token-2022/transfer-hook/account-data-as-seed", "account-data-as-seed/src/lib.rs:129 `ExtraAccountMeta::new_with_seeds(…Seed::AccountData…)`"],
     ["tokens/token-2022/transfer-hook/allow-block-list-token", "abl-token/src/utils.rs:18 `ExtraAccountMeta::new_with_seeds(…)`"],

@@ -1,12 +1,22 @@
-// Compressed NFTs for the compression ports: a Bubblegum tree (depth 3) minted through test/fixtures/metaplex.ts, and
+// Compressed NFTs for the compression ports: a Bubblegum tree (depth 3) made and minted with Bubblegum instructions, and
 // the leaf hashes, root and proofs Bubblegum checks, computed the way mpl-bubblegum and spl-concurrent-merkle-tree do.
 import { getCreateAccountInstruction } from "@solana-program/system";
 import { keccak_256 } from "@noble/hashes/sha3.js";
-import { type Address, type KeyPairSigner, address, generateKeyPairSigner, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
+import {
+  AccountRole,
+  type Address,
+  type KeyPairSigner,
+  address,
+  generateKeyPairSigner,
+  getAddressDecoder,
+  getAddressEncoder,
+  getProgramDerivedAddress,
+} from "@solana/kit";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type LiteSVM } from "litesvm";
-import { SYSTEM_PROGRAM, deployFile, expectOk, ix, send } from "./harness.js";
+import { SYSTEM_PROGRAM, expectOk, send } from "./harness.js";
 
 export const BUBBLEGUM = address("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY");
 export const COMPRESSION = address("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK");
@@ -16,7 +26,7 @@ export const HAVE_BUBBLEGUM = ["mpl_bubblegum.so", "spl_account_compression.so",
 
 const DEPTH = 3;
 const enc = getAddressEncoder();
-const keccak = (...parts: Uint8Array[]) => keccak_256(Buffer.concat(parts.map((p) => Buffer.from(p))));
+const keccak = (...parts: ArrayLike<number>[]) => keccak_256(Buffer.concat(parts.map((p) => Buffer.from(Uint8Array.from(p)))));
 const u64le = (n: bigint) => {
   const b = Buffer.alloc(8);
   b.writeBigUInt64LE(n);
@@ -28,7 +38,7 @@ const str = (s: string) => {
   l.writeUInt32LE(b.length);
   return Buffer.concat([l, b]);
 };
-/** The leaves of `mintCompressed` in the metaplex fixture: name "cNFT", symbol "CN", 500 bps, no creators. */
+/** The leaves `mint` makes: name "cNFT", symbol "CN", 500 bps, no creators. */
 const NAME = "cNFT";
 const SYMBOL = "CN";
 const URI = "https://example.com/n.json";
@@ -76,49 +86,70 @@ export function rootAndProof(leaves: Map<number, Uint8Array>, index: number): { 
 /** A proof node as an account address (the cNFT programs take the proof as remaining accounts). */
 export const nodeAddress = (n: Uint8Array): Address => getAddressDecoder().decode(n);
 
-/** A tree made and minted by the metaplex fixture's studio PDA, tracking its leaves. */
-export async function makeTree(svm: LiteSVM, payer: KeyPairSigner) {
-  const m = await deployFile(fileURLToPath(new URL("./fixtures/metaplex.ts", import.meta.url)), { svm });
-  const [studio] = await getProgramDerivedAddress({ programAddress: m.programId, seeds: ["studio"] });
-  expectOk(
-    await send(svm, payer, [
-      ix(m, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: studio, writable: true }, { address: SYSTEM_PROGRAM }]),
-    ]),
-  );
+const disc = (name: string) => createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
+
+/** A Bubblegum tree (depth 3, buffer 8) whose creator is `payer`, minting with MintV1 directly; tracks its leaves. */
+export async function makeTree(svm: LiteSVM, payer: KeyPairSigner, opts: { isPublic?: boolean } = {}) {
   const tree = await generateKeyPairSigner();
   const space = 56 + 24 + 8 * (40 + 32 * DEPTH) + (40 + 32 * DEPTH);
   const [treeConfig] = await getProgramDerivedAddress({ programAddress: BUBBLEGUM, seeds: [enc.encode(tree.address)] });
-  const common = [{ address: NOOP }, { address: COMPRESSION }, { address: BUBBLEGUM }, { address: SYSTEM_PROGRAM }];
+  const tail = [
+    { address: NOOP, role: AccountRole.READONLY },
+    { address: COMPRESSION, role: AccountRole.READONLY },
+    { address: SYSTEM_PROGRAM, role: AccountRole.READONLY },
+  ];
+  const u32le = (n: number) => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(n);
+    return b;
+  };
   expectOk(
     await send(svm, payer, [
       getCreateAccountInstruction({ payer, newAccount: tree, lamports: svm.minimumBalanceForRentExemption(BigInt(space)), space, programAddress: COMPRESSION }),
-      ix(m, "make_tree", {}, [
-        { address: treeConfig, writable: true },
-        { address: tree.address, writable: true },
-        { address: payer.address, signer: payer, writable: true },
-        { address: studio },
-        ...common,
-      ]),
+      {
+        programAddress: BUBBLEGUM,
+        accounts: [
+          { address: treeConfig, role: AccountRole.WRITABLE },
+          { address: tree.address, role: AccountRole.WRITABLE },
+          { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer },
+          { address: payer.address, role: AccountRole.READONLY_SIGNER, signer: payer },
+          ...tail,
+        ],
+        data: Buffer.concat([disc("create_tree"), u32le(DEPTH), u32le(8), Buffer.from(opts.isPublic ? [1, 1] : [0])]),
+      } as never,
     ]),
   );
   const leaves = new Map<number, Uint8Array>();
   let minted = 0n;
+  const fee = Buffer.alloc(2);
+  fee.writeUInt16LE(FEE);
   return {
     tree: tree.address,
     treeConfig,
     leaves,
-    /** Mint a cNFT to `owner` (also its delegate); returns its leaf. */
+    /** Account that a leaf was minted into, by others (e.g. MintToCollectionV1): track its nonce. */
+    track(leaf: Leaf & { index: number }, hash: Uint8Array) {
+      minted = leaf.nonce + 1n;
+      leaves.set(leaf.index, hash);
+    },
+    nextNonce: () => minted,
+    /** MintV1 a cNFT to `owner` (also its delegate); returns its leaf. */
     async mint(owner: Address): Promise<Leaf & { index: number }> {
       expectOk(
         await send(svm, payer, [
-          ix(m, "mint_compressed", {}, [
-            { address: treeConfig, writable: true },
-            { address: owner },
-            { address: tree.address, writable: true },
-            { address: payer.address, signer: payer, writable: true },
-            { address: studio },
-            ...common,
-          ]),
+          {
+            programAddress: BUBBLEGUM,
+            accounts: [
+              { address: treeConfig, role: AccountRole.WRITABLE },
+              { address: owner, role: AccountRole.READONLY },
+              { address: owner, role: AccountRole.READONLY },
+              { address: tree.address, role: AccountRole.WRITABLE },
+              { address: payer.address, role: AccountRole.READONLY_SIGNER, signer: payer },
+              { address: payer.address, role: AccountRole.READONLY_SIGNER, signer: payer },
+              ...tail,
+            ],
+            data: Buffer.concat([disc("mint_v1"), str(NAME), str(SYMBOL), str(URI), fee, Buffer.from([0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])]),
+          } as never,
         ]),
       );
       const nonce = minted++;

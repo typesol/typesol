@@ -6,6 +6,19 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Remaining accounts in a CPI: spread them into `invoke`'s account list with the flags they were passed with
+  (`...remainingAccounts()`, Rust's `extend_from_slice`) or all with one role (`...readonly(rest)`,
+  `...writable(rest)`), and take part of them with `rest.slice(a, b)`. A CPI lists at most 32 accounts (5113); a slice
+  out of range fails with 5104.
+- `findProgramAddress(seeds, program)`: the canonical PDA of another program at runtime.
+
+### Tooling
+- Ports: compression/cnft-burn, cnft-vault, cutils and token-2022/transfer-fee, blocked until now, are ported (PARTIAL;
+  test/ports/README.md). The compression ports run against Bubblegum, SPL Account Compression and Token Metadata, with
+  the leaf hashes, roots and proofs computed in the tests. Ports: 9 PORTED, 32 PARTIAL, 5 BLOCKED (all on transfer hooks
+  with extra accounts).
+
+### Added
 - PDA seeds from account fields: `Seeds<…, ["@pool.amm", "@mintA", "authority"]>` takes a Pubkey, integer or unit
   enum field of a struct account parameter, including the account's own (`Seeds<Mut<Offer>, ["offer", "@maker",
   "@offer.id"], "bump">`), like Anchor's `seeds = [pool.amm.as_ref(), …]`. Recorded in the IDL as account paths

@@ -343,6 +343,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_ata_address(${o.c}, ${m.c}, ${tp.c}, &${t}));`);
         return { c: `(&${t})`, type: PUBKEY };
       }
+      case "findProgramAddress": {
+        // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
+        if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
+        const seeds = this.seeds(args[0]!, 0);
+        const program = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        const t = this.tmp("pda");
+        const b = this.tmp("bump");
+        this.line(`SolPubkey ${t}; uint8_t ${b};`);
+        this.line(
+          `if (sol_try_find_program_address(${seeds.name}, ${seeds.count}, ${program.c}, &${t}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
+        );
+        return { c: `(&${t})`, type: PUBKEY };
+      }
       case "metadataAddress": {
         if (args.length !== 1) this.fail(node, "metadataAddress(mint) takes the mint");
         const m = this.expect(this.expr(args[0], PUBKEY), PUBKEY, args[0]);

@@ -29,9 +29,9 @@ Status:
 | `basics/realloc` | `basics/realloc.ts` | PARTIAL | the keypair account is the PDA `["message", payer]`; `input: String` is a `Vec<u8>` (same bytes); `realloc::payer` lamports are settled explicitly |
 | `basics/repository-layout` | `basics/repository-layout/{lib,error}.ts`, `instructions/`, `state/` | PARTIAL | the same module layout; the attraction lists are lookups by name (no constant tables of strings); an unknown attraction fails with 6000, not InvalidInstructionData |
 | `basics/transfer-sol` | `basics/transfer-sol.ts` | PORTED | |
-| `compression/cnft-burn` | | BLOCKED | passes the proof (remaining accounts) on to Bubblegum: a CPI account list extended with the remaining accounts |
-| `compression/cnft-vault` | | BLOCKED | same construct as `cnft-burn` (Bubblegum transfers with the proof as remaining accounts) |
-| `compression/cutils` | | BLOCKED | first blocker: same construct as `cnft-burn` (Bubblegum `verify_leaf` with the proof as remaining accounts); it also hashes Bubblegum leaf schemas |
+| `compression/cnft-burn` | `compression/cnft-burn.ts` | PARTIAL | `bubblegum_program` is pinned to Bubblegum's address (the original takes it unchecked and calls the fixed id) |
+| `compression/cnft-vault` | `compression/cnft-vault.ts` | PARTIAL | `bubblegum_program` pinned; the proof lengths are named `proof1_length` / `proof2_length` in the IDL (same bytes); tree addresses logged on their own lines |
+| `compression/cutils` | `compression/cutils.ts` | PARTIAL | `mint` takes `uri` instead of a MintParams struct (same bytes); `bubblegum_program` pinned; the unused `Data` account type is left out |
 | `oracles/pyth` | `oracles/pyth.ts` | PARTIAL | log lines differ (`{:?}` formatting); the account checks are the same |
 | `tokens/create-token` | `tokens/create-token.ts` | PARTIAL | the metadata address log line is two lines |
 | `tokens/escrow` | `tokens/escrow.ts` | PORTED | |
@@ -51,7 +51,7 @@ Status:
 | `tokens/token-2022/nft-meta-data-pointer` | `tokens/token-2022/nft-meta-data-pointer.ts` | PARTIAL | Token Metadata / MetadataPointer / MintTo hand-encoded; session tokens checked by their fields instead of re-deriving their PDA; `player` / `game_data` sized to their fields (Anchor reserves 1000 bytes) |
 | `tokens/token-2022/non-transferable` | `tokens/token-2022/non-transferable.ts` | PARTIAL | InitializeNonTransferableMint is hand-encoded |
 | `tokens/token-2022/permanent-delegate` | `tokens/token-2022/permanent-delegate.ts` | PARTIAL | InitializePermanentDelegate is hand-encoded |
-| `tokens/token-2022/transfer-fee` | | BLOCKED | `harvest` passes every remaining account to HarvestWithheldTokensToMint: a CPI account list extended with the remaining accounts |
+| `tokens/token-2022/transfer-fee` | `tokens/token-2022/transfer-fee.ts` | PARTIAL | TransferFee instructions hand-encoded; `harvest` passes every remaining account (Token-2022 skips the ones the original filters out) |
 | `tokens/token-2022/transfer-hook/account-data-as-seed` | | BLOCKED | an extra account in the ExtraAccountMetaList (`initExtraAccountMetas` takes none) |
 | `tokens/token-2022/transfer-hook/allow-block-list-token` | | BLOCKED | extra accounts in the ExtraAccountMetaList |
 | `tokens/token-2022/transfer-hook/counter` | | BLOCKED | an extra account in the ExtraAccountMetaList |
@@ -66,8 +66,8 @@ Status:
 the typed builtin needs a `Mint` or `TokenAccount` that is created in the same instruction without a TypeSOL wrapper
 for it (associated token accounts have one: `Ata<Init<TokenAccount>, …>` / `Ata<InitIfNeeded<TokenAccount>, …>`).
 
-Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` (skipped without
-`pnpm fetch:programs`), `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`, `test/ports-blocked.test.ts`.
+Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` and
+`test/ports-compression.test.ts` (skipped without `pnpm fetch:programs`), `test/ports-token2022-ext.test.ts`, `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`, `test/ports-blocked.test.ts`.
 
 ## License
 

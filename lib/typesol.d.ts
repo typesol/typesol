@@ -219,6 +219,8 @@ export interface TokenMetadataProgram extends AccountMeta {
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
 }
+/** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
+export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
 /** The Metaplex metadata account address of a mint. */
 export declare function metadataAddress(mint: Pubkey): Pubkey;
 
