@@ -494,7 +494,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (!raw) this.fail(valueNode, "this call does not produce a value");
     }
     let value = this.expect(raw ?? this.expr(valueNode, place.type), place.type, valueNode);
-    if (ts.isIdentifier(target)) value = this.ownedString(value); // a local keeps its own copy of account text
+    // A local, or a string field of a variable enum (a view), keeps its own copy of account text.
+    if (ts.isIdentifier(target) || (value.type.kind === "string" && this.peekKind(target) === "string")) value = this.ownedString(value);
     this.line(place.write(value.c) + ";");
   }
 

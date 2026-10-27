@@ -48,6 +48,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `typesol idl publish --url` accepts the Solana CLI's cluster monikers (`mainnet-beta`, `devnet`, …).
 
 ### Fixed
+- Data-enum strings (unreleased) after review: assigning account text into a local enum's string field now takes a copy
+  (it kept a view that changed with the account), and an enum nested in another's variant is described as Borsh in the
+  IDL (the IDL referred to a fixed form it never emitted, so Anchor clients could not load it).
 - `typesol port` (unreleased) after review: comment terminators in docs, an account and an argument with the same
   name, struct fields named like C keywords, constant expressions, `bytes`, tuple and generic types, and data enums /
   COptions in account data (now noted as layout differences) no longer produce a skeleton that fails to compile or

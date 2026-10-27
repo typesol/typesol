@@ -151,7 +151,16 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
           type: {
             kind: "enum",
             variants: e.variants.map((v) =>
-              v.fields.length ? { name: v.name, fields: v.fields.map((f) => ({ name: snakeCase(f.name), type: idlType(f.type) })) } : { name: v.name },
+              v.fields.length
+                ? {
+                    name: v.name,
+                    // A nested variable enum only exists in Borsh; fixed fields keep the fixed forms the bytes use.
+                    fields: v.fields.map((f) => ({
+                      name: snakeCase(f.name),
+                      type: f.type.kind === "dataEnum" && model.dataEnums.get(f.type.name)?.variable ? { defined: { name: f.type.name } } : idlType(f.type),
+                    })),
+                  }
+                : { name: v.name },
             ),
           },
         },
