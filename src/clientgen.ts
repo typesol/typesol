@@ -283,7 +283,12 @@ const KIT_VALUES = [
 // Keys of the program object that instructions must not take.
 const PROGRAM_KEYS = new Set(["address", "accounts", "pdas", "returns", "errors", "errorCode", "isError", "parseEvents"]);
 
-const camel = (s: string) => s.replace(/_+([A-Za-z0-9])/g, (_, c: string) => c.toUpperCase());
+// snake_case → camelCase by splitting (linear time, whatever the input): "taker_token_a" → "takerTokenA".
+const camel = (s: string) =>
+  s
+    .split("_")
+    .map((p, i) => (i === 0 || p === "" ? p : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join("") || s;
 const pascal = (s: string) => {
   const c = camel(s);
   return c.charAt(0).toUpperCase() + c.slice(1);
@@ -895,78 +900,111 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   const base = camel(idl.metadata?.name && NAME.test(idl.metadata.name) ? idl.metadata.name : "program");
   const programName = names.claim(JS_RESERVED.has(base) ? `${base}Program` : base);
   use("address");
-  const helpers: string[] = [
-    `const concat = (parts: ReadonlyUint8Array[]): Uint8Array => {`,
-    `  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));`,
-    `  let at = 0;`,
-    `  for (const p of parts) out.set(p, (at += p.length) - p.length);`,
-    `  return out;`,
-    `};`,
-    `const hasPrefix = (data: ReadonlyUint8Array, prefix: ReadonlyUint8Array) => data.length >= prefix.length && prefix.every((b, i) => data[i] === b);`,
-    `const isSigner = (v: TransactionSigner | Address): v is TransactionSigner => typeof v === "object" && v !== null && "address" in v;`,
-    `const key = (v: TransactionSigner | Address | undefined | null): Address => {`,
-    `  if (v === undefined || v === null) throw new Error("a seed account is missing");`,
-    `  return isSigner(v) ? v.address : v;`,
-    `};`,
-    `const required = <T>(v: T | undefined, name: string): T => {`,
-    `  if (v === undefined) throw new Error("account " + name + " is required");`,
-    `  return v;`,
-    `};`,
-    `const meta = (v: TransactionSigner | Address, role: AccountRole) => (isSigner(v) ? { address: v.address, role, signer: v } : { address: v, role });`,
-    `const programFromBytes = (b: Uint8Array): Address => getAddressDecoder().decode(b);`,
+  // Helpers, each with the names it calls; only those the program reaches are emitted (strict noUnusedLocals).
+  const helperDefs: { name: string; lines: string[] }[] = [
+    {
+      name: "concat",
+      lines: [
+        `const concat = (parts: ReadonlyUint8Array[]): Uint8Array => {`,
+        `  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));`,
+        `  let at = 0;`,
+        `  for (const p of parts) out.set(p, (at += p.length) - p.length);`,
+        `  return out;`,
+        `};`,
+      ],
+    },
+    {
+      name: "hasPrefix",
+      lines: [
+        `const hasPrefix = (data: ReadonlyUint8Array, prefix: ReadonlyUint8Array) => data.length >= prefix.length && prefix.every((b, i) => data[i] === b);`,
+      ],
+    },
+    {
+      name: "isSigner",
+      lines: [`const isSigner = (v: TransactionSigner | Address): v is TransactionSigner => typeof v === "object" && v !== null && "address" in v;`],
+    },
+    {
+      name: "key",
+      lines: [
+        `const key = (v: TransactionSigner | Address | undefined | null): Address => {`,
+        `  if (v === undefined || v === null) throw new Error("a seed account is missing");`,
+        `  return isSigner(v) ? v.address : v;`,
+        `};`,
+      ],
+    },
+    {
+      name: "required",
+      lines: [
+        `const required = <T>(v: T | undefined, name: string): T => {`,
+        `  if (v === undefined) throw new Error("account " + name + " is required");`,
+        `  return v;`,
+        `};`,
+      ],
+    },
+    {
+      name: "meta",
+      lines: [
+        `const meta = (v: TransactionSigner | Address, role: AccountRole) => (isSigner(v) ? { address: v.address, role, signer: v } : { address: v, role });`,
+      ],
+    },
+    { name: "programFromBytes", lines: [`const programFromBytes = (b: Uint8Array): Address => getAddressDecoder().decode(b);`] },
   ];
-  if (needsFixedString) {
-    use("transformCodec", "getStructCodec", "getU32Codec", "fixCodecSize", "getBytesCodec", "getUtf8Encoder", "getUtf8Decoder");
-    helpers.push(
-      `/** TypeSOL FixedString<N> in account data: u32 length, then N bytes (UTF-8, zero-padded). */`,
-      `const fixedString = (cap: number): Codec<string, string> =>`,
-      `  transformCodec(`,
-      `    getStructCodec([["len", getU32Codec()], ["bytes", fixCodecSize(getBytesCodec(), cap)]]),`,
-      `    (s: string) => {`,
-      `      const b = getUtf8Encoder().encode(s);`,
-      `      if (b.length > cap) throw new Error("string is " + b.length + " bytes; the field holds " + cap);`,
-      `      const padded = new Uint8Array(cap);`,
-      `      padded.set(b);`,
-      `      return { len: b.length, bytes: padded };`,
-      `    },`,
-      `    (v) => getUtf8Decoder().decode(v.bytes.slice(0, Math.min(v.len, cap))),`,
-      `  );`,
-    );
-  }
-  if (needsFixedOption) {
-    use("createCodec");
-    helpers.push(
-      `/** An Option of fixed size: a tag, then the value (all zero when empty). TypeSOL account data uses a u8 tag, COption a u32. */`,
-      `const fixedOption = <From, To extends From>(inner: Codec<From, To>, size: number, tag: Codec<number, number>, tagSize: number): Codec<From | null, To | null> =>`,
-      `  createCodec<From | null, To | null>({`,
-      `    fixedSize: tagSize + size,`,
-      `    write: (value, bytes, offset) => {`,
-      `      bytes.fill(0, offset, offset + tagSize + size);`,
-      `      tag.write(value === null ? 0 : 1, bytes, offset);`,
-      `      if (value !== null) inner.write(value, bytes, offset + tagSize);`,
-      `      return offset + tagSize + size;`,
-      `    },`,
-      `    read: (bytes, offset) => [tag.read(bytes, offset)[0] ? inner.read(bytes, offset + tagSize)[0] : null, offset + tagSize + size],`,
-      `  });`,
-    );
-  }
-  if (needsUnitEnum) {
-    use("transformCodec", "getU8Codec");
-    helpers.push(
-      `/** A unit enum: its variant index as a u8, checked against the number of variants. */`,
-      `const unitEnum = <T extends number>(count: number): Codec<T, T> =>`,
-      `  transformCodec(getU8Codec(), (v: T) => v, (n) => {`,
-      `    if (n >= count) throw new Error("enum variant " + n + " is out of range");`,
-      `    return n as T;`,
-      `  }) as unknown as Codec<T, T>;`,
-    );
-  }
+  if (needsFixedString)
+    helperDefs.push({
+      name: "fixedString",
+      lines: [
+        `/** TypeSOL FixedString<N> in account data: u32 length, then N bytes (UTF-8, zero-padded). */`,
+        `const fixedString = (cap: number): Codec<string, string> =>`,
+        `  transformCodec(`,
+        `    getStructCodec([["len", getU32Codec()], ["bytes", fixCodecSize(getBytesCodec(), cap)]]),`,
+        `    (s: string) => {`,
+        `      const b = getUtf8Encoder().encode(s);`,
+        `      if (b.length > cap) throw new Error("string is " + b.length + " bytes; the field holds " + cap);`,
+        `      const padded = new Uint8Array(cap);`,
+        `      padded.set(b);`,
+        `      return { len: b.length, bytes: padded };`,
+        `    },`,
+        `    (v) => getUtf8Decoder().decode(v.bytes.slice(0, Math.min(v.len, cap))),`,
+        `  );`,
+      ],
+    });
+  if (needsFixedOption)
+    helperDefs.push({
+      name: "fixedOption",
+      lines: [
+        `/** An Option of fixed size: a tag, then the value (all zero when empty). TypeSOL account data uses a u8 tag, COption a u32. */`,
+        `const fixedOption = <From, To extends From>(inner: Codec<From, To>, size: number, tag: Codec<number, number>, tagSize: number): Codec<From | null, To | null> =>`,
+        `  createCodec<From | null, To | null>({`,
+        `    fixedSize: tagSize + size,`,
+        `    write: (value, bytes, offset) => {`,
+        `      bytes.fill(0, offset, offset + tagSize + size);`,
+        `      tag.write(value === null ? 0 : 1, bytes, offset);`,
+        `      if (value !== null) inner.write(value, bytes, offset + tagSize);`,
+        `      return offset + tagSize + size;`,
+        `    },`,
+        `    read: (bytes, offset) => [tag.read(bytes, offset)[0] ? inner.read(bytes, offset + tagSize)[0] : null, offset + tagSize + size],`,
+        `  });`,
+      ],
+    });
+  if (needsUnitEnum)
+    helperDefs.push({
+      name: "unitEnum",
+      lines: [
+        `/** A unit enum: its variant index as a u8, checked against the number of variants. */`,
+        `const unitEnum = <T extends number>(count: number): Codec<T, T> =>`,
+        `  transformCodec(getU8Codec(), (v: T) => v, (n) => {`,
+        `    if (n >= count) throw new Error("enum variant " + n + " is out of range");`,
+        `    return n as T;`,
+        `  }) as unknown as Codec<T, T>;`,
+      ],
+    });
+  const HELPERS_AT = "\u0000helpers\u0000";
   const body = [
     "",
     `export const PROGRAM_ADDRESS = address(${JSON.stringify(programAddress)});`,
     "",
     `// ---- Helpers ----`,
-    ...helpers,
+    HELPERS_AT,
     "",
     `// ---- Types ----`,
     ...typeOut,
@@ -1052,18 +1090,48 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
 
   // Keep only the helpers the program calls (comments do not count), so the file passes strict noUnusedLocals.
   let source = body.join("\n");
-  const code = (s: string) => s.replace(/\/\*\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  // The source without comments (scanned linearly; comments carry IDL docs, which must not keep a helper alive).
+  const code = (s: string) => {
+    let out = "";
+    for (let i = 0; ;) {
+      const start = s.indexOf("/**", i);
+      if (start < 0) {
+        out += s.slice(i);
+        break;
+      }
+      out += s.slice(i, start);
+      const end = s.indexOf("*/", start + 3);
+      if (end < 0) break;
+      i = end + 2;
+    }
+    return out
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("//"))
+      .join("\n");
+  };
+  const calls = (text: string, name: string) => text.includes(`${name}(`) || text.includes(`${name}<`);
+  const kept = new Set<string>();
   for (let changed = true; changed;) {
     changed = false;
-    for (const helper of ["concat", "hasPrefix", "isSigner", "key", "required", "meta", "programFromBytes", "fixedString", "fixedOption", "unitEnum"]) {
-      const def = new RegExp(`(?:/\\*\\*[^\\n]*\\*/\\n)?^const ${helper} = [\\s\\S]*?;\\n(?=const |/\\*\\*|\\n|//)`, "m");
-      const m = def.exec(source);
-      if (m && !code(source.replace(m[0], "")).includes(`${helper}(`) && !code(source.replace(m[0], "")).includes(`${helper}<`)) {
-        source = source.replace(m[0], "");
+    const reach =
+      code(source) +
+      helperDefs
+        .filter((h) => kept.has(h.name))
+        .flatMap((h) => h.lines)
+        .join("\n");
+    for (const h of helperDefs)
+      if (!kept.has(h.name) && calls(reach, h.name)) {
+        kept.add(h.name);
         changed = true;
       }
-    }
   }
+  source = source.replace(
+    HELPERS_AT,
+    helperDefs
+      .filter((h) => kept.has(h.name))
+      .flatMap((h) => h.lines)
+      .join("\n"),
+  );
   const used = code(source);
   const imports = [...KIT_VALUES.map((k) => [k, k]), ...KIT_TYPES.map((k) => [k, `type ${k}`])]
     .filter(([k]) => new RegExp(`(?<![\\w$.])${k}\\b`).test(used))
