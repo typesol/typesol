@@ -2,7 +2,7 @@
 import { getTransferSolInstruction } from "@solana-program/system";
 import * as spl from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
-import { address, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
 import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
@@ -109,7 +109,7 @@ describe("port: tokens/token-2022/transfer-hook/transfer-switch", () => {
     const { svm } = d;
     const admin = await fundedSigner(svm);
     const [adminConfig] = await pda(d.programId, ["admin-config"]);
-    const configure = (who: typeof admin, next: string) =>
+    const configure = (who: typeof admin, next: Address) =>
       send(svm, who, [
         ix(d, "configure_admin", {}, [
           { address: who.address, signer: who, writable: true },
@@ -284,7 +284,7 @@ describe("port: tokens/token-2022/transfer-hook/allow-block-list-token", () => {
       send(svm, sender, [
         await hookedTransfer(d.programId, { source, mint, destination, authority: sender, amount }, [{ address: senderEntry }, { address: receiverEntry }]),
       ]);
-    const wallet = (owner: string, allowed: boolean) =>
+    const wallet = (owner: Address, allowed: boolean) =>
       send(svm, payer, [
         ix(d, "init_wallet", { args: { allowed } }, [
           { address: payer.address, signer: payer, writable: true },

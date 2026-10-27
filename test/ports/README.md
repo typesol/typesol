@@ -9,9 +9,7 @@ accounts and error codes where TypeSOL can express them. The files mirror the up
 Status:
 - **PORTED**: same interface, account layout, checks and behaviour.
 - **PARTIAL**: runs the same flows; the differences are listed here and in the port's header comment.
-- **BLOCKED**: needs a construct TypeSOL refuses today. `test/ports-blocked.test.ts` compiles the smallest TypeSOL
-  rendering of that construct and expects the refusal; when a probe fails, the construct compiles and the program can
-  be ported.
+- **BLOCKED**: needs a construct TypeSOL refuses. None is left: every program is ported.
 
 | Upstream (`<path>/anchor`) | Port | Status | Reason or blocker |
 | --- | --- | --- | --- |
@@ -52,12 +50,12 @@ Status:
 | `tokens/token-2022/non-transferable` | `tokens/token-2022/non-transferable.ts` | PARTIAL | InitializeNonTransferableMint is hand-encoded |
 | `tokens/token-2022/permanent-delegate` | `tokens/token-2022/permanent-delegate.ts` | PARTIAL | InitializePermanentDelegate is hand-encoded |
 | `tokens/token-2022/transfer-fee` | `tokens/token-2022/transfer-fee.ts` | PARTIAL | TransferFee instructions hand-encoded; `harvest` passes every remaining account (Token-2022 skips the ones the original filters out) |
-| `tokens/token-2022/transfer-hook/account-data-as-seed` | | BLOCKED | an extra account in the ExtraAccountMetaList (`initExtraAccountMetas` takes none) |
-| `tokens/token-2022/transfer-hook/allow-block-list-token` | | BLOCKED | extra accounts in the ExtraAccountMetaList |
-| `tokens/token-2022/transfer-hook/counter` | | BLOCKED | an extra account in the ExtraAccountMetaList |
+| `tokens/token-2022/transfer-hook/account-data-as-seed` | `tokens/token-2022/transfer-hook/account-data-as-seed.ts` | PARTIAL | the `transferring` flag is read by walking the TLV list |
+| `tokens/token-2022/transfer-hook/allow-block-list-token` | `tokens/token-2022/transfer-hook/allow-block-list-token.ts` | PARTIAL | `init_mint` takes InitMintArgs' fields as arguments (same bytes); extensions and Token Metadata hand-encoded; metadata strings read byte by byte; ab_wallet entries decoded with an owner check too |
+| `tokens/token-2022/transfer-hook/counter` | `tokens/token-2022/transfer-hook/counter.ts` | PARTIAL | the `transferring` flag is read by walking the TLV list |
 | `tokens/token-2022/transfer-hook/hello-world` | `tokens/token-2022/transfer-hook/hello-world.ts` | PARTIAL | InitializeTransferHook is hand-encoded; extension fields are read by walking the TLV list |
-| `tokens/token-2022/transfer-hook/transfer-cost` | | BLOCKED | extra accounts in the ExtraAccountMetaList |
-| `tokens/token-2022/transfer-hook/transfer-switch` | | BLOCKED | an extra account in the ExtraAccountMetaList |
+| `tokens/token-2022/transfer-hook/transfer-cost` | `tokens/token-2022/transfer-hook/transfer-cost.ts` | PARTIAL | `token::mint` / `token::authority` on the WSOL accounts checked in the body (6002 / 6003, not 2014 / 2015); `transferring` read from the TLV list |
+| `tokens/token-2022/transfer-hook/transfer-switch` | `tokens/token-2022/transfer-hook/transfer-switch.ts` | PARTIAL | `switch` is `switch_` in the IDL (same discriminator); `admin == new_admin` is refused (2040, TypeSOL's aliasing check); NotAdmin is 6002, not 2502 |
 | `tokens/token-fundraiser` | `tokens/token-fundraiser.ts` | PORTED | elapsed days use a checked `u16()` where Rust wraps (`as u16`); they differ only after ~179 years |
 | `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PORTED | |
 | `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PARTIAL | address log lines are two lines |
@@ -67,7 +65,7 @@ the typed builtin needs a `Mint` or `TokenAccount` that is created in the same i
 for it (associated token accounts have one: `Ata<Init<TokenAccount>, …>` / `Ata<InitIfNeeded<TokenAccount>, …>`).
 
 Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` and
-`test/ports-compression.test.ts` (skipped without `pnpm fetch:programs`), `test/ports-token2022-ext.test.ts`, `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`, `test/ports-blocked.test.ts`.
+`test/ports-compression.test.ts` (skipped without `pnpm fetch:programs`), `test/ports-token2022-ext.test.ts`, `test/ports-hooks.test.ts`, `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`.
 
 ## License
 

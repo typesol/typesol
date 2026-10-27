@@ -6,6 +6,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Transfer hooks with extra accounts: `initExtraAccountMetas(payer, account, mint, systemProgram, extraAccounts)` writes
+  an ExtraAccountMetaList (fixed addresses, PDAs of this program or of another program's account index, with literal,
+  account-key, account-data and instruction-data seeds), byte for byte what spl-tlv-account-resolution writes; Token-2022
+  checks the extra accounts against it on every transfer. `updateExtraAccountMetas(...)` rewrites and resizes a list.
 - Remaining accounts in a CPI: spread them into `invoke`'s account list with the flags they were passed with
   (`...remainingAccounts()`, Rust's `extend_from_slice`) or all with one role (`...readonly(rest)`,
   `...writable(rest)`), and take part of them with `rest.slice(a, b)`. A CPI lists at most 32 accounts (5113); a slice
@@ -18,11 +22,22 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - Structs with no fields, for marker accounts that are only a discriminator (Anchor `#[account] pub struct
   NftAuthority {}`).
 
+### Fixed
+- An associated token account created in the instruction (`Ata<Init|InitIfNeeded<TokenAccount>>`) refuses optional
+  TokenProgram / AssociatedTokenProgram / SystemProgram parameters at compile time (they used to fail at runtime with an
+  access violation when left out), and refuses `Owner<…>` / `Executable<…>` (which could never hold).
+- Unit enum values work as seeds in `create`, `signer([...])`, `findProgramAddress` and the other seed lists, one byte
+  each, as they already did in `Seeds<…>`.
+- `rest.slice(a, b)` is typed as something to spread into a CPI only (`RemainingSlice`), with a clear message elsewhere.
+
 ### Tooling
+- Ports: the five transfer-hook examples with extra accounts (account-data-as-seed, allow-block-list-token, counter,
+  transfer-cost, transfer-switch) are ported; their tests transfer through Token-2022, which checks the extra accounts.
+  All 46 program-examples are ported now: 9 PORTED, 37 PARTIAL, 0 BLOCKED. The blocked-construct probes
+  (test/ports-blocked.test.ts) are gone with the last blocker.
 - Ports: compression/cnft-burn, cnft-vault, cutils and token-2022/transfer-fee, blocked until now, are ported (PARTIAL;
   test/ports/README.md). The compression ports run against Bubblegum, SPL Account Compression and Token Metadata, with
-  the leaf hashes, roots and proofs computed in the tests. Ports: 9 PORTED, 32 PARTIAL, 5 BLOCKED (all on transfer hooks
-  with extra accounts).
+  the leaf hashes, roots and proofs computed in the tests.
 - Ports: the eight remaining program-examples that had not been attempted are ported: basics/repository-layout and
   token-2022 cpi-guard, group, immutable-owner, interest-bearing, memo-transfer, metadata and nft-meta-data-pointer
   (all PARTIAL; test/ports/README.md lists the differences). Every one of the 46 programs is now ported or blocked
