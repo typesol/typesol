@@ -39,6 +39,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSOL CPI helpers. |
 | `src/clientgen.ts` | The TypeScript client (`<name>.client.ts`, [client.md](client.md)): reads an IDL, validates it (it may come from anywhere), and writes one `@solana/kit` file. Not part of the compiler core: `workspace.ts` and the CLI write it after `build()`, and `typesol client` writes it for any IDL. |
 | `src/idlpublish.ts` | `typesol idl publish` through the Program Metadata program. |
+| `src/onchain.ts` | `typesol verify --address`: a deployed program's ELF, authority and deploy slot under loader v2, v3 or v4. |
 | `src/profile.ts` | Turns `--profile` logs into compute units per source line. |
 | `src/cli.ts` | Command parsing. Every command has strict options, `--help`, and exit codes 0 (success), 1 (failure), 2 (usage error) and 3 (verify mismatch). |
 

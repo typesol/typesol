@@ -5,6 +5,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `typesol verify <program>` without a `.so` reads the deployed program from the cluster (`--address`, or the address
+  in `typesol.json`; `--url`, cluster monikers or the Solana CLI config) under loader v2, v3 or v4, prints its upgrade
+  authority or that it is immutable and its last deploy slot, and compares the IDL published on chain with the built
+  one. A published IDL that differs is a mismatch (exit 3). No `solana program dump` step needed.
+- `typesol idl publish --url` accepts the Solana CLI's cluster monikers (`mainnet-beta`, `devnet`, …).
+
 ## 0.15.0 — 2026-10-27
 
 Project templates for `typesol init`, a mainnet deployment guide, and clearer `typesol idl publish` failures. No

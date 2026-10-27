@@ -34,8 +34,8 @@ clients read TypeSOL programs unchanged.
 - **Small and fast.** On the same programs, TypeSOL uses 5–46% of Anchor's compute units, with binaries about 10×
   smaller. It also uses fewer compute units than native Rust and than hand-tuned Pinocchio on every benchmarked
   instruction.
-- **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` checks a deployed program
-  against its source.
+- **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` reads a deployed program
+  from the cluster and checks it, and the IDL published on chain, against its source.
 
 <p align="center">
   <a href="#numbers">
@@ -209,7 +209,7 @@ The full reference, with every type, check and built-in, is in [docs/language.md
 | `typesol idl publish` | upload the IDL to the Program Metadata program (canonical when the upgrade authority signs) |
 | `typesol cpi <idl.json>` | generate typed CPI helpers for another program |
 | `typesol client <idl.json>` | generate a typed TypeScript client from an Anchor IDL (`typesol build` writes one per program) |
-| `typesol verify` | rebuild from source and compare with a deployed binary |
+| `typesol verify` | rebuild from source and compare with the program and IDL on chain (or a dumped `.so`) |
 | `typesol profile` | compute units per TypeScript line, from a `--profile` build's logs |
 | `typesol emit-c` | print the generated C |
 

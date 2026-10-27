@@ -77,12 +77,13 @@ explorers look for it. It costs a few thousandths of a SOL of rent.
 ## 6. Verify
 
 ```sh
-solana program dump <program id> deployed.so
-npx typesol verify my_app deployed.so
+npx typesol verify my_app
 ```
 
-`verify` rebuilds the program from `programs/my_app.ts` and compares it with the deployed bytes. `match` means anyone
-with your source and the same TypeSOL version gets exactly the program on chain.
+`verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
+the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
+TypeSOL version gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
+published in step 5. Anyone can run it against your program with `--address <program id> --url mainnet-beta`.
 
 ## 7. Call it
 
