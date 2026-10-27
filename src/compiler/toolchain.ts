@@ -71,6 +71,9 @@ export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
 }
 
 /** Compile generated C to an SBF shared object (same flags as the SDK's sbf.mk for the chosen SBPF version). */
+/** The SBF stack frame of one function. */
+export const STACK_FRAME = 4096;
+
 export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0", tc = findToolchain(sbpf)): void {
   const obj = outSo.replace(/\.so$/, ".o");
   const cflags = [
@@ -78,6 +81,8 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     "-Wno-parentheses-equality",
     // Generated checks may be always true/false (`a === a`, `enumByte >= 256` for a 256-variant enum); that is not an error.
     "-Wno-tautological-compare",
+    // SBF gives every function a 4 KiB stack frame; past it the program corrupts memory instead of failing.
+    `-Wframe-larger-than=${STACK_FRAME}`,
     "-O2",
     "-fno-builtin",
     // One section per function and constant, so the linker's --gc-sections can drop what nothing reaches.
@@ -90,7 +95,11 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     ...(sbpf === "v0" ? [] : [`-mcpu=${sbpf}`]),
   ];
   const incs = tc.includes.flatMap((i, n) => (n < 2 ? ["-isystem", i] : ["-I", i]));
-  run(tc.clang, [...cflags, ...incs, "-o", obj, "-c", cFile]);
+  try {
+    run(tc.clang, [...cflags, ...incs, "-o", obj, "-c", cFile]);
+  } catch (e) {
+    throw stackError((e as Error).message) ?? e;
+  }
   run(tc.lld, [
     "-z",
     "notext",
@@ -119,6 +128,19 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
 /** The clang version string, for build manifests. */
 export function toolchainVersion(tc = findToolchain()): string {
   return execFileSync(tc.clang, ["--version"], { encoding: "utf8" }).split("\n")[0].trim();
+}
+
+/** clang's frame-size errors, in the program's terms: which instruction or helper, how much, what to do. */
+function stackError(message: string): Error | undefined {
+  const over = [...message.matchAll(/stack frame size \((\d+)\) exceeds limit \((\d+)\) in '(\w+)'/g)];
+  if (!over.length) return undefined;
+  // clang inlines helpers into their callers, so an instruction's frame includes theirs.
+  const what = (fn: string) =>
+    fn.startsWith("ix_") ? `instruction ${fn.slice(3)} (with the helpers inlined into it)` : fn.startsWith("fn_") ? `helper ${fn.slice(3)}()` : fn;
+  return new Error(
+    over.map((m) => `${what(m[3])} needs ${m[1]} bytes of stack; SBF gives each function ${m[2]}`).join("\n") +
+      "\nKeep large structs and arrays in account data: bind them with const (a reference) instead of a typed local copy, or split the work into helpers.",
+  );
 }
 
 function run(cmd: string, args: string[]) {

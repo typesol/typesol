@@ -6,6 +6,8 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Fixed
+- A function whose stack frame exceeds SBF's 4 KiB used to build and then corrupt memory at runtime (the toolchain
+  only printed a note). The build now fails, naming the instruction or helper and its frame size.
 - A struct returned by a helper and bound through a ternary (`const o = c ? mk(1n) : mk(2n)`) pointed at storage
   that ended with the branch, so the program read garbage (found in review, never released). The result now lives for
   the whole function.
