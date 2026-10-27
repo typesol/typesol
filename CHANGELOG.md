@@ -6,6 +6,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Instructions can return a fixed-size struct as return data (a literal, a stored struct or a helper's result), at
+  most 1024 bytes. It goes out in its fixed layout, which the IDL describes under `returns`, so Anchor clients and the
+  generated TypeScript client decode it.
 - Helpers can return a fixed-size struct: `return { x, y }`, a stored struct or another helper's result. The caller
   gets its own copy to bind (`const p: Point = at(1n, 2n)`), store (`acct.home = at(…)`, `arr.set(i, at(…))`) or read
   (`at(…).x`). Structs with a Vec or variable-length strings cannot be returned.
