@@ -22,7 +22,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Pubkey constants | `const ADMIN = pubkey("4Nd1…")` (checked at compile time) or inline `pubkey("…")`; usable as seeds |
 | Events | `emit<Deposited>({ owner: owner.key, amount })` — Anchor-format `Program data:` logs, listed under `events` in the IDL; event structs may hold `string` and `Option` |
 | Enums | `export enum Status { Pending, Approved }` — unit variants stored as the Borsh u8 index; `Status.Approved`, `===` |
-| Options | `best: Option<u64>` (or `u64 \| null`) — `null`, `=== null`, TypeScript narrowing; `===` between options or with a value follows JS (null equals null, empty never equals a value); empty use aborts (5108); `${opt}` prints the value or `null`. Borsh `option` in arguments/events, fixed `{ is_some, value }` in account data |
+| Options | `best: Option<u64>` (or `u64 \| null`) — `null`, `=== null`, TypeScript narrowing; `===` between options or with a value follows JS (null equals null, empty never equals a value); empty use aborts (5108); `a ?? b` takes b only when a is empty (b runs only then; the result is an Option when b can be null), `x!` is the value or aborts with 5108; `${opt}` prints the value or `null`. Borsh `option` in arguments/events, fixed `{ is_some, value }` in account data |
 | Vecs | `entries: Vec<Entry>` as the last account field — `get`, `set`, `push(v, payer)`, `pop()`, `clear()`, `.length`; the account is resized (realloc) and rent topped up by `payer`; `Vec<u64>` arguments are read-only views; `pop()` of a Vec of structs works as a statement |
 | Struct arguments | `order: Order`, `ids: FixedArray<u8, 4>`, `orders: Vec<Order>` — fixed layouts, Borsh-identical, validated on entry (bools, enums, option tags, string lengths, enum tags; 102) and read-only |
 | Remaining accounts | `remainingAccounts()` — `.length`, `.get(i)` → `key`, `owner`, `lamports` (writes check writability), `isSigner`, `isWritable`; `loadAccount<T>` / `loadAccountMut<T>` give checked struct views; pass them to `invoke`, one at a time or spread: `...remainingAccounts()` (each with the flags it was passed with), `...readonly(rest)` / `...writable(rest)` (all with that role), `rest.slice(a, b)` for part of them; a CPI lists at most 32 accounts (5113) |
@@ -145,7 +145,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 ## Not supported yet
 
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
-inside a helper, data-enum arguments carrying strings/structs, Pubkeys in templates, `?.` / `!` / `**`, `switch` on
+inside a helper, data-enum arguments carrying strings/structs, Pubkeys in templates, `?.` / `**`, `!` on anything but an Option, `switch` on
 128-bit integers, `mulDiv` beyond u64, Token Metadata creators/collections, Core plugins, Bubblegum v2 / collections /
 transfers, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.

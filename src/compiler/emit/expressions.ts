@@ -54,6 +54,12 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   protected expr(node: ts.Expression, hint?: ValueType): Value {
     if (ts.isParenthesizedExpression(node)) return this.expr(node.expression, hint);
+    // `x!` on an Option: its value, aborting with 5108 when it is empty (JS would carry the null on).
+    if (ts.isNonNullExpression(node)) {
+      const v = this.expr(node.expression, hint && hint.kind !== "option" ? ({ kind: "option", inner: hint } as ValueType) : hint);
+      if (v.type.kind !== "option") this.fail(node, "! works on Option values; check optional accounts with `x !== null`");
+      return this.unwrap(v, node);
+    }
     this.noOptionalChain(node);
     if (ts.isBigIntLiteral(node)) {
       const value = BigInt(node.text.slice(0, -1).replace(/_/g, ""));
@@ -370,10 +376,44 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     return vt.kind === "pubkey" ? { c: `(&${t})`, type: vt } : { c: t, type: vt };
   }
 
+  /**
+   * `a ?? b` on an Option: a's value when it has one, else b, which runs only then (as in JS). The result is an
+   * Option itself when b can be null.
+   */
+  protected nullish(node: ts.BinaryExpression, hint?: ValueType): Value {
+    const left = this.expr(node.left, hint?.kind === "option" ? hint : hint ? ({ kind: "option", inner: hint } as ValueType) : undefined);
+    if (left.isNull) return this.expect(this.expr(node.right, hint), hint, node.right);
+    if (left.type.kind !== "option") return left; // never null: JS never evaluates b
+    const inner = left.type.inner;
+    if ((inner as { kind: string }).kind === "struct") this.fail(node, "?? works on Options of integers, booleans and Pubkeys");
+    const nullable = (t: ts.Type): boolean => !!(t.flags & ts.TypeFlags.Null) || (t.isUnion() && t.types.some(nullable));
+    const type: ValueType = hint ?? (nullable(this.checker.getTypeAtLocation(node)) ? left.type : inner);
+    const lo = this.tmp("opt");
+    this.line(`${optC(inner)} ${lo} = ${left.c};`);
+    const t = this.tmp("nn");
+    this.line(`${type.kind === "pubkey" ? "SolPubkey" : valueC(type)} ${t};`);
+    const set = (v: Value) => this.line(v.type.kind === "pubkey" ? `${t} = *(${v.c});` : `${t} = ${v.c};`);
+    this.line(`if (${lo}.some) {`);
+    this.block(() => {
+      const some: Value =
+        inner.kind === "pubkey"
+          ? { c: `(&${lo}.v)`, type: inner }
+          : inner.kind === "bool"
+            ? { c: `(${lo}.v != 0)`, type: inner }
+            : { c: `${lo}.v`, type: inner };
+      set(this.expect(some, type, node.left));
+    });
+    this.line(`} else {`);
+    this.block(() => set(this.expect(this.expr(node.right, type), type, node.right)));
+    this.line(`}`);
+    return type.kind === "pubkey" ? { c: `(&${t})`, type } : { c: t, type };
+  }
+
   protected binary(node: ts.BinaryExpression, hint?: ValueType): Value {
     const op = node.operatorToken.kind;
     const K = ts.SyntaxKind;
     if (op === K.AsteriskAsteriskToken) this.fail(node.operatorToken, "** is not supported; multiply, or use mulDiv/isqrt");
+    if (op === K.QuestionQuestionToken) return this.nullish(node, hint);
     if (op === K.AmpersandAmpersandToken || op === K.BarBarToken) {
       const left = this.expect(this.expr(node.left, BOOL), BOOL, node.left);
       const t = this.tmp();

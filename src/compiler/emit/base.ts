@@ -139,7 +139,7 @@ export abstract class EmitterBase {
   protected noOptionalChain(node: ts.Node) {
     if ((ts.isPropertyAccessExpression(node) || ts.isCallExpression(node) || ts.isElementAccessExpression(node)) && node.questionDotToken)
       this.fail(node, "optional chaining (?.) is not supported; check `x !== null` first");
-    if (ts.isNonNullExpression(node)) this.fail(node, "the ! assertion is not supported; check `x !== null` so TypeScript narrows it");
+    if (ts.isNonNullExpression(node)) this.fail(node, "the ! assertion works on Option values only; check `x !== null` so TypeScript narrows it");
   }
 
   protected lookup(name: string): Local | undefined {
