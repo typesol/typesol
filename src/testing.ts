@@ -159,6 +159,24 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       if (!variants[i]) throw new Error(`${where}: ${String(v)} is not a variant of ${type.defined.name}`);
       return { [variants[i].name]: {} };
     }
+    // A variant with fields, { Variant: { field: value } }: its fields converted like a struct's.
+    if (def?.type.kind === "enum" && variants && typeof v === "object" && v !== null && Object.keys(v).length === 1) {
+      const [key, body] = Object.entries(v as Record<string, unknown>)[0];
+      const variant = (variants as { name: string; fields?: unknown[] }[]).find(
+        (x) => x.name === key || camel(x.name) === key || x.name.toLowerCase() === key.toLowerCase(),
+      );
+      if (!variant) throw new Error(`${where}: ${key} is not a variant of ${type.defined.name}`);
+      const fields = (variant.fields ?? []) as { name?: string; type?: IdlType }[];
+      if (fields.length && fields.every((f) => typeof f === "object" && f?.name && f.type) && typeof body === "object" && body !== null) {
+        const o = body as Record<string, unknown>;
+        return {
+          [variant.name]: Object.fromEntries(
+            fields.map((f) => [f.name!, toCoder(o[f.name!] ?? o[camel(f.name!)], f.type!, `${where}.${variant.name}.${f.name}`)]),
+          ),
+        };
+      }
+      return { [variant.name]: body };
+    }
     return v;
   };
 

@@ -227,4 +227,40 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
     expect(b[at++]).toBe(0); // unverified
     expect(key()).toBe(collectionMint);
   });
+
+  it.skipIf(!HAVE_MPL)("reads createV3's arguments in source order", async () => {
+    const { admin, mint, issuer } = await issuerWith(TOKEN_PROGRAM);
+    const [metadata] = await pda(MPL, ["metadata", MPL, mint]);
+    const [note] = await pda(d.programId, ["note", admin.address]);
+    expectOk(
+      await send(d.svm, admin, [
+        ix(d, "note_setup", {}, [{ address: admin.address, signer: admin, writable: true }, { address: note, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    expectOk(
+      await send(d.svm, admin, [
+        ix(d, "name_in_order", {}, [
+          { address: admin.address, signer: admin, writable: true },
+          { address: issuer },
+          { address: mint },
+          { address: metadata, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: MPL },
+          { address: note, writable: true },
+        ]),
+      ]),
+    );
+    const b = Buffer.from((d.svm.getAccount(metadata) as { data: Uint8Array }).data);
+    let at = 1 + 32 + 32;
+    const n = b.readUInt32LE(at);
+    expect(
+      b
+        .subarray(at + 4, at + 4 + n)
+        .toString()
+        .replace(/\0+$/, ""),
+    ).toBe("before");
+    at += 4 + n;
+    for (let i = 0; i < 2; i++) at += 4 + b.readUInt32LE(at); // symbol, uri
+    expect(b.readUInt16LE(at)).toBe(111);
+  });
 });

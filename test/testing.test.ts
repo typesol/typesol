@@ -66,6 +66,16 @@ export function book(payer: Signer, book: Seeds<AccountInfo, ["book", "@side"]>,
     expect(t.ix("book", { side: { ask: {} } }, { payer }).accounts![1].address).toBe(await t.pda("book", Uint8Array.of(1)));
   });
 
+  it("converts data-enum variants with fields like structs", async () => {
+    const d = await deployFile(fileURLToPath(new URL("./fixtures/enumstr.ts", import.meta.url)));
+    const t = programHarness(d.svm, d.programId, d.idl as never);
+    const owner = await t.wallet();
+    const board = await t.pda("board", owner);
+    t.ok(await t.send(owner, t.ix("setup", {}, { owner })));
+    // A bigint for a u8 field and a camelCase variant key, both converted for the Anchor coder.
+    expect(t.returned("run", await t.send(owner, t.ix("run", { cmd: { say: { text: "abc", times: 2n } } }, { owner, board })))).toBe(6n);
+  });
+
   it("says what is wrong with an instruction it cannot build", async () => {
     const d = await deployFile(fixture("optional"));
     const t = programHarness(d.svm, d.programId, d.idl as never);

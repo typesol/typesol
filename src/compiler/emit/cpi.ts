@@ -622,9 +622,21 @@ export abstract class CpiEmitter extends CallEmitter {
     if (!isWritable(metadata.kind)) this.fail(a[0], "the metadata account must be Mut<AccountInfo>");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[3], "the payer must be a Mut<Signer>");
     if (sys.kind.kind !== "system") this.fail(a[5], "pass the SystemProgram parameter");
-    const [name, symbol, uri] = a.slice(6, 9).map((n) => this.expect(this.expr(n, STRING), STRING, n).c);
-    const fee = this.expect(this.expr(a[9], { kind: "int", name: "u16" }), { kind: "int", name: "u16" }, a[9]);
-    const mutable = this.expect(this.expr(a[10], BOOL), BOOL, a[10]);
+    // Arguments in source order, as JS evaluates them: a later one that runs statements (a helper changing account
+    // text) must not change what an earlier one read.
+    const vals: Value[] = [];
+    const inOrder = (n: ts.Expression, t: ValueType) => {
+      const mark = this.lines.length;
+      const v = this.expect(this.expr(n, t), t, n);
+      for (let j = 0; j < vals.length; j++) vals[j] = this.settle(vals[j], mark);
+      vals.push(v);
+      return vals.length - 1;
+    };
+    const slots = [...a.slice(6, 9).map((n) => inOrder(n, STRING)), inOrder(a[9], { kind: "int", name: "u16" }), inOrder(a[10], BOOL)];
+    const settleAll = (mark: number) => {
+      for (let j = 0; j < vals.length; j++) vals[j] = this.settle(vals[j], mark);
+    };
+    const extrasMark = this.lines.length;
     let creators = "NULL";
     let ncreators = "-1";
     let collection = "NULL";
@@ -671,8 +683,10 @@ export abstract class CpiEmitter extends CallEmitter {
       }
     }
     const seeds = this.signerSeeds(seedsArg, mintAuth, a[2]);
+    settleAll(extrasMark);
+    const [name, symbol, uri, fee, mutable] = slots.map((i) => vals[i]);
     this.line(
-      `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name}, ${symbol}, ${uri}, ${fee.c}, ${mutable.c}, ${creators}, ${ncreators}, ${collection}, ${seeds.name}, ${seeds.count}));`,
+      `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name.c}, ${symbol.c}, ${uri.c}, ${fee.c}, ${mutable.c}, ${creators}, ${ncreators}, ${collection}, ${seeds.name}, ${seeds.count}));`,
     );
     return undefined;
   }

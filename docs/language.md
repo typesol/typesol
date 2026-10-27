@@ -76,7 +76,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `SystemProgram`, `TokenProgram`, `Token2022Program` | exact program address |
 | `TokenInterface` | either token program |
 | `AssociatedTokenProgram` | `create` / `createIdempotent` CPIs; `associatedTokenAddress(owner, mint, tokenProgram)` |
-| `TokenMetadataProgram` | Metaplex `createV3(...)` (CreateMetadataAccountV3), optionally with `{ creators: [{ address, verified, share }], collection: mint }` after `isMutable` (1–5 creators, shares adding up to 100; the collection is written unverified); `metadataAddress(mint)` |
+| `TokenMetadataProgram` | Metaplex `createV3(...)` (CreateMetadataAccountV3), optionally with `{ creators: [{ address, verified, share }], collection: mint }` after `isMutable` (1–5 creators, shares adding up to 100; only the update authority, signing, can be `verified: true`; the collection is written unverified); `metadataAddress(mint)` |
 | `InstructionsSysvar`, `PythPriceUpdate`, `SwitchboardFeed` | exact address / owner program + discriminator |
 | `Program<"Address…">` | exact program address + executable |
 | `UncheckedProgram` | executable only — check `.key` yourself |

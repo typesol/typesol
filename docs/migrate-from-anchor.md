@@ -9,6 +9,7 @@ Anchor's constructs to TypeSOL's and shows the porting workflow.
 ```sh
 anchor build                                   # in the Anchor project: target/idl/my_program.json
 npx @typesol/cli init my-program && cd my-program
+rm programs/my_program.ts tests/my_program.test.ts   # the counter template's program and test
 npx typesol port ../anchor/target/idl/my_program.json --out programs/my_program.ts
 ```
 
