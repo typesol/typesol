@@ -6,6 +6,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Arrow functions: `const f = (x: u64): u64 => …` (and `const f = function (…) {…}`) at the top level or inside a
+  function is a helper. Local ones capture nothing (a closure over the enclosing function's variables is refused with
+  the name it reads); functions are called, not passed around.
+- Generic helpers: `function max<T extends bigint>(a: T, b: T): T` compiles once per set of types it is called with,
+  inferred from the arguments or written out (`max<u128>(x, 1n)`); type parameters stand for integers, booleans,
+  Pubkeys or enums.
+- `x as T` (and `satisfies`): names a type the value already has, never a conversion; mainly `return (a + b) as T`
+  in a generic helper.
 - Metaplex collections: `createV3`'s `isCollection: true` (CollectionDetails::V1), `createMasterEditionV3(…, maxSupply | null)`,
   `verifyCollection(…)` (Verify with CollectionV1) and `masterEditionAddress(mint)`. The tokens/nft-operations port now
   uses them instead of hand-encoded `invoke`s, checked against the real Token Metadata program.

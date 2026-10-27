@@ -1,7 +1,17 @@
 import ts from "typescript";
-import { type Analysis, type TypeScope } from "../analyze.js";
+import { type Analysis, type TypeScope, calleeName, resolveScalarType } from "../analyze.js";
 import type { Reporter } from "../diagnostics.js";
-import { type AccountParam, type Helper, type IdlSeed, type Instruction, type ProgramModel, type ValueType } from "../model.js";
+import {
+  type AccountParam,
+  type GenericHelper,
+  type Helper,
+  type IdlSeed,
+  type Instruction,
+  type ProgramModel,
+  type ScalarType,
+  type ValueType,
+  isScalar,
+} from "../model.js";
 import { type Value, type Local, isStable, cString, valueC, type EmitOptions } from "./shared.js";
 
 /**
@@ -31,6 +41,9 @@ export abstract class EmitterBase {
   protected readonly helper: Helper | undefined;
   protected readonly scope: TypeScope;
   protected readonly checker: ts.TypeChecker;
+  protected readonly analysis: Analysis;
+  /** Calls already resolved to a helper (a generic one's instance is found by probing its arguments). */
+  private readonly calleeCache = new Map<ts.CallExpression, Helper | null>();
 
   /** `file.ts:line` of the statement being lowered. */
   protected where: string | undefined;
@@ -42,8 +55,15 @@ export abstract class EmitterBase {
     this.model = analysis.model;
     // Each function resolves `typesol` names through its own file's imports.
     this.imports = target.imports;
-    this.scope = { imports: target.imports, enums: analysis.model.enums, options: analysis.model.options, dataEnums: analysis.model.dataEnums };
+    this.scope = {
+      imports: target.imports,
+      enums: analysis.model.enums,
+      options: analysis.model.options,
+      dataEnums: analysis.model.dataEnums,
+      typeArgs: "accounts" in target ? undefined : target.typeArgs,
+    };
     this.checker = analysis.checker;
+    this.analysis = analysis;
     if ("accounts" in target) {
       this.ix = target;
       for (const a of target.accounts) {
@@ -69,6 +89,49 @@ export abstract class EmitterBase {
         else this.args.set(p.name, { c: `p_${p.name}`, type: p.type, mutable: false });
       }
     }
+  }
+
+  /** The helper a call runs: a function, a const arrow function (top-level or local), or a generic one's instance. */
+  protected helperOf(node: ts.CallExpression): Helper | undefined {
+    if (!ts.isIdentifier(node.expression)) return undefined;
+    const cached = this.calleeCache.get(node);
+    if (cached !== undefined) return cached ?? undefined;
+    const callee = node.expression;
+    const name = calleeName(callee, this.model.helperDecls, this.checker) ?? (this.lookup(callee.text) ? undefined : callee.text);
+    const g = name ? this.model.generics.get(name) : undefined;
+    let h = name ? this.model.helpers.get(name) : undefined;
+    if (g) h = this.analysis.instantiate(g, this.typeArgsOf(node, g));
+    else if (h && node.typeArguments) this.fail(node, `${h.display} takes no type arguments`);
+    this.calleeCache.set(node, h ?? null);
+    return h;
+  }
+
+  /** A generic call's type arguments: written out (`max<u64>(a, b)`), or the types of the arguments in `T` positions. */
+  private typeArgsOf(node: ts.CallExpression, g: GenericHelper): ScalarType[] {
+    const usage = `write ${g.display}<u64>(…) with the types`;
+    if (node.typeArguments) {
+      if (node.typeArguments.length !== g.typeParams.length) this.fail(node, `${g.display} takes ${g.typeParams.length} type argument(s)`);
+      return node.typeArguments.map((t) => resolveScalarType(t, this.scope) ?? this.fail(t, "type arguments are integers, boolean, Pubkey or enums"));
+    }
+    return g.typeParams.map((tp) => {
+      for (const [i, p] of g.node.parameters.entries()) {
+        const arg = node.arguments[i];
+        if (!arg || !p.type || !ts.isTypeReferenceNode(p.type) || !ts.isIdentifier(p.type.typeName) || p.type.typeName.text !== tp || p.type.typeArguments)
+          continue;
+        // Type the argument without emitting it: it is lowered again, once, by the call.
+        const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
+        const probe = this.reporter.guard(() => this.expr(arg));
+        this.lines.length = saved.lines;
+        this.hoisted.length = saved.hoisted;
+        this.temp = saved.temp;
+        this.reporter.diagnostics.length = saved.diagnostics;
+        if (!probe || probe.literal !== undefined || probe.isNull) continue;
+        if (!isScalar(probe.type as never)) this.fail(arg, `${tp} stands for an integer, boolean, Pubkey or enum, not ${probe.type.kind}`);
+        const t = probe.type as ScalarType;
+        return t.kind === "pubkey" ? (t.hash ? { kind: "pubkey", hash: true } : { kind: "pubkey" }) : t;
+      }
+      return this.fail(node, `cannot tell what ${tp} is from literal arguments; ${usage}`);
+    });
   }
 
   protected line(s: string) {

@@ -17,7 +17,9 @@ import {
   type EnumDef,
   type ErrorDef,
   type FieldType,
+  type GenericHelper,
   type Helper,
+  type HelperNode,
   type Instruction,
   type IntName,
   type ParamKind,
@@ -28,6 +30,7 @@ import {
   type ValueType,
   isScalar,
   scalarSize,
+  typeName,
 } from "./model.js";
 
 export const LIB_PATH = fileURLToPath(new URL("../../lib/typesol.d.ts", import.meta.url));
@@ -131,6 +134,8 @@ export const MAX_CPI_ALLOCATION = 10 * 1024;
 
 export interface Analysis {
   model: ProgramModel;
+  /** A generic helper's instance for these type arguments (analyzed once, then kept in `model.helpers`). */
+  instantiate(g: GenericHelper, typeArgs: ScalarType[]): Helper;
   /** TypeScript's checker: used for narrowing (which variant a data-enum value is in a branch). */
   checker: ts.TypeChecker;
   sourceFile: ts.SourceFile;
@@ -144,6 +149,8 @@ export interface Analysis {
 /** What type resolution needs: imports, unit enums, and where to record Option<T> uses. */
 export interface TypeScope {
   imports: Map<string, string>;
+  /** Inside a generic helper's instance: type parameter -> the type it stands for. */
+  typeArgs?: Map<string, ScalarType>;
   enums: Map<string, EnumDef>;
   dataEnums?: Map<string, DataEnumDef>;
   options: Map<string, ScalarType | { kind: "struct"; name: string }>;
@@ -266,7 +273,7 @@ export function analyze(entry: string): Analysis {
   const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string> }[] = [];
   const errors: ErrorDef[] = [];
   const functions: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
-  const helperNodes: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
+  const helperNodes: HelperSource[] = [];
   const interfaces: { decl: ts.InterfaceDeclaration; imports: Map<string, string> }[] = [];
   const aliases: { decl: ts.TypeAliasDeclaration; imports: Map<string, string> }[] = [];
   /** Program-wide names (structs, enums, helpers) -> declaring file, for collision errors. */
@@ -344,7 +351,7 @@ export function analyze(entry: string): Analysis {
             functions.push({ node: stmt, imports });
           } else {
             if (stmt.name) declare(stmt.name, file);
-            helperNodes.push({ node: stmt, imports });
+            if (stmt.name) helperNodes.push({ node: stmt, name: stmt.name.text, display: stmt.name.text, decl: stmt, imports });
           }
         } else if (ts.isVariableStatement(stmt)) {
           // Top-level compile-time constants: const NAME = 4n / true / "seed"
@@ -352,6 +359,13 @@ export function analyze(entry: string): Analysis {
           for (const d of stmt.declarationList.declarations) {
             if (!ts.isIdentifier(d.name) || !d.initializer) reporter.fail(d, "declare const NAME = literal");
             const init = d.initializer;
+            // `const f = (…): T => …` / `const f = function (…) {…}`: a helper.
+            if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+              if (isEntry && isExported(stmt)) reporter.fail(d.name, "instructions are function declarations: export function name(…)");
+              declare(d.name, file);
+              helperNodes.push({ node: init, name: d.name.text, display: d.name.text, decl: d, imports });
+              continue;
+            }
             let value: ConstDef["value"];
             if (ts.isCallExpression(init) && ts.isIdentifier(init.expression) && imports.get(init.expression.text) === "pubkey") {
               const arg = init.arguments[0];
@@ -391,12 +405,73 @@ export function analyze(entry: string): Analysis {
   }
   const structs = analyzeStructs(interfaces, aliases, dataEnums, reporter, scopeFor, fstrings);
 
+  const checker = program.getTypeChecker();
+  // Local `const f = (…) => …` in any function body (and in those local functions): lifted to helpers.
+  const locals: HelperSource[] = [];
+  const taken = new Set<string>();
+  const collectLocals = (body: ts.Node, outer: string, imports: Map<string, string>, fn: HelperNode) => {
+    const generic = !!fn.typeParameters?.length;
+    const visit = (n: ts.Node): void => {
+      if (ts.isVariableDeclaration(n) && n.initializer && (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) {
+        reporter.guard(() => {
+          if (!ts.isIdentifier(n.name)) reporter.fail(n.name, "name local functions: const f = (…) => …");
+          if (generic) reporter.fail(n, "local functions inside a generic helper are not supported; declare this one at the top level");
+          if (!(n.parent.flags & ts.NodeFlags.Const) || !ts.isVariableStatement(n.parent.parent))
+            reporter.fail(n, "declare local functions with const: const f = (…) => …");
+          if (n.name.text.includes("__") || n.name.text.includes("$")) reporter.fail(n.name, `"${n.name.text}": "__" and "$" are reserved in names`);
+          let name = `${outer}__${n.name.text}`;
+          for (let i = 2; taken.has(name); i++) name = `${outer}__${n.name.text}__${i}`;
+          taken.add(name);
+          const src: HelperSource = { node: n.initializer as ts.ArrowFunction, name, display: n.name.text, decl: n, imports, outer: fn };
+          locals.push(src);
+          if (src.node.body) collectLocals(src.node.body, name, imports, src.node);
+        });
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+  };
+  for (const f of functions) if (f.node.body && f.node.name) collectLocals(f.node.body, f.node.name.text, f.imports, f.node);
+  for (const h of [...helperNodes]) if (h.node.body) collectLocals(h.node.body, h.name, h.imports, h.node);
+  const localDecls = new Set(locals.map((l) => l.decl));
+  for (const l of locals) reporter.guard(() => checkCaptures(l, localDecls, checker, reporter));
+
   const helpers = new Map<string, Helper>();
-  for (const fn of helperNodes) {
-    const h = reporter.guard(() => analyzeHelper(fn.node, reporter, scopeFor(fn.imports), structs));
+  const generics = new Map<string, GenericHelper>();
+  const helperDecls = new Map<ts.Node, string>();
+  for (const fn of [...helperNodes, ...locals]) {
+    helperDecls.set(fn.decl, fn.name);
+    if (fn.node.typeParameters?.length) {
+      reporter.guard(() => {
+        for (const tp of fn.node.typeParameters!) if (tp.default) reporter.fail(tp, "type parameters of helpers take no default");
+        generics.set(fn.name, {
+          name: fn.name,
+          display: fn.display,
+          node: fn.node,
+          typeParams: fn.node.typeParameters!.map((t) => t.name.text),
+          imports: fn.imports,
+        });
+      });
+      continue;
+    }
+    const h = reporter.guard(() => analyzeHelper(fn.node, fn.name, fn.display, reporter, scopeFor(fn.imports), structs));
     if (h) helpers.set(h.name, h);
   }
-  reporter.guard(() => checkRecursion(helpers, reporter));
+  const instances = new Map<string, Helper>();
+  const instantiate = (g: GenericHelper, typeArgs: ScalarType[]): Helper => {
+    const key = `${g.name}__${typeArgs.map(scalarKey).join("_")}`;
+    const done = instances.get(key);
+    if (done) return done;
+    const bound = new Map(g.typeParams.map((n, i) => [n, typeArgs[i]] as const));
+    const display = `${g.display}<${typeArgs.map(typeName).join(", ")}>`;
+    const h = analyzeHelper(g.node, key, display, reporter, { ...scopeFor(g.imports), typeArgs: bound }, structs);
+    h.typeArgs = bound;
+    instances.set(key, h);
+    helpers.set(key, h);
+    return h;
+  };
+  reporter.guard(() => checkRecursion([...helperNodes, ...locals], helperDecls, checker, reporter));
 
   const accountStructs = new Set<string>();
   const argStructs = new Set<string>();
@@ -451,6 +526,8 @@ export function analyze(entry: string): Analysis {
       structs,
       instructions,
       helpers,
+      generics,
+      helperDecls,
       errors,
       errorEnums,
       enums,
@@ -466,7 +543,8 @@ export function analyze(entry: string): Analysis {
     files: programFiles(program, entryPath).map((f) => f.fileName),
     imports: entryImports,
     reporter,
-    checker: program.getTypeChecker(),
+    checker,
+    instantiate,
   };
 }
 
@@ -526,6 +604,10 @@ export function typesolName(node: ts.TypeNode, imports: Map<string, string>): st
 
 export function resolveScalarType(node: ts.TypeNode, scope: TypeScope): ScalarType | undefined {
   if (node.kind === ts.SyntaxKind.BooleanKeyword) return { kind: "bool" };
+  if (scope.typeArgs && ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && !node.typeArguments) {
+    const t = scope.typeArgs.get(node.typeName.text);
+    if (t) return t;
+  }
   const n = typesolName(node, scope.imports);
   if (n && (INT_NAMES as readonly string[]).includes(n)) return { kind: "int", name: n as IntName };
   if (n === "Pubkey") return { kind: "pubkey" };
@@ -805,16 +887,56 @@ function analyzeStructs(
   return structs;
 }
 
-function analyzeHelper(fn: ts.FunctionDeclaration, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Helper {
-  if (!fn.name || !fn.body) reporter.fail(fn, "helper functions need a name and a body");
-  if (fn.typeParameters?.length || fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generic or generators");
-  if (!fn.type) reporter.fail(fn.name, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
+/** A function to analyze as a helper: where it is declared and the names it goes by. */
+interface HelperSource {
+  node: HelperNode;
+  /** C name (see Helper.name). */
+  name: string;
+  display: string;
+  /** The function declaration, or the variable declaration of an arrow (what calls resolve to). */
+  decl: ts.Node;
+  imports: Map<string, string>;
+  /** For a local function: the function it is declared in. */
+  outer?: ts.Node;
+}
+
+const isFunctionNode = (n: ts.Node) => ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isMethodDeclaration(n);
+
+/**
+ * A local function becomes a helper of its own, so it can only use its parameters, its own locals, top-level names and
+ * other local functions: reading a variable of the enclosing function (a closure) is refused.
+ */
+function checkCaptures(l: HelperSource, localDecls: Set<ts.Node>, checker: ts.TypeChecker, reporter: Reporter) {
+  const fn = l.node;
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n)) {
+      const sym = ts.isShorthandPropertyAssignment(n.parent) ? checker.getShorthandAssignmentValueSymbol(n.parent) : checker.getSymbolAtLocation(n);
+      for (const d of sym?.declarations ?? []) {
+        if (!(ts.isVariableDeclaration(d) || ts.isParameter(d) || ts.isBindingElement(d)) || localDecls.has(d)) continue;
+        if (d.getSourceFile() !== fn.getSourceFile() || (d.pos >= fn.pos && d.end <= fn.end)) continue;
+        // Declared in some function around this one: a captured variable.
+        for (let p: ts.Node | undefined = d.parent; p; p = p.parent)
+          if (isFunctionNode(p)) {
+            reporter.fail(n, `${l.display} reads "${n.text}" of the function around it; pass it as a parameter (local functions capture nothing)`);
+          }
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  if (fn.body) visit(fn.body);
+}
+
+function analyzeHelper(fn: HelperNode, name: string, display: string, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Helper {
+  if (!fn.body) reporter.fail(fn, "helper functions need a body");
+  if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
+  if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async");
+  if (!fn.type) reporter.fail(fn.name ?? fn, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
   let returns: Helper["returns"] = fn.type.kind === ts.SyntaxKind.VoidKeyword ? undefined : resolveScalarType(fn.type, scope);
   if (fn.type.kind !== ts.SyntaxKind.VoidKeyword && !returns) {
     const s = ts.isTypeReferenceNode(fn.type) && ts.isIdentifier(fn.type.typeName) && !fn.type.typeArguments ? structs.get(fn.type.typeName.text) : undefined;
     if (s && (s.size === undefined || s.vec))
       reporter.fail(fn.type, `${s.name} has variable-size fields and cannot be returned; return a struct of fixed size`);
-    if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey or a struct");
+    if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey, a struct or a type parameter");
     returns = { kind: "struct", name: s.name };
   }
   const params = fn.parameters.map((p) => {
@@ -834,16 +956,42 @@ function analyzeHelper(fn: ts.FunctionDeclaration, reporter: Reporter, scope: Ty
       reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
     return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
   });
-  return { name: fn.name.text, params, returns, node: fn, imports: scope.imports };
+  return { name, display, params, returns, node: fn, statements: bodyStatements(fn, !returns), imports: scope.imports };
+}
+
+/** A function's statements; an arrow's expression body is a `return expr;` (or `expr;` when it returns void). */
+function bodyStatements(fn: HelperNode, isVoid: boolean): readonly ts.Statement[] {
+  const body = fn.body!;
+  if (ts.isBlock(body)) return body.statements;
+  const f = ts.factory;
+  const stmt = isVoid ? f.createExpressionStatement(body) : f.createReturnStatement(body);
+  ts.setTextRange(stmt, body);
+  (stmt as { parent?: ts.Node }).parent = fn;
+  return [stmt];
+}
+
+/** The helper (or generic) a call's callee names: a local function by its declaration, others by name. */
+export function calleeName(callee: ts.Identifier, decls: Map<ts.Node, string>, checker: ts.TypeChecker): string | undefined {
+  let sym = checker.getSymbolAtLocation(callee);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  for (const d of sym?.declarations ?? []) {
+    const name = decls.get(d);
+    if (name) return name;
+  }
+  return undefined;
 }
 
 /** Helpers may call each other, but not recursively: SBF has a small fixed call depth. */
-function checkRecursion(helpers: Map<string, Helper>, reporter: Reporter) {
+function checkRecursion(sources: HelperSource[], decls: Map<ts.Node, string>, checker: ts.TypeChecker, reporter: Reporter) {
   const calls = new Map<string, string[]>();
-  for (const h of helpers.values()) {
+  const byName = new Map(sources.map((s) => [s.name, s]));
+  for (const h of sources) {
     const out: string[] = [];
     const visit = (n: ts.Node) => {
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && helpers.has(n.expression.text)) out.push(n.expression.text);
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+        const c = calleeName(n.expression, decls, checker);
+        if (c) out.push(c);
+      }
       ts.forEachChild(n, visit);
     };
     visit(h.node.body!);
@@ -852,12 +1000,14 @@ function checkRecursion(helpers: Map<string, Helper>, reporter: Reporter) {
   const state = new Map<string, "visiting" | "done">();
   const walk = (name: string, path: string[]) => {
     if (state.get(name) === "done") return;
-    if (state.get(name) === "visiting") reporter.fail(helpers.get(name)!.node.name!, `recursion is not supported: ${[...path, name].join(" -> ")}`);
+    const src = byName.get(name)!;
+    if (state.get(name) === "visiting")
+      reporter.fail(src.node.name ?? src.node, `recursion is not supported: ${[...path, name].map((n) => byName.get(n)!.display).join(" -> ")}`);
     state.set(name, "visiting");
     for (const c of calls.get(name) ?? []) walk(c, [...path, name]);
     state.set(name, "done");
   };
-  for (const name of helpers.keys()) walk(name, []);
+  for (const name of byName.keys()) walk(name, []);
 }
 
 function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Instruction {

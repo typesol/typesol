@@ -17,9 +17,9 @@ export class FunctionEmitter extends StatementEmitter {
     for (const p of h.params)
       if (p.account && p.account.kind === "account")
         this.line(`TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + 8);`);
-    for (const stmt of h.node.body!.statements) this.reporter.guard(() => this.statement(stmt));
+    for (const stmt of h.statements) this.reporter.guard(() => this.statement(stmt));
     // A helper with a result must return one; falling off the end would leave it unset.
-    const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${h.name} ended without returning a value");` : `  return SUCCESS;`;
+    const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${h.display} ended without returning a value");` : `  return SUCCESS;`;
     return [`${helperSignature(h)} {`, ...this.hoisted, ...this.lines, end, `}`].join("\n");
   }
 

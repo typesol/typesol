@@ -230,8 +230,8 @@ export abstract class StorageEmitter extends EmitterBase {
     this.noOptionalChain(node);
     // A helper's struct result: a local of the caller's, read and copied like any struct.
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const h = this.model.helpers.get(node.expression.text);
-      if (h?.returns?.kind === "struct" && !this.lookup(node.expression.text)) {
+      const h = this.helperOf(node);
+      if (h?.returns?.kind === "struct") {
         const v = this.callHelper(node, h)!;
         return { lv: `(*${v.c})`, type: { kind: "struct", name: h.returns.name }, writable: true };
       }
@@ -447,7 +447,8 @@ export abstract class StorageEmitter extends EmitterBase {
    * Write a struct or array into storage: from an object literal (field by field, every field
    * required) or by copying another location of the same type.
    */
-  protected writeAggregate(target: Ref, valueNode: ts.Expression) {
+  protected writeAggregate(target: Ref, valueNode: ts.Expression): void {
+    if (ts.isParenthesizedExpression(valueNode)) return this.writeAggregate(target, valueNode.expression);
     if (target.type.kind === "option" && target.type.inner.kind === "struct") {
       if (valueNode.kind === ts.SyntaxKind.NullKeyword) {
         this.line(`${target.lv}.some = 0;`);

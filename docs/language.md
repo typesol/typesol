@@ -41,6 +41,8 @@ The full reference. For a tour, start with the [README](../README.md).
 | Multiple files | `import { Side, min } from "./math"` — structs, enums, constants and helpers can live in other files; only the entry file's exported functions are instructions; names are program-wide, so imports from TypeSOL files cannot be renamed; error codes number imported files first |
 | Loops | `for (let i = 0n; i < n; i++)`, `while`, `for (const x of list)` over a `Vec` or `FixedArray` (each `x` is what `list.get(i)` gives: a value, or a reference into account data for structs; the length is read again every step, as in JS), `break`, `continue` — bounded by the compute budget. Remaining accounts are iterated by index |
 | Helpers | non-exported functions (and every function of an imported file): take values, structs, Vec arguments, `SignerSeeds` and accounts the instruction already checked (`Signer`, `AccountInfo`/`AccountMeta`, `Mut<T>`, token accounts, programs); return `void`, a scalar or a fixed-size struct (`function at(x: u64, y: u64): Point { return { x, y }; }`: the caller gets its own copy, to bind, store with `acct.home = at(…)` / `arr.set(i, at(…))` or read as `at(…).x`); no recursion. Helpers cannot grow Vecs (only instructions know the entry size) |
+| Arrow functions | `const fee = (x: u64): u64 => x / 100n` (or `const f = function (…) {…}`) at the top level or inside a function is a helper (parameter and return types written out). A local one capturing nothing: it reads its parameters, top-level names and other functions, not the enclosing function's variables (pass them in). Functions are called, not stored or passed |
+| Generic helpers | `function max<T extends bigint>(a: T, b: T): T` — compiled once per set of types it is called with (`max(a, b)` with u64 arguments, or `max<u128>(x, 1n)` when only literals tell); a type parameter stands for an integer, boolean, Pubkey or enum. Arithmetic on `T` is a `bigint` to TypeScript: `return (a + b) as T` (`as` names a type the value already has; it never converts) |
 | Evaluation order | operands and arguments are read left to right, as in JS, even when a later one changes account data (`v.length + v.pop()`) |
 | `++` `--` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | all checked |
 | Sysvars | `now()`, `currentSlot()`, `currentEpoch()` (clock), `minimumBalance(account)`, `rentExempt(space)` (rent) |
@@ -148,7 +150,8 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
 inside a helper, data-enum arguments carrying structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
 128-bit integers, `mulDiv` beyond u64, Core plugins, Bubblegum v2 / collections /
-transfers, floating point (by design), `do … while`.
+transfers, closures (local functions reading the enclosing function's variables), functions as values (callbacks,
+`.map`), type parameters standing for structs, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.
 
 `Init.create` handles a PDA address someone pre-funded: it tops up rent, then allocates and assigns instead of
