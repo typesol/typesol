@@ -465,7 +465,8 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     // JS evaluates the target (`a.get(i).x`: which element) before the right side. The exception is
     // `acct.field = acct.create(...)`, which must create the account before the field can be touched.
-    const isCall = ts.isCallExpression(valueNode) && !this.isStorageCall(valueNode);
+    // `fixedVec([…])` is a value written in place, not a call.
+    const isCall = ts.isCallExpression(valueNode) && !this.isStorageCall(valueNode) && this.exportName(valueNode.expression) !== "fixedVec";
     const createsFirst = isCall && ts.isPropertyAccessExpression(valueNode.expression) && ["create", "createIfNeeded"].includes(valueNode.expression.name.text);
     let raw = createsFirst ? this.call(valueNode as ts.CallExpression, topLevel) : undefined;
     if (createsFirst && !raw) this.fail(valueNode, "this call does not produce a value");
@@ -483,6 +484,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       (targetRef.type.kind === "array" ||
         targetRef.type.kind === "struct" ||
         targetRef.type.kind === "dataEnum" ||
+        (targetRef.type.kind === "vec" && targetRef.type.cap !== undefined) ||
         (targetRef.type.kind === "option" && targetRef.type.inner.kind === "struct"))
     ) {
       if (!targetRef.writable) this.fail(target, this.readOnly(targetRef));

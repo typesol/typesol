@@ -1,6 +1,6 @@
 import type { Analysis } from "../analyze.js";
 import { type FieldType, type StructDef } from "../model.js";
-import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, type EmitOptions } from "./shared.js";
+import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fixedVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
 
 /**
@@ -53,6 +53,12 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   const deps = (t: FieldType): void => {
     if (t.kind === "struct") emitStruct(model.structs.get(t.name)!);
     if (t.kind === "array" || t.kind === "vec") deps(t.elem);
+    if (t.kind === "vec" && t.cap !== undefined) {
+      const name = fixedVecC(t);
+      if (emitted.has(name)) return;
+      emitted.add(name);
+      out.push(`typedef struct __attribute__((packed)) {`, `  uint32_t len;`, `  ${storageDecl(t.elem, `items[${t.cap}]`)};`, `} ${name};`, "");
+    }
     if (t.kind === "option" && t.inner.kind === "struct") {
       const key = `opt:${t.inner.name}`;
       if (emitted.has(key)) return;

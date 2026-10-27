@@ -60,13 +60,14 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `u8` … `u128`, `i8` … `i128`, `bool`, `Pubkey` | `u8` … `u128`, `i8` … `i128`, `boolean`, `Pubkey` |
 | `[T; N]` | `FixedArray<T, N>` |
 | `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and N bytes, always N bytes long |
-| `Vec<T>` with `#[max_len(n)]` | `Vec<T>` as the account's last field; it grows with `push(v, payer)` |
+| `Vec<T>` with `#[max_len(n)]` | `Vec<T>` as the account's last field (it grows with `push(v, payer)`), or `FixedVec<T, n>` anywhere: a u32 length and room for n, always 4 + n × size bytes |
 | `Option<T>` | `Option<T>`: fixed size (1 + size of T) |
 | `#[derive(AnchorSerialize…)] enum` | `export enum` (unit variants) or a data enum `type A = { kind: "X"; … } \| …` |
 
 TypeSOL keeps account data at a fixed layout, so three Anchor layouts differ: a Borsh `String` is variable-length (TypeSOL
 uses `FixedString<N>`), a Borsh `Option` takes 1 byte when empty (TypeSOL always reserves the value), and a `Vec` can be
-anywhere in an Anchor struct (TypeSOL keeps it last). Accounts using them need a migration (or a new program) rather
+anywhere in an Anchor struct (TypeSOL keeps a growable one last; a `FixedVec<T, N>` elsewhere always takes its full
+capacity, where Anchor packs the elements and moves the fields after them). Accounts using them need a migration (or a new program) rather
 than an in-place upgrade. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
 matches byte for byte.
 

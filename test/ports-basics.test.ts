@@ -221,8 +221,8 @@ describe("port: basics/favorites", () => {
         ]),
       ]);
     const read = () => {
-      const f = decodeAccount<{ number: BN; color: unknown; hobby_count: number; hobbies: unknown[] }>(d, d.svm, "Favorites", favorites);
-      return { number: f.number.toNumber(), color: fixedString(f.color), hobbies: f.hobbies.slice(0, f.hobby_count).map(fixedString) };
+      const f = decodeAccount<{ number: BN; color: unknown; hobbies: { len: number; items: unknown[] } }>(d, d.svm, "Favorites", favorites);
+      return { number: f.number.toNumber(), color: fixedString(f.color), hobbies: f.hobbies.items.slice(0, f.hobbies.len).map(fixedString) };
     };
     expectOk(await set(user, ["skiing", "skydiving", "biking"]));
     expect(read()).toEqual({ number: 23, color: "purple", hobbies: ["skiing", "skydiving", "biking"] });

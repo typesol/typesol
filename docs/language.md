@@ -25,6 +25,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Enums | `export enum Status { Pending, Approved }` — unit variants stored as the Borsh u8 index; `Status.Approved`, `===` |
 | Options | `best: Option<u64>` (or `u64 \| null`) — `null`, `=== null`, TypeScript narrowing; `===` between options or with a value follows JS (null equals null, empty never equals a value); empty use aborts (5108); `a ?? b` takes b only when a is empty (b runs only then; the result is an Option when b can be null), `x!` is the value or aborts with 5108; `${opt}` prints the value or `null`. Borsh `option` in arguments/events, fixed `{ is_some, value }` in account data |
 | Vecs | `entries: Vec<Entry>` as the last account field — `get`, `set`, `push(v, payer)`, `pop()`, `clear()`, `.length`; the account is resized (realloc) and rent topped up by `payer`; `Vec<u64>` arguments are read-only views; `pop()` of a Vec of structs works as a statement |
+| Fixed-capacity lists | `owners: FixedVec<Pubkey, 8>` — any field, any number of them, in nested structs too: a u32 length and room for N elements (always 4 + N × size bytes), the same `get`, `set`, `push(v)`, `pop()`, `clear()`, `.length` and `for … of`; `push` on a full one fails (5104); `acct.owners = fixedVec([a, b])` writes a whole one (unused slots zeroed). Account data and returned structs only: arguments use `Vec<T>` |
 | Struct arguments | `order: Order`, `ids: FixedArray<u8, 4>`, `orders: Vec<Order>` — fixed layouts, Borsh-identical, validated on entry (bools, enums, option tags, string lengths, enum tags; 102) and read-only |
 | Remaining accounts | `remainingAccounts()` — `.length`, `.get(i)` → `key`, `owner`, `lamports` (writes check writability), `isSigner`, `isWritable`; `loadAccount<T>` / `loadAccountMut<T>` give checked struct views; pass them to `invoke`, one at a time or spread: `...remainingAccounts()` (each with the flags it was passed with), `...readonly(rest)` / `...writable(rest)` (all with that role), `rest.slice(a, b)` for part of them; a CPI lists at most 32 accounts (5113) |
 | Struct literals | `book.entries.push({ who: who.key, amount, status: Status.Pending, note }, who)` — every field required |
@@ -147,7 +148,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 
 ## Not supported yet
 
-Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
+Growable `Vec`s anywhere but the last account field (use `FixedVec<T, N>`), FixedVec in arguments and events, growing an account by more than 10 KiB in one instruction, growing a Vec
 inside a helper, data-enum arguments carrying structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
 128-bit integers, `mulDiv` beyond u64, Core's MasterEdition / VerifiedCreators / Autograph plugins, royalty rule sets and external plugin adapters, Bubblegum V2 delegates / freezes / metadata updates / V1 transfers, closures (local functions reading the enclosing function's variables), functions as values (callbacks,
 `.map`), type parameters standing for structs, floating point (by design), `do … while`.

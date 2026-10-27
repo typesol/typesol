@@ -1,7 +1,18 @@
 import ts from "typescript";
 import { snakeCase } from "./analyze.js";
 import { decodeAddress } from "../keys.js";
-import { type FieldType, type Instruction, type ParamKind, type ProgramModel, type ScalarType, type ValueType, isWritable, optionKey } from "./model.js";
+import {
+  type FieldType,
+  type Instruction,
+  type ParamKind,
+  type ProgramModel,
+  type ScalarType,
+  type ValueType,
+  fixedVecName,
+  isWritable,
+  optionKey,
+  typeName,
+} from "./model.js";
 
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -67,7 +78,7 @@ function idlType(t: FieldType | ValueType, borshOption = false): unknown {
       // Borsh enum in arguments and events; fixed tag + payload in account data.
       return borshOption || t.kind === "dataEnumArg" ? { defined: { name: t.name } } : { defined: { name: fixedEnumName(t.name) } };
     case "vec":
-      return { vec: idlType(t.elem) };
+      return t.cap === undefined ? { vec: idlType(t.elem) } : { defined: { name: fixedVecName(t) } };
     case "vecArg":
       return { vec: idlType(t.elem) };
     case "arrayArg":
@@ -190,6 +201,17 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
           fields: [
             { name: "is_some", type: "bool" },
             { name: "value", type: idlType(inner) },
+          ],
+        },
+      })),
+      ...[...model.fixedVecs].map(([name, t]) => ({
+        name,
+        docs: [`TypeSOL FixedVec<${typeName(t.elem)}, ${t.cap}>: \`len\` elements in use, room for ${t.cap} (the rest zero or stale).`],
+        type: {
+          kind: "struct",
+          fields: [
+            { name: "len", type: "u32" },
+            { name: "items", type: { array: [idlType(t.elem), t.cap] } },
           ],
         },
       })),

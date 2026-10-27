@@ -8,6 +8,7 @@ import {
   type ParamKind,
   type ScalarType,
   type ValueType,
+  fixedVecName,
   isWritable,
   optionKey,
 } from "../model.js";
@@ -59,7 +60,11 @@ export interface Ref {
   /** Field path from the account root, when it is a plain chain of fields. */
   path?: string[];
   /** For a Vec: the u32 length lvalue, the fixed-part size expression, and whether it may be resized here. */
-  vec?: { len: string; fixed: string; elemSize: number; resizable: boolean };
+  /**
+   * A Vec place: `len` the u32 length (an lvalue), `items` the element array. A trailing Vec grows the account
+   * (`fixed` bytes before it); a FixedVec (`cap`) has room for `cap` elements and never resizes.
+   */
+  vec?: { len: string; items: string; fixed: string; elemSize: number; resizable: boolean; cap?: number };
 }
 
 export interface Local {
@@ -154,6 +159,9 @@ export function fieldC(t: FieldType): string {
     case "pubkey":
     case "enum":
       return scalarStorageC(t);
+    case "vec":
+      if (t.cap !== undefined) return fixedVecC(t);
+      throw new Error("unreachable: a Vec is never an element");
     default:
       throw new Error(`unreachable: no element C type for ${t.kind}`);
   }
@@ -181,6 +189,7 @@ export function storageDecl(t: FieldType, name: string): string {
     case "array":
       return storageDecl(t.elem, `${name}[${t.len}]`);
     case "vec":
+      if (t.cap !== undefined) return `${fixedVecC(t)} ${name}`;
       // Borsh Vec as a trailing flexible array: u32 length, then the elements.
       return `uint32_t ${name}__len;
   ${storageDecl(t.elem, `${name}[]`)}`;
@@ -257,4 +266,14 @@ export function helperSignature(h: Helper): string {
 export interface EmitOptions {
   /** Log a marker and the remaining compute units before every statement (`typesol build --profile`). */
   profile?: boolean;
+}
+
+/** C typedef name of a FixedVec<T, N>: `{ uint32_t len; T items[N]; }`. */
+export function fixedVecC(t: FieldType & { kind: "vec" }): string {
+  return `TSF_${fixedVecName(t)}`;
+}
+
+/** The element count of a Vec place to read: a FixedVec's stored length is clamped to its capacity. */
+export function vecCount(v: NonNullable<Ref["vec"]>): string {
+  return v.cap === undefined ? `((uint64_t)${v.len})` : `((uint64_t)(${v.len} < ${v.cap} ? ${v.len} : ${v.cap}))`;
 }

@@ -19,7 +19,7 @@ Status:
 | `basics/counter` | `basics/counter.ts` | PARTIAL | keypair `init` is a client-allocated `Zeroed<Counter>` |
 | `basics/create-account` | `basics/create-account.ts` | PARTIAL | the `AddressData` struct argument is two arguments (same instruction bytes, different IDL) |
 | `basics/cross-program-invocation` | `basics/cross-program-invocation/{hand,lever}.ts` | PARTIAL | `hand` is ported as is; `lever`'s keypair `init` is a client-allocated `Zeroed<PowerStatus>` |
-| `basics/favorites` | `basics/favorites.ts` | PARTIAL | `Vec<String>` argument and field are fixed-size `FixedString<50>` lists; the address and hobby list are not logged |
+| `basics/favorites` | `basics/favorites.ts` | PARTIAL | the `Vec<String>` argument is a list of `FixedString<50>` structs and the field a `FixedVec<FixedString<50>, 5>`; the address and hobby list are not logged |
 | `basics/hello-solana` | `basics/hello-solana.ts` | PARTIAL | the program id log line is two lines (templates cannot format a Pubkey) |
 | `basics/pda-rent-payer` | `basics/pda-rent-payer.ts` | PORTED | |
 | `basics/processing-instructions` | `basics/processing-instructions.ts` | PORTED | |

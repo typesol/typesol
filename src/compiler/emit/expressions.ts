@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { calleeName, resolveValueType } from "../analyze.js";
 import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, sameType, typeName } from "../model.js";
-import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC } from "./shared.js";
+import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
 import { StorageEmitter } from "./storage.js";
 
 /**
@@ -191,7 +191,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.ix!.accounts.length}))`, type: U64 };
       const arr = this.ref(node.expression);
       if (arr?.type.kind === "array") return { c: `${arr.type.len}ULL`, type: U64 };
-      if (arr?.type.kind === "vec") return { c: `((uint64_t)${arr.vec!.len})`, type: U64 };
+      if (arr?.type.kind === "vec") return { c: vecCount(arr.vec!), type: U64 };
       if (ts.isIdentifier(node.expression)) {
         const l = this.lookup(node.expression.text);
         if (l?.type.kind === "vecArg") return { c: `((uint64_t)${l.c}.len)`, type: U64 };

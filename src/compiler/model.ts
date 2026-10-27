@@ -69,7 +69,8 @@ export type FieldType =
   /** A data-carrying enum (discriminated union): fixed { u8 tag; payload sized for the largest variant }. */
   | { kind: "dataEnum"; name: string }
   /** `Vec<T>`: Borsh u32 length + elements. Only as the last field of an account struct. */
-  | { kind: "vec"; elem: FieldType };
+  /** `Vec<T>` (last field, grows the account) or, with `cap`, `FixedVec<T, N>`: a u32 length and room for N elements. */
+  | { kind: "vec"; elem: FieldType; cap?: number };
 
 export interface StructField {
   name: string;
@@ -285,6 +286,8 @@ export interface ProgramModel {
   argStructs: Set<string>;
   /** FixedString capacities in use, for C typedefs and IDL types. */
   fstrings: Set<number>;
+  /** FixedVec<T, N> types in use (IDL name -> type), for IDL types. */
+  fixedVecs: Map<string, FieldType & { kind: "vec" }>;
 }
 
 export function isWritable(k: ParamKind): boolean {
@@ -329,7 +332,7 @@ export function typeName(t: ValueType | FieldType): string {
     case "enumRef":
       return t.name;
     case "vec":
-      return `Vec<${typeName(t.elem)}>`;
+      return t.cap === undefined ? `Vec<${typeName(t.elem)}>` : `FixedVec<${typeName(t.elem)}, ${t.cap}>`;
     case "vecArg":
       return `Vec<${typeName(t.elem)}>`;
     case "arrayArg":
@@ -365,7 +368,7 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
     case "option":
       return sameType(a.inner, (b as typeof a).inner);
     case "vec":
-      return sameType(a.elem, (b as typeof a).elem);
+      return a.cap === (b as typeof a).cap && sameType(a.elem, (b as typeof a).elem);
     case "vecArg":
       return sameType(a.elem, (b as typeof a).elem);
     case "arrayArg":
@@ -396,4 +399,11 @@ export function optionKey(t: ScalarType | { kind: "struct"; name: string }): str
 
 export function scalarKey(t: ScalarType): string {
   return t.kind === "int" ? t.name : t.kind === "enum" ? `e_${t.name}` : t.kind === "pubkey" && t.hash ? "hash" : t.kind;
+}
+
+/** The IDL type name of a FixedVec<T, N>: `FixedVec<N>_<T>`. */
+export function fixedVecName(t: FieldType & { kind: "vec" }): string {
+  return `FixedVec${t.cap}_${typeName(t.elem)
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/_+$/, "")}`;
 }

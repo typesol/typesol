@@ -41,7 +41,7 @@ it("counts", async () => {
 | --- | --- |
 | `t.ok(res)` | the successful result, or throws with the program's logs |
 | `t.errorCode(res)` | the custom error code of a failed transaction: 6000 + the member's index in your error enum, or a framework code ([errors.md](errors.md)) |
-| `t.account(type, address)` | the account decoded by its IDL type (bigints, address strings), or `null` once closed |
+| `t.account(type, address)` | the account decoded by its IDL type (bigints, address strings), or `null` once closed. TypeSOL fixed layouts come back as their IDL structs: a `FixedString<N>` as `{ len, bytes }`, a `FixedVec<T, N>` as `{ len, items }` (the generated client gives strings and arrays) |
 | `t.returned(instruction, res)` | the instruction's return data: an integer, boolean, Pubkey or struct |
 | `t.balance(address)` | lamports |
 
