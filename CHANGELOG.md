@@ -5,7 +5,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Fixed
+- `typesol idl publish` names the reason a write failed (the transaction's error and its last log lines) instead of
+  "The provided transaction plan failed to execute".
+
 ### Docs
+- docs/mainnet.md: from `typesol init` to a verified program on mainnet-beta (wallet, cost, deploy, IDL, `verify`,
+  freezing and closing).
 - README: the official escrow on mainnet-beta in all four versions, with each transaction's compute units linked to
   Solscan; the TypeSOL program's IDL is published on chain.
 

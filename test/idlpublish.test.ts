@@ -99,9 +99,10 @@ describe("on-chain IDL (Program Metadata program)", () => {
     const stranger = await fundedSigner(svm);
     const refused = await publishIdl(chain, { program, idl: out.idl, payer: stranger, canonical: true }).then(
       () => "",
-      (e: Error) => String((e as { cause?: Error }).cause?.message ?? e.message),
+      (e: Error) => e.message,
     );
-    expect(refused).toMatch(/InvalidSeeds/); // only the upgrade authority derives the canonical address
+    // Only the upgrade authority derives the canonical address; the error names the failed transaction's reason.
+    expect(refused).toMatch(/^IDL write failed: .*InvalidSeeds/s);
     const at = await publishIdl(chain, { program, idl: out.idl, payer: admin, canonical: true });
     expect(at).toBe(await metadataAddress(program, null));
     expect(await fetchIdl(chain.rpc, program)).toEqual(out.idl);

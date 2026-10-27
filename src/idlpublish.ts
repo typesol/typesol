@@ -107,19 +107,48 @@ export async function publishIdl(chain: Chain, opts: PublishOptions): Promise<Ad
         })
       )[0]
     : undefined;
-  await writeMetadata(
-    client as never,
-    {
-      payer: opts.payer,
-      authority,
-      program: opts.program,
-      ...(programData ? { programData } : {}),
-      seed: "idl",
-      format: Format.Json,
-      ...packed,
-    } as never,
-  );
+  try {
+    await writeMetadata(
+      client as never,
+      {
+        payer: opts.payer,
+        authority,
+        program: opts.program,
+        ...(programData ? { programData } : {}),
+        seed: "idl",
+        format: Format.Json,
+        ...packed,
+      } as never,
+    );
+  } catch (e) {
+    throw new Error(planFailure(e));
+  }
   return metadataAddress(opts.program, canonical ? null : authority.address);
+}
+
+/**
+ * The transaction planner reports a failed write as "The provided transaction plan failed to execute" and keeps the
+ * reason inside: name the first failed transaction's own error instead.
+ */
+function planFailure(e: unknown): string {
+  const seen = new Set<unknown>();
+  const messages: string[] = [];
+  let logs: string[] = [];
+  const walk = (v: unknown, depth: number): void => {
+    if (!v || typeof v !== "object" || seen.has(v) || depth > 8) return;
+    seen.add(v);
+    const o = v as Record<string, unknown>;
+    if (Array.isArray(o.logs) && !logs.length) logs = (o.logs as unknown[]).map(String);
+    if (v instanceof Error && v.message && !/transaction plan failed to execute/.test(v.message)) messages.push(v.message);
+    for (const k of ["transactionPlanResult", "plans", "error", "cause", "context"]) {
+      const c = o[k];
+      if (Array.isArray(c)) c.forEach((x) => walk(x, depth + 1));
+      else walk(c, depth + 1);
+    }
+  };
+  walk(e, 0);
+  const tail = logs.length ? `\n  ${logs.slice(-6).join("\n  ")}` : "";
+  return messages.length ? `IDL write failed: ${messages[0]}${tail}` : e instanceof Error ? e.message : String(e);
 }
 
 export async function metadataAddress(program: Address, authority: Address | null): Promise<Address> {
