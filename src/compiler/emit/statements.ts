@@ -267,6 +267,11 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
+      // A local function is a helper of its own (lifted when the program was analyzed): nothing to run here.
+      if (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) {
+        if (!this.model.helperDecls.has(d)) this.fail(d, "declare local functions with const: const f = (…) => …");
+        continue;
+      }
       const name = d.name.text;
       if (this.scopes.at(-1)!.has(name)) this.fail(d.name, `"${name}" is already declared`);
       // Account lookups go by name, so a local must not hide a parameter (it would read the parameter instead).
@@ -467,7 +472,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     // A helper's struct result is copied like any struct (the target first, as JS evaluates it first).
     const structCall =
       isCall && ts.isIdentifier((valueNode as ts.CallExpression).expression)
-        ? this.model.helpers.get(((valueNode as ts.CallExpression).expression as ts.Identifier).text)?.returns?.kind === "struct"
+        ? this.helperOf(valueNode as ts.CallExpression)?.returns?.kind === "struct"
         : false;
     if (structCall && this.writesThroughVec(target) && this.helperTakesMutAccounts(valueNode as ts.CallExpression))
       this.fail(target, "the right side calls a helper that may change this Vec; store its result in a local first");
@@ -512,7 +517,7 @@ export abstract class StatementEmitter extends CpiEmitter {
   }
 
   protected helperTakesMutAccounts(node: ts.CallExpression): boolean {
-    const h = ts.isIdentifier(node.expression) ? this.model.helpers.get(node.expression.text) : undefined;
+    const h = this.helperOf(node);
     return !!h?.params.some((p) => p.account && isWritable(p.account));
   }
 }

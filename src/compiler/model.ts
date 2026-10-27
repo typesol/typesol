@@ -182,6 +182,15 @@ export interface Instruction {
   imports: Map<string, string>;
 }
 
+/** A helper with type parameters, before it is instantiated. */
+export interface GenericHelper {
+  name: string;
+  display: string;
+  node: HelperNode;
+  typeParams: string[];
+  imports: Map<string, string>;
+}
+
 export interface HelperParam {
   name: string;
   /** `{ kind: "account" }` for account parameters (then `account` says which kind). */
@@ -190,13 +199,26 @@ export interface HelperParam {
   node: ts.ParameterDeclaration;
 }
 
-/** A non-exported function (or any function of an imported file): values and accounts in; void, a scalar or a struct out. */
+/** A function written as `function f(…)`, `const f = (…) => …` or `const f = function (…) {…}`. */
+export type HelperNode = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;
+
+/**
+ * A non-exported function (or any function of an imported file), or an arrow function declared with const at the top
+ * level or inside a function (capturing nothing): values and accounts in; void, a scalar or a struct out.
+ */
 export interface Helper {
+  /** The C name (fn_<name>): the function's name, `outer__local` for a local arrow, `name__u64` for an instance. */
   name: string;
+  /** The name in messages: `local`, `max<u64>`. */
+  display: string;
   params: HelperParam[];
   /** A struct result is written through an out pointer (`TSS_<name> *ret`) that the caller provides. */
   returns: ScalarType | { kind: "struct"; name: string } | undefined;
-  node: ts.FunctionDeclaration;
+  node: HelperNode;
+  /** The body; an arrow's expression body is one return (or expression) statement. */
+  statements: readonly ts.Statement[];
+  /** A generic helper's instance: type parameter -> the type it stands for. */
+  typeArgs?: Map<string, ScalarType>;
   /** The declaring file's `typesol` imports (local name -> export name). */
   imports: Map<string, string>;
 }
@@ -240,6 +262,10 @@ export interface ProgramModel {
   structs: Map<string, StructDef>;
   instructions: Instruction[];
   helpers: Map<string, Helper>;
+  /** Generic helpers by name: instantiated (into `helpers`) for the types each call uses. */
+  generics: Map<string, GenericHelper>;
+  /** Declaration (function, or the const of an arrow) -> helper or generic name, for calls to local arrows. */
+  helperDecls: Map<ts.Node, string>;
   errors: ErrorDef[];
   /** Enum name -> member name -> error */
   errorEnums: Map<string, Map<string, ErrorDef>>;

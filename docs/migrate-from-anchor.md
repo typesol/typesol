@@ -90,6 +90,8 @@ matches byte for byte.
 | `declare_program!(other)` / CPI to another Anchor program | `typesol cpi other.json` generates typed helpers |
 | `for x in v.iter()` | `for (const x of v)` |
 | `x.unwrap_or(d)` | `x ?? d` |
+| `fn max<T: PartialOrd>(a: T, b: T) -> T` | `function max<T extends bigint>(a: T, b: T): T` (one copy per type used) |
+| `let fee = \|x: u64\| x / 100;` (no captures) | `const fee = (x: u64): u64 => x / 100n;` |
 
 ## Tooling
 

@@ -56,14 +56,14 @@ describe("typesol/ts-plugin", () => {
 
   it("shows the compiler's refusal at its position, for the unsaved text", () => {
     const p = project();
-    const bad = p.text().replace("counter.count += by;", "const twice = (v: u64) => v * 2n;\n  counter.count += twice(by);");
+    const bad = p.text().replace("counter.count += by;", "const scaled = (v: u64): u64 => v * by;\n  counter.count += scaled(2n);");
     p.edit(p.file, bad);
     writeFileSync(path.join(p.dir, "unused.txt"), ""); // the file on disk is untouched: the plugin checks the editor text
     const diags = p.ls.getSemanticDiagnostics(p.file);
-    // The arrow function, then the call that uses it.
-    expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/ArrowFunction is not supported/), "unsupported call"]);
+    // A local function reading the enclosing function's argument (a closure), at the name it reads.
+    expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/scaled reads "by" of the function around it/)]);
     expect(diags[0]).toMatchObject({ source: "typesol", code: 9900, category: ts.DiagnosticCategory.Error });
-    expect(bad.slice(diags[0].start!, diags[0].start! + 1)).toBe("(");
+    expect(bad.slice(diags[0].start!, diags[0].start! + 2)).toBe("by");
   });
 
   it("leaves TypeScript's own errors alone and skips files that are not program entries", () => {

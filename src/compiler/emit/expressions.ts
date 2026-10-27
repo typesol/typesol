@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { calleeName, resolveValueType } from "../analyze.js";
 import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, sameType, typeName } from "../model.js";
 import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC } from "./shared.js";
 import { StorageEmitter } from "./storage.js";
@@ -54,6 +55,20 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   protected expr(node: ts.Expression, hint?: ValueType): Value {
     if (ts.isParenthesizedExpression(node)) return this.expr(node.expression, hint);
+    // `x as T`: an annotation the value must already match (no conversion: use u8(x) etc. for that). Inside a
+    // generic helper it names the instance's type: `return (a + b) as T`.
+    if (ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
+      if (ts.isAsExpression(node) && ts.isTypeReferenceNode(node.type) && ts.isIdentifier(node.type.typeName) && node.type.typeName.text === "const")
+        return this.expr(node.expression, hint);
+      const t = resolveValueType(node.type, this.scope);
+      if (!t || t.kind === "vecArg" || t.kind === "dataEnumArg")
+        this.fail(node.type, "`as` names an integer, boolean, Pubkey, enum, option or string type the value already has");
+      const v = this.expr(node.expression, t);
+      // Not a conversion: `x as u64 | null` does not make an Option of a u64.
+      if (v.literal === undefined && !v.isNull && !sameType(v.type, t))
+        this.fail(node, `this is a ${typeName(v.type)}, not a ${typeName(t)}: \`as\` does not convert (use u64(x) and the like for integers)`);
+      return this.expect(v, t, node.expression);
+    }
     // `x!` on an Option: its value, aborting with 5108 when it is empty (JS would carry the null on).
     if (ts.isNonNullExpression(node)) {
       const v = this.expr(node.expression, hint && hint.kind !== "option" ? ({ kind: "option", inner: hint } as ValueType) : hint);
@@ -123,6 +138,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         return hint?.kind === "int" ? this.literal(v, hint, node) : { c: intLiteral(v, "u64"), type: U64, literal: v };
       }
       if (this.accounts.has(node.text)) this.fail(node, `"${node.text}" is an account; use ${node.text}.key for its address`);
+      if (calleeName(node, this.model.helperDecls, this.checker) || this.model.helpers.has(node.text))
+        this.fail(node, `"${node.text}" is a function: TypeSOL functions are called (${node.text}(…)), not passed around or stored`);
       this.fail(node, `unknown name "${node.text}"`);
     }
     if (ts.isPropertyAccessExpression(node)) return this.property(node);

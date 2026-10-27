@@ -416,7 +416,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     if (builtin) this.fail(callee, `${builtin} cannot be called here`);
 
-    if (ts.isIdentifier(callee) && this.model.helpers.has(callee.text)) return this.callHelper(node, this.model.helpers.get(callee.text)!);
+    const helper = this.helperOf(node);
+    if (helper) return this.callHelper(node, helper);
 
     if (ts.isPropertyAccessExpression(callee)) {
       const method = callee.name.text;
@@ -805,7 +806,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   }
 
   protected callHelper(node: ts.CallExpression, h: Helper): Value | undefined {
-    if (node.arguments.length !== h.params.length) this.fail(node, `${h.name}() takes ${h.params.length} argument(s)`);
+    if (node.arguments.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);
     // Arguments are evaluated left to right: settle earlier ones when a later one runs statements.
     // A helper that takes accounts may change account data, so account text it gets is copied first.
     const takesAccounts = h.params.some((p) => p.account);
@@ -825,7 +826,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased).
     for (const [i, p] of h.params.entries())
       if (p.account && p.account.kind === "account" && p.account.mut && ts.isIdentifier(node.arguments[i]))
-        this.assertNotAliased([node.arguments[i].text], node, h.name);
+        this.assertNotAliased([node.arguments[i].text], node, h.display);
     const args = ["params", ...pieces.map((x) => (typeof x === "number" ? (values[x].type.kind === "pubkey" ? `*(${values[x].c})` : values[x].c) : x))];
     if (!h.returns) {
       this.line(`TS_TRY(fn_${h.name}(${args.join(", ")}));`);

@@ -113,11 +113,11 @@ describe("subset enforcement", () => {
       /can only be account data|ends in a Vec/,
     ],
     ["value enums with gaps", `export enum E { A = 0, B = 5 }\nexport function f(): void {}`, /numbered 0, 1, 2/],
-    ["null where no Option is expected", `export function f(b: Mut<Box>): void { b.value = null as never; }`, /not supported|null is only valid/],
+    ["null where no Option is expected", `export function f(b: Mut<Box>): void { b.value = null as never; }`, /not supported|null is only valid|`as` names/],
     [
       "comparing a non-option with null",
       `export function f(b: Mut<Box>): void { require((b.value as u64 | null) !== null, "x"); }`,
-      /not supported|only Option values/,
+      /not supported|only Option values|does not convert/,
     ],
     ["loadAccount used inline", `export function f(): void { const n = loadAccount<Box>(remainingAccounts().get(0n)).value; }`, /bind loadAccount/],
     ["mutating Vec arguments", `export function f(xs: Vec<u64>): void { xs.set(0n, 1n); }`, /Vec arguments are read-only/],
