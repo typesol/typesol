@@ -84,10 +84,16 @@ export interface RemainingAccount {
   readonly isWritable: boolean;
 }
 
-/** The accounts a client passed beyond the instruction's declared parameters. */
-export interface RemainingAccounts {
+/**
+ * The accounts a client passed beyond the instruction's declared parameters. Spread them into a CPI's account list:
+ * `...remainingAccounts()` passes each with the flags it was passed with (Rust's `extend_from_slice`),
+ * `...readonly(rest)` / `...writable(rest)` pass them all with that role (a cNFT proof, a harvest's sources).
+ */
+export interface RemainingAccounts extends Iterable<CpiAccount> {
   readonly length: u64;
   get(index: bigint): RemainingAccount;
+  /** Indexes start..end (end: all) of them, to spread into a CPI: `...readonly(rest.slice(0n, proofLength))`. */
+  slice(start: bigint, end?: bigint): RemainingAccounts;
 }
 export declare function remainingAccounts(): RemainingAccounts;
 
@@ -213,6 +219,8 @@ export interface TokenMetadataProgram extends AccountMeta {
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
 }
+/** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
+export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
 /** The Metaplex metadata account address of a mint. */
 export declare function metadataAddress(mint: Pubkey): Pubkey;
 
@@ -611,7 +619,9 @@ export interface CpiAccount {
   readonly __cpi_account: void;
 }
 export declare function readonly(account: AccountMeta | RemainingAccount): CpiAccount;
+export declare function readonly(accounts: RemainingAccounts): Iterable<CpiAccount>;
 export declare function writable(account: AccountMeta | RemainingAccount): CpiAccount;
+export declare function writable(accounts: RemainingAccounts): Iterable<CpiAccount>;
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;
 

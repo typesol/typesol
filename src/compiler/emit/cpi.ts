@@ -705,6 +705,24 @@ export abstract class CpiEmitter extends CallEmitter {
     this.fail(node.expression, `Bubblegum supports createTree and mint, not ${method}`);
   }
 
+  /**
+   * `remainingAccounts()` (or a const bound to it): every remaining account; `rest.slice(a, b?)`: indexes a..b of them
+   * (both checked against the count, 5104). C expressions for the range, relative to the first remaining account.
+   */
+  protected remainingRange(node: ts.Expression): { from: string; to: string } | undefined {
+    const n = this.ix!.accounts.length;
+    const count = `(params->ka_num - ${n})`;
+    if (this.isRemaining(node)) return { from: "0", to: count };
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "slice") return undefined;
+    if (!this.isRemaining(node.expression.expression)) return undefined;
+    if (node.arguments.length < 1 || node.arguments.length > 2) this.fail(node, "slice(start, end?) takes one or two indexes");
+    // Both ends may equal the count (an empty slice at the end).
+    const from = this.index(node.arguments[0]!, `${count} + 1`);
+    const to = node.arguments[1] ? this.index(node.arguments[1], `${count} + 1`) : count;
+    this.line(`if (${from} > ${to}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: remaining accounts slice out of range");`);
+    return { from, to };
+  }
+
   protected invoke(node: ts.CallExpression): undefined {
     const a = node.arguments;
     if (a.length !== 3 && a.length !== 4) this.fail(node, "invoke(program, accounts, data, signerSeeds?) takes 3 or 4 arguments");
@@ -722,10 +740,25 @@ export abstract class CpiEmitter extends CallEmitter {
     }
     const hasSeeds = a.length === 4;
 
-    // Accounts: readonly(x) / writable(x) / readonlySigner(x) / writableSigner(x)
+    // Accounts: readonly(x) / writable(x) / readonlySigner(x) / writableSigner(x), and the remaining accounts spread in:
+    // `...remainingAccounts()` (each with the flags it was passed with, Rust's `extend_from_slice`) or
+    // `...readonly(rest)` / `...writable(rest)` (all with that role).
     if (!ts.isArrayLiteralExpression(a[1])) this.fail(a[1], "accounts must be an array literal");
     const metas: string[] = [];
+    // Entries after the first spread are appended at runtime, in order.
+    type Spread = { kind: "spread"; mode: "asPassed" | "readonly" | "writable"; from: string; to: string };
+    const parts: ({ kind: "meta"; c: string } | Spread)[] = [];
     for (const el of a[1].elements) {
+      if (ts.isSpreadElement(el)) {
+        if (!this.ix) this.fail(el, "remainingAccounts() is only available in instructions");
+        const inner = el.expression;
+        const fnName = ts.isCallExpression(inner) ? this.exportName(inner.expression) : undefined;
+        const wrapped = ts.isCallExpression(inner) && (fnName === "readonly" || fnName === "writable") && inner.arguments.length === 1;
+        const range = this.remainingRange(wrapped ? inner.arguments[0]! : inner);
+        if (!range) this.fail(el, "spread the remaining accounts: ...remainingAccounts(), ...readonly(rest), ...writable(rest) or rest.slice(a, b)");
+        parts.push({ kind: "spread", mode: wrapped ? (fnName as "readonly" | "writable") : "asPassed", ...range });
+        continue;
+      }
       const fn = ts.isCallExpression(el) ? this.exportName(el.expression) : undefined;
       if (!ts.isCallExpression(el) || !fn || !["readonly", "writable", "readonlySigner", "writableSigner"].includes(fn) || el.arguments.length !== 1)
         this.fail(el, "each account must be readonly(x), writable(x), readonlySigner(x) or writableSigner(x)");
@@ -737,6 +770,7 @@ export abstract class CpiEmitter extends CallEmitter {
         if (isW) this.line(`TS_TRY(ts_check_writable(${h}));`);
         if (isS && !hasSeeds) this.line(`TS_TRY(ts_check_signer(${h}));`);
         metas.push(`{&${h}->key, ${isW}, ${isS}}`);
+        parts.push({ kind: "meta", c: metas[metas.length - 1]! });
         continue;
       }
       const acct = this.accountParam(el.arguments[0], `${fn}()'s argument`);
@@ -744,6 +778,7 @@ export abstract class CpiEmitter extends CallEmitter {
       if (isS && acct.kind.kind !== "signer" && !hasSeeds)
         this.fail(el, `"${acct.name}" did not sign; pass signerSeeds to sign for a PDA, or declare it Signer`);
       metas.push(`{&a_${acct.name}->key, ${isW}, ${isS}}`);
+      parts.push({ kind: "meta", c: metas[metas.length - 1]! });
     }
 
     // The CPI's account list is built in a buffer with room for one entry per instruction account.
@@ -796,9 +831,35 @@ export abstract class CpiEmitter extends CallEmitter {
 
     const seeds = hasSeeds ? this.signingSeeds(a[3]) : { name: "NULL", count: 0 };
     const metasName = this.tmp("metas");
-    this.line(`SolAccountMeta ${metasName}[${Math.max(metas.length, 1)}] = {${metas.join(", ")}};`);
+    let count: string = String(metas.length);
+    if (parts.some((p) => p.kind === "spread")) {
+      // Room for every account of the instruction (ts_invoke's scratch holds TS_MAX_ACCOUNTS records).
+      const n = this.ix!.accounts.length;
+      const cnt = this.tmp("nmetas");
+      this.line(`SolAccountMeta ${metasName}[TS_MAX_ACCOUNTS];`);
+      this.line(`uint64_t ${cnt} = 0;`);
+      const spreads = parts.filter((p): p is Spread => p.kind === "spread");
+      const total = [String(metas.length), ...spreads.map((p) => `(${p.to} - ${p.from})`)].join(" + ");
+      this.line(`if (${total} > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${MAX_ACCOUNTS} accounts");`);
+      for (const p of parts) {
+        if (p.kind === "meta") {
+          this.line(`${metasName}[${cnt}++] = (SolAccountMeta)${p.c};`);
+          continue;
+        }
+        const i = this.tmp("ri");
+        const r = this.tmp("racct");
+        this.line(`for (uint64_t ${i} = ${n} + ${p.from}; ${i} < ${n} + ${p.to}; ${i}++) {`);
+        this.line(`  TsAccount *${r} = params->ka[${i}];`);
+        if (p.mode === "writable") this.line(`  TS_TRY(ts_check_writable(${r}));`);
+        const w = p.mode === "asPassed" ? `${r}->is_writable` : p.mode === "writable" ? "1" : "0";
+        const sg = p.mode === "asPassed" ? `${r}->is_signer` : "0";
+        this.line(`  ${metasName}[${cnt}++] = (SolAccountMeta){&${r}->key, ${w}, ${sg}};`);
+        this.line(`}`);
+      }
+      count = cnt;
+    } else this.line(`SolAccountMeta ${metasName}[${Math.max(metas.length, 1)}] = {${metas.join(", ")}};`);
     const ixName = this.tmp("cpi");
-    this.line(`SolInstruction ${ixName} = {${programKey}, ${metasName}, ${metas.length}, ${buf}, ${len}};`);
+    this.line(`SolInstruction ${ixName} = {${programKey}, ${metasName}, ${count}, ${buf}, ${len}};`);
     if (hasSeeds) {
       const signer = this.tmp("signer");
       this.line(`SolSignerSeeds ${signer} = {${seeds.name}, ${seeds.count}};`);
