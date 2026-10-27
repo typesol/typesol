@@ -210,6 +210,7 @@ The full reference, with every type, check and built-in, is in [docs/language.md
 | `typesol idl publish` | upload the IDL to the Program Metadata program (canonical when the upgrade authority signs) |
 | `typesol cpi <idl.json>` | generate typed CPI helpers for another program |
 | `typesol client <idl.json>` | generate a typed TypeScript client from an Anchor IDL (`typesol build` writes one per program) |
+| `typesol/ts-plugin` | the compiler's errors in the editor as you type ([docs/cli.md](docs/cli.md#editor)) |
 | `typesol verify` | rebuild from source and compare with the program and IDL on chain (or a dumped `.so`) |
 | `typesol profile` | compute units per TypeScript line, from a `--profile` build's logs |
 | `typesol emit-c` | print the generated C |

@@ -37,6 +37,7 @@
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
     },
+    "./ts-plugin": "./ts-plugin/index.js",
     "./idl": {
       "types": "./dist/idlpublish.d.ts",
       "default": "./dist/idlpublish.js"
@@ -47,6 +48,7 @@
     "dist",
     "lib",
     "runtime",
+    "ts-plugin",
     "assets",
     "!assets/readme",
     "LICENSE",
