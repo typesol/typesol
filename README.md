@@ -25,8 +25,8 @@ it does not generate Rust. Your `.ts` file is typechecked by the TypeScript comp
 same LLVM toolchain that `cargo-build-sbf` uses. Every build also writes an **Anchor-compatible IDL**, so Anchor
 clients read TypeSOL programs unchanged.
 
-- **One language, end to end.** You write the program, its tests and its client in TypeScript, and your editor gives
-  you completion and type errors.
+- **One language, end to end.** You write the program and its tests in TypeScript, and every build writes a typed
+  client for it ([docs/client.md](docs/client.md)). Your editor gives you completion and type errors throughout.
 - **Safe by default.**
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
@@ -155,7 +155,7 @@ You also need the Agave CLI (`sh -c "$(curl -sSfL https://release.anza.xyz/stabl
 typesol init my-app --name counter      # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
 cd my-app && npm install ../typesol      # path to your clone (later: plain `npm install`)
 npm test                                # builds the program and runs it in LiteSVM, an in-process Solana runtime
-typesol build                           # target/counter/{counter.so, counter.json (IDL), counter.build.json}
+typesol build                           # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
 typesol deploy --url http://127.0.0.1:8899 --keypair ~/.config/solana/id.json
 ```
 
@@ -206,6 +206,7 @@ The full reference, with every type, check and built-in, is in [docs/language.md
 | `typesol deploy` | `solana program deploy` with the right program keypair (`--dry-run` prints the commands) |
 | `typesol idl publish` | upload the IDL to the Program Metadata program (canonical when the upgrade authority signs) |
 | `typesol cpi <idl.json>` | generate typed CPI helpers for another program |
+| `typesol client <idl.json>` | generate a typed TypeScript client from an Anchor IDL (`typesol build` writes one per program) |
 | `typesol verify` | rebuild from source and compare with a deployed binary |
 | `typesol profile` | compute units per TypeScript line, from a `--profile` build's logs |
 | `typesol emit-c` | print the generated C |

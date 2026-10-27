@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Sbpf } from "./compiler/index.js";
 import { generateCpi, type Idl } from "./cpigen.js";
+import { generateClient, writeClient, type ClientIdl } from "./clientgen.js";
 import { buildIdl } from "./compiler/idl.js";
 import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
 import { formatProfile, profileLogs } from "./profile.js";
@@ -75,7 +76,7 @@ const COMMANDS: Record<string, Command> = {
     usage:
       "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile]",
     help: [
-      `In a project (${CONFIG}): build every program, or the ones named, into <out>/<name>/ (.so, IDL .json, .c, .build.json).`,
+      `In a project (${CONFIG}): build every program, or the ones named, into <out>/<name>/ (.so, IDL .json, .client.ts, .c, .build.json).`,
       "Outside a project, or with a .ts file: build that file (its keypair is created next to the output if needed).",
       SBPF,
       "--profile            log a marker and the remaining compute units before every statement (for `typesol profile`; not for release)",
@@ -111,10 +112,12 @@ const COMMANDS: Record<string, Command> = {
       mkdirSync(path.dirname(keyFile), { recursive: true });
       const { address, created } = loadOrCreateKeypair(keyFile);
       const res = build(file, outDir, address, { sbpf: sbpf ?? "v0", profile });
+      const client = writeClient(res.idl, path.join(outDir, `${model.name}.client.ts`));
       log(`  program   ${model.name}`);
       log(`  address   ${address}${created ? "  (new keypair: keep it, it is the program's address)" : ""}`);
       log(`  binary    ${res.soPath}`);
       log(`  idl       ${res.idlPath}`);
+      log(`  client    ${client.path}`);
       log(`  manifest  ${res.manifestPath}`);
       log(`\n  deploy:   solana program deploy ${res.soPath} --program-id ${keyFile}`);
       return 0;
@@ -216,6 +219,22 @@ const COMMANDS: Record<string, Command> = {
         log(`  wrote ${v.out}: ${res.generated.length} helper(s)`);
       } else process.stdout.write(res.source);
       for (const s of res.skipped) console.error(`  skipped ${s.instruction}: ${s.reason}`);
+      return 0;
+    },
+  },
+  client: {
+    usage: "typesol client <idl.json> [--out <file.ts>] [--address <base58>]",
+    help: "Generate a typed TypeScript client (on @solana/kit) from an Anchor IDL (0.30+/1.x or TypeSOL). The IDL is validated first;\n  what the client leaves out is printed as notes. `typesol build` already writes <name>.client.ts for TypeSOL programs.",
+    options: { out: { type: "string" }, address: { type: "string" } },
+    run(v, args) {
+      const file = one(args, "<idl.json>");
+      if (v.address && !decodeAddress(v.address as string)) throw new UsageError(`--address "${v.address}" is not a base58 Solana address`);
+      const res = generateClient(readJson(file) as ClientIdl, { address: v.address as string | undefined });
+      if (v.out) {
+        writeFileSync(v.out as string, res.source);
+        log(`  wrote ${v.out}`);
+      } else process.stdout.write(res.source);
+      for (const n of res.notes) console.error(`  note: ${n}`);
       return 0;
     },
   },

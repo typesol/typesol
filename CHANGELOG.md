@@ -5,6 +5,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- A typed TypeScript client per program: `typesol build` writes `<name>.client.ts` (on `@solana/kit` only) with
+  instruction builders that fill in fixed addresses and PDAs, account decoders and fetchers, PDA helpers, error names,
+  event parsing and return-data decoders. The file uses no TypeScript-only syntax, so it also runs under Node's type
+  stripping. `typesol client <idl.json>` writes one from an Anchor IDL (0.30+), after validating it: an IDL whose names,
+  bytes or codes could not be embedded safely is refused. See docs/client.md.
+
 ### Changed
 - The CLI banner spells TypeSOL, in TypeScript blue and the Solana gradient on terminals with color (`NO_COLOR`
   turns it off).
