@@ -42,9 +42,10 @@ Every change adds its entry under `## Unreleased` in CHANGELOG.md.
    (start a new empty `## Unreleased` above it), commit as `Release v<version>`.
 3. Tag it: `git tag -a v<version> -m "TypeSOL <version>"`, push the tag, and create the GitHub Release from the tag
    with that CHANGELOG section as notes.
-4. Publishing to npm is separate and manual: run the **release** workflow (Actions → release → Run workflow) with the
-   version. It checks out the tag, builds and tests it, checks that it matches `package.json`, and publishes. Tags
-   and GitHub Releases never publish on their own.
+4. Publishing to npm (as `@typesol/cli`) is separate and manual: run the **release** workflow (Actions → release → Run
+   workflow) with the version. It checks out the tag, builds and tests it, checks that it matches `package.json`, and
+   publishes through npm trusted publishing (no stored token; the package trusts that workflow and its `npm`
+   environment). Tags and GitHub Releases never publish on their own.
 
 ## Code style
 
