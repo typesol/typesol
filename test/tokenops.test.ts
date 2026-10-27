@@ -4,9 +4,8 @@ import { lamports } from "@solana/kit";
 import { type Address, type KeyPairSigner, address, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, TOKEN_2022 } from "./harness.js";
 
-const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 const TREASURY = address("4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T");
 const NATIVE_MINT = address("So11111111111111111111111111111111111111112");
 const pk = (a: string) => ({ toBuffer: () => Buffer.from(getAddressEncoder().encode(a as never)), toBase58: () => a });

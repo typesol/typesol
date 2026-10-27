@@ -5,10 +5,22 @@ import * as t22 from "@solana-program/token-2022";
 import { type Address, type KeyPairSigner, address, generateKeyPairSigner, lamports, some } from "@solana/kit";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import {
+  BN,
+  SYSTEM_PROGRAM,
+  TOKEN_PROGRAM,
+  customError,
+  deployFile,
+  expectOk,
+  fundedSigner,
+  ix,
+  pda,
+  send,
+  type Deployed,
+  TOKEN_2022,
+  ATA_PROGRAM,
+} from "./harness.js";
 
-const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
-const ATA_PROGRAM = address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const MPL = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 // Metaplex programs are not redistributed with TypeSOL (Metaplex NFT license): `pnpm fetch:programs` downloads them.

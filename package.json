@@ -25,6 +25,10 @@
       "types": "./dist/cpigen.d.ts",
       "default": "./dist/cpigen.js"
     },
+    "./client": {
+      "types": "./dist/clientgen.d.ts",
+      "default": "./dist/clientgen.js"
+    },
     "./profile": {
       "types": "./dist/profile.d.ts",
       "default": "./dist/profile.js"

@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call: # run by release.yml before publishing, and by macos.yml with another runner
+  workflow_call: # run by macos.yml with another runner
     inputs:
       os:
         description: JSON list of runner labels for the test matrix

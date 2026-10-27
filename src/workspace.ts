@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { writeClient } from "./clientgen.js";
 import { build, COMPILER_VERSION, SBPF_VERSIONS, type BuildResult, type Sbpf } from "./compiler/index.js";
 import { loadOrCreateKeypair } from "./keys.js";
 
@@ -110,11 +111,14 @@ export function buildWorkspace(
   ws: Workspace,
   names = Object.keys(ws.programs),
   opts: { sbpf?: Sbpf; profile?: boolean } = {},
-): { paths: ProgramPaths; address: string; created: boolean; result: BuildResult }[] {
+): { paths: ProgramPaths; address: string; created: boolean; result: BuildResult; clientPath: string }[] {
   return names.map((name) => {
     const paths = programPaths(ws, name);
     const { address, created } = programAddress(ws, name);
-    return { paths, address, created, result: build(paths.entry, paths.outDir, address, { sbpf: opts.sbpf ?? ws.sbpf, profile: opts.profile }) };
+    const result = build(paths.entry, paths.outDir, address, { sbpf: opts.sbpf ?? ws.sbpf, profile: opts.profile });
+    // The TypeScript client (docs/client.md) is written with the build, from the same IDL.
+    const clientPath = writeClient(result.idl, path.join(paths.outDir, `${result.model.name}.client.ts`)).path;
+    return { paths, address, created, result, clientPath };
   });
 }
 

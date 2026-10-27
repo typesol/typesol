@@ -1,37 +1,56 @@
 name: release
-# Publishes to npm when a version tag is pushed (`git tag v0.10.0 && git push origin v0.10.0`).
-# The full CI runs first; publishing waits for approval in the "npm" environment and needs its NPM_TOKEN secret.
+# Publishes a tagged version to npm. Started by hand only (Actions → release → Run workflow): tags and GitHub Releases
+# never publish on their own. It builds and tests the tag, then publishes; publishing needs the "npm" environment's NPM_TOKEN.
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the v (the tag v<version> must exist)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
-
   publish:
-    needs: ci
+    # Self-contained and without caches: it runs on a tag chosen by hand, so nothing it builds may reach a cache that
+    # other workflows read.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: npm
     permissions:
       contents: read
       id-token: write # npm provenance
     steps:
+      - name: Check the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: '[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "not a version: $VERSION"; exit 1; }'
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
           registry-url: https://registry.npmjs.org
+      - name: Install Agave CLI and platform-tools
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          for i in 1 2 3 4; do cargo-build-sbf --install-only --tools-version v1.52 && break; sleep $((i * 15)); done
       - run: pnpm install --frozen-lockfile
       - name: Tag matches package.json
-        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+        env:
+          VERSION: ${{ inputs.version }}
+        run: test "$(node -p 'require("./package.json").version')" = "$VERSION"
       - run: pnpm build
+      - run: pnpm lint
+      - name: Fetch program binaries (public devnet, with retries)
+        run: for i in 1 2 3; do bash scripts/fetch-programs.sh devnet && break; sleep 20; done
+      - run: pnpm test
       - run: npm publish --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
