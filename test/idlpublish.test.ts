@@ -1,87 +1,16 @@
-import { lamports } from "@solana/kit";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-import {
-  type Address,
-  type Blockhash,
-  generateKeyPairSigner,
-  getAddressEncoder,
-  getBase64Encoder,
-  getProgramDerivedAddress,
-  getTransactionDecoder,
-} from "@solana/kit";
+import { generateKeyPairSigner } from "@solana/kit";
 import { LiteSVM } from "litesvm";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { build } from "../src/compiler/index.js";
-import { FailedTransactionMetadata } from "litesvm";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { type Chain, PROGRAM_METADATA_ID, fetchIdl, metadataAddress, publishIdl } from "../src/idlpublish.js";
+import { PROGRAM_METADATA_ID, fetchIdl, metadataAddress, publishIdl } from "../src/idlpublish.js";
 import { deployFile, fundedSigner, acct } from "./harness.js";
-
-/** A Chain over LiteSVM: RPC-shaped account reads, sends through the VM. */
-function svmChain(svm: LiteSVM): Chain {
-  const info = (a: Address) => {
-    const acct = svm.getAccount(a);
-    if (!acct?.exists) return null;
-    return {
-      data: [Buffer.from(acct.data).toString("base64"), "base64"],
-      executable: acct.executable,
-      lamports: acct.lamports,
-      owner: acct.programAddress,
-      space: BigInt(acct.data.length),
-      rentEpoch: 0n,
-    };
-  };
-  return {
-    rpc: {
-      getAccountInfo: (a: Address) => ({ send: async () => ({ context: { slot: 0n }, value: info(a) }) }),
-      getMultipleAccounts: (as: Address[]) => ({ send: async () => ({ context: { slot: 0n }, value: as.map(info) }) }),
-    } as never,
-    minimumBalance: async (space) => svm.minimumBalanceForRentExemption(BigInt(space)),
-    latestBlockhash: async () => ({ blockhash: svm.latestBlockhash() as Blockhash, lastValidBlockHeight: 1_000_000n }),
-    sendAndConfirm: async (wire) => {
-      const tx = getTransactionDecoder().decode(getBase64Encoder().encode(wire));
-      // Writes of one plan run concurrently on the same blockhash: do not expire it between them.
-      const res = svm.sendTransaction(tx as never);
-      if (res instanceof FailedTransactionMetadata) throw new Error(`${String(res.err())}\n${res.meta().logs().join("\n")}`);
-    },
-  };
-}
-
-/** Install `so` as an upgradeable (loader v3) program whose upgrade authority is `authority`. */
-async function upgradeable(svm: LiteSVM, program: Address, so: string, authority: Address) {
-  const LOADER = "BPFLoaderUpgradeab1e11111111111111111111111" as Address;
-  const enc = getAddressEncoder();
-  const [programData] = await getProgramDerivedAddress({ programAddress: LOADER, seeds: [enc.encode(program)] });
-  const elf = readFileSync(so);
-  const pd = Buffer.alloc(45 + elf.length);
-  pd.writeUInt32LE(3, 0);
-  pd[12] = 1;
-  Buffer.from(enc.encode(authority)).copy(pd, 13);
-  elf.copy(pd, 45);
-  const prog = Buffer.alloc(36);
-  prog.writeUInt32LE(2, 0);
-  Buffer.from(enc.encode(programData)).copy(prog, 4);
-  svm.setAccount({
-    address: programData,
-    data: new Uint8Array(pd),
-    executable: false,
-    lamports: lamports(svm.minimumBalanceForRentExemption(BigInt(pd.length))),
-    programAddress: LOADER,
-    space: BigInt(pd.length),
-  });
-  svm.setAccount({
-    address: program,
-    data: new Uint8Array(prog),
-    executable: true,
-    lamports: lamports(svm.minimumBalanceForRentExemption(36n)),
-    programAddress: LOADER,
-    space: 36n,
-  });
-}
+import { svmChain, upgradeable } from "./chain-helpers.js";
 
 describe("on-chain IDL (Program Metadata program)", () => {
   it("writes the canonical IDL when the upgrade authority signs, and refuses anyone else", async () => {

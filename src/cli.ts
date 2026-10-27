@@ -204,7 +204,7 @@ const COMMANDS: Record<string, Command> = {
       const kit = await import("@solana/kit");
       const { publishIdl, rpcChain } = await import("./idlpublish.js");
       const signer = await kit.createKeyPairSignerFromBytes(readKeypair(keyFile));
-      const chain = rpcChain(kit.createSolanaRpc(rpcUrl));
+      const chain = rpcChain(kit.createSolanaRpc(clusterUrl(rpcUrl)));
       for (const name of names(ws, args)) {
         // The IDL only needs the compiled model and the program address: the deployed binary is left alone.
         const { address } = programAddress(ws, name);
@@ -249,39 +249,87 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   verify: {
-    usage: "typesol verify <program.ts | program> <deployed.so> [--sbpf v0|v1|v2]",
+    usage: "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2]",
     help: [
-      "Rebuild and compare with a deployed binary (e.g. from `solana program dump`). Exit 0 on a match, 3 on a mismatch.",
+      "Rebuild and compare with what is deployed. Exit 0 on a match, 3 on a mismatch.",
+      "With a .so (e.g. from `solana program dump`): compare with that file.",
+      "Without one: read the program from the cluster (--url, else the Solana CLI config) at --address, or at the address",
+      "typesol.json records for a project program. Also prints the upgrade authority and compares the IDL published",
+      "on chain (`typesol idl publish`) with the one the source builds; a published IDL that differs is a mismatch.",
       "The SBPF version is read from the deployed binary unless --sbpf is given. Reproducible builds need the same",
       "TypeSOL version and platform-tools as the original (see its <name>.build.json).",
     ].join("\n  "),
-    options: { sbpf: { type: "string" } },
-    run(v, args) {
-      if (args.length !== 2) throw new UsageError("verify takes the program and the deployed .so");
+    options: { sbpf: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" } },
+    async run(v, args) {
+      if (args.length < 1 || args.length > 2) throw new UsageError("verify takes the program and, optionally, the deployed .so");
       const [target, deployedPath] = args;
+      if (deployedPath && (v.address || v.url)) throw new UsageError("give either a deployed .so or --address/--url, not both");
+      if (v.address && !decodeAddress(v.address as string)) throw new UsageError(`--address "${v.address}" is not a base58 Solana address`);
       const ws = findWorkspace(process.cwd());
       const name = ws && (ws.programs[target] ? target : programForEntry(ws, target));
       const entry = ws && name ? programPaths(ws, name).entry : target;
       if (!existsSync(entry)) throw new UsageError(`${entry} does not exist`);
-      if (!existsSync(deployedPath)) throw new UsageError(`${deployedPath} does not exist`);
-      const deployed = readFileSync(deployedPath);
+
+      let deployed: Buffer;
+      let onChain: { address: string; info: import("./onchain.js").Deployed; rpc: import("@solana/kit").Rpc<import("@solana/kit").SolanaRpcApi> } | undefined;
+      if (deployedPath) {
+        if (!existsSync(deployedPath)) throw new UsageError(`${deployedPath} does not exist`);
+        deployed = readFileSync(deployedPath);
+      } else {
+        const address = (v.address as string | undefined) ?? (ws && name ? ws.programs[name].address : undefined);
+        if (!address) throw new UsageError("no program address: pass --address, a deployed .so, or name a project program that has been built");
+        const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
+        if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
+        // Loaded only here: the other commands do not need an RPC client.
+        const kit = await import("@solana/kit");
+        const { fetchDeployed } = await import("./onchain.js");
+        const rpc = kit.createSolanaRpc(clusterUrl(rpcUrl));
+        const info = await fetchDeployed(rpc, address);
+        onChain = { address, info, rpc };
+        deployed = info.elf;
+      }
       // ELF e_flags (offset 0x30) hold the SBPF version: 0 for v0, 1 for v1, 2 for v2.
       const flags = deployed.length > 0x34 && deployed.readUInt32BE(0) === 0x7f454c46 ? deployed.readUInt32LE(0x30) : 0;
       const sbpf = sbpfOf(v) ?? SBPF_VERSIONS[flags] ?? "v0";
       const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-verify-"));
       let res, same;
       try {
-        res = build(entry, dir, "11111111111111111111111111111111", { sbpf });
+        res = build(entry, dir, onChain?.address ?? "11111111111111111111111111111111", { sbpf });
         same = verifyBinary(deployed, readFileSync(res.soPath));
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+      const what =
+        deployedPath ??
+        `${onChain!.address} (${onChain!.info.dataAccount === onChain!.address ? "" : `data ${onChain!.info.dataAccount}, `}loader ${onChain!.info.loader})`;
       log(
         same
           ? `  match     ${res.manifest.binary} (sbpf ${sbpf})`
-          : `  MISMATCH  ${deployedPath} is not what ${entry} builds to (${res.manifest.binary}, sbpf ${sbpf})`,
+          : `  MISMATCH  ${what} is not what ${entry} builds to (${res.manifest.binary}, sbpf ${sbpf})`,
       );
-      return same ? 0 : 3;
+      if (!onChain) return same ? 0 : 3;
+
+      const { info } = onChain;
+      log(`  authority ${info.authority ?? "none: the program is immutable"}${info.slot !== undefined ? `; last deployed in slot ${info.slot}` : ""}`);
+      const { fetchIdl } = await import("./idlpublish.js");
+      const { canonicalJson } = await import("./onchain.js");
+      let published: object | undefined;
+      try {
+        published = await fetchIdl(onChain.rpc, onChain.address as never);
+      } catch {
+        published = undefined;
+      }
+      if (!published) {
+        log("  idl       none published on chain (typesol idl publish)");
+        return same ? 0 : 3;
+      }
+      const idlSame = canonicalJson(published) === canonicalJson(res.idl);
+      log(
+        idlSame
+          ? "  idl       match: the published IDL is the one the source builds"
+          : "  IDL MISMATCH  the published IDL differs from the one the source builds",
+      );
+      return same && idlSame ? 0 : 3;
     },
   },
   profile: {
@@ -353,6 +401,21 @@ function readJson(file: string): unknown {
   } catch (e) {
     throw new Error(`${file}: not valid JSON (${(e as Error).message})`);
   }
+}
+
+/** The Solana CLI's cluster monikers, as `solana --url` accepts them; anything else is used as given. */
+function clusterUrl(url: string): string {
+  const monikers: Record<string, string> = {
+    "mainnet-beta": "https://api.mainnet-beta.solana.com",
+    m: "https://api.mainnet-beta.solana.com",
+    devnet: "https://api.devnet.solana.com",
+    d: "https://api.devnet.solana.com",
+    testnet: "https://api.testnet.solana.com",
+    t: "https://api.testnet.solana.com",
+    localhost: "http://127.0.0.1:8899",
+    l: "http://127.0.0.1:8899",
+  };
+  return monikers[url] ?? url;
 }
 
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
