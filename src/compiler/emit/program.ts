@@ -76,6 +76,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     s.fields.forEach((f) => deps(f.type));
     out.push(`typedef struct __attribute__((packed)) {`);
     for (const f of s.fields) out.push(`  ${storageDecl(f.type, f.name)};`);
+    if (!s.fields.length) out.push(`  uint8_t __empty[0];`); // a marker account (Anchor `pub struct NftAuthority {}`): discriminator only
     out.push(`} TSS_${s.name};`);
     out.push(`_Static_assert(sizeof(TSS_${s.name}) == ${s.size}, "TSS_${s.name} layout");`);
     if (s.vec) out.push(`#define TS_ELEM_${s.name} ${s.vec.elemSize}`);

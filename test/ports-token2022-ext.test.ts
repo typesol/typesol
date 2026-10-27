@@ -1,13 +1,16 @@
 // Ports of the Token-2022 extension examples added in the second batch (see test/ports/README.md).
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as t22 from "@solana-program/token-2022";
-import { address, generateKeyPairSigner, lamports, some } from "@solana/kit";
+import { type Address, address, generateKeyPairSigner, getAddressEncoder, lamports, some } from "@solana/kit";
+import { createHash } from "node:crypto";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
-import { SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
-import { createMint, deployPort, fundAta, tokenBalance } from "./ports-helpers.js";
+import { ATA_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
+import { ataOf, createMint, deployPort, fundAta, tokenBalance } from "./ports-helpers.js";
 
 const MEMO_PROGRAM = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+const SESSION_PROGRAM = address("KeyspM2ssCJbqUhQ4k7sveSiY4WjnYsrXkC8oDbwde5");
+const SYSVAR_RENT = address("SysvarRent111111111111111111111111111111111");
 
 describe("port: tokens/token-2022/cpi-guard", () => {
   it("a CPI transfer fails while the sender's CPI guard is on and works once it is off", async () => {
@@ -265,5 +268,91 @@ describe("port: tokens/token-2022/metadata", () => {
     );
     expect(metadata().updateAuthority).toEqual({ __option: "None" });
     expect(await update({ Symbol: {} }, "", "NOPE")).toBeInstanceOf(FailedTransactionMetadata);
+  });
+});
+
+describe("port: tokens/token-2022/nft-meta-data-pointer", () => {
+  it("mints the NFT, then chops trees as the player or through a session key, updating the NFT's wood", async () => {
+    const d = await deployPort("tokens/token-2022/nft-meta-data-pointer.ts", "H31ofLpWqeAzF2Pg54HSPQGYifJad843tTJg8vCYVoh3");
+    const { svm } = d;
+    const enc = getAddressEncoder();
+    const payer = await fundedSigner(svm);
+    const level = "level1";
+    const [player] = await pda(d.programId, ["player", payer.address]);
+    const [gameData] = await pda(d.programId, [level]);
+    const [nftAuthority] = await pda(d.programId, ["nft_authority"]);
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "init_player", { level_seed: level }, [
+          { address: player, writable: true },
+          { address: gameData, writable: true },
+          { address: payer.address, signer: payer, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    // mint_nft
+    const mint = await generateKeyPairSigner();
+    const ata = await ataOf(payer.address, mint.address, TOKEN_2022);
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "mint_nft", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: TOKEN_2022 },
+          { address: ata, writable: true },
+          { address: mint.address, signer: mint, writable: true },
+          { address: SYSVAR_RENT },
+          { address: ATA_PROGRAM },
+          { address: nftAuthority, writable: true },
+        ]),
+      ]),
+    );
+    expect(tokenBalance(svm, ata)).toBe(1n);
+    const mintState = () => t22.getMintDecoder().decode((svm.getAccount(mint.address) as { data: Uint8Array }).data);
+    const meta = () =>
+      (mintState().extensions as { value: { __kind: string; name?: string; additionalMetadata?: Map<string, string> }[] }).value.find(
+        (e) => e.__kind === "TokenMetadata",
+      )!;
+    expect(mintState().mintAuthority).toEqual({ __option: "None" });
+    expect([meta().name, meta().additionalMetadata!.get("level")]).toEqual(["Beaver", "1"]);
+    // chop_tree
+    const chop = (signer: typeof payer, session: Address | null, counter: number) =>
+      send(svm, signer, [
+        ix(d, "chop_tree", { level_seed: level, counter }, [
+          { address: session ?? d.programId },
+          { address: player, writable: true },
+          { address: gameData, writable: true },
+          { address: signer.address, signer, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: mint.address, writable: true },
+          { address: nftAuthority, writable: true },
+          { address: TOKEN_2022 },
+        ]),
+      ]);
+    expectOk(await chop(payer, null, 1));
+    expect(meta().additionalMetadata!.get("wood")).toBe("1");
+    const stranger = await fundedSigner(svm);
+    expect(customError(await chop(stranger, null, 2))).toBe(6001);
+    // A session key: a SessionToken of the session-keys program for (this program, the session signer, the player).
+    const sessionSigner = await fundedSigner(svm);
+    const token = (await generateKeyPairSigner()).address;
+    const setToken = (signer: Address, validUntil: bigint) => {
+      const data = new Uint8Array(8 + 32 * 3 + 8);
+      data.set(createHash("sha256").update("account:SessionToken").digest().subarray(0, 8), 0);
+      data.set(enc.encode(payer.address), 8);
+      data.set(enc.encode(d.programId), 40);
+      data.set(enc.encode(signer), 72);
+      new DataView(data.buffer).setBigInt64(104, validUntil, true);
+      svm.setAccount({ address: token, data, executable: false, lamports: lamports(10_000_000n), programAddress: SESSION_PROGRAM, space: BigInt(data.length) });
+    };
+    const nowTs = svm.getClock().unixTimestamp;
+    setToken(sessionSigner.address, nowTs + 3600n);
+    expectOk(await chop(sessionSigner, token, 3));
+    expect(meta().additionalMetadata!.get("wood")).toBe("2");
+    setToken(sessionSigner.address, nowTs - 1n); // expired
+    expect(customError(await chop(sessionSigner, token, 4))).toBe(6001);
+    setToken(stranger.address, nowTs + 3600n); // issued to someone else
+    expect(customError(await chop(sessionSigner, token, 5))).toBe(6001);
   });
 });

@@ -12,7 +12,6 @@ Status:
 - **BLOCKED**: needs a construct TypeSOL refuses today. `test/ports-blocked.test.ts` compiles the smallest TypeSOL
   rendering of that construct and expects the refusal; when a probe fails, the construct compiles and the program can
   be ported.
-- **NOT ATTEMPTED**: no known blocker; not ported yet.
 
 | Upstream (`<path>/anchor`) | Port | Status | Reason or blocker |
 | --- | --- | --- | --- |
@@ -28,7 +27,7 @@ Status:
 | `basics/processing-instructions` | `basics/processing-instructions.ts` | PORTED | |
 | `basics/program-derived-addresses` | `basics/program-derived-addresses.ts` | PORTED | |
 | `basics/realloc` | `basics/realloc.ts` | PARTIAL | the keypair account is the PDA `["message", payer]`; `input: String` is a `Vec<u8>` (same bytes); `realloc::payer` lamports are settled explicitly |
-| `basics/repository-layout` | | NOT ATTEMPTED | a Rust module-layout demo with no account state: string arguments matched against in-program lists of structs with `String` fields |
+| `basics/repository-layout` | `basics/repository-layout/{lib,error}.ts`, `instructions/`, `state/` | PARTIAL | the same module layout; the attraction lists are lookups by name (no constant tables of strings); an unknown attraction fails with 6000, not InvalidInstructionData |
 | `basics/transfer-sol` | `basics/transfer-sol.ts` | PORTED | |
 | `compression/cnft-burn` | | BLOCKED | passes the proof (remaining accounts) on to Bubblegum: a CPI account list extended with the remaining accounts |
 | `compression/cnft-vault` | | BLOCKED | same construct as `cnft-burn` (Bubblegum transfers with the proof as remaining accounts) |
@@ -41,15 +40,15 @@ Status:
 | `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | Token Metadata create (creators, collection), master edition and Verify are hand-encoded, and `MintTo` (the mint is created in the instruction); a wrong metadata account fails with 6000, not 3003 |
 | `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PARTIAL | address log lines are two lines |
 | `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PORTED | |
-| `tokens/token-2022/cpi-guard` | | NOT ATTEMPTED | one `TransferChecked` CPI that the client-enabled CPI guard must refuse |
+| `tokens/token-2022/cpi-guard` | `tokens/token-2022/cpi-guard.ts` | PARTIAL | the `init_if_needed` PDA token account is created in the body and `TransferChecked` into it is hand-encoded; `token::mint` fails with 6000, not 2014 |
 | `tokens/token-2022/default-account-state` | `tokens/token-2022/default-account-state.ts` | PARTIAL | DefaultAccountState instructions are hand-encoded (no Token-2022 extension builtins) |
-| `tokens/token-2022/group` | | NOT ATTEMPTED | a GroupPointer mint (hand-encoded extension instruction, as in the ported extension examples) |
-| `tokens/token-2022/immutable-owner` | | NOT ATTEMPTED | a token account with ImmutableOwner (hand-encoded extension instruction) |
-| `tokens/token-2022/interest-bearing` | | NOT ATTEMPTED | InterestBearingConfig initialize and update; its fields would be read by walking the TLV list, as `transfer-hook/hello-world` does |
-| `tokens/token-2022/memo-transfer` | | NOT ATTEMPTED | MemoTransfer enable and disable on a token account (hand-encoded extension instructions) |
-| `tokens/token-2022/metadata` | | NOT ATTEMPTED | Token Metadata interface instructions with variable-length `String` fields, and mint reallocation for them |
+| `tokens/token-2022/group` | `tokens/token-2022/group.ts` | PARTIAL | the PDA mint with GroupPointer is created in the body (GroupPointer Initialize hand-encoded); the extension is read by walking the TLV list and not logged with `{:?}` |
+| `tokens/token-2022/immutable-owner` | `tokens/token-2022/immutable-owner.ts` | PARTIAL | InitializeImmutableOwner is hand-encoded |
+| `tokens/token-2022/interest-bearing` | `tokens/token-2022/interest-bearing.ts` | PARTIAL | InterestBearingMint Initialize / UpdateRate are hand-encoded; a wrong rate authority fails with 6000 where the original panics |
+| `tokens/token-2022/memo-transfer` | `tokens/token-2022/memo-transfer.ts` | PARTIAL | MemoTransfer enable / disable are hand-encoded |
+| `tokens/token-2022/metadata` | `tokens/token-2022/metadata.ts` | PARTIAL | Token Metadata interface calls and MetadataPointer are hand-encoded; `initialize` takes three string arguments (same bytes) and `update_field` a unit enum plus a key (different bytes: no data enums carrying strings); a new Key entry is funded even when the key exists |
 | `tokens/token-2022/mint-close-authority` | `tokens/token-2022/mint-close-authority.ts` | PARTIAL | InitializeMintCloseAuthority and closing a mint are hand-encoded |
-| `tokens/token-2022/nft-meta-data-pointer` | | NOT ATTEMPTED | a larger game example built on MetadataPointer and the Token Metadata interface (see `metadata`) |
+| `tokens/token-2022/nft-meta-data-pointer` | `tokens/token-2022/nft-meta-data-pointer.ts` | PARTIAL | Token Metadata / MetadataPointer / MintTo hand-encoded; session tokens checked by their fields instead of re-deriving their PDA; `player` / `game_data` sized to their fields (Anchor reserves 1000 bytes) |
 | `tokens/token-2022/non-transferable` | `tokens/token-2022/non-transferable.ts` | PARTIAL | InitializeNonTransferableMint is hand-encoded |
 | `tokens/token-2022/permanent-delegate` | `tokens/token-2022/permanent-delegate.ts` | PARTIAL | InitializePermanentDelegate is hand-encoded |
 | `tokens/token-2022/transfer-fee` | | BLOCKED | `harvest` passes every remaining account to HarvestWithheldTokensToMint: a CPI account list extended with the remaining accounts |
