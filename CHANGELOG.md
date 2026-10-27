@@ -5,6 +5,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- Metaplex collections: `createV3`'s `isCollection: true` (CollectionDetails::V1), `createMasterEditionV3(…, maxSupply | null)`,
+  `verifyCollection(…)` (Verify with CollectionV1) and `masterEditionAddress(mint)`. The tokens/nft-operations port now
+  uses them instead of hand-encoded `invoke`s, checked against the real Token Metadata program.
+
 ## 0.16.0 — 2026-10-28
 
 Everyday TypeScript that Anchor developers reach for (`for … of`, `??`, destructuring, `**`, structs returned from

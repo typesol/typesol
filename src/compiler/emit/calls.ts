@@ -356,12 +356,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         );
         return { c: `(&${t})`, type: PUBKEY };
       }
-      case "metadataAddress": {
-        if (args.length !== 1) this.fail(node, "metadataAddress(mint) takes the mint");
+      case "metadataAddress":
+      case "masterEditionAddress": {
+        if (args.length !== 1) this.fail(node, `${builtin}(mint) takes the mint`);
         const m = this.expect(this.expr(args[0], PUBKEY), PUBKEY, args[0]);
         const t = this.tmp("md");
         this.line(`SolPubkey ${t};`);
-        this.line(`TS_TRY(ts_metadata_address(${m.c}, &${t}));`);
+        this.line(`TS_TRY(${builtin === "metadataAddress" ? "ts_metadata_address" : "ts_master_edition_address"}(${m.c}, &${t}));`);
         return { c: `(&${t})`, type: PUBKEY };
       }
       case "initExtraAccountMetas":

@@ -233,7 +233,10 @@ export interface TokenMetadataProgram extends AccountMeta {
     isMutable: boolean,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
-  /** With creators (1–5, shares adding up to 100) and/or an unverified collection mint. */
+  /**
+   * With creators (1–5, shares adding up to 100), an unverified collection mint, and/or `isCollection: true`
+   * (CollectionDetails::V1: this NFT is a sized collection other NFTs are verified into).
+   */
   createV3(
     metadata: AccountMeta,
     mint: AccountMeta,
@@ -246,10 +249,42 @@ export interface TokenMetadataProgram extends AccountMeta {
     uri: string,
     sellerFeeBasisPoints: u16,
     isMutable: boolean,
-    extras: { creators?: MetadataCreator[]; collection?: Pubkey },
+    extras: { creators?: MetadataCreator[]; collection?: Pubkey; isCollection?: boolean },
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /**
+   * CreateMasterEditionV3: makes `mint` (supply 1, decimals 0) a master edition; the mint and freeze authorities move
+   * to the edition. `maxSupply` 0n is a one of one, `null` allows unlimited prints.
+   */
+  createMasterEditionV3(
+    edition: AccountMeta,
+    mint: AccountMeta,
+    updateAuthority: AccountMeta,
+    mintAuthority: AccountMeta,
+    payer: Mut<Signer>,
+    metadata: AccountMeta,
+    tokenProgram: TokenProgram,
+    systemProgram: SystemProgram,
+    maxSupply: u64 | null,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /**
+   * Verify with CollectionV1: marks `metadata`'s collection (set with createV3's `collection`) verified. `authority` is
+   * the collection's update authority; the collection is a master edition created with `isCollection: true`.
+   */
+  verifyCollection(
+    authority: AccountMeta,
+    metadata: AccountMeta,
+    collectionMint: AccountMeta,
+    collectionMetadata: AccountMeta,
+    collectionMasterEdition: AccountMeta,
+    systemProgram: SystemProgram,
+    instructionsSysvar: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
 }
+/** The Metaplex master edition address of a mint (PDA ["metadata", program, mint, "edition"]). */
+export declare function masterEditionAddress(mint: Pubkey): Pubkey;
 /** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
 /** The Metaplex metadata account address of a mint. */
