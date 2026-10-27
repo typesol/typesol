@@ -95,7 +95,7 @@ account written through `.lamports` or `loadAccountMut` is another account of th
   `transfer`, `transferChecked(from, mint, to, authority, amount)` (required by Token-2022 mints with fees/hooks), `mintTo`, `burn`, `closeAccount`,
   `approve(source, delegate, owner, amount)`, `revoke`, `setAuthority(target, current, AuthorityType.MintTokens, next | null)`,
   `freezeAccount` / `thawAccount(account, mint, freezeAuthority)`, `syncNative(account)`, `initializeMint2(mint, decimals, mintAuthority, freezeAuthority | null)`,
-  `initializeAccount3(account, mint, owner)`, and on Token-2022 `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)` (metadata extension)
+  `initializeAccount3(account, mint, owner)`, and on Token-2022 `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)` (metadata extension) and the extension initializers to call between `createAccount` and `initializeMint2` / `initializeAccount3`: `initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)`, `initializeMintCloseAuthority(mint, authority | null)`, `initializeNonTransferableMint(mint)`, `initializePermanentDelegate(mint, delegate)`, `initializeDefaultAccountState(mint, frozen)`, `initializeMetadataPointer` / `initializeGroupPointer` / `initializeGroupMemberPointer` / `initializeTransferHook(mint, authority | null, address | null)`, `initializeInterestBearingMint(mint, rateAuthority | null, rate)`, `initializeImmutableOwner(account)`
 - `account.lamports` read/write on `Mut` accounts, `close(account, destination)` for program accounts
 - `requirePda(account, seeds, bump)`
 

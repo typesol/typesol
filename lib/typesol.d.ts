@@ -629,6 +629,31 @@ interface TokenOps {
   initializeMint2(mint: AccountMeta, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): void;
   /** Initialize a token account created with systemProgram.createAccount (InitializeAccount3). */
   initializeAccount3(account: AccountMeta, mint: AccountMeta, owner: Pubkey): void;
+
+  // Token-2022 extensions, set up on a mint created with room for them, before initializeMint2 (or, for the token
+  // account ones, before initializeAccount3). Token-2022 only: refused at compile time on TokenProgram.
+  /** TransferFeeConfig: `basisPoints` (at most 10000) of each transfer, capped at `maximumFee`. */
+  initializeTransferFeeConfig(mint: AccountMeta, configAuthority: Pubkey | null, withdrawAuthority: Pubkey | null, basisPoints: u16, maximumFee: u64): void;
+  /** MintCloseAuthority: who may close the mint once its supply is 0. */
+  initializeMintCloseAuthority(mint: AccountMeta, closeAuthority: Pubkey | null): void;
+  /** NonTransferable: tokens of this mint cannot be transferred (soul-bound). */
+  initializeNonTransferableMint(mint: AccountMeta): void;
+  /** PermanentDelegate: `delegate` may transfer or burn from any account of this mint. */
+  initializePermanentDelegate(mint: AccountMeta, delegate: Pubkey): void;
+  /** DefaultAccountState: new token accounts start frozen (true) or initialized (false). */
+  initializeDefaultAccountState(mint: AccountMeta, frozen: boolean): void;
+  /** MetadataPointer: where the mint's metadata lives (the mint itself for initializeMetadata). */
+  initializeMetadataPointer(mint: AccountMeta, authority: Pubkey | null, metadataAddress: Pubkey | null): void;
+  /** GroupPointer: where the mint's token-group data lives. */
+  initializeGroupPointer(mint: AccountMeta, authority: Pubkey | null, groupAddress: Pubkey | null): void;
+  /** GroupMemberPointer: where the mint's group-member data lives. */
+  initializeGroupMemberPointer(mint: AccountMeta, authority: Pubkey | null, memberAddress: Pubkey | null): void;
+  /** TransferHook: `programId` is invoked on every transfer of this mint. */
+  initializeTransferHook(mint: AccountMeta, authority: Pubkey | null, programId: Pubkey | null): void;
+  /** InterestBearingConfig: `rate` in basis points per year (UI amounts only; balances do not change). */
+  initializeInterestBearingMint(mint: AccountMeta, rateAuthority: Pubkey | null, rate: i16): void;
+  /** ImmutableOwner on a token account (before initializeAccount3): its owner can never change. */
+  initializeImmutableOwner(account: AccountMeta): void;
 }
 
 /** The SPL Token program (Tokenkeg). Its address is checked. */

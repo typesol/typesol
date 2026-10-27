@@ -6,6 +6,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Token-2022 extension initializers on `Token2022Program` / `TokenInterface` (refused on `TokenProgram`): transfer fee,
+  mint close authority, non-transferable, permanent delegate, default account state, metadata / group / group-member
+  pointers, transfer hook, interest-bearing, immutable owner. Byte layouts checked against the official
+  @solana-program/token-2022 decoder on real mints.
 - `typesol/ts-plugin`: a TypeScript language-service plugin that shows the compiler's own errors in the editor, for
   the unsaved text, once TypeScript has none. `typesol init` projects enable it in `programs/tsconfig.json` (the
   editor must use the workspace's TypeScript). `typesol check` gains `--json` and `--stdin`.
