@@ -380,3 +380,51 @@ describe("port: basics/transfer-sol", () => {
     expect(d.svm.getBalance(programOwned.address)).toBe(SOL);
   });
 });
+
+describe("port: basics/repository-layout", () => {
+  it("runs the carnival's rides, games and food stands with the original messages", async () => {
+    const d = await deployPort("basics/repository-layout/lib.ts", "8t94SEJh9jVjDwV7cbiuT6BvEsHo4YHP9x9a5rYH1NpP");
+    const payer = await fundedSigner(d.svm);
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const r = expectOk(await send(d.svm, payer, [ix(d, name, args, [{ address: payer.address, signer: payer, writable: true }])]));
+      return r
+        .logs()
+        .filter((l) => l.startsWith("Program log: "))
+        .map((l) => l.slice(13));
+    };
+    const ride = (name: string, height: number, ticket_count: number, ride_name: string) => call("go_on_ride", { name, height, ticket_count, ride_name });
+    expect(await ride("Jimmy", 36, 15, "Scrambler")).toEqual([
+      "You're about to ride the Scrambler!",
+      '  Sorry Jimmy, you need to be 48" tall to ride the Scrambler!',
+    ]);
+    expect(await ride("Mary", 52, 1, "Ferris Wheel")).toEqual([
+      "You're about to ride the Ferris Wheel!",
+      "  Sorry Mary, you need 5 tickets to ride the Ferris Wheel!",
+    ]);
+    expect(await ride("Alice", 56, 15, "Scrambler")).toEqual(["You're about to ride the Scrambler!", "  Welcome aboard the Scrambler!"]);
+    expect(await ride("Bob", 61, 6, "Zero Gravity")).toEqual([
+      "You're about to ride the Zero Gravity!",
+      "  Welcome aboard the Zero Gravity!",
+      "  Btw, this ride goes upside down. Hold on tight!",
+    ]);
+    const game = (name: string, ticket_count: number, game_name: string) => call("play_game", { name, ticket_count, game_name });
+    expect(await game("Jimmy", 15, "I Got It!")).toEqual([
+      "You're about to play I Got It!!",
+      "  Let's see what you got!",
+      "  You get 12 attempts and the prize is a goldfish!",
+    ]);
+    expect(await game("Mary", 1, "Ring Toss")).toEqual(["You're about to play Ring Toss!", "  Sorry Mary, you need 3 tickets to play Ring Toss!"]);
+    const food = (name: string, ticket_count: number, food_stand_name: string) => call("eat_food", { name, ticket_count, food_stand_name });
+    expect(await food("Jimmy", 15, "Taco Shack")).toEqual(["Welcome to Taco Shack! What can I get you?", "  Enjoy your taco!"]);
+    expect(await food("Mary", 1, "Larry's Pizza")).toEqual(["Welcome to Larry's Pizza! What can I get you?", "  Sorry Mary, our pizza is 3 tickets!"]);
+    expect(await food("Bob", 6, "Dough Boy's")).toEqual(["Welcome to Dough Boy's! What can I get you?", "  Enjoy your fried dough!"]);
+    // An attraction that is not on the lists fails.
+    expect(
+      customError(
+        await send(d.svm, payer, [
+          ix(d, "go_on_ride", { name: "Zed", height: 70, ticket_count: 9, ride_name: "Loop" }, [{ address: payer.address, signer: payer, writable: true }]),
+        ]),
+      ),
+    ).toBe(6000);
+  });
+});
