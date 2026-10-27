@@ -364,8 +364,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_metadata_address(${m.c}, &${t}));`);
         return { c: `(&${t})`, type: PUBKEY };
       }
-      case "initExtraAccountMetas": {
-        if (args.length !== 4 && args.length !== 5) this.fail(node, "initExtraAccountMetas(payer, account, mint, systemProgram, extraAccounts?)");
+      case "initExtraAccountMetas":
+      case "updateExtraAccountMetas": {
+        if (args.length !== 4 && args.length !== 5) this.fail(node, `${builtin}(payer, account, mint, systemProgram, extraAccounts?)`);
         const payer = this.accountParam(args[0], "the payer");
         if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(args[0], "the payer must be a Mut<Signer>");
         const acct = this.accountParam(args[1], "the extra-account-metas account");
@@ -374,7 +375,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const sys = this.accountParam(args[3], "the system program");
         if (sys.kind.kind !== "system") this.fail(args[3], "pass the SystemProgram parameter");
         const { name: entries, count } = args[4] ? this.extraAccountMetas(args[4]) : { name: "NULL", count: 0 };
-        this.line(`TS_TRY(ts_init_extra_metas(params, a_${payer.name}, a_${acct.name}, &a_${mint.name}->key, ${entries}, ${count}));`);
+        const fn = builtin === "initExtraAccountMetas" ? "ts_init_extra_metas" : "ts_update_extra_metas";
+        this.line(`TS_TRY(${fn}(params, a_${payer.name}, a_${acct.name}, &a_${mint.name}->key, ${entries}, ${count}));`);
         return undefined;
       }
       case "remainingAccounts":

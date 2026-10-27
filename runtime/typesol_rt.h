@@ -1215,3 +1215,32 @@ static inline uint64_t ts_init_extra_metas(TsParams *params, TsAccount *payer, T
   return SUCCESS;
 }
 
+/*
+ * ExtraAccountMetaList::update: rewrite an existing list (this program's PDA ["extra-account-metas", mint], holding the
+ * execute discriminator), resizing it to `n` records. The payer tops it up to the rent of the new size when its
+ * lamports fall short, as the program-examples do before `resize`.
+ */
+static inline uint64_t ts_update_extra_metas(TsParams *params, TsAccount *payer, TsAccount *acct, const SolPubkey *mint, const uint8_t *entries,
+                                             uint32_t n) {
+  SolSignerSeed seeds[2] = {{(const uint8_t *)"extra-account-metas", 19}, {(const uint8_t *)mint, 32}};
+  SolPubkey pda;
+  uint8_t bump;
+  if (sol_try_find_program_address(seeds, 2, params->program_id, &pda, &bump) != SUCCESS || !ts_key_eq(&pda, &acct->key))
+    TS_FAIL(TS_ERR_SEEDS, "TypeSOL: not the mint's extra-account-metas PDA");
+  if (!ts_key_eq(&acct->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: the extra-account-metas account is not this program's");
+  if (acct->data_len < 16 || ts_ld64(acct->data) != ts_ld64(TS_TRANSFER_HOOK_EXECUTE_DISC))
+    TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: not an ExtraAccountMetaList");
+  uint64_t new_len = 16 + 35 * (uint64_t)n;
+  uint64_t rent;
+  TS_TRY(ts_minimum_balance(new_len, &rent));
+  if (rent > acct->lamports) TS_TRY(ts_system_transfer(params, payer, acct, rent - acct->lamports));
+  if (new_len > acct->data_len + MAX_PERMITTED_DATA_INCREASE) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
+  if (new_len > acct->data_len) ts_memzero(acct->data + acct->data_len, new_len - acct->data_len);
+  acct->data_len = new_len;
+  uint32_t len = 4 + 35 * n;
+  ts_memcpy(acct->data + 8, &len, 4);
+  ts_memcpy(acct->data + 12, &n, 4);
+  if (n) ts_memcpy(acct->data + 16, entries, 35 * (uint64_t)n);
+  return SUCCESS;
+}
+

@@ -247,6 +247,17 @@ export declare function initExtraAccountMetas(
   systemProgram: SystemProgram,
   extraAccounts?: ExtraAccountMeta[],
 ): void;
+/**
+ * Rewrite this program's existing ExtraAccountMetaList for `mint` (Rust `ExtraAccountMetaList::update`), resizing it to
+ * the new list; `payer` tops it up to the rent of the new size when needed.
+ */
+export declare function updateExtraAccountMetas(
+  payer: Mut<Signer>,
+  account: AccountMeta,
+  mint: AccountMeta,
+  systemProgram: SystemProgram,
+  extraAccounts?: ExtraAccountMeta[],
+): void;
 export type ExtraAccountMeta =
   | { address: Pubkey; isSigner?: boolean; isWritable?: boolean }
   | { seeds: (string | ExtraAccountSeed)[]; program?: bigint; isSigner?: boolean; isWritable?: boolean };

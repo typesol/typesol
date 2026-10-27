@@ -1,11 +1,12 @@
 // Ports of tokens/token-2022/transfer-hook/* with extra accounts (helpers in hook-helpers.ts).
 import { getTransferSolInstruction } from "@solana-program/system";
 import * as spl from "@solana-program/token";
+import * as t22 from "@solana-program/token-2022";
 import { address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
 import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, TOKEN_PROGRAM, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
-import { ataOf, deployPort, tokenBalance } from "./ports-helpers.js";
+import { ataOf, deployPort, pk, tokenBalance } from "./ports-helpers.js";
 
 const WSOL = address("So11111111111111111111111111111111111111112");
 import { ataFor, hookMint, hookedTransfer, validationAccount } from "./hook-helpers.js";
@@ -222,5 +223,173 @@ describe("port: tokens/token-2022/transfer-hook/transfer-cost", () => {
     expect(r.logs()).toContain("Program log: This token has been transferred 1 times");
     expect(tokenBalance(svm, delegateWsol)).toBe(10n);
     expect(tokenBalance(svm, destination)).toBe(10n);
+  });
+});
+
+describe("port: tokens/token-2022/transfer-hook/allow-block-list-token", () => {
+  it("allows, blocks and thresholds transfers from the mint's metadata and per-wallet entries", async () => {
+    const d = await deployPort("tokens/token-2022/transfer-hook/allow-block-list-token.ts", "3ku1ZEGvBEEfhaYsAzBZuecTPEa58ZRhoVqHVGpGxVGi");
+    const { svm } = d;
+    const payer = await fundedSigner(svm);
+    const [config] = await pda(d.programId, ["config"]);
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "init_config", {}, [{ address: payer.address, signer: payer, writable: true }, { address: config, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    const mintKp = await generateKeyPairSigner();
+    const mint = mintKp.address;
+    const metas = await validationAccount(d.programId, mint);
+    expectOk(
+      await send(svm, payer, [
+        ix(
+          d,
+          "init_mint",
+          {
+            decimals: 2,
+            mint_authority: pk(payer.address),
+            freeze_authority: pk(payer.address),
+            permanent_delegate: pk(payer.address),
+            transfer_hook_authority: pk(payer.address),
+            mode: { Allow: {} },
+            threshold: new BN(0),
+            name: "Listed",
+            symbol: "ABL",
+            uri: "https://example.com/abl.json",
+          },
+          [
+            { address: payer.address, signer: payer, writable: true },
+            { address: mint, signer: mintKp, writable: true },
+            { address: metas, writable: true },
+            { address: SYSTEM_PROGRAM },
+            { address: TOKEN_2022 },
+          ],
+        ),
+      ]),
+    );
+    const meta = () => {
+      const m = t22.getMintDecoder().decode((svm.getAccount(mint) as { data: Uint8Array }).data);
+      return (m.extensions as { value: { __kind: string; additionalMetadata?: Map<string, string> }[] }).value.find((e) => e.__kind === "TokenMetadata")!
+        .additionalMetadata!;
+    };
+    expect([...meta()]).toEqual([["AB", "Allow"]]);
+
+    const sender = await fundedSigner(svm);
+    const source = await ataFor(svm, payer, sender.address, mint, 1_000n);
+    const receiver = (await generateKeyPairSigner()).address;
+    const destination = await ataFor(svm, payer, receiver, mint, 0n);
+    const [senderEntry] = await pda(d.programId, ["ab_wallet", sender.address]);
+    const [receiverEntry] = await pda(d.programId, ["ab_wallet", receiver]);
+    const transfer = async (amount: bigint) =>
+      send(svm, sender, [
+        await hookedTransfer(d.programId, { source, mint, destination, authority: sender, amount }, [{ address: senderEntry }, { address: receiverEntry }]),
+      ]);
+    const wallet = (owner: string, allowed: boolean) =>
+      send(svm, payer, [
+        ix(d, "init_wallet", { args: { allowed } }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: config },
+          { address: owner },
+          { address: owner === sender.address ? senderEntry : receiverEntry, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    const mode = (m: object, threshold: number) =>
+      send(svm, payer, [
+        ix(d, "change_mode", { args: { mode: m, threshold: new BN(threshold) } }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint, writable: true },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+
+    // Allow mode: only listed (allowed) destinations.
+    expect(customError(await transfer(10n))).toBe(6001);
+    expectOk(await wallet(receiver, true));
+    expectOk(await transfer(10n));
+    // A blocked wallet is refused in every mode.
+    expectOk(await wallet(sender.address, false));
+    expect(customError(await transfer(10n))).toBe(6003);
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "remove_wallet", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: config },
+          { address: sender.address },
+          { address: senderEntry, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(svm.getAccount(senderEntry).exists).toBe(false);
+    // Mixed: unlisted destinations may receive less than the threshold.
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "remove_wallet", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: config },
+          { address: receiver },
+          { address: receiverEntry, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expectOk(await mode({ Mixed: {} }, 100));
+    expect([...meta()]).toEqual([
+      ["AB", "Mixed"],
+      ["threshold", "100"],
+    ]);
+    expectOk(await transfer(99n));
+    expect(customError(await transfer(100n))).toBe(6002);
+    // Block mode: unlisted wallets pass; the threshold field is reset to 0.
+    expectOk(await mode({ Block: {} }, 5));
+    expect(meta().get("threshold")).toBe("0");
+    expectOk(await transfer(500n));
+    // Only the config authority manages wallets.
+    const stranger = await fundedSigner(svm);
+    expect(
+      customError(
+        await send(svm, stranger, [
+          ix(d, "init_wallet", { args: { allowed: true } }, [
+            { address: stranger.address, signer: stranger, writable: true },
+            { address: config },
+            { address: receiver },
+            { address: receiverEntry, writable: true },
+            { address: SYSTEM_PROGRAM },
+          ]),
+        ]),
+      ),
+    ).toBe(2001);
+    // resize_meta_list rewrites the list (already the right size).
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "resize_meta_list", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint },
+          { address: metas, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: TOKEN_2022 },
+        ]),
+      ]),
+    );
+    expectOk(await transfer(1n));
+
+    // attach_to_mint: point another hooked mint at this program and write its list.
+    const other = await hookMint(svm, payer, (await generateKeyPairSigner()).address);
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "attach_to_mint", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: other, writable: true },
+          { address: await validationAccount(d.programId, other), writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: TOKEN_2022 },
+        ]),
+      ]),
+    );
+    expect(t22.getMintDecoder().decode((svm.getAccount(other) as { data: Uint8Array }).data).extensions).toMatchObject({
+      value: [{ __kind: "TransferHook", programId: d.programId }],
+    });
   });
 });
