@@ -36,6 +36,8 @@ export interface FixedArray<T, N extends number> {
   get(index: bigint): T;
   set(index: bigint, value: T): void;
   readonly __length?: N;
+  /** `for (const x of arr)`: each element in order, as `arr.get(i)` gives it. */
+  [Symbol.iterator](): Iterator<T>;
 }
 
 /** Create a local fixed-length array filled with `fill`: `const xs = fixedArray<u64, 4>(0n)`. */
@@ -71,6 +73,8 @@ export interface Vec<T> {
   pop(): T;
   /** Remove every element, shrinking the account. */
   clear(): void;
+  /** `for (const x of vec)`: each element in order, as `vec.get(i)` gives it; the length is read again every step. */
+  [Symbol.iterator](): Iterator<T>;
 }
 
 /** One extra account passed after the declared ones. Nothing about it is checked until you check it. */

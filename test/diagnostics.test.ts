@@ -25,7 +25,11 @@ function errorsFor(body: string, name = "prog"): string[] {
 describe("subset enforcement", () => {
   const cases: [string, string, RegExp][] = [
     ["floating-point numbers", `export function f(b: Mut<Box>): void { b.value = 1; }`, /Type 'number' is not assignable|bigint literal/],
-    ["do-while loops", `export function f(b: Mut<Box>): void { do { b.value += 1n; } while (b.value < 3n); }`, /only for \(init; cond; step\) and while/],
+    [
+      "do-while loops",
+      `export function f(b: Mut<Box>): void { do { b.value += 1n; } while (b.value < 3n); }`,
+      /only for \(init; cond; step\), for \(const x of list\) and while/,
+    ],
     ["break outside a loop", `export function f(b: Mut<Box>): void { if (b.value > 0n) { break; } }`, /Jump target|outside a loop/],
     [
       "recursive helpers",
