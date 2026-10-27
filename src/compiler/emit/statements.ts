@@ -70,9 +70,19 @@ export abstract class StatementEmitter extends CpiEmitter {
       return;
     }
     if (returns.kind === "struct") {
-      // Helpers only: write the struct through the caller's out pointer (a literal, a place or another helper's result).
       if (!stmt.expression) this.fail(stmt, `return a ${returns.name}`);
-      this.writeAggregate({ lv: "(*ret)", type: returns, writable: true }, stmt.expression);
+      if (this.helper) {
+        // Write the struct through the caller's out pointer (a literal, a place or another helper's result).
+        this.writeAggregate({ lv: "(*ret)", type: returns, writable: true }, stmt.expression);
+        this.line(`return SUCCESS;`);
+        return;
+      }
+      // Return data: the struct's fixed layout, which the IDL describes field by field.
+      const t = this.tmp("ret");
+      this.line(`TSS_${returns.name} ${t};`);
+      this.writeAggregate({ lv: t, type: returns, writable: true }, stmt.expression);
+      this.line(`sol_set_return_data((const uint8_t *)&${t}, sizeof(${t}));`);
+      for (const l of this.epilogue()) this.line(l);
       this.line(`return SUCCESS;`);
       return;
     }

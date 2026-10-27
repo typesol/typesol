@@ -6,7 +6,7 @@ The full reference. For a tour, start with the [README](../README.md).
 
 | Concept | TypeSOL |
 | --- | --- |
-| Instruction | an exported function returning `void`, or one integer / boolean / `Pubkey` (sent as return data, `returns` in the IDL) |
+| Instruction | an exported function returning `void`, one integer / boolean / `Pubkey`, or a fixed-size struct (sent as return data, at most 1024 bytes; `returns` in the IDL, and the generated client decodes it) |
 | Account data | an exported `interface` with fixed-size fields; interfaces nest (`home: Point`, `trail: FixedArray<Point, 4>`) |
 | Integers | `u8` `u16` `u32` `u64` `u128` `i8` `i16` `i32` `i64` `i128` — bigint literals (`1n`), every `+ - * / %` checked; `& \| ^` on equal types, `~` within the width, `<<` / `>>` checked (amount below the width, `<<` may not lose bits) |
 | Integer helpers | `mulDiv(a, b, c)` / `mulDivCeil` (u64 through a 128-bit product), `isqrt(x)` (up to u128), `min(a, b)`, `max(a, b)` |

@@ -125,6 +125,8 @@ const MAX_ARRAY_LEN = 1_000_000;
 const MAX_STRING_CAP = 10_240;
 /** Solana's account size limit, and what a program can allocate itself through a CPI (Init<T>). */
 export const MAX_ACCOUNT_SIZE = 10 * 1024 * 1024;
+/** sol_set_return_data's limit. */
+export const MAX_RETURN_DATA = 1024;
 export const MAX_CPI_ALLOCATION = 10 * 1024;
 
 export interface Analysis {
@@ -404,6 +406,8 @@ export function analyze(entry: string): Analysis {
     if (!ix) continue;
     instructions.push(ix);
     for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
+    // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
+    if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
     for (const a of ix.accounts)
       if (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded")
         accountStructs.add(a.kind.struct.name);
@@ -843,10 +847,20 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   if (fn.typeParameters?.length) reporter.fail(fn, "instructions cannot be generic");
   if (fn.asteriskToken || (ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))
     reporter.fail(fn, "instructions cannot be async or generators");
-  let returns: ScalarType | undefined;
+  let returns: Instruction["returns"];
   if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword) {
     returns = resolveScalarType(fn.type, scope);
-    if (!returns) reporter.fail(fn.type, "instructions return void or one integer, boolean or Pubkey (sent as return data)");
+    const s =
+      !returns && ts.isTypeReferenceNode(fn.type) && ts.isIdentifier(fn.type.typeName) && !fn.type.typeArguments
+        ? structs.get(fn.type.typeName.text)
+        : undefined;
+    if (s) {
+      if (s.size === undefined || s.vec) reporter.fail(fn.type, `${s.name} has variable-size fields and cannot be return data`);
+      // The runtime caps return data at 1024 bytes.
+      if (s.size > MAX_RETURN_DATA) reporter.fail(fn.type, `${s.name} is ${s.size} bytes; return data holds at most ${MAX_RETURN_DATA}`);
+      returns = { kind: "struct", name: s.name };
+    }
+    if (!returns) reporter.fail(fn.type, "instructions return void, one integer, boolean or Pubkey, or a fixed-size struct (sent as return data)");
   }
 
   const accounts: AccountParam[] = [];

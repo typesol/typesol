@@ -171,7 +171,8 @@ export interface Instruction {
   args: ArgParam[];
   /** Fixed bytes of the arguments; strings add their length on top. */
   minArgsSize: number;
-  returns: ScalarType | undefined;
+  /** Sent as return data: a scalar in Borsh, or a fixed-size struct in its fixed layout (as the IDL describes it). */
+  returns: ScalarType | { kind: "struct"; name: string } | undefined;
   /** account name -> seeds, recorded when the body creates or verifies a PDA with describable seeds. */
   pdas: Map<string, IdlSeed[]>;
   /** account name -> the program its PDA is derived under, when not this program (e.g. associated token accounts). */
