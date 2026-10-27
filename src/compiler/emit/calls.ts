@@ -365,7 +365,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return { c: `(&${t})`, type: PUBKEY };
       }
       case "initExtraAccountMetas": {
-        if (args.length !== 4) this.fail(node, "initExtraAccountMetas(payer, account, mint, systemProgram) takes four accounts");
+        if (args.length !== 4 && args.length !== 5) this.fail(node, "initExtraAccountMetas(payer, account, mint, systemProgram, extraAccounts?)");
         const payer = this.accountParam(args[0], "the payer");
         if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(args[0], "the payer must be a Mut<Signer>");
         const acct = this.accountParam(args[1], "the extra-account-metas account");
@@ -373,7 +373,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const mint = this.accountParam(args[2], "the mint");
         const sys = this.accountParam(args[3], "the system program");
         if (sys.kind.kind !== "system") this.fail(args[3], "pass the SystemProgram parameter");
-        this.line(`TS_TRY(ts_init_extra_metas(params, a_${payer.name}, a_${acct.name}, &a_${mint.name}->key));`);
+        const { name: entries, count } = args[4] ? this.extraAccountMetas(args[4]) : { name: "NULL", count: 0 };
+        this.line(`TS_TRY(ts_init_extra_metas(params, a_${payer.name}, a_${acct.name}, &a_${mint.name}->key, ${entries}, ${count}));`);
         return undefined;
       }
       case "remainingAccounts":
@@ -622,6 +623,78 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`SolPubkey ${out};`);
     this.line(`sol_${fn}(${arr}, ${parts.length}, (uint8_t *)&${out});`);
     return { c: `(&${out})`, type: HASH };
+  }
+
+  /**
+   * The extra accounts of a transfer hook, as ExtraAccountMeta records (35 bytes each): `{ address, isSigner?, isWritable? }`
+   * for a fixed address, `{ seeds: [...], program?, isSigner?, isWritable? }` for a PDA of this program (or, with
+   * `program: index`, of the program at that account index). Seeds: string literals, seedAccountKey(i),
+   * seedAccountData(i, offset, length), seedInstructionData(offset, length); packed into 32 bytes.
+   */
+  protected extraAccountMetas(node: ts.Expression): { name: string; count: number } {
+    if (!ts.isArrayLiteralExpression(node)) this.fail(node, "the extra accounts must be an array literal of { address } / { seeds } objects");
+    const bytes: number[] = [];
+    const fixups: { offset: number; c: string }[] = [];
+    const small = (e: ts.Expression, what: string, max = 255): number => {
+      if (!ts.isBigIntLiteral(e)) this.fail(e, `${what} must be a bigint literal`);
+      const v = Number(BigInt(e.text.replace(/n$/, "")));
+      if (v < 0 || v > max) this.fail(e, `${what} must be 0..${max}`);
+      return v;
+    };
+    for (const el of node.elements) {
+      if (!ts.isObjectLiteralExpression(el)) this.fail(el, "each extra account is { address, … } or { seeds: [...], … }");
+      const props = new Map<string, ts.Expression>();
+      for (const p of el.properties) {
+        if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) this.fail(p, "use plain properties: address, seeds, program, isSigner, isWritable");
+        if (!["address", "seeds", "program", "isSigner", "isWritable"].includes(p.name.text)) this.fail(p.name, `unknown property "${p.name.text}"`);
+        props.set(p.name.text, p.initializer);
+      }
+      const flag = (k: string) => {
+        const v = props.get(k);
+        if (!v) return 0;
+        if (v.kind === ts.SyntaxKind.TrueKeyword) return 1;
+        if (v.kind === ts.SyntaxKind.FalseKeyword) return 0;
+        this.fail(v, `${k} must be true or false`);
+      };
+      const start = bytes.length;
+      const address = props.get("address");
+      const seeds = props.get("seeds");
+      if (!!address === !!seeds) this.fail(el, "give either address or seeds");
+      if (address) {
+        if (props.has("program")) this.fail(props.get("program")!, "program goes with seeds, not with address");
+        const v = this.expect(this.expr(address, PUBKEY), PUBKEY, address);
+        bytes.push(0, ...new Array(32).fill(0));
+        fixups.push({ offset: start + 1, c: v.c });
+      } else {
+        if (!ts.isArrayLiteralExpression(seeds!)) this.fail(seeds!, "seeds must be an array literal");
+        const packed: number[] = [];
+        for (const s of seeds.elements) {
+          if (ts.isStringLiteral(s)) {
+            const b = [...Buffer.from(s.text, "utf8")];
+            if (b.length > 32) this.fail(s, "a literal seed can be at most 32 bytes");
+            packed.push(1, b.length, ...b);
+            continue;
+          }
+          const fn = ts.isCallExpression(s) ? this.exportName(s.expression) : undefined;
+          const a = ts.isCallExpression(s) ? s.arguments : ([] as unknown as ts.NodeArray<ts.Expression>);
+          if (fn === "seedInstructionData" && a.length === 2) packed.push(2, small(a[0]!, "the data index"), small(a[1]!, "the length"));
+          else if (fn === "seedAccountKey" && a.length === 1) packed.push(3, small(a[0]!, "the account index"));
+          else if (fn === "seedAccountData" && a.length === 3)
+            packed.push(4, small(a[0]!, "the account index"), small(a[1]!, "the data index"), small(a[2]!, "the length"));
+          else this.fail(s, "a seed is a string literal, seedAccountKey(i), seedAccountData(i, offset, length) or seedInstructionData(offset, length)");
+        }
+        if (packed.length > 32) this.fail(seeds!, `the packed seeds take ${packed.length} bytes; at most 32 fit`);
+        const program = props.get("program");
+        bytes.push(program ? 128 + small(program, "program (an account index)", 127) : 1, ...packed, ...new Array(32 - packed.length).fill(0));
+      }
+      bytes.push(flag("isSigner")!, flag("isWritable")!);
+    }
+    const count = node.elements.length;
+    if (!count) return { name: "NULL", count: 0 };
+    const name = this.tmp("extra_metas");
+    this.line(`${fixups.length ? "" : "static const "}uint8_t ${name}[${bytes.length}] = ${cBytes(bytes)};`);
+    for (const f of fixups) this.line(`ts_memcpy(${name} + ${f.offset}, ${f.c}, 32);`);
+    return { name, count };
   }
 
   /** `remainingAccounts()` or a const bound to it. */

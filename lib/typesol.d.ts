@@ -229,11 +229,36 @@ export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubk
 export declare function metadataAddress(mint: Pubkey): Pubkey;
 
 /**
- * Create the transfer-hook validation account (an empty ExtraAccountMetaList) at PDA ["extra-account-metas", mint].
- * Pair it with instructions tagged `@discriminator spl-transfer-hook-interface:execute` and
+ * Create the transfer-hook validation account (an ExtraAccountMetaList) at PDA ["extra-account-metas", mint], listing
+ * the extra accounts Token-2022 passes to the hook after the standard four and this account (so the first extra account
+ * has index 5). Pair it with instructions tagged `@discriminator spl-transfer-hook-interface:execute` and
  * `@discriminator spl-transfer-hook-interface:initialize-extra-account-metas`.
+ *
+ * Each extra account (a literal list; Rust `ExtraAccountMeta::new_with_pubkey` / `new_with_seeds` /
+ * `new_external_pda_with_seeds`):
+ *  - `{ address: WSOL_MINT, isSigner: false, isWritable: false }`: a fixed address;
+ *  - `{ seeds: ["counter", seedAccountKey(3n)], isWritable: true }`: a PDA of this program;
+ *  - `{ seeds: [...], program: 6n }`: a PDA of the program at account index 6.
  */
-export declare function initExtraAccountMetas(payer: Mut<Signer>, account: AccountMeta, mint: AccountMeta, systemProgram: SystemProgram): void;
+export declare function initExtraAccountMetas(
+  payer: Mut<Signer>,
+  account: AccountMeta,
+  mint: AccountMeta,
+  systemProgram: SystemProgram,
+  extraAccounts?: ExtraAccountMeta[],
+): void;
+export type ExtraAccountMeta =
+  | { address: Pubkey; isSigner?: boolean; isWritable?: boolean }
+  | { seeds: (string | ExtraAccountSeed)[]; program?: bigint; isSigner?: boolean; isWritable?: boolean };
+export interface ExtraAccountSeed {
+  readonly __extraSeed: void;
+}
+/** Seed::AccountKey: the key of the account at this index of the execute instruction. */
+export declare function seedAccountKey(index: bigint): ExtraAccountSeed;
+/** Seed::AccountData: `length` bytes at `offset` of the data of the account at `index`. */
+export declare function seedAccountData(index: bigint, offset: bigint, length: bigint): ExtraAccountSeed;
+/** Seed::InstructionData: `length` bytes at `offset` of the execute instruction's data. */
+export declare function seedInstructionData(offset: bigint, length: bigint): ExtraAccountSeed;
 
 /** Fields every account parameter exposes. */
 export interface AccountMeta {

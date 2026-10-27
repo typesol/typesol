@@ -1197,13 +1197,21 @@ static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *progr
  * ["extra-account-metas", mint]: TLV = execute discriminator | u32 length 4 | u32 count 0.
  */
 static const uint8_t TS_TRANSFER_HOOK_EXECUTE_DISC[8] = {105, 37, 101, 197, 75, 251, 102, 26};
-static inline uint64_t ts_init_extra_metas(TsParams *params, TsAccount *payer, TsAccount *acct, const SolPubkey *mint) {
+/*
+ * The ExtraAccountMetaList (spl-tlv-account-resolution) at PDA ["extra-account-metas", mint]: the execute
+ * discriminator, a u32 length, then a PodSlice of `n` 35-byte ExtraAccountMeta records (discriminator, 32-byte address
+ * or packed seeds, is_signer, is_writable), which the compiler encodes into `entries`.
+ */
+static inline uint64_t ts_init_extra_metas(TsParams *params, TsAccount *payer, TsAccount *acct, const SolPubkey *mint, const uint8_t *entries,
+                                           uint32_t n) {
   SolSignerSeed seeds[3] = {{(const uint8_t *)"extra-account-metas", 19}, {(const uint8_t *)mint, 32}};
   uint8_t bump;
-  /* 16 bytes in total: the 8-byte discriminator slot holds the execute discriminator. */
-  TS_TRY(ts_create_pda(params, payer, acct, seeds, 2, TS_TRANSFER_HOOK_EXECUTE_DISC, 16, &bump));
-  uint32_t len = 4;
+  uint64_t space = 16 + 35 * (uint64_t)n;
+  TS_TRY(ts_create_pda(params, payer, acct, seeds, 2, TS_TRANSFER_HOOK_EXECUTE_DISC, space, &bump));
+  uint32_t len = 4 + 35 * n;
   ts_memcpy(acct->data + 8, &len, 4);
+  ts_memcpy(acct->data + 12, &n, 4);
+  if (n) ts_memcpy(acct->data + 16, entries, 35 * (uint64_t)n);
   return SUCCESS;
 }
 
