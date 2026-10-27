@@ -5,6 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.13.0 — 2026-10-27
+
+Every program in solana-developers/program-examples now ports to TypeSOL: PDA seeds from account fields, remaining
+accounts passed on in CPIs, transfer hooks with extra accounts, `findProgramAddress` and marker accounts. Not externally
+audited (see SECURITY.md).
+
 ### Added
 - Transfer hooks with extra accounts: `initExtraAccountMetas(payer, account, mint, systemProgram, extraAccounts)` writes
   an ExtraAccountMetaList (fixed addresses, PDAs of this program or of another program's account index, with literal,
