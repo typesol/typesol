@@ -5,6 +5,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.15.0 — 2026-10-27
+
+Project templates for `typesol init`, a mainnet deployment guide, and clearer `typesol idl publish` failures. No
+language, IDL or error-code changes. Not externally audited (see SECURITY.md).
+
 ### Added
 - `typesol init --template counter|vault|escrow`: start from a PDA counter (the default, as before), a SOL vault or an
   SPL token escrow. Each template is the matching `examples/` program with a LiteSVM test of its main flow and of a
