@@ -191,3 +191,79 @@ describe("port: tokens/token-2022/interest-bearing", () => {
     expect(config()[3]).toBe(100);
   });
 });
+
+describe("port: tokens/token-2022/metadata", () => {
+  it("creates a mint with on-mint metadata, updates, removes and emits it, and drops the update authority", async () => {
+    const d = await deployPort("tokens/token-2022/metadata.ts", "HZcin721jw6Uc14yybjYqXRPw4w2GzmXCBYnMddYueyU");
+    const { svm } = d;
+    const payer = await fundedSigner(svm);
+    const mint = await generateKeyPairSigner();
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "initialize", { name: "TypeSOL", symbol: "TS", uri: "https://typesol.com/meta.json" }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint.address, signer: mint, writable: true },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    const metadata = () => {
+      const m = t22.getMintDecoder().decode((svm.getAccount(mint.address) as { data: Uint8Array }).data);
+      const ext = (m.extensions as { value: { __kind: string }[] }).value;
+      return ext.find((e) => e.__kind === "TokenMetadata") as unknown as {
+        updateAuthority: unknown;
+        name: string;
+        symbol: string;
+        uri: string;
+        additionalMetadata: Map<string, string>;
+      };
+    };
+    expect(metadata()).toMatchObject({ updateAuthority: some(payer.address), name: "TypeSOL", symbol: "TS", uri: "https://typesol.com/meta.json" });
+    const update = (field: object, key: string, value: string) =>
+      send(svm, payer, [
+        ix(d, "update_field", { field, key, value }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint.address, writable: true },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    expectOk(await update({ Name: {} }, "", "TypeSOL Token, renamed"));
+    expect(metadata().name).toBe("TypeSOL Token, renamed");
+    expectOk(await update({ Key: {} }, "color", "red"));
+    expect(metadata().additionalMetadata.get("color")).toBe("red");
+    const lamports = svm.getBalance(mint.address)!;
+    expect(lamports).toBeGreaterThanOrEqual(
+      svm.minimumBalanceForRentExemption(BigInt(svm.getAccount(mint.address).exists ? (svm.getAccount(mint.address) as { data: Uint8Array }).data.length : 0)),
+    );
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "remove_key", { key: "color" }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint.address, writable: true },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(metadata().additionalMetadata.has("color")).toBe(false);
+    // emit: the token program returns the Borsh TokenMetadata as return data.
+    const emitted = expectOk(await send(svm, payer, [ix(d, "emit", {}, [{ address: mint.address }, { address: TOKEN_2022 }])]));
+    expect(Buffer.from(emitted.returnData().data()).includes(Buffer.from("TypeSOL Token, renamed"))).toBe(true);
+    // update_authority with no new authority: the metadata can no longer be changed.
+    expectOk(
+      await send(svm, payer, [
+        ix(d, "update_authority", {}, [
+          { address: payer.address, signer: payer },
+          { address: d.programId },
+          { address: mint.address, writable: true },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(metadata().updateAuthority).toEqual({ __option: "None" });
+    expect(await update({ Symbol: {} }, "", "NOPE")).toBeInstanceOf(FailedTransactionMetadata);
+  });
+});
