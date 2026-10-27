@@ -6,6 +6,8 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `a ?? b` on Options of integers, booleans and Pubkeys (b is evaluated only when a is empty; the result is an
+  Option when b can be null), and `x!` on an Option (its value; an empty one aborts with 5108).
 - `for (const x of list)` over a `Vec` (account field or argument) or a `FixedArray`: each `x` is what `list.get(i)`
   gives (a value, or a reference into account data for structs, with the same aliasing checks), the length is read
   again before every step as in JS, and `break` / `continue` work. Remaining accounts are still iterated by index.
