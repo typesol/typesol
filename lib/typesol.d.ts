@@ -92,8 +92,12 @@ export interface RemainingAccount {
 export interface RemainingAccounts extends Iterable<CpiAccount> {
   readonly length: u64;
   get(index: bigint): RemainingAccount;
-  /** Indexes start..end (end: all) of them, to spread into a CPI: `...readonly(rest.slice(0n, proofLength))`. */
-  slice(start: bigint, end?: bigint): RemainingAccounts;
+  /** Indexes start..end (end: all) of them, only to spread into a CPI: `...readonly(rest.slice(0n, proofLength))`. */
+  slice(start: bigint, end?: bigint): RemainingSlice;
+}
+/** Part of the remaining accounts (`rest.slice(a, b)`): spread it into a CPI's account list, directly or via readonly/writable. */
+export interface RemainingSlice extends Iterable<CpiAccount> {
+  readonly __remainingSlice: void;
 }
 export declare function remainingAccounts(): RemainingAccounts;
 
@@ -225,11 +229,47 @@ export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubk
 export declare function metadataAddress(mint: Pubkey): Pubkey;
 
 /**
- * Create the transfer-hook validation account (an empty ExtraAccountMetaList) at PDA ["extra-account-metas", mint].
- * Pair it with instructions tagged `@discriminator spl-transfer-hook-interface:execute` and
+ * Create the transfer-hook validation account (an ExtraAccountMetaList) at PDA ["extra-account-metas", mint], listing
+ * the extra accounts Token-2022 passes to the hook after the standard four and this account (so the first extra account
+ * has index 5). Pair it with instructions tagged `@discriminator spl-transfer-hook-interface:execute` and
  * `@discriminator spl-transfer-hook-interface:initialize-extra-account-metas`.
+ *
+ * Each extra account (a literal list; Rust `ExtraAccountMeta::new_with_pubkey` / `new_with_seeds` /
+ * `new_external_pda_with_seeds`):
+ *  - `{ address: WSOL_MINT, isSigner: false, isWritable: false }`: a fixed address;
+ *  - `{ seeds: ["counter", seedAccountKey(3n)], isWritable: true }`: a PDA of this program;
+ *  - `{ seeds: [...], program: 6n }`: a PDA of the program at account index 6.
  */
-export declare function initExtraAccountMetas(payer: Mut<Signer>, account: AccountMeta, mint: AccountMeta, systemProgram: SystemProgram): void;
+export declare function initExtraAccountMetas(
+  payer: Mut<Signer>,
+  account: AccountMeta,
+  mint: AccountMeta,
+  systemProgram: SystemProgram,
+  extraAccounts?: ExtraAccountMeta[],
+): void;
+/**
+ * Rewrite this program's existing ExtraAccountMetaList for `mint` (Rust `ExtraAccountMetaList::update`), resizing it to
+ * the new list; `payer` tops it up to the rent of the new size when needed.
+ */
+export declare function updateExtraAccountMetas(
+  payer: Mut<Signer>,
+  account: AccountMeta,
+  mint: AccountMeta,
+  systemProgram: SystemProgram,
+  extraAccounts?: ExtraAccountMeta[],
+): void;
+export type ExtraAccountMeta =
+  | { address: Pubkey; isSigner?: boolean; isWritable?: boolean }
+  | { seeds: (string | ExtraAccountSeed)[]; program?: bigint; isSigner?: boolean; isWritable?: boolean };
+export interface ExtraAccountSeed {
+  readonly __extraSeed: void;
+}
+/** Seed::AccountKey: the key of the account at this index of the execute instruction. */
+export declare function seedAccountKey(index: bigint): ExtraAccountSeed;
+/** Seed::AccountData: `length` bytes at `offset` of the data of the account at `index`. */
+export declare function seedAccountData(index: bigint, offset: bigint, length: bigint): ExtraAccountSeed;
+/** Seed::InstructionData: `length` bytes at `offset` of the execute instruction's data. */
+export declare function seedInstructionData(offset: bigint, length: bigint): ExtraAccountSeed;
 
 /** Fields every account parameter exposes. */
 export interface AccountMeta {
@@ -315,7 +355,8 @@ export type Account<T> = Readonly<T> & AccountMeta;
 /** Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. */
 export type Mut<T> = T & AccountMeta;
 
-export type Seed = string | Pubkey | bigint;
+/** A PDA seed: a string, a Pubkey, an integer (at its width) or a unit enum value (one byte). */
+export type Seed = string | Pubkey | bigint | number;
 
 /**
  * The seeds (with the bump) of one PDA signature, for helpers that sign CPIs: declare a `seeds: SignerSeeds`
@@ -619,9 +660,9 @@ export interface CpiAccount {
   readonly __cpi_account: void;
 }
 export declare function readonly(account: AccountMeta | RemainingAccount): CpiAccount;
-export declare function readonly(accounts: RemainingAccounts): Iterable<CpiAccount>;
+export declare function readonly(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
 export declare function writable(account: AccountMeta | RemainingAccount): CpiAccount;
-export declare function writable(accounts: RemainingAccounts): Iterable<CpiAccount>;
+export declare function writable(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;
 

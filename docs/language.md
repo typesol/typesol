@@ -102,8 +102,14 @@ account written through `.lamports` or `loadAccountMut` is another account of th
 
 `/** @discriminator spl-transfer-hook-interface:execute */` above an instruction replaces its Anchor discriminator with
 sha256(preimage)[..8] (or `@discriminator 0x…` for raw bytes), so a TypeSOL program can be a Token-2022 transfer hook:
-`execute(source, mint, destination, owner, extraMetas, amount)` plus `initExtraAccountMetas(payer, account, mint, systemProgram)`
-for the validation account. See `test/fixtures/hook.ts`.
+`execute(source, mint, destination, owner, extraMetas, ...extraAccounts, amount)` plus
+`initExtraAccountMetas(payer, account, mint, systemProgram, extraAccounts?)` for the validation account (an
+ExtraAccountMetaList). Extra accounts are listed as `{ address, isSigner?, isWritable? }` (a fixed address) or
+`{ seeds: [...], program?, isSigner?, isWritable? }` (a PDA of this program, or with `program: i` of the program at account
+index i), with seeds from string literals, `seedAccountKey(i)`, `seedAccountData(i, offset, length)` and
+`seedInstructionData(offset, length)`; Token-2022 resolves and checks them on every transfer. The first extra account has
+index 5. `updateExtraAccountMetas(...)` rewrites and resizes an existing list. See `test/fixtures/hook.ts` and the
+transfer-hook ports.
 
 ## Calling other programs
 
@@ -140,7 +146,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
 inside a helper, data-enum arguments carrying strings/structs, Pubkeys in templates, `?.` / `!` / `**`, `switch` on
-128-bit integers, `mulDiv` beyond u64, transfer hooks with extra accounts, Token Metadata creators/collections, Core plugins, Bubblegum v2 / collections /
+128-bit integers, `mulDiv` beyond u64, Token Metadata creators/collections, Core plugins, Bubblegum v2 / collections /
 transfers, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.
 

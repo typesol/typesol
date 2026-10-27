@@ -189,7 +189,7 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | **CPIs** | System, SPL Token, Token-2022 (including extension reads and metadata), ATA, Metaplex Token Metadata, Core, Bubblegum. Generic `invoke` with PDA signing, return data, and typed bindings generated from any Anchor IDL (`typesol cpi`) |
 | **Events** | `emit` (log-based) and `emitCpi` (Anchor `emit_cpi!`, through a self-CPI) |
 | **Crypto & oracles** | `sha256`, `keccak256`, Merkle proofs, Ed25519 and secp256k1 signature checks, Pyth pull oracle, Switchboard |
-| **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook |
+| **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook, with extra accounts (ExtraAccountMetaList) |
 
 The full reference, with every type, check and built-in, is in [docs/language.md](docs/language.md).
 
@@ -275,7 +275,7 @@ Details are in [docs/testing.md](docs/testing.md).
 
 ## Status
 
-**TypeSOL is pre-1.0 (0.12).** Releases follow the organization's
+**TypeSOL is pre-1.0 (0.13).** Releases follow the organization's
 [versioning policy](https://github.com/typesol/.github/blob/main/VERSIONING.md); [CHANGELOG.md](CHANGELOG.md) lists every
 change.
 - The compiler, runtime and tooling have been through internal security reviews and are covered by the tests above.

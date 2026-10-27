@@ -905,8 +905,8 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
     const c = a.constraints;
     if (a.kind.kind === "token" && a.kind.init && !c.ata)
       reporter.fail(a.node, 'Init<TokenAccount> / InitIfNeeded<TokenAccount> create associated token accounts: wrap them in Ata<…, "owner", "mint">');
-    if (a.kind.kind === "token" && a.kind.init && (c.hasOne.length || c.seeds || c.address))
-      reporter.fail(a.node, "an associated token account created here is checked against Ata<…>'s owner and mint; drop HasOne/Seeds/Address");
+    if (a.kind.kind === "token" && a.kind.init && (c.hasOne.length || c.seeds || c.address || c.owner || c.executable))
+      reporter.fail(a.node, "an associated token account created here is checked against Ata<…>'s owner and mint; drop HasOne/Seeds/Address/Owner/Executable");
     if (!c.hasOne.length && !c.seeds && !c.closeTo && !c.ata) continue;
     const struct =
       a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || a.kind.kind === "zeroed" ? a.kind.struct : undefined;

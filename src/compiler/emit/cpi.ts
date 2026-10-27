@@ -87,7 +87,12 @@ export abstract class CpiEmitter extends CallEmitter {
         const t = this.tmp("seed");
         this.line(`${info.c} ${t} = ${typed.c};`);
         parts.push(`{(const uint8_t *)&${t}, ${info.bytes}}`);
-      } else this.fail(el, "seeds can be strings, Pubkeys or integers");
+      } else if (v.type.kind === "enum") {
+        // A unit enum value is its variant index, one byte (as in Seeds<…> and Borsh).
+        const t = this.tmp("seed");
+        this.line(`uint8_t ${t} = (uint8_t)(${v.c});`);
+        parts.push(`{(const uint8_t *)&${t}, 1}`);
+      } else this.fail(el, "seeds can be strings, Pubkeys, integers or unit enum values");
     }
     const name = this.tmp("seeds");
     const slots = parts.length + extra;
@@ -183,6 +188,7 @@ export abstract class CpiEmitter extends CallEmitter {
     const need = (kind: string, what: string) => {
       const p = this.ix!.accounts.find((o) => o.kind.kind === kind);
       if (!p) this.fail(node, `${call}(...) needs ${what} parameter`);
+      if (p.optional) this.fail(p.node, `${call}(...) needs "${p.name}": it cannot be optional`);
       return p;
     };
     const ataProgram = need("ataProgram", "an AssociatedTokenProgram");

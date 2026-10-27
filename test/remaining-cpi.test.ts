@@ -87,5 +87,22 @@ export function f(payer: Signer, callee: UncheckedProgram): void {
       message = e.diagnostics.map((x) => x.message).join("\\n");
     }
     expect(message).not.toBe("");
+    // A slice outside a spread: a type error (RemainingSlice has no get), and a clear message from the compiler.
+    writeFileSync(
+      f,
+      `import { type Signer, invoke, readonlySigner, remainingAccounts, sighash, type UncheckedProgram } from "typesol";
+export function f(payer: Signer, callee: UncheckedProgram): void {
+  const part = remainingAccounts().slice(1n);
+  invoke(callee, [readonlySigner(payer), ...part], [sighash("count")]);
+}`,
+    );
+    let sliceMessage = "";
+    try {
+      generate(f);
+    } catch (e) {
+      if (!(e instanceof CompileError)) throw e;
+      sliceMessage = e.diagnostics.map((x) => x.message).join("\n");
+    }
+    expect(sliceMessage).toMatch(/only for spreading into a CPI/);
   });
 });

@@ -148,7 +148,7 @@ for (const [label, program] of [
 
 describe("Ata<Init|InitIfNeeded<TokenAccount>> diagnostics", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-ata-"));
-  const HEAD = `import { type AccountInfo, type AssociatedTokenProgram, type Ata, type Init, type InitIfNeeded, type Mut, type Mint, type Signer, type SystemProgram, type TokenAccount, type TokenProgram, type u64 } from "typesol";\n`;
+  const HEAD = `import { type AccountInfo, type AssociatedTokenProgram, type Ata, type Init, type InitIfNeeded, type Mut, type Mint, type Owner, type Signer, type SystemProgram, type TokenAccount, type TokenProgram, type u64 } from "typesol";\n`;
   const errorsFor = (body: string) => {
     const f = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
     writeFileSync(f, HEAD + body);
@@ -172,6 +172,17 @@ describe("Ata<Init|InitIfNeeded<TokenAccount>> diagnostics", () => {
         `export function f(payer: Mut<Signer>, owner: AccountInfo, mint: Mint, tokenProgram: TokenProgram, a: Ata<Init<TokenAccount>, "owner", "mint">): void { a.create(payer); }`,
       ),
     ).toMatch(/needs an AssociatedTokenProgram/);
+    // The programs the CPI needs cannot be optional, and Owner<…> cannot hold on an account that does not exist yet.
+    expect(
+      errorsFor(
+        `export function f(payer: Mut<Signer>, owner: AccountInfo, mint: Mint, tokenProgram: TokenProgram | null, associatedTokenProgram: AssociatedTokenProgram, systemProgram: SystemProgram, a: Ata<Init<TokenAccount>, "owner", "mint">): void { a.create(payer); }`,
+      ),
+    ).toMatch(/cannot be optional/);
+    expect(
+      errorsFor(
+        `export function f(${params}, a: Owner<Ata<Init<TokenAccount>, "owner", "mint">, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">): void { a.create(payer); }`,
+      ),
+    ).toMatch(/drop HasOne\/Seeds\/Address\/Owner\/Executable/);
     expect(errorsFor(`export function f(${params}, a: Ata<Init<TokenAccount>, "owner", "mint">, go: boolean): void { if (go) { a.create(payer); } }`)).toMatch(
       /top-level statement/,
     );
