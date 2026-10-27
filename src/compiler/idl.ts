@@ -143,6 +143,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         },
       })),
       ...[...model.enums.values()].map((e) => ({ name: e.name, type: { kind: "enum", variants: e.variants.map((v) => ({ name: v })) } })),
+      // A variable enum (it holds strings) only exists in Borsh: no fixed account-data form to describe.
       ...[...model.dataEnums.values()].flatMap((e) => [
         {
           name: e.name,
@@ -154,19 +155,23 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
             ),
           },
         },
-        {
-          name: fixedEnumName(e.name),
-          docs: [
-            `TypeSOL ${e.name} in account data: \`tag\` is the variant index, \`payload\` the variant's fields (Borsh layout) padded to the largest variant.`,
-          ],
-          type: {
-            kind: "struct",
-            fields: [
-              { name: "tag", type: "u8" },
-              { name: "payload", type: { array: ["u8", e.payload] } },
-            ],
-          },
-        },
+        ...(e.variable
+          ? []
+          : [
+              {
+                name: fixedEnumName(e.name),
+                docs: [
+                  `TypeSOL ${e.name} in account data: \`tag\` is the variant index, \`payload\` the variant's fields (Borsh layout) padded to the largest variant.`,
+                ],
+                type: {
+                  kind: "struct",
+                  fields: [
+                    { name: "tag", type: "u8" },
+                    { name: "payload", type: { array: ["u8", e.payload] } },
+                  ],
+                },
+              },
+            ]),
       ]),
       ...[...model.options.values()].map((inner) => ({
         name: fixedOptionName(inner),

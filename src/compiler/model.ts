@@ -215,6 +215,11 @@ export interface DataEnumDef {
   variants: { name: string; fields: StructField[]; size: number }[];
   /** Largest variant size: the fixed payload in account data. */
   payload: number;
+  /**
+   * A variant holds a `string` (directly or in a nested enum): such an enum is Borsh in instruction arguments and
+   * events and a local value otherwise, never account data or part of a fixed layout. Its C payload holds TS_Str views.
+   */
+  variable?: boolean;
   node: ts.TypeAliasDeclaration;
 }
 

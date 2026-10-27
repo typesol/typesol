@@ -1038,9 +1038,22 @@ export abstract class CpiEmitter extends CallEmitter {
     e.variants.forEach((v, i) => {
       this.line(`case ${i}: {`);
       for (const f of v.fields) {
+        const at = `${src.lv}.v.${v.name}.${f.name}`;
+        if (f.type.kind === "string") {
+          // Borsh String: u32 length, then the bytes.
+          const n = this.tmp("sl");
+          this.line(`uint32_t ${n} = (uint32_t)${at}.len;`);
+          put(`&${n}`, "4");
+          put(`${at}.ptr`, `${at}.len`);
+          continue;
+        }
+        if (f.type.kind === "dataEnum" && this.model.dataEnums.get(f.type.name)?.variable) {
+          this.serializeDataEnumLv(at, f.type.name, put);
+          continue;
+        }
         const n = this.fieldBytes(f.type);
         // put() with no static size: the payload differs by variant.
-        put(`&${src.lv}.v.${v.name}.${f.name}`, String(n));
+        put(`&${at}`, String(n));
       }
       this.line(`break; }`);
     });

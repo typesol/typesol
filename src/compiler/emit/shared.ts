@@ -185,7 +185,8 @@ export function storageDecl(t: FieldType, name: string): string {
       return `uint32_t ${name}__len;
   ${storageDecl(t.elem, `${name}[]`)}`;
     case "string":
-      throw new Error("unreachable: variable strings are not stored");
+      // Only in a variable data enum's payload (arguments, events, locals): a view of the text.
+      return `TS_Str ${name}`;
   }
 }
 

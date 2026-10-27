@@ -250,11 +250,13 @@ export function generatePort(idl: PortIdl): PortResult {
           "",
         );
       } else {
+        // Strings in variants are fine in arguments and events (Borsh); account data needs fixed-size variants.
+        const vw: Where = used.has("account") || (!used.has("arg") && !used.has("event")) ? "variant" : "event";
         const parts = variants.map((v) => {
           const fs = (v.fields ?? []).map((f, i) =>
             typeof f === "object" && f !== null && "name" in f
-              ? `${ident((f as IdlField).name, true)}: ${tsType((f as IdlField).type, "variant", `${def.name}.${v.name}`)}`
-              : `f${i}: ${tsType(f as IdlType, "variant", `${def.name}.${v.name}`)}`,
+              ? `${ident((f as IdlField).name, true)}: ${tsType((f as IdlField).type, vw, `${def.name}.${v.name}`)}`
+              : `f${i}: ${tsType(f as IdlType, vw, `${def.name}.${v.name}`)}`,
           );
           return `{ kind: "${pascal(v.name)}"${fs.map((x) => `; ${x}`).join("")} }`;
         });

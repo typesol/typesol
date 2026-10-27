@@ -275,7 +275,9 @@ export abstract class StorageEmitter extends EmitterBase {
           const vi = e.variants.findIndex((v) => v.name === n);
           const fields = e.variants[vi]?.fields ?? [];
           const at = fields.findIndex((x) => x.name === field);
-          const offset = fields.slice(0, Math.max(at, 0)).reduce((sum, x) => sum + this.fieldBytes(x.type), 0);
+          // In the C payload a string is a TS_Str view (16 bytes); everything else has its stored size.
+          const cBytes = (t: FieldType) => (t.kind === "string" ? 16 : this.fieldBytes(t));
+          const offset = fields.slice(0, Math.max(at, 0)).reduce((sum, x) => sum + cBytes(x.type), 0);
           return { vi, name: n, f: fields[at], offset };
         });
         if (located.some((l) => !l.f)) this.fail(node.name, `"${field}" is not a field of ${names.map((n) => `${e.name}.${n}`).join(" / ")}`);
@@ -395,6 +397,8 @@ export abstract class StorageEmitter extends EmitterBase {
         return { c: `(&${r.lv})`, type: r.type };
       case "fstring":
         return { c: `ts_fstr_view((const uint8_t *)&${r.lv}, ${r.type.cap})`, type: STRING };
+      case "string":
+        return { c: r.lv, type: STRING }; // a variable enum's text: already a view
       case "enum":
         return { c: r.lv, type: r.type };
       case "option":
@@ -423,6 +427,7 @@ export abstract class StorageEmitter extends EmitterBase {
         return `${r.lv} = *(${c})`;
       case "fstring":
         return `TS_TRY(ts_fstr_set((uint8_t *)&${r.lv}, ${r.type.cap}, ${c}))`;
+      case "string":
       case "enum":
       case "option":
         return `${r.lv} = ${c}`;
@@ -433,7 +438,7 @@ export abstract class StorageEmitter extends EmitterBase {
 
   protected storageValueType(t: FieldType): ValueType | undefined {
     if (isScalar(t)) return t;
-    if (t.kind === "fstring") return STRING;
+    if (t.kind === "fstring" || t.kind === "string") return STRING;
     if (t.kind === "option" && t.inner.kind !== "struct") return t as ValueType;
     return undefined;
   }
@@ -485,7 +490,8 @@ export abstract class StorageEmitter extends EmitterBase {
         const f = variant.fields.find((x) => x.name === name)!;
         const sub: Ref = { lv: `${tmp}.v.${variant.name}.${f.name}`, type: f.type, writable: true };
         const vt = this.storageValueType(f.type);
-        if (vt) this.line(this.writeStorage(sub, this.expect(this.expr(ex, vt), vt, ex).c) + ";");
+        // A string kept in a variable enum holds its own copy of account text (the account may change later).
+        if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(ex, vt), vt, ex)).c) + ";");
         else this.writeAggregate(sub, ex);
       }
       this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
