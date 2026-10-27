@@ -23,5 +23,6 @@ compiler's checks log their TypeScript location, e.g. `TypeSOL: arithmetic overf
 **Heap errors (5110) building strings** — strings are allocated on a 32 KiB heap and never freed. Build less text,
 or declare `const HEAP_SIZE_KIB = 64n` and add a ComputeBudget `requestHeapFrame` instruction to the transaction.
 
-**`typesol idl publish` fails on a local validator with "invalid instruction data"** — older validators reject a
-System instruction the current Program Metadata program uses; it works on clusters with current Agave versions.
+**`typesol idl publish` fails on a local validator with "invalid instruction data"** — the System Program of
+`solana-test-validator` (Agave 3.1 included) rejects a System instruction that the current Program Metadata program
+uses. Publishing works on mainnet-beta. The error shows the failing transaction's last log lines.
