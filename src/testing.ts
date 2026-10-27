@@ -9,7 +9,8 @@
  *   expect((await t.account("Counter", counter))?.count).toBe(5n);
  *
  * Accounts are passed by name; their signer / writable flags and fixed addresses (system program, token programs…)
- * come from the IDL, as Anchor's `.accounts({...})` does. Arguments take plain values: bigints or numbers for
+ * come from the IDL, as Anchor's `.accounts({...})` does, and PDAs seeded by constants, arguments or other accounts'
+ * keys are derived when left out. Arguments take plain values: bigints or numbers for
  * integers, address strings for Pubkeys, null for an empty Option. Decoded accounts and return data come back the
  * same way (bigints, address strings).
  *
@@ -28,12 +29,14 @@ import {
   getAddressEncoder,
   getProgramDerivedAddress,
   isAddress,
+  isOffCurveAddress,
   lamports,
   pipe,
   setTransactionMessageFeePayerSigner,
   signTransactionMessageWithSigners,
 } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
@@ -53,12 +56,14 @@ export type AccountInput = Address | KeyPairSigner | null;
 export type SeedInput = string | Address | KeyPairSigner | Uint8Array | bigint;
 
 type IdlType = string | { option: IdlType } | { vec: IdlType } | { array: [IdlType, number] } | { defined: { name: string } };
+type IdlSeed = { kind: "const"; value: number[] } | { kind: "arg"; path: string } | { kind: "account"; path: string };
 interface IdlAccountItem {
   name: string;
   writable?: boolean;
   signer?: boolean;
   optional?: boolean;
   address?: string;
+  pda?: { seeds: IdlSeed[]; program?: IdlSeed };
 }
 interface ProgramIdl {
   address: string;
@@ -164,6 +169,37 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     return v;
   };
 
+  /** find_program_address, synchronously (sha256 + the curve check), so ix() can fill PDAs in. */
+  const findPda = (seeds: Uint8Array[], program: Address): Address => {
+    for (let bump = 255; bump >= 0; bump--) {
+      const h = createHash("sha256");
+      for (const s of seeds) h.update(s);
+      h.update(Uint8Array.of(bump));
+      h.update(new Uint8Array(enc.encode(program)));
+      h.update("ProgramDerivedAddress");
+      const a = getAddressDecoder().decode(h.digest());
+      if (isOffCurveAddress(a)) return a;
+    }
+    throw new Error("no off-curve bump for these seeds");
+  };
+
+  /** An argument's bytes as a seed: little-endian integers at their width, bool as one byte, Pubkey, UTF-8 text. */
+  const argSeed = (v: unknown, type: IdlType): Uint8Array | undefined => {
+    if (typeof type !== "string" || v === undefined || v === null) return undefined;
+    const int = /^([ui])(8|16|32|64|128)$/.exec(type);
+    if (int) {
+      const bytes = Number(int[2]) / 8;
+      let n = BigInt.asUintN(bytes * 8, BigInt(v as bigint | number));
+      const out = new Uint8Array(bytes);
+      for (let i = 0; i < bytes; i++, n >>= 8n) out[i] = Number(n & 0xffn);
+      return out;
+    }
+    if (type === "bool") return Uint8Array.of(v ? 1 : 0);
+    if (type === "pubkey") return new Uint8Array(enc.encode((isSigner(v) ? v.address : v) as Address));
+    if (type === "string") return new TextEncoder().encode(v as string);
+    return undefined;
+  };
+
   const seedBytes = (s: SeedInput): Uint8Array => {
     if (s instanceof Uint8Array) return s;
     if (typeof s === "bigint") {
@@ -198,6 +234,32 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       if (!def) throw new Error(`the program has no instruction "${name}" (it has ${pidl.instructions.map((i) => i.name).join(", ")})`);
       const given = new Map(Object.entries(accounts).map(([k, v]) => [snake(k), v]));
       for (const k of given.keys()) if (!def.accounts.some((a) => a.name === k)) throw new Error(`${def.name} has no account "${k}"`);
+      const argsIn = args as Record<string, unknown>;
+      // PDAs whose seeds are constants, arguments or other accounts' keys are filled in, as the generated client does.
+      const addressOf = (name: string): Address | undefined => {
+        const v = given.get(name);
+        return v === undefined || v === null ? undefined : isSigner(v) ? v.address : v;
+      };
+      for (let progress = true; progress;) {
+        progress = false;
+        for (const a of def.accounts) {
+          if (given.has(a.name) || !a.pda || a.address) continue;
+          const seed = (s: IdlSeed): Uint8Array | undefined => {
+            if (s.kind === "const") return Uint8Array.from(s.value);
+            if (s.kind === "account") {
+              const at = s.path.includes(".") ? undefined : addressOf(s.path);
+              return at && new Uint8Array(enc.encode(at));
+            }
+            const arg = def.args.find((x) => x.name === s.path);
+            return arg && argSeed(argsIn[arg.name] ?? argsIn[camel(arg.name)], arg.type);
+          };
+          const seeds = a.pda.seeds.map(seed);
+          const program = a.pda.program ? seed(a.pda.program) : new Uint8Array(enc.encode(programId));
+          if (seeds.some((x) => x === undefined) || !program || program.length !== 32) continue;
+          given.set(a.name, findPda(seeds as Uint8Array[], getAddressDecoder().decode(program)));
+          progress = true;
+        }
+      }
       const metas = def.accounts.map((a) => {
         let v = given.has(a.name) ? given.get(a.name)! : undefined;
         if (v === undefined && a.address) v = a.address as Address;
