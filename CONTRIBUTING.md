@@ -23,12 +23,26 @@ a constraint or an error code.
 
 ## Versioning
 
-TypeSOL uses semantic versioning. Before 1.0:
+TypeSOL follows the organization's [versioning and release policy](https://github.com/typesol/.github/blob/main/VERSIONING.md).
+For the compiler, before 1.0:
 - a **minor** release (0.x → 0.y) may change the language surface (`lib/typesol.d.ts`), the account/IDL layout of
   generated programs, or error codes — always listed under "Breaking" in CHANGELOG.md;
 - a **patch** release only fixes bugs without changing layouts or the meaning of valid programs.
 The TypeScript dependency is pinned exactly: it decides what type-checks, so it only changes in minor releases.
 Builds record the TypeSOL, TypeScript and clang versions in `<name>.build.json`.
+
+Every change adds its entry under `## Unreleased` in CHANGELOG.md.
+
+## Releasing
+
+1. Merge `develop` into `main` through a pull request with green CI.
+2. On `main`: set `version` in `package.json`, rename `## Unreleased` in CHANGELOG.md to `## <version> — <YYYY-MM-DD>`
+   (start a new empty `## Unreleased` above it), commit as `Release v<version>`.
+3. Tag it: `git tag -a v<version> -m "TypeSOL <version>"`, push the tag, and create the GitHub Release from the tag
+   with that CHANGELOG section as notes.
+4. Publishing to npm is separate and manual: run the **release** workflow (Actions → release → Run workflow) with the
+   version. It checks out the tag, runs the full CI, checks that the tag matches `package.json`, and publishes. Tags
+   and GitHub Releases never publish on their own.
 
 ## Code style
 
