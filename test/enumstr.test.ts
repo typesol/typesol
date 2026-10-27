@@ -52,6 +52,21 @@ describe("data enums with strings", () => {
     expect(t.returned("run", await t.send(owner, t.ix("run", { cmd: { Nop: {} } }, { owner, board })))).toBe(0n);
   });
 
+  it("keeps nested variable enums decodable (IDL) and copies account text assigned into a field", async () => {
+    const owner = await t.wallet();
+    const nested = await t.send(owner, t.ix("nest", { text: "hi", times: 2, tail: 9 }, { owner }));
+    const data = t
+      .ok(nested)
+      .logs()
+      .filter((l) => l.startsWith("Program data: "))
+      .map((l) => JSON.parse(JSON.stringify(t.coder.events.decode(l.slice("Program data: ".length))?.data)));
+    expect(data).toEqual([{ w: { Wrap: { c: { Say: { text: "hi", times: 2 } }, tail: 9 } } }]);
+
+    const board = await t.pda("board", owner);
+    t.ok(await t.send(owner, t.ix("setup", {}, { owner })));
+    expect(events(await t.send(owner, t.ix("assignField", {}, { owner, board })))).toEqual([{ name: "Said", cmd: { Say: { text: "start", times: 1 } } }]);
+  });
+
   it("refuses them in account data and refuses Vec variants", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-enumstr-"));
     const errors = (body: string) => {

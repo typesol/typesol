@@ -36,3 +36,24 @@ export function run(owner: Signer, board: Mut<Board>, cmd: Command): u64 {
       return 0n;
   }
 }
+
+/** A variable enum nested in another one's variant: Borsh all the way down in the IDL and on the wire. */
+export type Wrap = { kind: "Wrap"; c: Command; tail: u8 } | { kind: "Empty" };
+
+export interface Wrapped {
+  w: Wrap;
+}
+
+export function nest(owner: Signer, text: string, times: u8, tail: u8): void {
+  const w: Wrap = { kind: "Wrap", c: { kind: "Say", text, times }, tail };
+  emit<Wrapped>({ w });
+}
+
+/** Assigning account text into a local enum's string field takes a copy, like building it does. */
+export function assignField(owner: Signer, board: Mut<Board>): void {
+  const c: Command = { kind: "Say", text: "x", times: 1n };
+  if (c.kind === "Say") c.text = board.title;
+  board.title = "zzz";
+  emit<Said>({ who: owner.key, cmd: c });
+}
+
