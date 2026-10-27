@@ -51,7 +51,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Events through CPI | `emitCpi<Paid>({ … }, eventAuthority, self)` with `eventAuthority: EventAuthority, self: SelfProgram` parameters — Anchor `emit_cpi!`: the event rides in a self-CPI (inner instruction), not in logs; the program accepts Anchor's event instruction (2002 / 2006 otherwise) |
 | Heap | 32 KiB by default; `const HEAP_SIZE_KIB = 64n` (32–256) lets the program use more, when clients add ComputeBudget `requestHeapFrame` |
 | Docs | JSDoc on instructions, `@param`, structs, fields and data enums becomes `docs` in the IDL |
-| Metaplex Core | `core: MplCoreProgram` — `createCollection`, `createAsset` (in a collection, PDA authorities via signerSeeds), `transferAsset`, `burnAsset` (no plugins; `null` leaves an optional account out); `coreAssetOwner(asset)`, `coreAssetCollection(asset)` |
+| Metaplex Core | `core: MplCoreProgram` — `createCollection`, `createAsset` (in a collection, PDA authorities via signerSeeds), `transferAsset`, `burnAsset` (`null` leaves an optional account out); plugins as a literal list after the uri (`[{ kind: "Royalties", basisPoints: 500n, creators: [{ address, percentage: 100n }] }, { kind: "PermanentFreezeDelegate", frozen: false, authority: studio.key }]`), and `addPlugin` / `updatePlugin` / `removePlugin(…, "FreezeDelegate")` with their `…CollectionPlugin` forms. Plugins: Royalties (no rule set), FreezeDelegate, BurnDelegate, TransferDelegate, UpdateDelegate, PermanentFreezeDelegate, Attributes, PermanentTransferDelegate, PermanentBurnDelegate, Edition, AddBlocker, ImmutableMetadata; `authority` is `"owner"`, `"updateAuthority"`, `"none"` or a Pubkey; `coreAssetOwner(asset)`, `coreAssetCollection(asset)` |
 | Compressed NFTs | `bubblegum: BubblegumProgram` — `createTree` (client-allocated tree on SPL Account Compression), `mint` (MintV1, no collection/creators) |
 
 ## Account parameters and the checks they emit
@@ -149,7 +149,7 @@ an integer literal, an argument, `acct.key` or a scalar field of an account, the
 
 Vecs anywhere but the last account field, growing an account by more than 10 KiB in one instruction, growing a Vec
 inside a helper, data-enum arguments carrying structs, Pubkeys in templates, `?.`, `**=`, `!` on anything but an Option, `switch` on
-128-bit integers, `mulDiv` beyond u64, Core plugins, Bubblegum v2 / collections /
+128-bit integers, `mulDiv` beyond u64, Core's MasterEdition / VerifiedCreators / Autograph plugins, royalty rule sets and external plugin adapters, Bubblegum v2 / collections /
 transfers, closures (local functions reading the enclosing function's variables), functions as values (callbacks,
 `.map`), type parameters standing for structs, floating point (by design), `do … while`.
 They are rejected at compile time rather than half-supported.

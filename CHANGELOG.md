@@ -6,6 +6,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Metaplex Core plugins: a literal plugin list in `createAsset` / `createCollection` (Royalties, freeze / burn / transfer /
+  update delegates and their permanent forms, Attributes, Edition, AddBlocker, ImmutableMetadata, each with an optional
+  authority), and `addPlugin`, `updatePlugin`, `removePlugin` with their collection forms, checked against the real Core
+  program (a frozen asset cannot move until it is thawed).
 - Arrow functions: `const f = (x: u64): u64 => …` (and `const f = function (…) {…}`) at the top level or inside a
   function is a helper. Local ones capture nothing (a closure over the enclosing function's variables is refused with
   the name it reads); functions are called, not passed around.
