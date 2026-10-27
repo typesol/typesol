@@ -16,6 +16,7 @@ import path from "node:path";
 import { writeClient } from "./clientgen.js";
 import { build, COMPILER_VERSION, SBPF_VERSIONS, type BuildResult, type Sbpf } from "./compiler/index.js";
 import { loadOrCreateKeypair } from "./keys.js";
+import { TEMPLATES, type TemplateName } from "./templates.js";
 
 export const CONFIG = "typesol.json";
 
@@ -131,115 +132,13 @@ export function deployArgs(soPath: string, keypair: string, opts: { url?: string
   return args;
 }
 
-const PROGRAM = `import { type Account, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type u8, type u64, require } from "typesol";
-
-export interface Counter {
-  authority: Pubkey;
-  count: u64;
-  bump: u8;
-}
-
-export enum CounterError {
-  Unauthorized = "Only the counter's authority can change it",
-}
-
-/** Create the caller's counter at PDA ["counter", authority]. */
-export function initialize(authority: Mut<Signer>, counter: Init<Counter>, systemProgram: SystemProgram): void {
-  counter.bump = counter.create(authority, ["counter", authority.key]);
-  counter.authority = authority.key;
-  counter.count = 0n;
-}
-
-export function increment(authority: Signer, counter: Mut<Counter>, by: u64): void {
-  require(counter.authority === authority.key, CounterError.Unauthorized);
-  counter.count += by;
-}
-
-export function assertAtLeast(counter: Account<Counter>, min: u64): void {
-  require(counter.count >= min, "counter is below the expected minimum");
-}
-`;
-
-const TEST = (name: string) => `// Runs the program in LiteSVM (an in-process Solana runtime): \`npm test\`.
-import { BN, BorshCoder, type Idl } from "@anchor-lang/core";
-import {
-  AccountRole,
-  appendTransactionMessageInstructions,
-  createTransactionMessage,
-  generateKeyPairSigner,
-  getAddressEncoder,
-  getProgramDerivedAddress,
-  lamports,
-  pipe,
-  setTransactionMessageFeePayerSigner,
-  signTransactionMessageWithSigners,
-  type Address,
-  type Instruction,
-  type KeyPairSigner,
-} from "@solana/kit";
-import { FailedTransactionMetadata, LiteSVM } from "litesvm";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildWorkspace, findWorkspace } from "typesol/workspace";
-import { beforeAll, describe, expect, it } from "vitest";
-
-const SYSTEM = "11111111111111111111111111111111" as Address;
-const ws = findWorkspace(path.dirname(fileURLToPath(import.meta.url)))!;
-
-describe("${name}", () => {
-  const svm = new LiteSVM();
-  let programId: Address;
-  let coder: BorshCoder;
-  beforeAll(() => {
-    const [built] = buildWorkspace(ws, ["${name}"]);
-    programId = built.address as Address;
-    svm.addProgramFromFile(programId, built.result.soPath);
-    coder = new BorshCoder(built.result.idl as unknown as Idl);
-  });
-
-  const ix = (name: string, args: object, accounts: { address: Address; signer?: KeyPairSigner; writable?: boolean }[]): Instruction => ({
-    programAddress: programId,
-    accounts: accounts.map((a) => ({
-      address: a.address,
-      role: a.signer ? (a.writable ? AccountRole.WRITABLE_SIGNER : AccountRole.READONLY_SIGNER) : a.writable ? AccountRole.WRITABLE : AccountRole.READONLY,
-      ...(a.signer ? { signer: a.signer } : {}),
-    })) as Instruction["accounts"],
-    data: new Uint8Array(coder.instruction.encode(name, args)),
-  });
-  const send = async (payer: KeyPairSigner, ixs: Instruction[]) => {
-    const tx = await pipe(
-      createTransactionMessage({ version: 0 }),
-      (t) => setTransactionMessageFeePayerSigner(payer, t),
-      (t) => svm.setTransactionMessageLifetimeUsingLatestBlockhash(t),
-      (t) => appendTransactionMessageInstructions(ixs, t),
-      (t) => signTransactionMessageWithSigners(t),
-    );
-    const res = svm.sendTransaction(tx);
-    svm.expireBlockhash();
-    return res;
-  };
-
-  it("initializes and increments the caller's counter", async () => {
-    const alice = await generateKeyPairSigner();
-    svm.airdrop(alice.address, lamports(1_000_000_000n));
-    const [counter] = await getProgramDerivedAddress({ programAddress: programId, seeds: ["counter", getAddressEncoder().encode(alice.address)] });
-    const me = { address: alice.address, signer: alice, writable: true };
-    expect(await send(alice, [ix("initialize", {}, [me, { address: counter, writable: true }, { address: SYSTEM }])])).not.toBeInstanceOf(FailedTransactionMetadata);
-    expect(await send(alice, [ix("increment", { by: new BN(5) }, [{ address: alice.address, signer: alice }, { address: counter, writable: true }])])).not.toBeInstanceOf(FailedTransactionMetadata);
-    const account = svm.getAccount(counter);
-    if (!account.exists) throw new Error("counter was not created");
-    const state = coder.accounts.decode("Counter", Buffer.from(account.data));
-    expect(state.count.toString()).toBe("5");
-  });
-});
-`;
-
-/** Create a project: typesol.json, one program, a LiteSVM test, configs. Refuses to overwrite files. */
-export function scaffold(dir: string, name: string): string[] {
+/** Create a project: typesol.json, one program from a template, its LiteSVM test, configs. Refuses to overwrite files. */
+export function scaffold(dir: string, name: string, template: TemplateName = "counter"): string[] {
+  const t = TEMPLATES[template];
   if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`program name "${name}" must be snake_case`);
   const files: Record<string, string> = {
     [CONFIG]: JSON.stringify({ programs: { [name]: { path: `programs/${name}.ts` } }, out: "target", sbpf: "v0" }, null, 2) + "\n",
-    [`programs/${name}.ts`]: PROGRAM,
+    [`programs/${name}.ts`]: t.program,
     "programs/tsconfig.json":
       JSON.stringify(
         {
@@ -249,7 +148,7 @@ export function scaffold(dir: string, name: string): string[] {
         null,
         2,
       ) + "\n",
-    [`tests/${name}.test.ts`]: TEST(name),
+    [`tests/${name}.test.ts`]: t.test(name),
     "package.json":
       JSON.stringify(
         {
@@ -267,6 +166,7 @@ export function scaffold(dir: string, name: string): string[] {
             "@solana/kit": "^8.5.0",
             litesvm: "^1.6.1",
             vitest: "^5.0.5",
+            ...t.devDependencies,
           },
         },
         null,

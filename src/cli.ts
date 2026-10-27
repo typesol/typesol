@@ -11,6 +11,7 @@ import { generateClient, writeClient, type ClientIdl } from "./clientgen.js";
 import { buildIdl } from "./compiler/idl.js";
 import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
 import { formatProfile, profileLogs } from "./profile.js";
+import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import { buildWorkspace, CONFIG, deployArgs, findWorkspace, programAddress, programForEntry, programPaths, scaffold, type Workspace } from "./workspace.js";
 
 const ASSETS = fileURLToPath(new URL("../assets/", import.meta.url));
@@ -53,13 +54,22 @@ interface Command {
 
 const COMMANDS: Record<string, Command> = {
   init: {
-    usage: "typesol init [<dir>] [--name <program>]",
-    help: "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore.\n  Refuses to overwrite files. <name> must be snake_case (default: derived from <dir>).",
-    options: { name: { type: "string" } },
+    usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow]",
+    help: [
+      "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore.",
+      "Refuses to overwrite files. <name> must be snake_case (default: derived from <dir>).",
+      "--template counter   a PDA counter per user (default)",
+      "--template vault     a SOL vault at a PDA: deposit, withdraw above rent, close",
+      "--template escrow    an SPL token escrow: make, take, refund, with the offer PDA signing for its vault",
+    ].join("\n  "),
+    options: { name: { type: "string" }, template: { type: "string" } },
     run(v, args) {
       if (args.length > 1) throw new UsageError("init takes at most one directory");
       if (v.name !== undefined && !/^[a-z][a-z0-9_]*$/.test(v.name as string))
         throw new UsageError(`--name "${v.name}" must be snake_case (a-z, 0-9, _; starting with a letter)`);
+      const template = (v.template as string | undefined) ?? "counter";
+      if (!(TEMPLATE_NAMES as readonly string[]).includes(template))
+        throw new UsageError(`--template "${template}" is not one of ${TEMPLATE_NAMES.join(", ")}`);
       const root = path.resolve(args[0] ?? ".");
       const derived = path
         .basename(root)
@@ -67,7 +77,7 @@ const COMMANDS: Record<string, Command> = {
         .replace(/^_+|_+$/g, "")
         .toLowerCase();
       const name = (v.name as string | undefined) ?? (/^[a-z]/.test(derived) ? derived : `p_${derived || "program"}`);
-      for (const f of scaffold(root, name)) log(`  created ${path.join(root, f)}`);
+      for (const f of scaffold(root, name, template as TemplateName)) log(`  created ${path.join(root, f)}`);
       log(`\n  next: cd ${path.relative(process.cwd(), root) || "."} && npm install && npm test`);
       return 0;
     },

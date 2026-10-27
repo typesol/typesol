@@ -16,6 +16,16 @@ const tmp = () => {
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 const run = (args: string[], cwd: string) => spawnSync("node", [CLI, ...args], { cwd, encoding: "utf8" });
 
+/** Typecheck and run a scaffolded project's own test (`typesol` linked to this checkout; other dev dependencies from this repo). */
+function runGeneratedTest(dir: string) {
+  mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+  symlinkSync(ROOT, path.join(dir, "node_modules/typesol"), "dir");
+  for (const dep of ["@anchor-lang", "@solana", "@solana-program", "litesvm", "vitest", "@types", "typescript"])
+    symlinkSync(path.join(ROOT, "node_modules", dep), path.join(dir, "node_modules", dep), "dir");
+  execFileSync("node", [path.join(ROOT, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"], { cwd: dir, stdio: "pipe" });
+  execFileSync("node", [path.join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", dir], { cwd: dir, stdio: "pipe" });
+}
+
 describe("projects: typesol init / build / deploy --dry-run", () => {
   it("scaffolds a project that typechecks and whose own test passes; records the program address", () => {
     const dir = tmp();
@@ -52,13 +62,24 @@ describe("projects: typesol init / build / deploy --dry-run", () => {
     expect(run(["build"], dir).stderr).toMatch(/is missing, but typesol\.json records/);
     renameSync(path.join(dir, "kp.bak"), path.join(dir, "target/deploy/tally-keypair.json"));
 
-    // The generated test typechecks and passes (`typesol` linked to this checkout; other dev dependencies from this repo).
-    mkdirSync(path.join(dir, "node_modules"), { recursive: true });
-    symlinkSync(ROOT, path.join(dir, "node_modules/typesol"), "dir");
-    for (const dep of ["@anchor-lang", "@solana", "litesvm", "vitest", "@types", "typescript"])
-      symlinkSync(path.join(ROOT, "node_modules", dep), path.join(dir, "node_modules", dep), "dir");
-    execFileSync("node", [path.join(ROOT, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"], { cwd: dir, stdio: "pipe" });
-    execFileSync("node", [path.join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", dir], { cwd: dir, stdio: "pipe" });
+    // The generated test typechecks and passes.
+    runGeneratedTest(dir);
+  });
+
+  it.each(["vault", "escrow"])("--template %s: the program is the matching example and the generated test passes", (template) => {
+    const dir = tmp();
+    expect(run(["init", ".", "--name", "app", "--template", template], dir).status).toBe(0);
+    expect(readFileSync(path.join(dir, "programs/app.ts"), "utf8")).toBe(readFileSync(path.join(ROOT, `examples/${template}.ts`), "utf8"));
+    runGeneratedTest(dir);
+  });
+
+  it("the default template is examples/counter.ts; unknown templates are usage errors", () => {
+    const dir = tmp();
+    expect(run(["init", ".", "--name", "app"], dir).status).toBe(0);
+    expect(readFileSync(path.join(dir, "programs/app.ts"), "utf8")).toBe(readFileSync(path.join(ROOT, "examples/counter.ts"), "utf8"));
+    const bad = run(["init", "other", "--template", "nope"], dir);
+    expect([bad.status, bad.stderr]).toEqual([2, expect.stringMatching(/--template "nope" is not one of counter, vault, escrow/)]);
+    expect(existsSync(path.join(dir, "other"))).toBe(false);
   });
 
   it("explains instead of crashing: bad typesol.json, unknown commands, missing files", () => {

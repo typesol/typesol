@@ -5,6 +5,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `typesol init --template counter|vault|escrow`: start from a PDA counter (the default, as before), a SOL vault or an
+  SPL token escrow. Each template is the matching `examples/` program with a LiteSVM test of its main flow and of a
+  refused call; the escrow project also gets `@solana-program/token`.
+
 ### Fixed
 - `typesol idl publish` names the reason a write failed (the transaction's error and its last log lines) instead of
   "The provided transaction plan failed to execute".
