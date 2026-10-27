@@ -5,22 +5,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
-### Fixed
-- A function whose stack frame exceeds SBF's 4 KiB used to build and then corrupt memory at runtime (the toolchain
-  only printed a note). The build now fails, naming the instruction or helper and its frame size.
-- A struct returned by a helper and bound through a ternary (`const o = c ? mk(1n) : mk(2n)`) pointed at storage
-  that ended with the branch, so the program read garbage (found in review, never released). The result now lives for
-  the whole function.
-- A struct reference used across `for … of` steps is checked like in other loops: replacing what it refers to later
-  in the body is refused, as JS would keep the old object.
-- `a ** b` reads `a` before evaluating `b` (a helper in the exponent that changes `a` no longer changes the result).
-- A struct-returning helper that takes an account and a struct, bound without a type, no longer fails to build with
-  a duplicate C declaration.
-- `typesol verify --address` tells "no IDL published" apart from an IDL that cannot be read (now an error, exit 3).
-- `typesol/testing`: Options and FixedStrings in decoded accounts and return data come back as plain values; passing
-  an address where an account must sign is reported up front.
-
 ### Added
+- `typesol port <idl.json>`: a TypeSOL program skeleton from an Anchor IDL (structs, enums, errors, one function per
+  instruction with its accounts and arguments). Discriminators, account names and error codes are kept, so existing
+  clients keep working where layouts match; notes list where Anchor's Borsh layout differs. Round-trips every example
+  (example → IDL → port → IDL) with the same instructions, accounts, layouts and error codes.
 - Token-2022 extension initializers on `Token2022Program` / `TokenInterface` (refused on `TokenProgram`): transfer fee,
   mint close authority, non-transferable, permanent delegate, default account state, metadata / group / group-member
   pointers, transfer hook, interest-bearing, immutable owner. Byte layouts checked against the official
@@ -52,6 +41,21 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   authority or that it is immutable and its last deploy slot, and compares the IDL published on chain with the built
   one. A published IDL that differs is a mismatch (exit 3). No `solana program dump` step needed.
 - `typesol idl publish --url` accepts the Solana CLI's cluster monikers (`mainnet-beta`, `devnet`, …).
+
+### Fixed
+- A function whose stack frame exceeds SBF's 4 KiB used to build and then corrupt memory at runtime (the toolchain
+  only printed a note). The build now fails, naming the instruction or helper and its frame size.
+- A struct returned by a helper and bound through a ternary (`const o = c ? mk(1n) : mk(2n)`) pointed at storage
+  that ended with the branch, so the program read garbage (found in review, never released). The result now lives for
+  the whole function.
+- A struct reference used across `for … of` steps is checked like in other loops: replacing what it refers to later
+  in the body is refused, as JS would keep the old object.
+- `a ** b` reads `a` before evaluating `b` (a helper in the exponent that changes `a` no longer changes the result).
+- A struct-returning helper that takes an account and a struct, bound without a type, no longer fails to build with
+  a duplicate C declaration.
+- `typesol verify --address` tells "no IDL published" apart from an IDL that cannot be read (now an error, exit 3).
+- `typesol/testing`: Options and FixedStrings in decoded accounts and return data come back as plain values; passing
+  an address where an account must sign is reported up front.
 
 ## 0.15.0 — 2026-10-27
 

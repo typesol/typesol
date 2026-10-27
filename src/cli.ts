@@ -8,6 +8,7 @@ import { parseArgs, type ParseArgsConfig } from "node:util";
 import ts from "typescript";
 import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Sbpf } from "./compiler/index.js";
 import { generateCpi, type Idl } from "./cpigen.js";
+import { generatePort, type PortIdl } from "./portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./clientgen.js";
 import { buildIdl } from "./compiler/idl.js";
 import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
@@ -246,6 +247,26 @@ const COMMANDS: Record<string, Command> = {
         log(`  wrote ${v.out}: ${res.generated.length} helper(s)`);
       } else process.stdout.write(res.source);
       for (const s of res.skipped) console.error(`  skipped ${s.instruction}: ${s.reason}`);
+      return 0;
+    },
+  },
+  port: {
+    usage: "typesol port <idl.json> [--out <file.ts>]",
+    help: [
+      "A TypeSOL program skeleton from an Anchor IDL (0.30+/1.x): account structs, enums, errors, events and one function per",
+      "instruction with its accounts and arguments (bodies to fill in). Discriminators, account names and error order are kept,",
+      "so existing clients keep working where the layouts match; the notes (stderr) list where they do not.",
+    ].join("\n  "),
+    options: { out: { type: "string" } },
+    run(v, args) {
+      const file = one(args, "<idl.json>");
+      const res = generatePort(readJson(file) as PortIdl);
+      if (v.out) {
+        if (existsSync(v.out as string)) throw new UsageError(`${v.out} exists; refusing to overwrite it`);
+        writeFileSync(v.out as string, res.source);
+        log(`  wrote ${v.out}`);
+      } else process.stdout.write(res.source);
+      for (const n of res.notes) console.error(`  note: ${n}`);
       return 0;
     },
   },
