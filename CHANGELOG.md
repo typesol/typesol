@@ -23,6 +23,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   declaratively, with no bump arguments); escrow and token-fundraiser check their PDAs declaratively instead of with
   `requirePda` in the body.
 
+## 0.12.1 — 2026-10-27
+
+No change to the compiler, the runtime or the generated code.
+
+### Tooling
+- Releases are published to npm through trusted publishing: the release workflow authenticates with GitHub's OIDC
+  token, and no npm token is stored in the repository.
+
 ## 0.12.0 — 2026-10-27
 
 Associated token accounts created in the instruction, PDA bumps without arguments, and the first npm release, as
