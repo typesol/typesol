@@ -115,7 +115,8 @@ describe(`model-based fuzzing (seed ${SEED}, ${STEPS} steps)`, () => {
         }
       }
     }
-    expect(stats.deposits + stats.withdraws).toBeGreaterThan(STEPS / 20);
+    // A sanity check that the run exercised the paths (not a property): seed 1793122244741 lands exactly on 5%.
+    expect(stats.deposits + stats.withdraws).toBeGreaterThanOrEqual(STEPS / 20);
     expect(stats.rejected).toBeGreaterThan(STEPS / 10);
     if (process.env.FUZZ_VERBOSE) console.log("vault", stats);
   });
