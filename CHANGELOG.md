@@ -6,6 +6,8 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `a ** b` on integers, every multiplication checked (5100 on overflow or a negative exponent, where JS throws). A
+  literal exponent unrolls at compile time; otherwise a square-and-multiply loop runs.
 - Object destructuring: `const { owner, pos: p } = acct` (`let` for scalars) from a name or a field path, read like
   `acct.owner` (scalars copied, nested structs referenced). Rest elements, defaults and nested patterns are refused.
 - Instructions can return a fixed-size struct as return data (a literal, a stored struct or a helper's result), at
