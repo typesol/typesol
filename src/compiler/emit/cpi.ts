@@ -396,7 +396,92 @@ export abstract class CpiEmitter extends CallEmitter {
     };
     const value = (n: ts.Expression, t: ValueType) => (put: Put) => this.serialize(this.expect(this.expr(n, t), t, n), n, put);
     const optKey: ValueType = { kind: "option", inner: PUBKEY };
+    const U16: ValueType = { kind: "int", name: "u16" };
+    const I16: ValueType = { kind: "int", name: "i16" };
+    const byte = (k: number) => (put: Put) => {
+      const t = this.tmp("b");
+      this.line(`uint8_t ${t} = ${k};`);
+      put(`&${t}`, "1", 1);
+    };
+    /** Token-2022's OptionalNonZeroPubkey: 32 bytes, all zero for none. */
+    const nonZeroKey = (n: ts.Expression) => (put: Put) => {
+      this.model.options.set("pubkey", PUBKEY);
+      const v = this.expect(this.expr(n, optKey), optKey, n);
+      const t = this.tmp("nzk");
+      this.line(`SolPubkey ${t};`);
+      this.line(`{ ${optC(PUBKEY)} o = ${v.c}; if (o.some) ${t} = o.v; else ts_memzero(&${t}, 32); }`);
+      put(`&${t}`, "32", 32);
+    };
+    const token2022Only = () => {
+      if (program.kind.kind === "tokenProgram" && program.kind.flavor === "token")
+        this.fail(node, `${method} is a Token-2022 extension; use Token2022Program or TokenInterface`);
+    };
+    const mintOnly = (n: number, usage: string) => {
+      token2022Only();
+      if (a.length !== n) this.fail(node, usage);
+      return anyAcct(a[0], "the mint", true);
+    };
+    const none = { name: "NULL", count: 0 };
     switch (method) {
+      case "initializeTransferFeeConfig": {
+        const mint = mintOnly(5, "initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)");
+        this.model.options.set("pubkey", PUBKEY);
+        const bps = this.expect(this.expr(a[3], U16), U16, a[3]);
+        this.line(`if (${bps.c} > 10000) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: transfer fee above 10000 basis points");`);
+        simple(26, [byte(0), value(a[1], optKey), value(a[2], optKey), (put) => this.serialize(bps, a[3], put), value(a[4], U64)], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializeMintCloseAuthority": {
+        const mint = mintOnly(2, "initializeMintCloseAuthority(mint, closeAuthority | null)");
+        this.model.options.set("pubkey", PUBKEY);
+        simple(25, [value(a[1], optKey)], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializeNonTransferableMint": {
+        const mint = mintOnly(1, "initializeNonTransferableMint(mint)");
+        simple(32, [], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializePermanentDelegate": {
+        const mint = mintOnly(2, "initializePermanentDelegate(mint, delegate)");
+        simple(35, [value(a[1], PUBKEY)], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializeDefaultAccountState": {
+        const mint = mintOnly(2, "initializeDefaultAccountState(mint, frozen)");
+        const frozen = this.expect(this.expr(a[1], BOOL), BOOL, a[1]);
+        const st = this.tmp("st");
+        this.line(`uint8_t ${st} = (${frozen.c}) ? 2 : 1;`); // AccountState::Frozen / Initialized
+        simple(28, [byte(0), (put) => put(`&${st}`, "1", 1)], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializeMetadataPointer":
+      case "initializeGroupPointer":
+      case "initializeGroupMemberPointer":
+      case "initializeTransferHook": {
+        const tag = { initializeMetadataPointer: 39, initializeGroupPointer: 40, initializeGroupMemberPointer: 41, initializeTransferHook: 36 }[method];
+        const second = {
+          initializeMetadataPointer: "metadataAddress",
+          initializeGroupPointer: "groupAddress",
+          initializeGroupMemberPointer: "memberAddress",
+          initializeTransferHook: "programId",
+        }[method];
+        const mint = mintOnly(3, `${method}(mint, authority | null, ${second} | null)`);
+        simple(tag, [byte(0), nonZeroKey(a[1]), nonZeroKey(a[2])], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializeInterestBearingMint": {
+        const mint = mintOnly(3, "initializeInterestBearingMint(mint, rateAuthority | null, rate)");
+        simple(33, [byte(0), nonZeroKey(a[1]), value(a[2], I16)], [[mint, true, false]], none);
+        return undefined;
+      }
+      case "initializeImmutableOwner": {
+        token2022Only();
+        if (a.length !== 1) this.fail(node, "initializeImmutableOwner(account)");
+        const acct = anyAcct(a[0], "the token account", true);
+        simple(22, [], [[acct, true, false]], none);
+        return undefined;
+      }
       case "approve": {
         arity(4);
         const src = want(a[0], "token", true, "the source");
@@ -497,7 +582,7 @@ export abstract class CpiEmitter extends CallEmitter {
     }
     this.fail(
       node.expression,
-      `token programs support transfer, transferChecked, mintTo, burn, closeAccount, approve, revoke, setAuthority, freezeAccount, thawAccount, syncNative, initializeMint2, initializeAccount3 and initializeMetadata, not ${method}`,
+      `token programs support transfer, transferChecked, mintTo, burn, closeAccount, approve, revoke, setAuthority, freezeAccount, thawAccount, syncNative, initializeMint2, initializeAccount3, initializeMetadata and the Token-2022 extension initializers (initializeTransferFeeConfig, initializeMintCloseAuthority, initializeNonTransferableMint, initializePermanentDelegate, initializeDefaultAccountState, initializeMetadataPointer, initializeGroupPointer, initializeGroupMemberPointer, initializeTransferHook, initializeInterestBearingMint, initializeImmutableOwner), not ${method}`,
     );
   }
 
