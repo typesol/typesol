@@ -5,6 +5,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.12.0 — 2026-10-27
+
+Associated token accounts created in the instruction, PDA bumps without arguments, and the first npm release, as
+`@typesol/cli`. Not externally audited (see SECURITY.md).
+
 ### Added
 - `Ata<Init<TokenAccount>, "owner", "mint">` / `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">` (Anchor `init` /
   `init_if_needed` with `associated_token::mint` and `associated_token::authority`): `acct.create(payer)` /
