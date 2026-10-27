@@ -58,32 +58,9 @@ SECURITY.md).
 ### Fixed
 - `createV3` evaluates its arguments in source order (a creator share computed by a helper that changes account text
   no longer changes the name or fee read before it).
-- `typesol/testing` converts data-enum variants with fields (`{ Say: { text, times: 2n } }`) like structs.
-- Data-enum strings (unreleased) after review: assigning account text into a local enum's string field now takes a copy
-  (it kept a view that changed with the account), and an enum nested in another's variant is described as Borsh in the
-  IDL (the IDL referred to a fixed form it never emitted, so Anchor clients could not load it).
-- `typesol port` (unreleased) after review: comment terminators in docs, an account and an argument with the same
-  name, struct fields named like C keywords, constant expressions, `bytes`, tuple and generic types, and data enums /
-  COptions in account data (now noted as layout differences) no longer produce a skeleton that fails to compile or
-  silently differs. Type names are kept as written, so account discriminators match.
-- `typesol/testing` (unreleased): PDAs seeded by accounts with a fixed address (an ATA's token program) or by unit-enum
-  arguments are derived; unit enums can be passed as an index or a name.
-- The Token-2022 extension methods are typed on `Token2022Program` / `TokenInterface` only, so the editor flags them on
-  `TokenProgram`; `initializeTransferFeeConfig` evaluates its arguments in source order.
 - A function whose stack frame exceeds SBPF v0's 4 KiB used to build and then corrupt memory at runtime (the toolchain
   only printed a note). The build now fails, naming the instruction or helper and its frame size (v1/v2 frames grow
   dynamically and are not limited).
-- A struct returned by a helper and bound through a ternary (`const o = c ? mk(1n) : mk(2n)`) pointed at storage
-  that ended with the branch, so the program read garbage (found in review, never released). The result now lives for
-  the whole function.
-- A struct reference used across `for … of` steps is checked like in other loops: replacing what it refers to later
-  in the body is refused, as JS would keep the old object.
-- `a ** b` reads `a` before evaluating `b` (a helper in the exponent that changes `a` no longer changes the result).
-- A struct-returning helper that takes an account and a struct, bound without a type, no longer fails to build with
-  a duplicate C declaration.
-- `typesol verify --address` tells "no IDL published" apart from an IDL that cannot be read (now an error, exit 3).
-- `typesol/testing`: Options and FixedStrings in decoded accounts and return data come back as plain values; passing
-  an address where an account must sign is reported up front.
 
 ### Docs
 - docs/migrate-from-anchor.md: Anchor constructs, account data, code and tooling mapped to TypeSOL, with the `typesol port`
