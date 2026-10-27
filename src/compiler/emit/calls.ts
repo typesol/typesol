@@ -832,8 +832,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     const t = this.tmp();
     if (h.returns.kind === "struct") {
-      // The result lives in a local the caller owns: a reference to it reads and copies like any struct.
-      this.line(`TSS_${h.returns.name} ${t};`);
+      // The result lives in a local the caller owns: a reference to it reads and copies like any struct. Declared at
+      // the top of the function, so a reference taken inside a block (a ternary's branch) stays valid after it.
+      this.hoisted.push(`  TSS_${h.returns.name} ${t};`);
       this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);
       return { c: `(&${t})`, type: { kind: "structRef", struct: h.returns.name, writable: true } };
     }

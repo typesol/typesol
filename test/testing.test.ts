@@ -36,7 +36,9 @@ describe("typesol/testing", () => {
     const owner = await t.wallet();
     const q = t.returned<Record<string, unknown>>("preview", await t.send(owner, t.ix("preview", { price: 21n, limit: 4n }, { owner })));
     expect(q).toMatchObject({ owner: owner.address, price: 42n, fee: 5, open: false });
+    expect(q).toMatchObject({ limit: 4n, label: "preview" }); // fixed-layout Option and FixedString as plain values
     const n = await t.send(owner, t.ix("preview", { price: 1n, limit: null }, { owner }));
-    expect(t.returned<{ limit: { is_some: boolean } }>("preview", n).limit.is_some).toBe(false);
+    expect(t.returned<{ limit: bigint | null }>("preview", n).limit).toBeNull();
+    expect(() => t.ix("preview", { price: 1n, limit: null }, { owner: owner.address })).toThrow(/signs; pass its keypair/);
   });
 });

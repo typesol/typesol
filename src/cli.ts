@@ -328,17 +328,21 @@ const COMMANDS: Record<string, Command> = {
 
       const { info } = onChain;
       log(`  authority ${info.authority ?? "none: the program is immutable"}${info.slot !== undefined ? `; last deployed in slot ${info.slot}` : ""}`);
-      const { fetchIdl } = await import("./idlpublish.js");
+      const { fetchIdl, metadataAddress } = await import("./idlpublish.js");
       const { canonicalJson } = await import("./onchain.js");
-      let published: object | undefined;
-      try {
-        published = await fetchIdl(onChain.rpc, onChain.address as never);
-      } catch {
-        published = undefined;
-      }
-      if (!published) {
+      // No canonical metadata account means nothing was published; one that cannot be read is an error, not "none".
+      const at = await metadataAddress(onChain.address as never, null);
+      const exists = (await onChain.rpc.getAccountInfo(at, { encoding: "base64" }).send()).value !== null;
+      if (!exists) {
         log("  idl       none published on chain (typesol idl publish)");
         return same ? 0 : 3;
+      }
+      let published: object;
+      try {
+        published = await fetchIdl(onChain.rpc, onChain.address as never);
+      } catch (e) {
+        log(`  IDL ERROR  the IDL at ${at} could not be read: ${(e as Error).message}`);
+        return 3;
       }
       const idlSame = canonicalJson(published) === canonicalJson(res.idl);
       log(
