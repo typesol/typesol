@@ -13,7 +13,7 @@ const enc = getAddressEncoder();
 const createPda = (program: Address, seeds: Uint8Array[]): Address | undefined => {
   const h = createHash("sha256");
   for (const s of seeds) h.update(s);
-  h.update(enc.encode(program));
+  h.update(new Uint8Array(enc.encode(program)));
   h.update("ProgramDerivedAddress");
   const address = getAddressDecoder().decode(h.digest());
   return isOffCurveAddress(address) ? address : undefined;
