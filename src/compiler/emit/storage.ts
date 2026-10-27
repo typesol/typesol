@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { resolveScalarType } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, storageDecl } from "./shared.js";
+import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount } from "./shared.js";
 import { EmitterBase } from "./base.js";
 
 /**
@@ -254,10 +254,12 @@ export abstract class StorageEmitter extends EmitterBase {
           if (!f) return undefined;
           this.assertUsable(a, node);
           const r: Ref = { lv: `d_${a.name}->${f.name}`, type: f.type, writable: isWritable(a.kind), account: a, path: [f.name] };
-          if (f.type.kind === "vec")
+          if (f.type.kind === "vec" && f.type.cap !== undefined) r.vec = this.fixedVec(r.lv, f.type.elem, f.type.cap);
+          else if (f.type.kind === "vec")
             // Growing needs the account's length at instruction entry: only instructions know it.
             r.vec = {
               len: `d_${a.name}->${f.name}__len`,
+              items: r.lv,
               fixed: `sizeof(TSS_${a.kind.struct.name})`,
               elemSize: a.kind.struct.vec!.elemSize,
               resizable: isWritable(a.kind) && !!this.ix,
@@ -287,14 +289,14 @@ export abstract class StorageEmitter extends EmitterBase {
         // TypeScript proved the variant set; this runtime check is the backstop.
         const cond = located.map((l) => `${base.lv}.tag != ${l.vi}`).join(" && ");
         this.line(`if (${cond}) TS_FAIL(TS_ERR_ENUM_VARIANT, "TypeSOL: ${e.name} is not ${names.join("/")}");`);
-        return { ...base, lv: `${base.lv}.v.${first.name}.${first.f.name}`, type: first.f.type, path: undefined, vec: undefined };
+        return this.withFixedVec({ ...base, lv: `${base.lv}.v.${first.name}.${first.f.name}`, type: first.f.type, path: undefined, vec: undefined });
       }
       if (base && base.type.kind === "option" && base.type.inner.kind === "struct") {
         const s = this.model.structs.get(base.type.inner.name)!;
         const f = s.fields.find((x) => x.name === field);
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
         this.line(`if (!${base.lv}.some) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: option is empty");`);
-        return { ...base, lv: `${base.lv}.v.${f.name}`, type: f.type, path: undefined, vec: undefined };
+        return this.withFixedVec({ ...base, lv: `${base.lv}.v.${f.name}`, type: f.type, path: undefined, vec: undefined });
       }
       if (base && base.type.kind === "struct") {
         const s = this.model.structs.get(base.type.name)!;
@@ -302,8 +304,9 @@ export abstract class StorageEmitter extends EmitterBase {
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
         const r: Ref = { ...base, lv: `${base.lv}.${f.name}`, type: f.type, path: base.path && [...base.path, f.name], vec: undefined };
         // Vecs of loaded accounts can be read and updated in place but not resized (no entry length known).
-        if (f.type.kind === "vec") r.vec = { len: `${base.lv}.${f.name}__len`, fixed: `sizeof(TSS_${s.name})`, elemSize: s.vec!.elemSize, resizable: false };
-        return r;
+        if (f.type.kind === "vec" && f.type.cap === undefined)
+          r.vec = { len: `${base.lv}.${f.name}__len`, items: r.lv, fixed: `sizeof(TSS_${s.name})`, elemSize: s.vec!.elemSize, resizable: false };
+        return this.withFixedVec(r);
       }
       return undefined;
     }
@@ -320,8 +323,9 @@ export abstract class StorageEmitter extends EmitterBase {
       const base = this.ref(node.expression.expression);
       if (base && (base.type.kind === "array" || base.type.kind === "vec")) {
         if (node.arguments.length !== 1) this.fail(node, "get(index) takes one argument");
-        const idx = this.index(node.arguments[0], base.type.kind === "array" ? `${base.type.len}ULL` : `(uint64_t)${base.vec!.len}`);
-        return { ...base, lv: `${base.lv}[${idx}]`, type: base.type.elem, path: undefined, vec: undefined };
+        const idx = this.index(node.arguments[0], base.type.kind === "array" ? `${base.type.len}ULL` : vecCount(base.vec!));
+        const lv = base.type.kind === "array" ? `${base.lv}[${idx}]` : `${base.vec!.items}[${idx}]`;
+        return this.withFixedVec({ ...base, lv, type: base.type.elem, path: undefined, vec: undefined });
       }
     }
     return undefined;
@@ -498,6 +502,30 @@ export abstract class StorageEmitter extends EmitterBase {
       this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
+    if (target.type.kind === "vec" && target.type.cap !== undefined && ts.isCallExpression(valueNode) && this.exportName(valueNode.expression) === "fixedVec") {
+      const list = valueNode.arguments[0];
+      if (valueNode.arguments.length !== 1 || !ts.isArrayLiteralExpression(list)) this.fail(valueNode, "fixedVec([…]) takes an array literal");
+      return this.writeAggregate(target, list);
+    }
+    if (target.type.kind === "vec" && target.type.cap !== undefined && ts.isArrayLiteralExpression(valueNode)) {
+      // `list = [a, b]`: built in a temporary (the elements may read the old list), the unused slots zeroed.
+      const t = target.type as FieldType & { kind: "vec"; cap: number };
+      const els = valueNode.elements;
+      if (els.length > t.cap) this.fail(valueNode, `${els.length} elements do not fit in ${typeName(t)}`);
+      const tmp = this.tmp("fv");
+      this.line(`${fixedVecC(t)} ${tmp};`);
+      this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
+      this.line(`${tmp}.len = ${els.length};`);
+      els.forEach((e, i) => {
+        if (ts.isSpreadElement(e)) this.fail(e, "list the elements one by one");
+        const sub: Ref = { lv: `${tmp}.items[${i}]`, type: t.elem, writable: true };
+        const vt = this.storageValueType(t.elem);
+        if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(e, vt), vt, e)).c) + ";");
+        else this.writeAggregate(sub, e);
+      });
+      this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      return;
+    }
     if (ts.isObjectLiteralExpression(valueNode)) {
       if (target.type.kind !== "struct") this.fail(valueNode, `expected a ${typeName(target.type)}, not an object literal`);
       const s = this.model.structs.get(target.type.name)!;
@@ -528,6 +556,17 @@ export abstract class StorageEmitter extends EmitterBase {
       this.fail(valueNode, `expected a ${typeName(target.type)}: an object literal or another ${typeName(target.type)}`);
     // Same-typed places are either distinct or identical (`a.p = a.p`); ts_copy skips the latter.
     this.line(`ts_copy(&${target.lv}, &${src.lv}, sizeof(${target.lv}));`);
+  }
+
+  /** The Vec view of a FixedVec stored at `lv` (`{ len, items[cap] }`). */
+  protected fixedVec(lv: string, elem: FieldType, cap: number): NonNullable<Ref["vec"]> {
+    return { len: `${lv}.len`, items: `${lv}.items`, fixed: "", elemSize: this.fieldBytes(elem), resizable: false, cap };
+  }
+
+  /** A place whose type is a FixedVec gets its Vec view. */
+  protected withFixedVec(r: Ref): Ref {
+    if (r.type.kind === "vec" && r.type.cap !== undefined) r.vec = this.fixedVec(r.lv, r.type.elem, r.type.cap);
+    return r;
   }
 
   /** `arr.get(i)` reads storage rather than calling anything. */
@@ -609,8 +648,10 @@ export abstract class StorageEmitter extends EmitterBase {
         return this.fieldBytes(t.elem) * t.len;
       case "struct":
         return this.model.structs.get(t.name)!.size!;
-      case "string":
       case "vec":
+        if (t.cap !== undefined) return 4 + this.fieldBytes(t.elem) * t.cap;
+        throw new Error("unreachable: variable-size field has no fixed size");
+      case "string":
         throw new Error("unreachable: variable-size field has no fixed size");
     }
   }

@@ -18,6 +18,7 @@ import {
   type ErrorDef,
   type FieldType,
   type GenericHelper,
+  fixedVecName,
   type Helper,
   type HelperNode,
   type Instruction,
@@ -90,6 +91,7 @@ const TYPE_EXPORTS = new Set([
   "TokenInterface",
   "FixedArray",
   "FixedString",
+  "FixedVec",
   "Program",
   "UncheckedProgram",
   "CpiAccount",
@@ -283,7 +285,7 @@ export function analyze(entry: string): Analysis {
   const isExported = (n: ts.Node) => ts.canHaveModifiers(n) && (ts.getModifiers(n) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
   const declare = (name: ts.Identifier, file: ts.SourceFile) => {
     // These prefixes name the IDL types TypeSOL generates for FixedString<N>, Option and data enums in account data.
-    if (/^(FixedString\d|FixedOption_|FixedEnum_)/.test(name.text))
+    if (/^(FixedString\d|FixedVec\d|FixedOption_|FixedEnum_)/.test(name.text))
       reporter.fail(name, `"${name.text}" is reserved for IDL types TypeSOL generates; pick another name`);
     const prev = declared.get(name.text);
     if (prev) reporter.fail(name, `"${name.text}" is already declared in ${path.basename(prev)}; names are program-wide`);
@@ -392,6 +394,7 @@ export function analyze(entry: string): Analysis {
   }
 
   const fstrings = new Set<number>();
+  const fixedVecs = new Map<string, FieldType & { kind: "vec" }>();
   const scopeFor = (imports: Map<string, string>): TypeScope => ({ imports, enums, options, dataEnums });
   for (const c of pendingConstTypes) {
     reporter.guard(() => {
@@ -403,7 +406,7 @@ export function analyze(entry: string): Analysis {
       c.def.type = t;
     });
   }
-  const structs = analyzeStructs(interfaces, aliases, dataEnums, reporter, scopeFor, fstrings);
+  const structs = analyzeStructs(interfaces, aliases, dataEnums, reporter, scopeFor, fstrings, fixedVecs);
 
   const checker = program.getTypeChecker();
   // Local `const f = (…) => …` in any function body (and in those local functions): lifted to helpers.
@@ -481,6 +484,14 @@ export function analyze(entry: string): Analysis {
     if (!ix) continue;
     instructions.push(ix);
     for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
+    // Arguments are Borsh: a FixedVec's padded layout is account data only.
+    for (const a of ix.args) {
+      const seen = new Set<string>();
+      collectStructs(a.type, structs, dataEnums, seen);
+      for (const s of seen)
+        if (structs.get(s)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined))
+          reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} holds a FixedVec, which only account data can; pass a Vec<T> argument instead`);
+    }
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
     if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
     for (const a of ix.accounts)
@@ -538,6 +549,7 @@ export function analyze(entry: string): Analysis {
       accountStructs,
       argStructs,
       fstrings,
+      fixedVecs,
     },
     sourceFile,
     files: programFiles(program, entryPath).map((f) => f.fileName),
@@ -663,6 +675,7 @@ function analyzeStructs(
   reporter: Reporter,
   scopeFor: (imports: Map<string, string>) => TypeScope,
   fstrings: Set<number>,
+  fixedVecs: Map<string, FieldType & { kind: "vec" }>,
 ): Map<string, StructDef> {
   const names = new Set(items.map((d) => d.decl.name.text));
   const enumNames = new Set(aliases.map((a) => a.decl.name.text));
@@ -710,6 +723,17 @@ function analyzeStructs(
       if (!Number.isInteger(len) || len < 1 || len > MAX_ARRAY_LEN) reporter.fail(targs[1], `array length must be 1..${MAX_ARRAY_LEN}`);
       return { kind: "array", elem, len };
     }
+    if (ext === "FixedVec") {
+      if (!targs[0]) reporter.fail(node, "FixedVec<T, N> needs an element type");
+      const elem = fieldType(targs[0]);
+      if (elem.kind === "string" || elem.kind === "vec") reporter.fail(targs[0], "FixedVec elements must have a fixed size (use FixedString<N>)");
+      const cap = numericLiteralArg(targs[1]);
+      if (cap === undefined || !Number.isInteger(cap) || cap < 1 || cap > MAX_ARRAY_LEN)
+        reporter.fail(node, `FixedVec<T, N> needs a literal capacity 1..${MAX_ARRAY_LEN}, e.g. FixedVec<u64, 16>`);
+      const t = { kind: "vec" as const, elem, cap };
+      fixedVecs.set(fixedVecName(t), t);
+      return t;
+    }
     if (ext === "FixedString") {
       const cap = numericLiteralArg(targs[0]);
       if (cap === undefined || !Number.isInteger(cap) || cap < 1 || cap > MAX_STRING_CAP)
@@ -719,7 +743,10 @@ function analyzeStructs(
     }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && names.has(node.typeName.text) && !targs.length)
       return { kind: "struct", name: node.typeName.text };
-    reporter.fail(node, "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, string (events only) or another struct");
+    reporter.fail(
+      node,
+      "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T> (last), string (events only) or another struct",
+    );
   };
 
   for (const { decl, imports: fileImports } of items) {
@@ -736,8 +763,11 @@ function analyzeStructs(
         const problem = cNameProblem(name);
         if (problem) reporter.fail(m.name, problem);
         const type = fieldType(m.type);
-        if (type.kind === "vec" && m !== decl.members[decl.members.length - 1])
-          reporter.fail(m, "a Vec<T> field must be the last field of the struct (its length changes the account size)");
+        if (type.kind === "vec" && type.cap === undefined && m !== decl.members[decl.members.length - 1])
+          reporter.fail(
+            m,
+            "a Vec<T> field must be the last field of the struct (its length changes the account size); use FixedVec<T, N> for a list of at most N elsewhere",
+          );
         fields.push({ name, type });
       }
       checkSnakeDuplicates(
@@ -841,8 +871,12 @@ function analyzeStructs(
         if (e.variable) return undefined;
         return 1 + e.payload;
       }
-      case "vec":
-        return 4; // the u32 length; elements live past the fixed part
+      case "vec": {
+        if (t.cap === undefined) return 4; // the u32 length; elements live past the fixed part
+        const e = sizeOf(t.elem, at);
+        if (e === undefined) reporter.fail(at, "FixedVec elements must have a fixed size");
+        return 4 + e * t.cap;
+      }
       case "string":
         return undefined;
       case "fstring":
@@ -875,7 +909,7 @@ function analyzeStructs(
     if (total !== undefined && total + 8 > MAX_ACCOUNT_SIZE)
       reporter.fail(s.node.name, `${s.name} is ${total + 8} bytes with its discriminator; Solana accounts are at most ${MAX_ACCOUNT_SIZE} bytes`);
     const last = s.fields.at(-1);
-    if (last?.type.kind === "vec") {
+    if (last?.type.kind === "vec" && last.type.cap === undefined) {
       const elemSize = sizeOf(last.type.elem, s.node);
       if (elemSize === undefined) reporter.fail(s.node, "Vec elements must have a fixed size");
       s.vec = { name: last.name, elem: last.type.elem, elemSize };
@@ -1159,7 +1193,8 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   const pushes = (() => {
     let found = false;
     const visit = (n: ts.Node) => {
-      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push") found = true;
+      // Vec.push(value, payer) grows the account; FixedVec.push(value) does not.
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && n.arguments.length === 2) found = true;
       ts.forEachChild(n, visit);
     };
     visit(fn.body);

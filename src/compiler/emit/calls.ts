@@ -33,6 +33,7 @@ import {
   fieldC,
   storageDecl,
   accountMismatch,
+  vecCount,
 } from "./shared.js";
 import { ExpressionEmitter } from "./expressions.js";
 
@@ -513,7 +514,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const args = node.arguments;
     const vt = v.type as FieldType & { kind: "vec" };
     const info = v.vec!;
-    const elemRef = (idx: string): Ref => ({ ...v, lv: `${v.lv}[${idx}]`, type: vt.elem, vec: undefined, path: undefined });
+    const elemRef = (idx: string): Ref => this.withFixedVec({ ...v, lv: `${info.items}[${idx}]`, type: vt.elem, vec: undefined, path: undefined });
+    const count = vecCount(info);
     /**
      * Evaluate the value into a temporary first (JS evaluates arguments before the call runs), then return a
      * writer for the element: `push(v.length)` sees the old length, `set(i, pop())` checks i after the pop.
@@ -538,6 +540,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // Elements removed or replaced here must not be referenced afterwards.
     const elemPaths = () => (ts.isPropertyAccessExpression(node.expression) ? this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`) : undefined);
     const resize = (newLen: string, payer: string) => {
+      if (info.cap !== undefined) return; // a FixedVec has its room already
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of declared Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
@@ -548,11 +551,22 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (!this.storageValueType(vt.elem)) this.assertNotAliased(elemPaths(), node);
         const i = this.indexValue(args[0]);
         const write = stageElem(args[1]);
-        this.checkIndex(i, `(uint64_t)${info.len}`);
+        this.checkIndex(i, count);
         write(elemRef(i));
         return undefined;
       }
       case "push": {
+        if (info.cap !== undefined) {
+          if (args.length !== 1) this.fail(node, "push(value) on a FixedVec takes the value (it has room for its capacity already)");
+          needWritable();
+          const write = stageElem(args[0]);
+          const n = this.tmp("n");
+          this.line(`uint64_t ${n} = ${count};`);
+          this.line(`if (${n} >= ${info.cap}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: push() on a full FixedVec");`);
+          this.line(`${info.len} = (uint32_t)(${n} + 1);`);
+          write(elemRef(n));
+          return undefined;
+        }
         if (args.length !== 2) this.fail(node, "push(value, payer) takes the value and a Mut<Signer> that pays for the extra rent");
         needWritable();
         const payer = this.accountParam(args[1], "the payer");
@@ -572,7 +586,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.assertNotAliased(elemPaths(), node);
         const st = this.storageValueType(vt.elem);
         const n = this.tmp("n");
-        this.line(`uint64_t ${n} = (uint64_t)${info.len};`);
+        this.line(`uint64_t ${n} = ${count};`);
         this.line(`if (${n} == 0) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pop() on an empty Vec");`);
         // Structs and arrays are dropped (pop() as a statement); read .get(length - 1) first to keep one.
         let result: Value | undefined;

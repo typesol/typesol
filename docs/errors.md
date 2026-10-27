@@ -26,7 +26,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 4102 | cast overflow (InvalidNumericConversion) |
 | 5100 / 5101 | arithmetic overflow (including shifts) / division by zero |
 | 5103 | sysvar unavailable |
-| 5104 | index out of bounds (arrays, Vecs, remaining accounts, `pop()` on an empty Vec) |
+| 5104 | index out of bounds (arrays, Vecs, remaining accounts, `pop()` on an empty Vec, `push` on a full FixedVec) |
 | 5105 | string longer than the FixedString capacity |
 | 5106 | missing or mismatched return data |
 | 5107 | event larger than 1024 bytes |

@@ -427,7 +427,11 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   const use = (..._n: string[]) => undefined;
 
   // ---- TypeSOL fixed layouts in account data ------------------------------------------------------------------
-  type Special = { kind: "fstring"; cap: number } | { kind: "foption"; inner: IdlType } | { kind: "fenum"; base: string; size: number };
+  type Special =
+    | { kind: "fstring"; cap: number }
+    | { kind: "fvec"; elem: IdlType; cap: number }
+    | { kind: "foption"; inner: IdlType }
+    | { kind: "fenum"; base: string; size: number };
   const special = (n: string): Special | undefined => {
     if (!typesol) return undefined;
     const d = defs.get(n);
@@ -435,6 +439,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     if (f.length !== 2) return undefined;
     const arrayLen = (t: IdlType) => (typeof t === "object" && t.array ? Number(t.array[1]) : NaN);
     if (/^FixedString\d+$/.test(n) && f[0]!.name === "len" && Number.isInteger(arrayLen(f[1]!.type))) return { kind: "fstring", cap: arrayLen(f[1]!.type) };
+    if (/^FixedVec\d+_/.test(n) && f[0]!.name === "len" && f[1]!.name === "items" && Number.isInteger(arrayLen(f[1]!.type)))
+      return { kind: "fvec", elem: (f[1]!.type as { array: [IdlType, number] }).array[0], cap: arrayLen(f[1]!.type) };
     if (n.startsWith("FixedOption_") && f[0]!.name === "is_some") return { kind: "foption", inner: f[1]!.type };
     if (n.startsWith("FixedEnum_") && f[0]!.name === "tag" && defs.has(n.slice("FixedEnum_".length)) && Number.isInteger(arrayLen(f[1]!.type)))
       return { kind: "fenum", base: n.slice("FixedEnum_".length), size: 1 + arrayLen(f[1]!.type) };
@@ -504,12 +510,14 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     const n = definedName(t)!;
     const s = special(n);
     if (s?.kind === "fstring") return "string";
+    if (s?.kind === "fvec") return `Array<${tsType(s.elem, dir)}>`;
     if (s?.kind === "foption") return `${tsType(s.inner, dir)} | null`;
     if (s?.kind === "fenum") return dir === "in" ? `${tsName(s.base)}Args` : tsName(s.base);
     return isUnitEnum(defs.get(n)!) || dir === "out" ? tsName(n) : `${tsName(n)}Args`;
   }
   let needsFixedString = false;
   let needsFixedOption = false;
+  let needsFixedVec = false;
   let needsUnitEnum = false;
   function codec(t: IdlType): string {
     if (typeof t === "string") {
@@ -543,6 +551,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     const n = definedName(t)!;
     const s = special(n);
     if (s?.kind === "fstring") return ((needsFixedString = true), `fixedString(${s.cap})`);
+    if (s?.kind === "fvec") {
+      if (idlSize(s.elem) === undefined) throw new ClientIdlError(`${n}: the elements have no fixed size`);
+      return ((needsFixedVec = true), `fixedVec(${codec(s.elem)}, ${idlSize(s.elem)}, ${s.cap})`);
+    }
     if (s?.kind === "foption") {
       const size = idlSize(s.inner);
       if (size === undefined) throw new ClientIdlError(`${n}: the value has no fixed size`);
@@ -570,6 +582,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     if (n === undefined) return undefined;
     const sp = special(n);
     if (sp?.kind === "fstring") return 4 + sp.cap;
+    if (sp?.kind === "fvec") {
+      const e = idlSize(sp.elem);
+      return e === undefined ? undefined : 4 + e * sp.cap;
+    }
     if (sp?.kind === "fenum") return sp.size;
     if (sp?.kind === "foption") {
       const v = idlSize(sp.inner);
@@ -983,6 +999,28 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         `      return offset + tagSize + size;`,
         `    },`,
         `    read: (bytes, offset) => [tag.read(bytes, offset)[0] ? inner.read(bytes, offset + tagSize)[0] : null, offset + tagSize + size],`,
+        `  });`,
+      ],
+    });
+  if (needsFixedVec)
+    helperDefs.push({
+      name: "fixedVec",
+      lines: [
+        `/** TypeSOL FixedVec<T, N> in account data: u32 length, then room for N elements (unused ones zero). */`,
+        `const fixedVec = <From, To extends From>(item: Codec<From, To>, size: number, cap: number): Codec<From[], To[]> =>`,
+        `  createCodec<From[], To[]>({`,
+        `    fixedSize: 4 + size * cap,`,
+        `    write: (value, bytes, offset) => {`,
+        `      if (value.length > cap) throw new Error(value.length + " elements; the field holds " + cap);`,
+        `      bytes.fill(0, offset, offset + 4 + size * cap);`,
+        `      getU32Codec().write(value.length, bytes, offset);`,
+        `      value.forEach((v, i) => item.write(v, bytes, offset + 4 + i * size));`,
+        `      return offset + 4 + size * cap;`,
+        `    },`,
+        `    read: (bytes, offset) => {`,
+        `      const n = Math.min(getU32Codec().read(bytes, offset)[0], cap);`,
+        `      return [Array.from({ length: n }, (_, i) => item.read(bytes, offset + 4 + i * size)[0]), offset + 4 + size * cap];`,
+        `    },`,
         `  });`,
       ],
     });

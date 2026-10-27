@@ -77,6 +77,24 @@ export interface Vec<T> {
   [Symbol.iterator](): Iterator<T>;
 }
 
+/**
+ * A list stored inline with room for N elements: a u32 length, then N slots (Anchor `Vec<T>` with `#[max_len(N)]`, but
+ * always 4 + N × size(T) bytes). Unlike `Vec<T>` it can be any field, any number of times, and in nested structs;
+ * `push` fails (5104) when it is full. Write a whole one with `fixedVec([a, b])`.
+ */
+export interface FixedVec<T, N extends number> {
+  readonly length: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  push(value: T): void;
+  pop(): T;
+  clear(): void;
+  [Symbol.iterator](): Iterator<T>;
+  readonly __capacity?: N;
+}
+/** A FixedVec value holding these elements (`acct.owners = fixedVec([a, b])`, `{ owners: fixedVec([]) }`). */
+export declare function fixedVec<T>(items: T[]): FixedVec<T, never>;
+
 /** One extra account passed after the declared ones. Nothing about it is checked until you check it. */
 export interface RemainingAccount {
   readonly key: Pubkey;

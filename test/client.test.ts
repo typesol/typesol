@@ -191,6 +191,24 @@ describe("generated client: TypeSOL storage types", () => {
     expect(c.accounts.Book.decode(accountData(d.svm, bookPda)).approver).toBeNull();
   });
 
+  it("fixedvec: FixedVec fields decode as arrays and encode back to the same bytes", async () => {
+    const d = await load<Any>("test/fixtures/fixedvec.ts");
+    const c = d.client.fixedvec;
+    const payer = await fundedSigner(d.svm);
+    const create = await c.create({ payer });
+    expectOk(await send(d.svm, payer, [create]));
+    const board = create.accounts[1].address;
+    const other = (await generateKeyPairSigner()).address;
+    expectOk(await send(d.svm, payer, [await c.addOwner({ payer, board }, { owner: other })]));
+    expectOk(await send(d.svm, payer, [await c.addMember({ payer, board }, { key: other, weight: 9n })]));
+    const b = c.accounts.Board.decode(accountData(d.svm, board));
+    expect(b.owners).toEqual([payer.address, other]);
+    expect(b.members).toEqual([{ who: other, weight: 9n }]);
+    expect(b.last.notes).toEqual(["hi"]);
+    expect(b.log).toEqual([9n]);
+    expect([...c.accounts.Board.encode(b)]).toEqual([...accountData(d.svm, board)]);
+  });
+
   it("profiles: strings in events, FixedString arrays, PDA from a string argument", async () => {
     const d = await load<Any>("examples/profiles.ts");
     const c = d.client.profiles;

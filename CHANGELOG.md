@@ -6,6 +6,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `FixedVec<T, N>`: a list with room for N elements (u32 length + N slots, like `FixedString<N>`) as any account field,
+  several per struct and in nested structs, with `get` / `set` / `push` / `pop` / `clear` / `.length` / `for … of`;
+  `push` on a full one fails with 5104, `fixedVec([…])` writes a whole one. The IDL describes each as a
+  `FixedVec<N>_<T>` struct `{ len, items }`; the generated client reads and writes them as arrays. The
+  basics/favorites port uses one.
 - Bubblegum V2: `createTreeV2`, `mintV2` (optionally into a Metaplex Core collection), `transferV2` and `burnV2`, which
   take the leaf (root, data and creator hashes, nonce, index) and pass its Merkle proof on from the remaining accounts;
   the Core `BubblegumV2` collection plugin. Checked against Bubblegum, mpl-account-compression, mpl-noop and Core
