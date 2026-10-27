@@ -5,6 +5,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.16.0 — 2026-10-28
+
+Everyday TypeScript that Anchor developers reach for (`for … of`, `??`, destructuring, `**`, structs returned from
+helpers and instructions, strings in enum variants), tools to move an Anchor program over (`typesol port`, a migration
+guide) and to work on it (`typesol/testing`, an editor plugin, `verify` against the cluster), Token-2022 extension
+setup and Metaplex creators. No IDL or error-code changes for existing programs. Not externally audited (see
+SECURITY.md).
+
 ### Added
 - Metaplex `createV3(…, isMutable, { creators, collection }, signerSeeds?)`: 1–5 creators (shares checked to add up to 100
   when literal) and an unverified collection mint, checked against the real Token Metadata program.
