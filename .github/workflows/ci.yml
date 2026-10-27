@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call: # run by release.yml before publishing, and by macos.yml with another runner
+  workflow_call: # run by macos.yml with another runner
     inputs:
       os:
         description: JSON list of runner labels for the test matrix
@@ -13,10 +13,6 @@ on:
         description: Run the Anchor differential job ("yes" or "no")
         type: string
         default: "yes"
-      ref:
-        description: Git ref to test (release.yml passes the tag); empty means the triggering commit
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -38,8 +34,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -98,8 +92,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
