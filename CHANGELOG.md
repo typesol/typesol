@@ -6,6 +6,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `typesol/ts-plugin`: a TypeScript language-service plugin that shows the compiler's own errors in the editor, for
+  the unsaved text, once TypeScript has none. `typesol init` projects enable it in `programs/tsconfig.json` (the
+  editor must use the workspace's TypeScript). `typesol check` gains `--json` and `--stdin`.
 - `typesol/testing`: `testProgram(name, import.meta.url)` builds a project program into LiteSVM, with `wallet()`, `pda(…)`,
   `ix(name, args, accounts)` (accounts by name, flags and fixed addresses from the IDL, plain argument values),
   `send`, `ok`, `errorCode`, `account` (decoded to bigints and address strings), `returned` and `balance`. The

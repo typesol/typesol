@@ -142,7 +142,17 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
     "programs/tsconfig.json":
       JSON.stringify(
         {
-          compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true, types: [], lib: ["ES2022"] },
+          compilerOptions: {
+            target: "ES2022",
+            module: "ESNext",
+            moduleResolution: "Bundler",
+            strict: true,
+            noEmit: true,
+            types: [],
+            lib: ["ES2022"],
+            // TypeSOL's own errors in the editor (with the workspace's TypeScript; see docs/cli.md).
+            plugins: [{ name: "typesol/ts-plugin" }],
+          },
           include: ["**/*.ts"],
         },
         null,

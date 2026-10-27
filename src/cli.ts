@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
+import ts from "typescript";
 import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Sbpf } from "./compiler/index.js";
 import { generateCpi, type Idl } from "./cpigen.js";
 import { generateClient, writeClient, type ClientIdl } from "./clientgen.js";
@@ -134,13 +135,29 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   check: {
-    usage: "typesol check <program.ts>",
-    help: "Typecheck and validate the TypeSOL subset without building.",
-    options: {},
-    run(_, args) {
-      const { model } = generate(mustExist(one(args, "<program.ts>")));
-      log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
-      return 0;
+    usage: "typesol check <program.ts> [--json] [--stdin]",
+    help: [
+      "Typecheck and validate the TypeSOL subset without building.",
+      "--json    print { ok, diagnostics: [{ file, line, column, message }] } (exit 1 when there are diagnostics)",
+      "--stdin   read <program.ts>'s text from stdin instead of the file (an editor's unsaved buffer); its imports are read from disk",
+    ].join("\n  "),
+    options: { json: { type: "boolean" }, stdin: { type: "boolean" } },
+    run(v, args) {
+      const file = path.resolve(one(args, "<program.ts>"));
+      const restore = v.stdin ? overrideFile(file, readFileSync(0, "utf8")) : undefined;
+      try {
+        if (!v.stdin) mustExist(file);
+        const { model } = generate(file);
+        if (v.json) log(JSON.stringify({ ok: true, diagnostics: [] }));
+        else log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
+        return 0;
+      } catch (e) {
+        if (!v.json || !(e instanceof CompileError)) throw e;
+        log(JSON.stringify({ ok: false, diagnostics: e.diagnostics }));
+        return 1;
+      } finally {
+        restore?.();
+      }
     },
   },
   "emit-c": {
@@ -401,6 +418,18 @@ function readJson(file: string): unknown {
   } catch (e) {
     throw new Error(`${file}: not valid JSON (${(e as Error).message})`);
   }
+}
+
+/** Make the compiler read `text` for `file` (instead of the disk) until the returned function is called. */
+function overrideFile(file: string, text: string): () => void {
+  const sys = ts.sys;
+  const { readFile, fileExists } = sys;
+  sys.readFile = (p, enc) => (path.resolve(p) === file ? text : readFile.call(sys, p, enc));
+  sys.fileExists = (p) => path.resolve(p) === file || fileExists.call(sys, p);
+  return () => {
+    sys.readFile = readFile;
+    sys.fileExists = fileExists;
+  };
 }
 
 /** The Solana CLI's cluster monikers, as `solana --url` accepts them; anything else is used as given. */
