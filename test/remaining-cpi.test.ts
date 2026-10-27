@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CompileError, generate } from "../src/compiler/index.js";
-import { customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "./harness.js";
+import { BN, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "./harness.js";
 
 const fixture = (f: string) => fileURLToPath(new URL(`./fixtures/${f}`, import.meta.url));
 
@@ -47,6 +47,20 @@ describe("remaining accounts in a CPI", () => {
     // Order kept after a spread: rest (read-only), rest (as passed), then the payer again (a signer). The runtime
     // merges a repeated account's privileges, so `w` is writable in both places.
     expect(result(expectOk(await call("twice", rest)))).toBe(7n + 100n * 2n + 10000n * 1n);
+  });
+
+  it("passes a slice of them, and refuses slices out of range (5104)", async () => {
+    const payer = await fundedSigner(d.svm);
+    const rest = await Promise.all(Array.from({ length: 5 }, async (_, i) => ({ address: (await generateKeyPairSigner()).address, writable: i === 1 })));
+    const slice = (from: number, to: number) =>
+      send(d.svm, payer, [
+        ix(d, "sliced", { from: new BN(from), to: new BN(to) }, [{ address: payer.address, signer: payer }, { address: callee.programId }, ...rest]),
+      ]);
+    expect(result(expectOk(await slice(1, 4)))).toBe(3n);
+    expect(result(expectOk(await slice(0, 5)))).toBe(5n);
+    expect(result(expectOk(await slice(5, 5)))).toBe(0n);
+    expect(customError(await slice(2, 6))).toBe(5104);
+    expect(customError(await slice(3, 2))).toBe(5104);
   });
 
   it("refuses a CPI that would list more than 32 accounts (5113)", async () => {

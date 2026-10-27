@@ -705,6 +705,24 @@ export abstract class CpiEmitter extends CallEmitter {
     this.fail(node.expression, `Bubblegum supports createTree and mint, not ${method}`);
   }
 
+  /**
+   * `remainingAccounts()` (or a const bound to it): every remaining account; `rest.slice(a, b?)`: indexes a..b of them
+   * (both checked against the count, 5104). C expressions for the range, relative to the first remaining account.
+   */
+  protected remainingRange(node: ts.Expression): { from: string; to: string } | undefined {
+    const n = this.ix!.accounts.length;
+    const count = `(params->ka_num - ${n})`;
+    if (this.isRemaining(node)) return { from: "0", to: count };
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "slice") return undefined;
+    if (!this.isRemaining(node.expression.expression)) return undefined;
+    if (node.arguments.length < 1 || node.arguments.length > 2) this.fail(node, "slice(start, end?) takes one or two indexes");
+    // Both ends may equal the count (an empty slice at the end).
+    const from = this.index(node.arguments[0]!, `${count} + 1`);
+    const to = node.arguments[1] ? this.index(node.arguments[1], `${count} + 1`) : count;
+    this.line(`if (${from} > ${to}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: remaining accounts slice out of range");`);
+    return { from, to };
+  }
+
   protected invoke(node: ts.CallExpression): undefined {
     const a = node.arguments;
     if (a.length !== 3 && a.length !== 4) this.fail(node, "invoke(program, accounts, data, signerSeeds?) takes 3 or 4 arguments");
@@ -728,16 +746,17 @@ export abstract class CpiEmitter extends CallEmitter {
     if (!ts.isArrayLiteralExpression(a[1])) this.fail(a[1], "accounts must be an array literal");
     const metas: string[] = [];
     // Entries after the first spread are appended at runtime, in order.
-    const parts: ({ kind: "meta"; c: string } | { kind: "spread"; mode: "asPassed" | "readonly" | "writable" })[] = [];
+    type Spread = { kind: "spread"; mode: "asPassed" | "readonly" | "writable"; from: string; to: string };
+    const parts: ({ kind: "meta"; c: string } | Spread)[] = [];
     for (const el of a[1].elements) {
       if (ts.isSpreadElement(el)) {
+        if (!this.ix) this.fail(el, "remainingAccounts() is only available in instructions");
         const inner = el.expression;
         const fnName = ts.isCallExpression(inner) ? this.exportName(inner.expression) : undefined;
-        if (this.isRemaining(inner)) parts.push({ kind: "spread", mode: "asPassed" });
-        else if (ts.isCallExpression(inner) && (fnName === "readonly" || fnName === "writable") && inner.arguments.length === 1 && this.isRemaining(inner.arguments[0]!))
-          parts.push({ kind: "spread", mode: fnName });
-        else this.fail(el, "spread the remaining accounts: ...remainingAccounts(), ...readonly(rest) or ...writable(rest)");
-        if (!this.ix) this.fail(el, "remainingAccounts() is only available in instructions");
+        const wrapped = ts.isCallExpression(inner) && (fnName === "readonly" || fnName === "writable") && inner.arguments.length === 1;
+        const range = this.remainingRange(wrapped ? inner.arguments[0]! : inner);
+        if (!range) this.fail(el, "spread the remaining accounts: ...remainingAccounts(), ...readonly(rest), ...writable(rest) or rest.slice(a, b)");
+        parts.push({ kind: "spread", mode: wrapped ? (fnName as "readonly" | "writable") : "asPassed", ...range });
         continue;
       }
       const fn = ts.isCallExpression(el) ? this.exportName(el.expression) : undefined;
@@ -819,12 +838,9 @@ export abstract class CpiEmitter extends CallEmitter {
       const cnt = this.tmp("nmetas");
       this.line(`SolAccountMeta ${metasName}[TS_MAX_ACCOUNTS];`);
       this.line(`uint64_t ${cnt} = 0;`);
-      const rest = `(params->ka_num - ${n})`;
-      const fixed = metas.length;
-      const spreads = parts.filter((p) => p.kind === "spread").length;
-      this.line(
-        `if (${fixed} + ${spreads} * ${rest} > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${MAX_ACCOUNTS} accounts");`,
-      );
+      const spreads = parts.filter((p): p is Spread => p.kind === "spread");
+      const total = [String(metas.length), ...spreads.map((p) => `(${p.to} - ${p.from})`)].join(" + ");
+      this.line(`if (${total} > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${MAX_ACCOUNTS} accounts");`);
       for (const p of parts) {
         if (p.kind === "meta") {
           this.line(`${metasName}[${cnt}++] = (SolAccountMeta)${p.c};`);
@@ -832,7 +848,7 @@ export abstract class CpiEmitter extends CallEmitter {
         }
         const i = this.tmp("ri");
         const r = this.tmp("racct");
-        this.line(`for (uint64_t ${i} = ${n}; ${i} < params->ka_num; ${i}++) {`);
+        this.line(`for (uint64_t ${i} = ${n} + ${p.from}; ${i} < ${n} + ${p.to}; ${i}++) {`);
         this.line(`  TsAccount *${r} = params->ka[${i}];`);
         if (p.mode === "writable") this.line(`  TS_TRY(ts_check_writable(${r}));`);
         const w = p.mode === "asPassed" ? `${r}->is_writable` : p.mode === "writable" ? "1" : "0";

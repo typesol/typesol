@@ -92,6 +92,8 @@ export interface RemainingAccount {
 export interface RemainingAccounts extends Iterable<CpiAccount> {
   readonly length: u64;
   get(index: bigint): RemainingAccount;
+  /** Indexes start..end (end: all) of them, to spread into a CPI: `...readonly(rest.slice(0n, proofLength))`. */
+  slice(start: bigint, end?: bigint): RemainingAccounts;
 }
 export declare function remainingAccounts(): RemainingAccounts;
 
