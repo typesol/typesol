@@ -9,3 +9,8 @@ export function derive(seedA: string, seedB: Pubkey, seedN: u64, program: Pubkey
 export function check(target: AccountInfo, seedA: string, bump: u8): void {
   requirePda(target, [seedA], bump);
 }
+
+/** 15 seeds: the most a bump search takes. */
+export function mostSeeds(program: Pubkey): Pubkey {
+  return findProgramAddress(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o"], program);
+}

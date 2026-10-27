@@ -82,4 +82,13 @@ describe("PDA derivation (sha256 + curve check) matches the runtime's", () => {
     const r = await send(d.svm, payer, [ix(d, "derive", { seed_a: "x".repeat(33), seed_b: pk(payer.address), seed_n: new BN(1), program: pk(program) }, [])]);
     expect(customError(r)).toBe(2006);
   });
+
+  it("searches with 15 seeds, the most the syscall takes (16 is a compile error)", async () => {
+    const payer = await fundedSigner(d.svm);
+    const program = (await generateKeyPairSigner()).address;
+    const seeds = "abcdefghijklmno".split("");
+    const [expected] = await getProgramDerivedAddress({ programAddress: program, seeds });
+    const ok = expectOk(await send(d.svm, payer, [ix(d, "most_seeds", { program: pk(program) }, [])]));
+    expect(getAddressDecoder().decode(ok.returnData().data())).toBe(expected);
+  });
 });

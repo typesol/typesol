@@ -12,7 +12,7 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   `create`, `signer` and `findProgramAddress` all use it. Benchmarks: counter.initialize 3,030 → 1,872 CU,
   escrow.make 5,974 → 3,638; in the official examples escrow take_offer 14,519 → 7,117 and close_user 1,728 → 586.
   Binaries grow 0.4–1.2 KB. New tests compare it with @solana/kit's derivation over random seeds, canonical bumps
-  below 255 and on-curve bumps.
+  below 255 and on-curve bumps. Needs the curve25519 syscalls (active on mainnet-beta since epoch 637).
 
 ## 0.13.0 — 2026-10-27
 
