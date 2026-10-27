@@ -37,7 +37,7 @@ import { CallEmitter } from "./calls.js";
 /** One piece of a Metaplex instruction's Borsh data: fixed bytes, or a value lowered and serialized in source order. */
 type MplField = { bytes: number[] } | { value: ts.Expression; type: ValueType };
 
-/** Metaplex Core's Plugin / PluginType enums, in order (VerifiedCreators and later are not supported). */
+/** Metaplex Core's Plugin / PluginType enums, in order (MasterEdition, VerifiedCreators and Autograph values are refused). */
 const CORE_PLUGINS = [
   "Royalties",
   "FreezeDelegate",
@@ -52,6 +52,9 @@ const CORE_PLUGINS = [
   "MasterEdition",
   "AddBlocker",
   "ImmutableMetadata",
+  "VerifiedCreators",
+  "Autograph",
+  "BubblegumV2",
 ] as const;
 const CORE_PLUGIN_FIELDS: Record<string, string[]> = {
   Royalties: ["basisPoints", "creators"],
@@ -291,11 +294,35 @@ export abstract class CpiEmitter extends CallEmitter {
     return undefined;
   }
 
-  /** Emit a CPI to the program account `program` with these metas (account, writable, signer). */
-  protected cpi(program: string, metas: [string, boolean, boolean][], buf: string, len: string, seeds: { name: string; count: number | string }) {
+  /**
+   * Emit a CPI to the program account `program` with these metas (account, writable, signer), and then (`tail`) a range
+   * of the remaining accounts, read-only (a Merkle proof).
+   */
+  protected cpi(
+    program: string,
+    metas: [string, boolean, boolean][],
+    buf: string,
+    len: string,
+    seeds: { name: string; count: number | string },
+    tail?: { from: string; to: string },
+  ) {
     const m = this.tmp("metas");
-    this.line(`SolAccountMeta ${m}[${metas.length}] = {${metas.map(([acc, w, sg]) => `{&${acc}->key, ${w}, ${sg}}`).join(", ")}};`);
-    this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${metas.length}, ${seeds.name}, ${seeds.count}));`);
+    const fixed = metas.map(([acc, w, sg]) => `{&${acc}->key, ${w}, ${sg}}`).join(", ");
+    if (!tail) {
+      this.line(`SolAccountMeta ${m}[${metas.length}] = {${fixed}};`);
+      this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${metas.length}, ${seeds.name}, ${seeds.count}));`);
+      return;
+    }
+    const n = this.ix!.accounts.length;
+    const cnt = this.tmp("nmetas");
+    const i = this.tmp("ri");
+    this.line(
+      `if (${metas.length} + (${tail.to} - ${tail.from}) > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${MAX_ACCOUNTS} accounts");`,
+    );
+    this.line(`SolAccountMeta ${m}[TS_MAX_ACCOUNTS] = {${fixed}};`);
+    this.line(`uint64_t ${cnt} = ${metas.length};`);
+    this.line(`for (uint64_t ${i} = ${n} + ${tail.from}; ${i} < ${n} + ${tail.to}; ${i}++) ${m}[${cnt}++] = (SolAccountMeta){&params->ka[${i}]->key, 0, 0};`);
+    this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${cnt}, ${seeds.name}, ${seeds.count}));`);
   }
 
   protected signerSeeds(node: ts.Expression | undefined, authority: AccountParam, at: ts.Node): { name: string; count: number | string } {
@@ -825,7 +852,8 @@ export abstract class CpiEmitter extends CallEmitter {
     const kind = kindNode.text;
     const index = CORE_PLUGINS.indexOf(kind as never);
     if (index < 0) this.fail(kindNode, `Core plugins are ${CORE_PLUGINS.join(", ")}`);
-    if (kind === "MasterEdition") this.fail(kindNode, "the MasterEdition plugin is not supported yet (removePlugin can remove one)");
+    if (kind === "MasterEdition" || kind === "VerifiedCreators" || kind === "Autograph")
+      this.fail(kindNode, `the ${kind} plugin is not supported yet (removePlugin can remove one)`);
     const known = new Set(["kind", "authority", ...(CORE_PLUGIN_FIELDS[kind] ?? [])]);
     for (const [k, v] of props) if (!known.has(k)) this.fail(v, `${kind} has no field ${k}`);
     const need = (k: string) => props.get(k) ?? this.fail(n, `${kind} needs ${k}`);
@@ -1120,7 +1148,214 @@ export abstract class CpiEmitter extends CallEmitter {
         return undefined;
       }
     }
-    this.fail(node.expression, `Bubblegum supports createTree and mint, not ${method}`);
+    return this.bubblegumV2(node, bg, method);
+  }
+
+  /** Bubblegum V2 (trees on mpl-account-compression with mpl-noop; optional Metaplex Core collections). */
+  protected bubblegumV2(node: ts.CallExpression, bg: AccountParam, method: string): undefined {
+    const a = node.arguments;
+    const p = `a_${bg.name}`;
+    const acct = (i: number, what: string, w: boolean, s: boolean) => this.mplMeta(a[i]!, bg, what, w, s);
+    const seedsAt = (i: number) => (a[i] ? this.signingSeeds(a[i]) : { name: "NULL", count: 0 });
+    const U32: ValueType = { kind: "int", name: "u32" };
+    const U64v: ValueType = { kind: "int", name: "u64" };
+    const HASH: ValueType = { kind: "pubkey", hash: true };
+    // The leaf a transfer or burn replaces: { root, dataHash, creatorHash, assetDataHash?, flags?, nonce, index }.
+    const leafFields = (n: ts.Expression): MplField[] => {
+      if (!ts.isObjectLiteralExpression(n)) this.fail(n, "the leaf is { root, dataHash, creatorHash, assetDataHash?, flags?, nonce, index }");
+      const props = new Map<string, ts.Expression>();
+      for (const q of n.properties) {
+        if (ts.isPropertyAssignment(q) && ts.isIdentifier(q.name)) props.set(q.name.text, q.initializer);
+        else if (ts.isShorthandPropertyAssignment(q)) props.set(q.name.text, q.name);
+        else this.fail(q, "write leaf fields as name: value");
+      }
+      const known = ["root", "dataHash", "creatorHash", "assetDataHash", "flags", "nonce", "index"];
+      for (const [k, v] of props) if (!known.includes(k)) this.fail(v, `the leaf has no field ${k}`);
+      const need = (k: string) => props.get(k) ?? this.fail(n, `the leaf needs ${k}`);
+      const opt = (k: string, t: ValueType): MplField[] => {
+        const v = props.get(k);
+        if (!v || v.kind === ts.SyntaxKind.NullKeyword) return [{ bytes: [0] }];
+        return [{ bytes: [1] }, { value: v, type: t }];
+      };
+      return [
+        { value: need("root"), type: HASH },
+        { value: need("dataHash"), type: HASH },
+        { value: need("creatorHash"), type: HASH },
+        ...opt("assetDataHash", HASH),
+        ...opt("flags", U8),
+        { value: need("nonce"), type: U64v },
+        { value: need("index"), type: U32 },
+      ];
+    };
+    const proofRange = (n: ts.Expression) => {
+      if (!this.ix) this.fail(n, "a Merkle proof comes from remainingAccounts(), so only instructions can pass one");
+      return this.remainingRange(n) ?? this.fail(n, "pass the proof as remainingAccounts() or rest.slice(a, b)");
+    };
+    switch (method) {
+      case "createTreeV2": {
+        // CreateTreeConfigV2: treeConfig, merkleTree, payer, treeCreator, logWrapper, compressionProgram, systemProgram.
+        if (a.length !== 10 && a.length !== 11)
+          this.fail(
+            node,
+            "createTreeV2(treeConfig, merkleTree, payer, treeCreator | null, logWrapper, compressionProgram, systemProgram, maxDepth, maxBufferSize, isPublic, signerSeeds?)",
+          );
+        const metas = [
+          acct(0, "the tree config", true, false),
+          acct(1, "the merkle tree", true, false),
+          acct(2, "the payer", true, true),
+          acct(3, "the tree creator", false, true),
+          acct(4, "the log wrapper", false, false),
+          acct(5, "the compression program", false, false),
+          acct(6, "the system program", false, false),
+        ];
+        const data = this.mplData(node, 32, [
+          { bytes: [55, 99, 95, 215, 142, 203, 227, 205] },
+          { value: a[7]!, type: U32 },
+          { value: a[8]!, type: U32 },
+          { bytes: [1] },
+          { value: a[9]!, type: BOOL },
+        ]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(10));
+        return undefined;
+      }
+      case "mintV2": {
+        // MintV2: treeConfig, payer, treeCreatorOrDelegate, collectionAuthority, leafOwner, leafDelegate, merkleTree,
+        // coreCollection, mplCoreCpiSigner, logWrapper, compressionProgram, mplCoreProgram, systemProgram.
+        const usage =
+          "mintV2(treeConfig, payer, treeDelegate | null, leafOwner, leafDelegate | null, merkleTree, logWrapper, compressionProgram, mplCoreProgram, systemProgram, { name, symbol, uri, sellerFeeBasisPoints, creators?, isMutable? }, { collection, authority, cpiSigner }?, signerSeeds?)";
+        const collection = a[11] && ts.isObjectLiteralExpression(a[11]) ? a[11] : undefined;
+        if (a.length < 11 || a.length > (collection ? 13 : 12)) this.fail(node, usage);
+        const md = a[10]!;
+        if (!ts.isObjectLiteralExpression(md)) this.fail(md, "the metadata is { name, symbol, uri, sellerFeeBasisPoints, creators?, isMutable? }");
+        const field = (o: ts.ObjectLiteralExpression, k: string) => {
+          const q = o.properties.find(
+            (x) => (ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === k,
+          );
+          return q ? (ts.isPropertyAssignment(q) ? q.initializer : (q as ts.ShorthandPropertyAssignment).name) : undefined;
+        };
+        for (const q of md.properties)
+          if (!q.name || !ts.isIdentifier(q.name) || !["name", "symbol", "uri", "sellerFeeBasisPoints", "creators", "isMutable"].includes(q.name.text))
+            this.fail(q, "the metadata takes name, symbol, uri, sellerFeeBasisPoints, creators and isMutable");
+        const coll = collection
+          ? (["collection", "authority", "cpiSigner"] as const).map((k) => field(collection, k) ?? this.fail(collection, `the collection needs ${k}`))
+          : undefined;
+        if (collection)
+          for (const q of collection.properties)
+            if (!q.name || !ts.isIdentifier(q.name) || !["collection", "authority", "cpiSigner"].includes(q.name.text))
+              this.fail(q, "the collection is { collection, authority, cpiSigner }");
+        const metas: [string, boolean, boolean][] = [
+          acct(0, "the tree config", true, false),
+          acct(1, "the payer", true, true),
+          acct(2, "the tree delegate", false, true),
+          coll ? this.mplMeta(coll[1], bg, "the collection authority", false, true) : [p, false, false],
+          acct(3, "the leaf owner", false, false),
+          acct(4, "the leaf delegate", false, false),
+          acct(5, "the merkle tree", true, false),
+          coll ? this.mplMeta(coll[0], bg, "the core collection", true, false) : [p, false, false],
+          coll ? this.mplMeta(coll[2], bg, "the mpl-core CPI signer", false, false) : [p, false, false],
+          acct(6, "the log wrapper", false, false),
+          acct(7, "the compression program", false, false),
+          acct(8, "the mpl-core program", false, false),
+          acct(9, "the system program", false, false),
+        ];
+        const need = (k: string) => field(md, k) ?? this.fail(md, `the metadata needs ${k}`);
+        const fields: MplField[] = [
+          { bytes: [120, 121, 23, 146, 173, 110, 199, 205] },
+          { value: need("name"), type: STRING },
+          { value: need("symbol"), type: STRING },
+          { value: need("uri"), type: STRING },
+          { value: need("sellerFeeBasisPoints"), type: { kind: "int", name: "u16" } },
+          { bytes: [0] }, // primary_sale_happened
+        ];
+        const mutable = field(md, "isMutable");
+        fields.push(mutable ? { value: mutable, type: BOOL } : { bytes: [1] });
+        fields.push({ bytes: [1, 0] }); // token_standard: Some(NonFungible)
+        const creators = field(md, "creators");
+        if (creators && !ts.isArrayLiteralExpression(creators)) this.fail(creators, "creators: [{ address, verified, share }, …] (an array literal)");
+        const list = creators ? (creators as ts.ArrayLiteralExpression).elements : [];
+        if (list.length > 5) this.fail(creators!, "Bubblegum takes at most 5 creators");
+        fields.push({ bytes: [list.length, 0, 0, 0] });
+        let shares = 0n;
+        let constant = true;
+        for (const el of list) {
+          if (!ts.isObjectLiteralExpression(el)) this.fail(el, "a creator is { address, verified, share }");
+          const f = (k: string) => field(el, k) ?? this.fail(el, `a creator needs ${k}`);
+          const share = f("share");
+          if (ts.isBigIntLiteral(share)) shares += BigInt(share.text.slice(0, -1));
+          else constant = false;
+          fields.push({ value: f("address"), type: PUBKEY }, { value: f("verified"), type: BOOL }, { value: share, type: U8 });
+        }
+        if (list.length && constant && shares !== 100n) this.fail(creators!, `creator shares add up to ${shares}; Bubblegum requires 100`);
+        // collection: Some(the core collection's key) when minting into one.
+        if (coll) fields.push({ bytes: [1] }, { value: this.keyOf(coll[0]), type: PUBKEY });
+        else fields.push({ bytes: [0] });
+        fields.push({ bytes: [0, 0] }); // asset_data, asset_data_schema: None
+        const data = this.mplData(node, 1024, fields);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(collection ? 12 : 11));
+        return undefined;
+      }
+      case "transferV2": {
+        // TransferV2: treeConfig, payer, authority, leafOwner, leafDelegate, newLeafOwner, merkleTree, coreCollection,
+        // logWrapper, compressionProgram, systemProgram; the proof follows as remaining accounts.
+        if (a.length !== 13 && a.length !== 14)
+          this.fail(
+            node,
+            "transferV2(treeConfig, payer, authority | null, leafOwner, leafDelegate | null, newLeafOwner, merkleTree, coreCollection | null, logWrapper, compressionProgram, systemProgram, leaf, proof, signerSeeds?)",
+          );
+        const metas = [
+          acct(0, "the tree config", true, false),
+          acct(1, "the payer", true, true),
+          acct(2, "the authority", false, true),
+          acct(3, "the leaf owner", false, false),
+          acct(4, "the leaf delegate", false, false),
+          acct(5, "the new leaf owner", false, false),
+          acct(6, "the merkle tree", true, false),
+          acct(7, "the core collection", false, false),
+          acct(8, "the log wrapper", false, false),
+          acct(9, "the compression program", false, false),
+          acct(10, "the system program", false, false),
+        ];
+        const data = this.mplData(node, 160, [{ bytes: [119, 40, 6, 235, 234, 221, 248, 49] }, ...leafFields(a[11]!)]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(13), proofRange(a[12]!));
+        return undefined;
+      }
+      case "burnV2": {
+        // BurnV2: treeConfig, payer, authority, leafOwner, leafDelegate, merkleTree, coreCollection, mplCoreCpiSigner,
+        // logWrapper, compressionProgram, mplCoreProgram, systemProgram; the proof follows as remaining accounts.
+        if (a.length !== 14 && a.length !== 15)
+          this.fail(
+            node,
+            "burnV2(treeConfig, payer, authority | null, leafOwner, leafDelegate | null, merkleTree, coreCollection | null, mplCoreCpiSigner | null, logWrapper, compressionProgram, mplCoreProgram, systemProgram, leaf, proof, signerSeeds?)",
+          );
+        const metas = [
+          acct(0, "the tree config", true, false),
+          acct(1, "the payer", true, true),
+          acct(2, "the authority", false, true),
+          acct(3, "the leaf owner", false, false),
+          acct(4, "the leaf delegate", false, false),
+          acct(5, "the merkle tree", true, false),
+          acct(6, "the core collection", true, false),
+          acct(7, "the mpl-core CPI signer", false, false),
+          acct(8, "the log wrapper", false, false),
+          acct(9, "the compression program", false, false),
+          acct(10, "the mpl-core program", false, false),
+          acct(11, "the system program", false, false),
+        ];
+        const data = this.mplData(node, 160, [{ bytes: [115, 210, 34, 240, 232, 143, 183, 16] }, ...leafFields(a[12]!)]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(14), proofRange(a[13]!));
+        return undefined;
+      }
+    }
+    this.fail(node.expression, `Bubblegum supports createTree, mint, createTreeV2, mintV2, transferV2 and burnV2, not ${method}`);
+  }
+
+  /** `acct.key` of an account parameter, as an expression to serialize. */
+  protected keyOf(n: ts.Expression): ts.Expression {
+    const f = ts.factory;
+    const e = f.createPropertyAccessExpression(n, "key");
+    ts.setTextRange(e, n);
+    (e as { parent?: ts.Node }).parent = n.parent;
+    return e;
   }
 
   /**

@@ -527,8 +527,10 @@ export type CorePlugin = (
   | { kind: "Edition"; number: u32 }
   | { kind: "AddBlocker" }
   | { kind: "ImmutableMetadata" }
+  /** On a collection: lets Bubblegum mint compressed NFTs into it (mintV2 with a collection). */
+  | { kind: "BubblegumV2" }
 ) & { authority?: CorePluginAuthority };
-export type CorePluginKind = CorePlugin["kind"] | "MasterEdition";
+export type CorePluginKind = CorePlugin["kind"] | "MasterEdition" | "VerifiedCreators" | "Autograph";
 
 export interface MplCoreProgram extends AccountMeta {
   readonly __mpl_core: void;
@@ -684,6 +686,106 @@ export interface BubblegumProgram extends AccountMeta {
     sellerFeeBasisPoints: u16,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /**
+   * CreateTreeConfigV2: a tree on mpl-account-compression (mcmt6…, allocated by the client and owned by it) with the
+   * mpl-noop log wrapper (mnoop…). `treeCreator` `null`: the payer.
+   */
+  createTreeV2(
+    treeConfig: AccountMeta,
+    merkleTree: AccountMeta,
+    payer: Mut<Signer>,
+    treeCreator: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    maxDepth: u32,
+    maxBufferSize: u32,
+    isPublic: boolean,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** MintV2 of a leaf, optionally into a Metaplex Core collection (whose update authority signs as `authority`). */
+  mintV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    treeDelegate: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    mplCoreProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    metadata: CompressedMetadata,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  mintV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    treeDelegate: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    mplCoreProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    metadata: CompressedMetadata,
+    collection: { collection: AccountMeta; authority: AccountMeta; cpiSigner: AccountMeta },
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** TransferV2, signed by the owner or delegate as `authority` (`null`: the payer); `proof` is the leaf's Merkle proof. */
+  transferV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    newLeafOwner: AccountMeta,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeaf,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  burnV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta | null,
+    mplCoreCpiSigner: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    mplCoreProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeaf,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+}
+/** Bubblegum V2 leaf metadata (MetadataArgsV2): non-fungible, primary sale not happened, mutable unless `isMutable: false`. */
+export interface CompressedMetadata {
+  name: string;
+  symbol: string;
+  uri: string;
+  sellerFeeBasisPoints: u16;
+  creators?: { address: Pubkey; verified: boolean; share: u8 }[];
+  isMutable?: boolean;
+}
+/** The leaf a transfer or burn replaces, as an indexer (DAS getAssetProof / getAsset) reports it. */
+export interface CompressedLeaf {
+  root: Hash;
+  dataHash: Hash;
+  creatorHash: Hash;
+  assetDataHash?: Hash | null;
+  flags?: u8 | null;
+  nonce: u64;
+  index: u32;
 }
 
 /** The current slot and epoch (Clock sysvar). */
