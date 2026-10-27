@@ -4,8 +4,8 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
 
 ## Status
 
-- Version 0.10 has been reviewed internally (runtime, code generation and tooling) and is covered by execution
-  tests, differential tests against Anchor, and randomized tests. **It has not been audited by an independent
+- Version 0.10 was reviewed internally (runtime, code generation and tooling). Every release is covered by execution
+  tests, differential tests against Anchor, and randomized tests. **TypeSOL has not been audited by an independent
   firm.** Do not put significant value behind programs built with it until an external audit of the compiler and
   runtime is published, and audit your own programs as you would any Solana program.
 - Only the latest 0.x release receives security fixes.
