@@ -5,6 +5,18 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.11.0 — 2026-10-27
+
+Pinocchio-level code generation, a typed TypeScript client, and the release process the organization uses from now
+on. Not externally audited (see SECURITY.md).
+
+### Breaking
+- `invoke` takes at most 32 accounts; a longer list is a compile error.
+- The project is spelled **TypeSOL** in docs, CLI help and runtime messages (`TypeSOL: arithmetic overflow (file.ts:12)`).
+  Tools that match log text on the old spelling need updating. The npm package and command stay `typesol`.
+- Generated code changed throughout (see Performance), so programs rebuilt with 0.11 have new binary hashes:
+  `typesol verify` compares a deployment with a build by the same version.
+
 ### Added
 - A typed TypeScript client per program: `typesol build` writes `<name>.client.ts` (on `@solana/kit` only) with
   instruction builders that fill in fixed addresses and PDAs, account decoders and fetchers, PDA helpers, error names,
@@ -12,10 +24,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   stripping. `typesol client <idl.json>` writes one from an Anchor IDL (0.30+), after validating it: an IDL whose names,
   bytes or codes could not be embedded safely is refused. See docs/client.md.
 
+- Tests: 30 Anchor programs from solana-developers/program-examples rewritten in TypeSOL, with their original flows
+  and failure paths, plus probes for the constructs that still block 9 programs (test/ports/README.md).
+
 ### Changed
 - The CLI banner spells TypeSOL, in TypeScript blue and the Solana gradient on terminals with color (`NO_COLOR`
   turns it off).
-- The project is now spelled **TypeSOL**, in docs, CLI help and runtime messages (`TypeSOL: arithmetic overflow (file.ts:12)`). Tools that match log text on the old spelling need updating. The npm package and command stay `typesol`.
+- The README shows a benchmark chart and table generated from the benchmark results (`scripts/readme-bench.ts`).
 
 ### Performance
 Same checks, error codes and account state; fewer compute units and smaller binaries. counter.increment 926 → 110 CU,
@@ -25,7 +40,7 @@ nine benchmarked instructions (see the README numbers).
 - Accounts are read in place. Generated code works on `TsAccount`, the loader's serialized account record, so the
   entry point stores one pointer per account instead of filling a `SolAccountInfo` (about 14 CU per account), and
   lengths a CPI changes no longer need refreshing afterwards. CPIs build `SolAccountInfo` records only for the
-  accounts they list (`ts_invoke`). `invoke` now takes at most 32 accounts.
+  accounts they list (`ts_invoke`).
 - Duplicate writable accounts (2040) are found by comparing account records, one instruction per pair: the loader
   passes repeats as duplicates of one record.
 - PDA signer seeds that read account fields (`["offer", offer.maker, offer.seed, offer.bump]`) point at the account
@@ -34,14 +49,19 @@ nine benchmarked instructions (see the README numbers).
 - Pubkey, discriminator and other byte comparisons, copies and zeroing work 8 bytes at a time (`ts_key_eq`,
   `ts_mem_eq`, `ts_memcpy`, `ts_memzero`) instead of the SDK's byte loops.
 - Instruction dispatch compares an 8-byte discriminator as one u64.
-- The entry point deserializes accounts with `ts_deserialize`: same layout and duplicate handling as the SDK's
-  `sol_deserialize`, without its per-account bound branch (the account count is already capped) or bool
-  normalization (the loader writes 0 or 1).
 - The rent-exempt minimum uses integer math when the exemption threshold is a whole number (every cluster) and the
   product stays below 2^53, where it is bit-identical to the floating-point formula; other thresholds still take it.
 - Checked u64 `+`, `-` and `*` compile to one compare; `*` skips the 128-bit multiply when both factors fit in 32 bits.
 - Programs link with `--gc-sections` and `--strip-all` (clang `-ffunction-sections -fdata-sections`): unused
   compiler-builtins code and the symbol tables are dropped. Build manifests' binary hashes change accordingly.
+
+### Security
+- Development dependencies: `jayson` 5 and `toml` 5.0.1 (pnpm overrides) for advisories in packages that
+  `@anchor-lang/core` pulls into the test toolchain; nothing in the published package changed.
+
+### Tooling
+- Releases follow the organization's versioning policy (typesol/.github VERSIONING.md). Tags and GitHub Releases never
+  publish: publishing to npm is a separate workflow started by hand, which builds and tests the tag without caches.
 
 ## 0.10.0 — 2026-10-23
 
