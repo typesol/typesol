@@ -46,7 +46,10 @@ type BorshCoder = InstanceType<typeof BorshCoder>;
 export type Result = TransactionMetadata | FailedTransactionMetadata;
 /** An account for an instruction: an address, a keypair (which then signs), or null to leave an optional one out. */
 export type AccountInput = Address | KeyPairSigner | null;
-/** A PDA seed: text, an address (or keypair), raw bytes, or a bigint as a little-endian u64. */
+/**
+ * A PDA seed: text, an address (or keypair), raw bytes, or a bigint as a little-endian u64. A string that is a valid
+ * address is taken as one; pass `new TextEncoder().encode(s)` for text that happens to look like an address.
+ */
 export type SeedInput = string | Address | KeyPairSigner | Uint8Array | bigint;
 
 type IdlType = string | { option: IdlType } | { vec: IdlType } | { array: [IdlType, number] } | { defined: { name: string } };
@@ -150,7 +153,14 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     if (typeof v === "object" && typeof (v as { toBase58?: unknown }).toBase58 === "function") return (v as { toBase58(): string }).toBase58();
     if (Array.isArray(v)) return v.map(plain);
     if (v instanceof Uint8Array) return v;
-    if (typeof v === "object") return Object.fromEntries(Object.entries(v as object).map(([k, x]) => [k, plain(x)]));
+    if (typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      const keys = Object.keys(o).sort().join(",");
+      // Account data keeps Options and FixedStrings in a fixed layout; give them back as the plain value / string.
+      if (keys === "is_some,value") return o.is_some ? plain(o.value) : null;
+      if (keys === "bytes,len" && Array.isArray(o.bytes)) return Buffer.from((o.bytes as number[]).slice(0, Number(o.len))).toString("utf8");
+      return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, plain(x)]));
+    }
     return v;
   };
 
@@ -195,6 +205,7 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
           if (!a.optional) throw new Error(`${def.name}: account "${camel(a.name)}" is required`);
           return { address: programId, role: AccountRole.READONLY }; // left out: the program's own id stands in
         }
+        if (a.signer && !isSigner(v)) throw new Error(`${def.name}: account "${camel(a.name)}" signs; pass its keypair, not its address`);
         const address = isSigner(v) ? v.address : v;
         const role = a.signer
           ? a.writable

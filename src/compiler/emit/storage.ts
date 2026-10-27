@@ -73,11 +73,12 @@ export abstract class StorageEmitter extends EmitterBase {
   }
 
   protected looksLikeDataEnum(node: ts.Expression): boolean {
-    const saved = { lines: this.lines.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
+    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
     try {
       return this.reporter.guard(() => this.ref(node))?.type.kind === "dataEnum";
     } finally {
       this.lines.length = saved.lines;
+      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
       this.temp = saved.temp;
       this.reporter.diagnostics.length = saved.diagnostics;
     }
@@ -141,7 +142,8 @@ export abstract class StorageEmitter extends EmitterBase {
     // Loops around `at` that do not also contain the declaration run their earlier statements again later.
     let loop: ts.Node | undefined;
     for (let n: ts.Node | undefined = at.parent; n && n !== decl.parent; n = n.parent)
-      if ((ts.isForStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n)) && !(decl.pos >= n.pos && decl.end <= n.end)) loop = n;
+      if ((ts.isForStatement(n) || ts.isForOfStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n)) && !(decl.pos >= n.pos && decl.end <= n.end))
+        loop = n;
     let found = false;
     const scope = decl.parent.parent.parent; // VariableDeclaration -> List -> Statement -> enclosing block
     const visit = (n: ts.Node) => {
@@ -194,12 +196,13 @@ export abstract class StorageEmitter extends EmitterBase {
   protected looksLikeStructPlace(node: ts.Expression): boolean {
     if (ts.isParenthesizedExpression(node)) return this.looksLikeStructPlace(node.expression);
     if (ts.isConditionalExpression(node)) return this.looksLikeStructPlace(node.whenTrue) && this.looksLikeStructPlace(node.whenFalse);
-    const saved = { lines: this.lines.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
+    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
     try {
       const r = this.reporter.guard(() => this.ref(node));
       return r?.type.kind === "struct";
     } finally {
       this.lines.length = saved.lines;
+      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
       this.temp = saved.temp;
       this.reporter.diagnostics.length = saved.diagnostics;
     }
@@ -533,11 +536,12 @@ export abstract class StorageEmitter extends EmitterBase {
 
   /** The kind of storage an expression names (struct, array, dataEnum…), without emitting code or failing. */
   protected peekKind(node: ts.Expression): FieldType["kind"] | undefined {
-    const saved = { lines: this.lines.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
+    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
     try {
       return this.reporter.guard(() => this.ref(node))?.type.kind;
     } finally {
       this.lines.length = saved.lines;
+      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
       this.temp = saved.temp;
       this.reporter.diagnostics.length = saved.diagnostics;
     }

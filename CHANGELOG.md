@@ -5,6 +5,19 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Fixed
+- A struct returned by a helper and bound through a ternary (`const o = c ? mk(1n) : mk(2n)`) pointed at storage
+  that ended with the branch, so the program read garbage (found in review, never released). The result now lives for
+  the whole function.
+- A struct reference used across `for … of` steps is checked like in other loops: replacing what it refers to later
+  in the body is refused, as JS would keep the old object.
+- `a ** b` reads `a` before evaluating `b` (a helper in the exponent that changes `a` no longer changes the result).
+- A struct-returning helper that takes an account and a struct, bound without a type, no longer fails to build with
+  a duplicate C declaration.
+- `typesol verify --address` tells "no IDL published" apart from an IDL that cannot be read (now an error, exit 3).
+- `typesol/testing`: Options and FixedStrings in decoded accounts and return data come back as plain values; passing
+  an address where an account must sign is reported up front.
+
 ### Added
 - Token-2022 extension initializers on `Token2022Program` / `TokenInterface` (refused on `TokenProgram`): transfer fee,
   mint close authority, non-transferable, permanent delegate, default account state, metadata / group / group-member

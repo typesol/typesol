@@ -349,9 +349,10 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       (ts.isBigIntLiteral(node.whenFalse) || ts.isPrefixUnaryExpression(node.whenFalse));
     if (!type && !bothLiteral && (ts.isBigIntLiteral(node.whenTrue) || node.whenTrue.kind === ts.SyntaxKind.NullKeyword)) {
       // Type the non-literal branch first, without emitting it, to give the literal its type.
-      const saved = { lines: this.lines.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
+      const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
       const probe = this.reporter.guard(() => this.expr(node.whenFalse));
       this.lines.length = saved.lines;
+      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
       this.temp = saved.temp;
       this.reporter.diagnostics.length = saved.diagnostics;
       if (probe && probe.literal === undefined && !probe.isNull) type = probe.type;
@@ -416,7 +417,10 @@ export abstract class ExpressionEmitter extends StorageEmitter {
    */
   protected power(node: ts.BinaryExpression, hint?: ValueType): Value {
     let base = this.expr(node.left, hint?.kind === "int" ? hint : undefined);
+    const mark = this.lines.length;
     const exp = this.expr(node.right);
+    // JS reads the base first: if the exponent ran statements (a helper that changes it), use the value read before.
+    base = this.settle(base, mark);
     if (base.literal !== undefined) base = this.literal(base.literal, hint?.kind === "int" ? hint : U64, node.left);
     if (base.type.kind !== "int") this.fail(node.left, "** needs an integer base");
     const type = base.type;
