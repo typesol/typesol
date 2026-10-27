@@ -48,7 +48,7 @@ export abstract class EmitterBase {
       this.ix = target;
       for (const a of target.accounts) {
         this.accounts.set(a.name, a);
-        if (a.kind.kind === "init" || a.kind.kind === "initIfNeeded") this.pendingInit.add(a.name);
+        if (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || (a.kind.kind === "token" && a.kind.init)) this.pendingInit.add(a.name);
       }
       for (const a of target.args)
         this.args.set(
@@ -177,8 +177,17 @@ export abstract class EmitterBase {
   protected assertUsable(a: AccountParam, node: ts.Node) {
     // TypeScript makes you check `x !== null` first; this is the runtime backstop.
     if (a.optional) this.line(`if (a_${a.name} == NULL) TS_FAIL(TS_ERR_ACCOUNT_MISSING, "TypeSOL: optional account ${a.name} was not passed");`);
-    if ((a.kind.kind === "init" || a.kind.kind === "initIfNeeded") && !this.created.has(a.name))
-      this.fail(node, `"${a.name}" is used before ${a.name}.${a.kind.kind === "init" ? "create" : "createIfNeeded"}(...) runs`);
+    const createdBy =
+      a.kind.kind === "init"
+        ? "create"
+        : a.kind.kind === "initIfNeeded"
+          ? "createIfNeeded"
+          : a.kind.kind === "token" && a.kind.init
+            ? a.kind.init === "create"
+              ? "create"
+              : "createIfNeeded"
+            : undefined;
+    if (createdBy && !this.created.has(a.name)) this.fail(node, `"${a.name}" is used before ${a.name}.${createdBy}(...) runs`);
   }
 
   // ---- implemented by later layers --------------------------------------------------
@@ -192,6 +201,7 @@ export abstract class EmitterBase {
   protected abstract seeds(node: ts.Expression, extra: number): { name: string; count: number; idl: IdlSeed[] | undefined };
   protected abstract recordPda(account: AccountParam, idl: IdlSeed[] | undefined): void;
   protected abstract create(node: ts.CallExpression, target: AccountParam, topLevel: boolean, ifNeeded?: boolean): Value;
+  protected abstract createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined;
   protected abstract systemTransfer(node: ts.CallExpression): undefined;
   protected abstract createAccount(node: ts.CallExpression, system: AccountParam): undefined;
   protected abstract tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;

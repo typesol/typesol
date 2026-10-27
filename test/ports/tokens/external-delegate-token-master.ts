@@ -7,9 +7,6 @@
 //    verifySecp256k1 compares, so `ethereum_address` is stored (and passed to `set_ethereum_address`) as a Hash
 //    holding the 20-byte address left-padded with 12 zero bytes, instead of `[u8; 20]`.
 //    `signature: [u8; 65]` is taken as `r: Hash, s: Hash, recovery_id: u8` (the same 65 bytes on the wire).
-//  - interface: the token transfers are signed by the `[user_account.key]` PDA with `ctx.bumps.user_pda`; TypeSOL's
-//    Seeds<> finds and checks the canonical address but does not expose the bump, so both transfer instructions take
-//    `user_pda_bump` (checked with requirePda; only the canonical bump passes both checks).
 //  - TypeSOL refuses high-s secp256k1 signatures (stricter than the raw secp256k1_recover syscall).
 import {
   type AccountInfo,
@@ -30,7 +27,6 @@ import {
   keccak256,
   pubkey,
   require,
-  requirePda,
   verifySecp256k1,
 } from "typesol";
 
@@ -71,7 +67,6 @@ export function transferTokens(
   r: Hash,
   s: Hash,
   recoveryId: u8,
-  userPdaBump: u8,
 ): void {
   // The digest binds the program, the accounts, the amount and the nonce, so a signature cannot be replayed.
   require(verifySecp256k1(
@@ -83,8 +78,7 @@ export function transferTokens(
   ), ErrorCode.InvalidSignature);
   require(userAccount.nonce < U64_MAX, ErrorCode.NonceOverflow);
   userAccount.nonce += 1n;
-  requirePda(userPda, [userAccount.key], userPdaBump);
-  tokenProgram.transfer(userTokenAccount, recipientTokenAccount, userPda, amount, [userAccount.key, userPdaBump]);
+  tokenProgram.transfer(userTokenAccount, recipientTokenAccount, userPda, amount, [userAccount.key, userPda.pdaBump]);
 }
 
 export function authorityTransfer(
@@ -95,8 +89,6 @@ export function authorityTransfer(
   userPda: Seeds<Owner<AccountInfo, "11111111111111111111111111111111">, ["@userAccount"]>,
   tokenProgram: TokenProgram,
   amount: u64,
-  userPdaBump: u8,
 ): void {
-  requirePda(userPda, [userAccount.key], userPdaBump);
-  tokenProgram.transfer(userTokenAccount, recipientTokenAccount, userPda, amount, [userAccount.key, userPdaBump]);
+  tokenProgram.transfer(userTokenAccount, recipientTokenAccount, userPda, amount, [userAccount.key, userPda.pdaBump]);
 }

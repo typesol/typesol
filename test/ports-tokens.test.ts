@@ -260,7 +260,7 @@ describe("port: tokens/token-swap", () => {
       ]);
     const createPool = (b = mintB, accountB = poolB) =>
       send(svm, admin, [
-        ix(d, "create_pool", { liquidity_bump: liquidityBump }, [
+        ix(d, "create_pool", {}, [
           { address: amm },
           { address: pool, writable: true },
           { address: authority },
@@ -303,27 +303,22 @@ describe("port: tokens/token-swap", () => {
     type Alt = { authority?: Address; bump?: number; poolA?: Address; poolB?: Address };
     const swap = (swapA: boolean, input: bigint, minOut: bigint, alt: Alt = {}) =>
       send(svm, admin, [
-        ix(
-          d,
-          "swap_exact_tokens_for_tokens",
-          { swap_a: swapA, input_amount: new BN(input.toString()), min_output_amount: new BN(minOut.toString()), authority_bump: alt.bump ?? authorityBump },
-          [
-            { address: amm },
-            { address: pool },
-            { address: alt.authority ?? authority },
-            { address: admin.address, signer: admin },
-            { address: mintA },
-            { address: mintB },
-            { address: alt.poolA ?? poolA, writable: true },
-            { address: alt.poolB ?? poolB, writable: true },
-            { address: holderA, writable: true },
-            { address: holderB, writable: true },
-            { address: admin.address, signer: admin, writable: true },
-            { address: TOKEN_PROGRAM },
-            { address: ATA_PROGRAM },
-            { address: SYSTEM_PROGRAM },
-          ],
-        ),
+        ix(d, "swap_exact_tokens_for_tokens", { swap_a: swapA, input_amount: new BN(input.toString()), min_output_amount: new BN(minOut.toString()) }, [
+          { address: amm },
+          { address: pool },
+          { address: alt.authority ?? authority },
+          { address: admin.address, signer: admin },
+          { address: mintA },
+          { address: mintB },
+          { address: alt.poolA ?? poolA, writable: true },
+          { address: alt.poolB ?? poolB, writable: true },
+          { address: holderA, writable: true },
+          { address: holderB, writable: true },
+          { address: admin.address, signer: admin, writable: true },
+          { address: TOKEN_PROGRAM },
+          { address: ATA_PROGRAM },
+          { address: SYSTEM_PROGRAM },
+        ]),
       ]);
     const withdraw = (amount: bigint, alt: Alt = {}) =>
       send(svm, admin, [
@@ -389,9 +384,9 @@ describe("port: tokens/token-swap", () => {
     const outA = quote(300_000n, 5_500_000n - outB, 1_200_000n);
     expectOk(await s.swap(false, 300_000n, 100n));
     expect(tokenBalance(s.svm, s.holderA)).toBe(a0 - 100_000n + outA);
-    // A non-canonical authority bump does not derive the pool authority.
+    // A non-canonical authority bump does not derive the pool authority (withdraw takes the bump as an argument).
     const [, bump] = await pda(s.d.programId, [s.amm, s.mintA, s.mintB, "authority"]);
-    expect(customError(await s.swap(true, 1_000n, 1n, { bump: bump - 1 }))).toBe(2006);
+    expect(customError(await s.withdraw(1n, { bump: bump - 1 }))).toBe(2006);
     // A non-canonical authority PDA with vaults someone funded is refused too (Anchor's find_program_address check).
     const fake = await nonCanonicalPda(s.d.programId, [addrBytes(s.amm), addrBytes(s.mintA), addrBytes(s.mintB), Buffer.from("authority")], bump);
     const alt = {
@@ -459,7 +454,7 @@ describe("port: tokens/external-delegate-token-master", () => {
         ]),
       ]),
     );
-    const [userPda, bump] = await pda(d.programId, [userAccount.address]);
+    const [userPda] = await pda(d.programId, [userAccount.address]);
     const mint = await createMint(svm, authority);
     const userToken = await fundAta(svm, authority, userPda, mint, 1_000n);
     const recipient = await fundedSigner(svm, 1n);
@@ -473,7 +468,7 @@ describe("port: tokens/external-delegate-token-master", () => {
       { address: TOKEN_PROGRAM },
     ];
 
-    expectOk(await send(svm, authority, [ix(d, "authority_transfer", { amount: new BN(100), user_pda_bump: bump }, accounts)]));
+    expectOk(await send(svm, authority, [ix(d, "authority_transfer", { amount: new BN(100) }, accounts)]));
     expect(tokenBalance(svm, recipientToken)).toBe(100n);
 
     const nonce = () => BigInt(decodeAccount<{ nonce: BN }>(d, svm, "UserAccount", userAccount.address).nonce.toString());
@@ -491,7 +486,7 @@ describe("port: tokens/external-delegate-token-master", () => {
       return { recovery_id: sig[0], r: [...sig.slice(1, 33)], s: [...sig.slice(33, 65)] };
     };
     const transfer = (amount: bigint, sig: ReturnType<typeof sign>) =>
-      send(svm, authority, [ix(d, "transfer_tokens", { amount: new BN(amount.toString()), ...sig, user_pda_bump: bump }, accounts)]);
+      send(svm, authority, [ix(d, "transfer_tokens", { amount: new BN(amount.toString()), ...sig }, accounts)]);
 
     const good = sign(250n, nonce());
     expectOk(await transfer(250n, good));

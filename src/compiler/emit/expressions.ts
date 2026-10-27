@@ -203,7 +203,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         if (field === "dataLen") return { c: `${v}->data_len`, type: U64 };
         if (field === "pdaBump") {
           const b = this.bumps.get(a.name);
-          if (!b) this.fail(node, `pdaBump is available on Init/InitIfNeeded accounts after create()/createIfNeeded()`);
+          if (!b) this.fail(node, `pdaBump is available on Seeds<…> accounts and on Init/InitIfNeeded accounts after create()/createIfNeeded()`);
           return { c: b, type: U8 };
         }
         const k = a.kind;

@@ -103,7 +103,9 @@ export type ParamKind =
   | { kind: "initIfNeeded"; struct: StructDef }
   /** A large account the client already allocated (zeroed, owned by this program); initialized here. */
   | { kind: "zeroed"; struct: StructDef }
-  | { kind: "token"; mut: boolean }
+  /** `init`: an associated token account this instruction creates (`Ata<Init<TokenAccount>, …>`, create) or creates when
+   * missing (`Ata<InitIfNeeded<TokenAccount>, …>`, createIfNeeded); it is a TokenAccount once that call has run. */
+  | { kind: "token"; mut: boolean; init?: "create" | "ifNeeded" }
   | { kind: "mint"; mut: boolean }
   | { kind: "system" }
   | { kind: "instructionsSysvar" }

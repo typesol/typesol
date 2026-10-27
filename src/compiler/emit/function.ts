@@ -40,7 +40,8 @@ export class FunctionEmitter extends StatementEmitter {
       if (isWritable(k)) head.push(`  TS_TRY(ts_check_writable(${v}));`);
       if (k.kind === "account")
         head.push(`  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, sizeof(TSS_${k.struct.name})));`);
-      if (k.kind === "token") head.push(`  TS_TRY(ts_check_token_account(${v}));`);
+      // A token account created by this instruction is checked where it is created (create/createIfNeeded).
+      if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
       if (k.kind === "mint") head.push(`  TS_TRY(ts_check_mint(${v}));`);
       if (k.kind === "system") head.push(`  TS_TRY(ts_check_address(${v}, &TS_SYSTEM_PROGRAM_ID));`);
       if (k.kind === "instructionsSysvar") head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
@@ -233,8 +234,11 @@ export class FunctionEmitter extends StatementEmitter {
     // Two back-to-back markers measure what one marker costs, so the profiler can subtract it.
     if (this.profile) for (let i = 0; i < 2; i++) (this.line(`sol_log("ts:~");`), this.line(`sol_log_compute_units();`));
     for (const stmt of ix.node.body!.statements) this.reporter.guard(() => this.statement(stmt, true));
-    for (const name of this.pendingInit)
-      this.reporter.error(this.accounts.get(name)!.node, `Init account "${name}" is never created; call ${name}.create(payer, seeds)`);
+    for (const name of this.pendingInit) {
+      const k = this.accounts.get(name)!.kind;
+      const how = k.kind === "token" ? `${name}.${k.init === "create" ? "create" : "createIfNeeded"}(payer)` : `${name}.create(payer, seeds)`;
+      this.reporter.error(this.accounts.get(name)!.node, `Init account "${name}" is never created; call ${how}`);
+    }
 
     const end = ix.returns
       ? [`  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${ix.name} ended without returning a value");`]
@@ -256,6 +260,8 @@ export class FunctionEmitter extends StatementEmitter {
 
   protected constraintChecks(ix: Instruction): string[] {
     const out: string[] = [];
+    // Bumps found by Seeds<…> checks, declared ahead of the (possibly optional-guarded) checks for `acct.pdaBump`.
+    const bumpDecls: string[] = [];
     for (const a of ix.accounts) {
       const start = out.length;
       const c = a.constraints;
@@ -288,7 +294,19 @@ export class FunctionEmitter extends StatementEmitter {
         out.push(`  static const SolPubkey ca_${a.name} = {${cBytes(c.address.bytes)}};`);
         out.push(`  if (!ts_key_eq(&a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not the expected address");`);
       }
-      if (c.ata) {
+      if (c.ata && a.kind.kind === "token" && a.kind.init) {
+        // Created in the body: the ATA program checks the address when it creates it, and createIfNeeded checks an
+        // existing one there. Only the IDL entry is recorded here.
+        const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
+        if (tp && !ix.pdas.has(a.name)) {
+          ix.pdas.set(a.name, [
+            { kind: "account", path: snakeCase(c.ata.owner) },
+            { kind: "account", path: snakeCase(tp.name) },
+            { kind: "account", path: snakeCase(c.ata.mint) },
+          ]);
+          ix.pdaPrograms.set(a.name, { kind: "const", value: ATA_PROGRAM_BYTES });
+        }
+      } else if (c.ata) {
         // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
         let program = `&a_${a.name}->owner`;
         if (k !== "token") {
@@ -370,11 +388,14 @@ export class FunctionEmitter extends StatementEmitter {
         if (c.seeds.bump) {
           out.push(`  ${seeds}[${parts.length}] = (SolSignerSeed){&d_${a.name}->${c.seeds.bump}, 1};`);
           out.push(`  TS_TRY(ts_require_pda(a_${a.name}, ${seeds}, ${parts.length + 1}, ${program}));`);
+          this.bumps.set(a.name, `d_${a.name}->${c.seeds.bump}`);
         } else {
-          out.push(`  { SolPubkey pda_${a.name}; uint8_t b_${a.name};`);
+          bumpDecls.push(`  uint8_t sb_${a.name}; (void)sb_${a.name};`);
+          out.push(`  { SolPubkey pda_${a.name};`);
           out.push(
-            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &b_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
+            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &sb_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
           );
+          this.bumps.set(a.name, `sb_${a.name}`);
         }
       }
       // Constraints run only when every optional account they mention was passed.
@@ -383,7 +404,7 @@ export class FunctionEmitter extends StatementEmitter {
       if (optional.length && lines.length) out.push(`  if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) {`, ...lines.map((l) => `  ${l}`), `  }`);
       else out.push(...lines);
     }
-    return out;
+    return [...bumpDecls, ...out];
   }
 
   /** Optional account parameters a piece of generated C refers to (a_name / d_name). */

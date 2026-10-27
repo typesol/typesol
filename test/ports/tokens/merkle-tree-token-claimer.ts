@@ -4,9 +4,9 @@
 //  - the proof is a flat `hashes: Vec<u8>`. TypeSOL cannot slice bytes into a Hash (and sha256 takes at most 16
 //    parts), so each 32-byte sibling is packed into four little-endian u64 words, which sha256 hashes as the same
 //    32 bytes.
-//  - the mint (a keypair `init`) and the vault / claimer ATAs (`init_if_needed`) are created in the body, where they are
-//    AccountInfo to TypeSOL, so MintTo into the vault and TransferChecked into the claimer's ATA are hand-encoded
-//    (`invoke`). SetAuthority and the rest are typed.
+//  - the mint (a keypair `init`) is created in the body, where it is an AccountInfo to TypeSOL, so the vault ATA is
+//    created with createIdempotent and MintTo into it is hand-encoded (`invoke`). The claimer's ATA is
+//    Ata<InitIfNeeded<TokenAccount>, …>; SetAuthority and the rest are typed.
 // The `[u8; 32]` root is a Hash (the same 32 bytes in the account and in instruction data).
 import {
   type AccountMeta,
@@ -139,7 +139,7 @@ export function claimAirdrop(
   mint: Mint,
   vault: Ata<Mut<TokenAccount>, "airdropState", "mint">,
   claimReceipt: InitIfNeeded<ClaimReceipt>,
-  signerAta: Ata<Mut<AccountMeta>, "signer", "mint">,
+  signerAta: Ata<InitIfNeeded<TokenAccount>, "signer", "mint">,
   signer: Mut<Signer>,
   systemProgram: SystemProgram,
   tokenProgram: TokenProgram,
@@ -149,20 +149,14 @@ export function claimAirdrop(
   index: u64,
 ): void {
   claimReceipt.createIfNeeded(signer, ["claim_receipt", airdropState.key, index]);
-  associatedTokenProgram.createIdempotent(signer, signerAta, signer, mint, systemProgram, tokenProgram);
+  signerAta.createIfNeeded(signer);
   require(amount > 0n, ClaimError.InvalidAmount);
   require(claimReceipt.claimer === DEFAULT_PUBKEY, ClaimError.AlreadyClaimed);
   require(computeRoot(signer.key, amount, hashes, index) === airdropState.merkleRoot, ClaimError.InvalidProof);
   require(amount <= U64_MAX - airdropState.amountClaimed, ClaimError.AmountOverflow);
   const newAmountClaimed = airdropState.amountClaimed + amount;
   require(newAmountClaimed <= airdropState.airdropAmount, ClaimError.ClaimExceedsAirdrop);
-  // SPL Token TransferChecked (instruction 12), signed by the airdrop state PDA.
-  invoke(
-    tokenProgram,
-    [writable(vault), readonly(mint), writable(signerAta), readonlySigner(airdropState)],
-    [u8(12n), amount, mint.decimals],
-    ["merkle_tree", mint.key, airdropState.bump],
-  );
+  tokenProgram.transferChecked(vault, mint, signerAta, airdropState, amount, ["merkle_tree", mint.key, airdropState.bump]);
   claimReceipt.airdropState = airdropState.key;
   claimReceipt.claimer = signer.key;
   claimReceipt.index = index;

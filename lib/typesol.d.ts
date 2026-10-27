@@ -247,6 +247,8 @@ export type Address<A, Base58 extends string> = A & { readonly __address?: Base5
  *  - `HasOne<TokenAccount, "mint" | "owner">`: the token account's mint / owner is the key of the parameter with that name (2014 / 2015).
  *  - `HasOne<Mint, "mintAuthority" | "freezeAuthority">`: the mint's authority is that parameter's key (2016 / 2017).
  *  - `Ata<TokenAccount, "owner", "mint">`: the account is the associated token account of those parameters (2009).
+ *  - `Ata<Init<TokenAccount>, "owner", "mint">` / `Ata<InitIfNeeded<TokenAccount>, …>`: the instruction creates that
+ *    account with `create(payer)` / `createIfNeeded(payer)` (needs the AssociatedTokenProgram and SystemProgram).
  */
 export type Ata<A, Owner extends string, MintParam extends string> = A & { readonly __ata?: [Owner, MintParam] };
 
@@ -321,12 +323,21 @@ export declare function signer(seeds: Seed[]): SignerSeeds;
  * Created on first use (like Anchor `init_if_needed`): `createIfNeeded(payer, seeds)` returns true when it
  * created the account now. An existing account must be this PDA, owned by this program and of type T.
  */
-export type InitIfNeeded<T> = T &
-  AccountMeta & {
-    createIfNeeded(payer: Mut<Signer>, seeds: Seed[]): boolean;
-    /** The PDA bump, after createIfNeeded(). */
-    readonly pdaBump: u8;
-  };
+export type InitIfNeeded<T> = T extends TokenAccount
+  ? T & {
+      /**
+       * In `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">` (Anchor `init_if_needed` + `associated_token`): create the
+       * associated token account when it does not exist yet, with `payer` funding rent; true when it created it now.
+       * An existing account must be that ATA, of that mint and owner.
+       */
+      createIfNeeded(payer: Mut<Signer>): boolean;
+    }
+  : T &
+      AccountMeta & {
+        createIfNeeded(payer: Mut<Signer>, seeds: Seed[]): boolean;
+        /** The PDA bump, after createIfNeeded(). */
+        readonly pdaBump: u8;
+      };
 
 /**
  * Declarative constraints, checked before your code runs (like Anchor's account attributes):
@@ -341,6 +352,8 @@ export type InitIfNeeded<T> = T &
 export type HasOne<A, Field extends string> = A & { readonly __hasOne?: Field };
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
+  /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */
+  readonly pdaBump: u8;
 };
 /** The account's owner program must be this address (Anchor `owner = …`, 2004). */
 export type Owner<A, Base58 extends string> = A & { readonly __owner?: Base58 };
@@ -466,16 +479,24 @@ export declare function currentEpoch(): u64;
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
 /** A program-owned account that this instruction creates as a PDA. */
-export type Init<T> = T &
-  AccountMeta & {
-    /**
-     * Derive the PDA from `seeds`, verify it matches this account, create it with
-     * `payer` funding rent, and write the discriminator. Returns the bump.
-     */
-    create(payer: Mut<Signer>, seeds: Seed[]): u8;
-    /** The PDA bump, after create(). */
-    readonly pdaBump: u8;
-  };
+export type Init<T> = T extends TokenAccount
+  ? T & {
+      /**
+       * In `Ata<Init<TokenAccount>, "owner", "mint">` (Anchor `init` + `associated_token`): create the associated token
+       * account of those parameters, with `payer` funding rent. Fails if it already exists.
+       */
+      create(payer: Mut<Signer>): void;
+    }
+  : T &
+      AccountMeta & {
+        /**
+         * Derive the PDA from `seeds`, verify it matches this account, create it with
+         * `payer` funding rent, and write the discriminator. Returns the bump.
+         */
+        create(payer: Mut<Signer>, seeds: Seed[]): u8;
+        /** The PDA bump, after create(). */
+        readonly pdaBump: u8;
+      };
 
 /**
  * A large account (over 10 KiB, up to 10 MiB) the client already allocated with System CreateAccount,

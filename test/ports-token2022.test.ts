@@ -16,25 +16,24 @@ describe("port: tokens/token-2022/basics", () => {
     const { svm } = d;
     const signer = await fundedSigner(svm);
     const name = "TypeSOL token";
-    const [mint, mintBump] = await pda(d.programId, ["token-2022-token", signer.address, name]);
-    const createToken = (bump: number) =>
+    const [mint] = await pda(d.programId, ["token-2022-token", signer.address, name]);
+    const createToken = () =>
       send(svm, signer, [
-        ix(d, "create_token", { token_name: name, bump }, [
+        ix(d, "create_token", { token_name: name }, [
           { address: signer.address, signer, writable: true },
           { address: mint, writable: true },
           { address: SYSTEM_PROGRAM },
           { address: TOKEN_2022 },
         ]),
       ]);
-    expect(customError(await createToken(mintBump - 1))).toBe(2006);
-    expectOk(await createToken(mintBump));
+    expectOk(await createToken());
     expect(acct(svm, mint).programAddress).toBe(TOKEN_2022);
     expect(mintOf(svm, mint).mintAuthority).toEqual(some(signer.address));
 
-    const [tokenAccount, accountBump] = await pda(d.programId, ["token-2022-token-account", signer.address, mint]);
+    const [tokenAccount] = await pda(d.programId, ["token-2022-token-account", signer.address, mint]);
     expectOk(
       await send(svm, signer, [
-        ix(d, "create_token_account", { bump: accountBump }, [
+        ix(d, "create_token_account", {}, [
           { address: signer.address, signer, writable: true },
           { address: mint },
           { address: tokenAccount, writable: true },
