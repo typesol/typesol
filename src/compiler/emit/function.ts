@@ -410,7 +410,7 @@ export class FunctionEmitter extends StatementEmitter {
           bumpDecls.push(`  uint8_t sb_${a.name}; (void)sb_${a.name};`);
           out.push(`  { SolPubkey pda_${a.name};`);
           out.push(
-            `    if (sol_try_find_program_address(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &sb_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
+            `    if (ts_find_pda(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &sb_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
           );
           this.bumps.set(a.name, `sb_${a.name}`);
         }

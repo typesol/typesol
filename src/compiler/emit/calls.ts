@@ -352,7 +352,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const b = this.tmp("bump");
         this.line(`SolPubkey ${t}; uint8_t ${b};`);
         this.line(
-          `if (sol_try_find_program_address(${seeds.name}, ${seeds.count}, ${program.c}, &${t}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
+          `if (ts_find_pda(${seeds.name}, ${seeds.count}, ${program.c}, &${t}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
         );
         return { c: `(&${t})`, type: PUBKEY };
       }
