@@ -262,6 +262,10 @@ export abstract class StatementEmitter extends CpiEmitter {
     const mutable = !(list.flags & ts.NodeFlags.Const);
     if (!(list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let))) this.fail(list, "use const or let, not var");
     for (const d of list.declarations) {
+      if (ts.isObjectBindingPattern(d.name) && d.initializer) {
+        this.destructure(list, d, d.name, d.initializer, topLevel);
+        continue;
+      }
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
       const name = d.name.text;
       if (this.scopes.at(-1)!.has(name)) this.fail(d.name, `"${name}" is already declared`);
@@ -357,6 +361,35 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (type.kind === "pubkey") this.line(`SolPubkey ${c} = *(${v.c});`);
       else this.line(`${valueC(type)}${type.kind === "account" ? "" : " "}${c} = ${this.ownedString(v).c};`);
       this.scopes.at(-1)!.set(name, { c, type, mutable });
+    }
+  }
+
+  /**
+   * `const { a, b: c } = s`: one declaration per name, `const a = s.a`, in source order. The source must be a name or
+   * a field path (no calls), so reading it once per name reads the same thing JS reads once.
+   */
+  protected destructure(list: ts.VariableDeclarationList, d: ts.VariableDeclaration, pattern: ts.ObjectBindingPattern, init: ts.Expression, topLevel: boolean) {
+    if (d.type) this.fail(d.type, "destructuring takes the types from the source; drop the annotation");
+    const plain = (e: ts.Expression): boolean =>
+      ts.isIdentifier(e) ||
+      (ts.isPropertyAccessExpression(e) && !e.questionDotToken && plain(e.expression)) ||
+      (ts.isParenthesizedExpression(e) && plain(e.expression));
+    if (!plain(init)) this.fail(init, "destructure a variable or a field (a.b.c); bind a call to a const first");
+    const f = ts.factory;
+    for (const el of pattern.elements) {
+      if (el.dotDotDotToken) this.fail(el, "...rest is not supported in destructuring");
+      if (el.initializer) this.fail(el, "default values are not supported in destructuring");
+      if (!ts.isIdentifier(el.name)) this.fail(el, "nested destructuring is not supported; destructure in two steps");
+      const prop = el.propertyName ?? el.name;
+      if (!ts.isIdentifier(prop)) this.fail(el, "use plain field names");
+      const access = f.createPropertyAccessExpression(init, prop.text);
+      ts.setTextRange(access, el);
+      (access as { parent?: ts.Node }).parent = d;
+      // The element's own name node, so aliasing checks and the type checker find its uses.
+      const decl = f.createVariableDeclaration(el.name, undefined, undefined, access);
+      ts.setTextRange(decl, el);
+      (decl as { parent?: ts.Node }).parent = list;
+      this.variable({ ...list, declarations: [decl] } as unknown as ts.VariableDeclarationList, topLevel);
     }
   }
 

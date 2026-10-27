@@ -18,6 +18,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Local arrays | `const xs = fixedArray<i64, 5>(0n)` — up to 256 elements on the stack |
 | Strings | `string` arguments and literals; `name: FixedString<32>` in account data (u32 length + 32 bytes); `===`, `byteLength(s)`, `log(s)`, `+=`, as PDA seeds; too-long writes abort (5105). A local bound to account text keeps its own copy |
 | Copies | `a.home = b.home`, `a.trail.set(0n, a.home)` copy whole structs / arrays of the same type: assignment copies (like Rust/Anchor), binding with `const` references |
+| Destructuring | `const { owner, pos: p } = acct` (or `let` for scalars to change) from a name or a field path — one declaration per name, read like `acct.owner`: scalars are copies, nested structs are references. No rest, defaults or nesting |
 | Struct values | `const p: Point = { x, y }` (or a copy of another Point) — a local struct; fields can be updated, store it with `acct.home = p` |
 | Pubkey constants | `const ADMIN = pubkey("4Nd1…")` (checked at compile time) or inline `pubkey("…")`; usable as seeds |
 | Events | `emit<Deposited>({ owner: owner.key, amount })` — Anchor-format `Program data:` logs, listed under `events` in the IDL; event structs may hold `string` and `Option` |
