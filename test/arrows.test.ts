@@ -74,6 +74,9 @@ describe("arrow functions and generic helpers", () => {
     expect(errors(`function g<T>(a: T): T { const h = (v: T): T => v; return h(a); }\nexport function f(x: u64): u64 { return g(x); }`)).toMatch(
       /inside a generic helper are not supported/,
     );
+    // A generic helper is compiled per use: one never called is not checked beyond TypeScript.
+    expect(errors(`function g<T>(a: T): T { do {} while (false); return a; }\nexport function f(x: u64): u64 { return x; }`)).toBe("");
+    expect(errors(`function g<T>(a: T): T { do {} while (false); return a; }\nexport function f(x: u64): u64 { return g(x); }`)).toMatch(/while loops/);
     // A generic helper calling another; a generic local function.
     expect(
       errors(
