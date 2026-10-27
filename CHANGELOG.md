@@ -6,6 +6,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `typesol/testing`: `testProgram(name, import.meta.url)` builds a project program into LiteSVM, with `wallet()`, `pda(…)`,
+  `ix(name, args, accounts)` (accounts by name, flags and fixed addresses from the IDL, plain argument values),
+  `send`, `ok`, `errorCode`, `account` (decoded to bigints and address strings), `returned` and `balance`. The
+  `typesol init` templates' tests use it (the counter test went from 70 lines to 20). See docs/test-your-program.md.
 - `a ** b` on integers, every multiplication checked (5100 on overflow or a negative exponent, where JS throws). A
   literal exponent unrolls at compile time; otherwise a square-and-multiply loop runs.
 - Object destructuring: `const { owner, pos: p } = acct` (`let` for scalars) from a name or a field path, read like

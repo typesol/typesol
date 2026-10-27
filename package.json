@@ -33,6 +33,10 @@
       "types": "./dist/profile.d.ts",
       "default": "./dist/profile.js"
     },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
     "./idl": {
       "types": "./dist/idlpublish.d.ts",
       "default": "./dist/idlpublish.js"
@@ -72,6 +76,18 @@
     "@solana-program/program-metadata": "0.11.0",
     "@solana/kit": "^8.5.0",
     "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "@anchor-lang/core": "^1.2.1",
+    "litesvm": "^1.6.1"
+  },
+  "peerDependenciesMeta": {
+    "@anchor-lang/core": {
+      "optional": true
+    },
+    "litesvm": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@anchor-lang/core": "1.2.1",

@@ -12,74 +12,16 @@ export interface Template {
   devDependencies?: Record<string, string>;
 }
 
-/** The part every test shares: build the project's program into a LiteSVM, encode instructions with its IDL, send. */
-const testFile = (
-  name: string,
-  o: { imports: string; kit: string[]; body: string },
-) => `// Runs the program in LiteSVM (an in-process Solana runtime): \`npm test\`.
-import { BN, BorshCoder, type Idl } from "@anchor-lang/core";
-${o.imports}import {
-${[
-  "AccountRole",
-  "appendTransactionMessageInstructions",
-  "createTransactionMessage",
-  ...o.kit,
-  "pipe",
-  "setTransactionMessageFeePayerSigner",
-  "signTransactionMessageWithSigners",
-  "type Address",
-  "type Instruction",
-  "type KeyPairSigner",
-]
-  .map((x) => `  ${x},`)
-  .join("\n")}
-} from "@solana/kit";
-import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildWorkspace, findWorkspace } from "typesol/workspace";
+/** Every test starts the same way: build the project's program into a LiteSVM with `typesol/testing`. */
+const testFile = (name: string, o: { imports?: string; body: string }) => `// Runs the program in LiteSVM (an in-process Solana runtime): \`npm test\`.
+${o.imports ?? ""}import { testProgram, type TestProgram } from "typesol/testing";
 import { beforeAll, describe, expect, it } from "vitest";
 
-const SYSTEM = "11111111111111111111111111111111" as Address;
-const ws = findWorkspace(path.dirname(fileURLToPath(import.meta.url)))!;
-
 describe("${name}", () => {
-  const svm = new LiteSVM();
-  let programId: Address;
-  let coder: BorshCoder;
-  beforeAll(() => {
-    const [built] = buildWorkspace(ws, ["${name}"]);
-    programId = built.address as Address;
-    svm.addProgramFromFile(programId, built.result.soPath);
-    coder = new BorshCoder(built.result.idl as unknown as Idl);
+  let t: TestProgram;
+  beforeAll(async () => {
+    t = await testProgram("${name}", import.meta.url);
   });
-
-  const ix = (name: string, args: object, accounts: { address: Address; signer?: KeyPairSigner; writable?: boolean }[]): Instruction => ({
-    programAddress: programId,
-    accounts: accounts.map((a) => ({
-      address: a.address,
-      role: a.signer ? (a.writable ? AccountRole.WRITABLE_SIGNER : AccountRole.READONLY_SIGNER) : a.writable ? AccountRole.WRITABLE : AccountRole.READONLY,
-      ...(a.signer ? { signer: a.signer } : {}),
-    })) as Instruction["accounts"],
-    data: new Uint8Array(coder.instruction.encode(name, args)),
-  });
-  const send = async (payer: KeyPairSigner, ixs: Instruction[]) => {
-    const tx = await pipe(
-      createTransactionMessage({ version: 0 }),
-      (t) => setTransactionMessageFeePayerSigner(payer, t),
-      (t) => svm.setTransactionMessageLifetimeUsingLatestBlockhash(t),
-      (t) => appendTransactionMessageInstructions(ixs, t),
-      (t) => signTransactionMessageWithSigners(t),
-    );
-    const res = svm.sendTransaction(tx);
-    svm.expireBlockhash();
-    return res;
-  };
-  /** The custom error code of a failed transaction: 6000 + the member's index in the program's error enum. */
-  const errorCode = (res: TransactionMetadata | FailedTransactionMetadata) => {
-    if (!(res instanceof FailedTransactionMetadata)) throw new Error("expected the transaction to fail");
-    return Number(/Custom\\D*(\\d+)/.exec(String(res.err()))?.[1]);
-  };
 ${o.body}});
 `;
 
@@ -116,25 +58,17 @@ export function assertAtLeast(counter: Account<Counter>, min: u64): void {
 `,
     test: (name) =>
       testFile(name, {
-        imports: "",
-        kit: ["generateKeyPairSigner", "getAddressEncoder", "getProgramDerivedAddress", "lamports"],
         body: `
   it("initializes and increments the caller's counter; refuses anyone else", async () => {
-    const alice = await generateKeyPairSigner();
-    const mallory = await generateKeyPairSigner();
-    svm.airdrop(alice.address, lamports(1_000_000_000n));
-    svm.airdrop(mallory.address, lamports(1_000_000_000n));
-    const [counter] = await getProgramDerivedAddress({ programAddress: programId, seeds: ["counter", getAddressEncoder().encode(alice.address)] });
-    const me = { address: alice.address, signer: alice, writable: true };
-    expect(await send(alice, [ix("initialize", {}, [me, { address: counter, writable: true }, { address: SYSTEM }])])).toBeInstanceOf(TransactionMetadata);
-    expect(await send(alice, [ix("increment", { by: new BN(5) }, [{ address: alice.address, signer: alice }, { address: counter, writable: true }])])).toBeInstanceOf(TransactionMetadata);
-    const account = svm.getAccount(counter);
-    if (!account.exists) throw new Error("counter was not created");
-    expect(coder.accounts.decode("Counter", Buffer.from(account.data)).count.toString()).toBe("5");
+    const alice = await t.wallet();
+    const mallory = await t.wallet();
+    const counter = await t.pda("counter", alice);
+    t.ok(await t.send(alice, t.ix("initialize", {}, { authority: alice, counter })));
+    t.ok(await t.send(alice, t.ix("increment", { by: 5n }, { authority: alice, counter })));
+    expect((await t.account<{ count: bigint }>("Counter", counter))?.count).toBe(5n);
 
     // CounterError.Unauthorized is the enum's first member: 6000.
-    const stranger = ix("increment", { by: new BN(1) }, [{ address: mallory.address, signer: mallory }, { address: counter, writable: true }]);
-    expect(errorCode(await send(mallory, [stranger]))).toBe(6000);
+    expect(t.errorCode(await t.send(mallory, t.ix("increment", { by: 1n }, { authority: mallory, counter })))).toBe(6000);
   });
 `,
       }),
@@ -198,41 +132,30 @@ export function shut(owner: Mut<Signer>, vault: Mut<Vault>): void {
 `,
     test: (name) =>
       testFile(name, {
-        imports: "",
-        kit: ["generateKeyPairSigner", "getAddressEncoder", "getProgramDerivedAddress", "lamports"],
         body: `
   it("deposits and withdraws SOL, keeps the rent reserve, then closes", async () => {
-    const owner = await generateKeyPairSigner();
-    svm.airdrop(owner.address, lamports(10_000_000_000n));
-    const [vault] = await getProgramDerivedAddress({ programAddress: programId, seeds: ["vault", getAddressEncoder().encode(owner.address)] });
-    const me = { address: owner.address, signer: owner, writable: true };
-    const v = { address: vault, writable: true };
-
-    expect(await send(owner, [ix("open", {}, [me, v, { address: SYSTEM }])])).toBeInstanceOf(TransactionMetadata);
-    const rent = svm.getBalance(vault)!;
-    expect(await send(owner, [ix("deposit", { amount: new BN(3_000_000_000) }, [me, v, { address: SYSTEM }])])).toBeInstanceOf(TransactionMetadata);
-    expect(await send(owner, [ix("withdraw", { amount: new BN(1_000_000_000) }, [me, v])])).toBeInstanceOf(TransactionMetadata);
-    expect(svm.getBalance(vault)).toBe(rent + 2_000_000_000n);
+    const owner = await t.wallet();
+    const vault = await t.pda("vault", owner);
+    t.ok(await t.send(owner, t.ix("open", {}, { owner, vault })));
+    const rent = t.balance(vault);
+    t.ok(await t.send(owner, t.ix("deposit", { amount: 3_000_000_000n }, { owner, vault })));
+    t.ok(await t.send(owner, t.ix("withdraw", { amount: 1_000_000_000n }, { owner, vault })));
+    expect(t.balance(vault)).toBe(rent + 2_000_000_000n);
 
     // VaultError.InsufficientFunds (third member, 6002): the rent reserve stays.
-    expect(errorCode(await send(owner, [ix("withdraw", { amount: new BN(2_000_000_001) }, [me, v])]))).toBe(6002);
+    expect(t.errorCode(await t.send(owner, t.ix("withdraw", { amount: 2_000_000_001n }, { owner, vault })))).toBe(6002);
 
-    expect(await send(owner, [ix("shut", {}, [me, v])])).toBeInstanceOf(TransactionMetadata);
-    expect(svm.getAccount(vault).exists).toBe(false);
+    t.ok(await t.send(owner, t.ix("shut", {}, { owner, vault })));
+    expect(await t.account("Vault", vault)).toBeNull();
   });
 
   it("refuses a stranger", async () => {
-    const owner = await generateKeyPairSigner();
-    const thief = await generateKeyPairSigner();
-    svm.airdrop(owner.address, lamports(2_000_000_000n));
-    svm.airdrop(thief.address, lamports(1_000_000_000n));
-    const [vault] = await getProgramDerivedAddress({ programAddress: programId, seeds: ["vault", getAddressEncoder().encode(owner.address)] });
-    const v = { address: vault, writable: true };
-    expect(await send(owner, [ix("open", {}, [{ address: owner.address, signer: owner, writable: true }, v, { address: SYSTEM }])])).toBeInstanceOf(
-      TransactionMetadata,
-    );
+    const owner = await t.wallet();
+    const thief = await t.wallet();
+    const vault = await t.pda("vault", owner);
+    t.ok(await t.send(owner, t.ix("open", {}, { owner, vault })));
     // VaultError.NotOwner: 6000.
-    expect(errorCode(await send(thief, [ix("shut", {}, [{ address: thief.address, signer: thief, writable: true }, v])]))).toBe(6000);
+    expect(t.errorCode(await t.send(thief, t.ix("shut", {}, { owner: thief, vault })))).toBe(6000);
   });
 `,
       }),
@@ -347,18 +270,17 @@ export function refund(
 `,
     test: (name) =>
       testFile(name, {
-        imports: `import { AccountState, getMintEncoder, getMintSize, getTokenDecoder, getTokenEncoder, getTokenSize } from "@solana-program/token";\n`,
-        kit: ["generateKeyPairSigner", "getAddressEncoder", "getProgramDerivedAddress", "lamports"],
+        imports: `import { AccountState, getMintEncoder, getMintSize, getTokenDecoder, getTokenEncoder, getTokenSize } from "@solana-program/token";\nimport { type Address, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";\n`,
         body: `
   const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address;
   /** A mint, written straight into the VM (a real client sends System CreateAccount + InitializeMint2). */
   const mint = async (authority: Address) => {
     const address = (await generateKeyPairSigner()).address;
     const data = getMintEncoder().encode({ mintAuthority: authority, supply: 0n, decimals: 6, isInitialized: true, freezeAuthority: null });
-    svm.setAccount({ address, data: new Uint8Array(data), executable: false, lamports: lamports(1_461_600n), programAddress: TOKEN, space: BigInt(getMintSize()) });
+    t.svm.setAccount({ address, data: new Uint8Array(data), executable: false, lamports: lamports(1_461_600n), programAddress: TOKEN, space: BigInt(getMintSize()) });
     return address;
   };
-  /** A token account of \`owner\` for \`mint\` holding \`amount\`, written straight into the VM. */
+  /** A token account of owner for mint holding amount, written straight into the VM. */
   const tokenAccount = async (owner: Address, mintAddress: Address, amount: bigint) => {
     const address = (await generateKeyPairSigner()).address;
     const data = getTokenEncoder().encode({
@@ -371,73 +293,43 @@ export function refund(
       delegatedAmount: 0n,
       closeAuthority: null,
     });
-    svm.setAccount({ address, data: new Uint8Array(data), executable: false, lamports: lamports(2_039_280n), programAddress: TOKEN, space: BigInt(getTokenSize()) });
+    t.svm.setAccount({ address, data: new Uint8Array(data), executable: false, lamports: lamports(2_039_280n), programAddress: TOKEN, space: BigInt(getTokenSize()) });
     return address;
   };
   const balance = (address: Address) => {
-    const account = svm.getAccount(address);
+    const account = t.svm.getAccount(address);
     return account.exists ? getTokenDecoder().decode(account.data).amount : null;
   };
 
   it("escrows mint A for mint B; the taker swaps, the maker can refund", async () => {
-    const maker = await generateKeyPairSigner();
-    const taker = await generateKeyPairSigner();
-    svm.airdrop(maker.address, lamports(1_000_000_000n));
-    svm.airdrop(taker.address, lamports(1_000_000_000n));
+    const maker = await t.wallet();
+    const taker = await t.wallet();
     const mintA = await mint(maker.address);
     const mintB = await mint(taker.address);
-    const makerA = await tokenAccount(maker.address, mintA, 1_000n);
-    const makerB = await tokenAccount(maker.address, mintB, 0n);
-    const takerA = await tokenAccount(taker.address, mintA, 0n);
-    const takerB = await tokenAccount(taker.address, mintB, 500n);
+    const makerTokenA = await tokenAccount(maker.address, mintA, 1_000n);
+    const makerTokenB = await tokenAccount(maker.address, mintB, 0n);
+    const takerTokenA = await tokenAccount(taker.address, mintA, 0n);
+    const takerTokenB = await tokenAccount(taker.address, mintB, 500n);
 
-    const open = async (seed: number) => {
-      const [offer] = await getProgramDerivedAddress({
-        programAddress: programId,
-        seeds: ["offer", getAddressEncoder().encode(maker.address), new Uint8Array(new BN(seed).toArray("le", 8))],
-      });
+    const open = async (seed: bigint) => {
+      const offer = await t.pda("offer", maker, seed);
       // The client creates the vault: an empty token account for mint A owned by the offer PDA.
       const vault = await tokenAccount(offer, mintA, 0n);
-      const make = ix("make", { seed: new BN(seed), amount_a: new BN(400), want_b: new BN(300), mint_b: { toBuffer: () => Buffer.from(getAddressEncoder().encode(mintB)) } }, [
-        { address: maker.address, signer: maker, writable: true },
-        { address: offer, writable: true },
-        { address: makerA, writable: true },
-        { address: vault, writable: true },
-        { address: SYSTEM },
-        { address: TOKEN },
-      ]);
-      expect(await send(maker, [make])).toBeInstanceOf(TransactionMetadata);
+      t.ok(await t.send(maker, t.ix("make", { seed, amountA: 400n, wantB: 300n, mintB }, { maker, offer, makerTokenA, vault })));
       return { offer, vault };
     };
 
-    const first = await open(1);
+    const first = await open(1n);
     expect(balance(first.vault)).toBe(400n);
-    const take = ix("take", {}, [
-      { address: taker.address, signer: taker, writable: true },
-      { address: maker.address, writable: true },
-      { address: first.offer, writable: true },
-      { address: takerA, writable: true },
-      { address: takerB, writable: true },
-      { address: makerB, writable: true },
-      { address: first.vault, writable: true },
-      { address: TOKEN },
-    ]);
-    expect(await send(taker, [take])).toBeInstanceOf(TransactionMetadata);
-    expect([balance(takerA), balance(makerB), balance(first.vault)]).toEqual([400n, 300n, null]);
+    t.ok(await t.send(taker, t.ix("take", {}, { taker, maker: maker.address, offer: first.offer, takerTokenA, takerTokenB, makerTokenB, vault: first.vault })));
+    expect([balance(takerTokenA), balance(makerTokenB), balance(first.vault)]).toEqual([400n, 300n, null]);
 
-    const second = await open(2);
-    const refund = (signer: KeyPairSigner) =>
-      ix("refund", {}, [
-        { address: signer.address, signer, writable: true },
-        { address: second.offer, writable: true },
-        { address: makerA, writable: true },
-        { address: second.vault, writable: true },
-        { address: TOKEN },
-      ]);
+    const second = await open(2n);
+    const refund = (who: KeyPairSigner) => t.ix("refund", {}, { maker: who, offer: second.offer, makerTokenA, vault: second.vault });
     // EscrowError.WrongMaker (third member, 6002): only the maker refunds.
-    expect(errorCode(await send(taker, [refund(taker)]))).toBe(6002);
-    expect(await send(maker, [refund(maker)])).toBeInstanceOf(TransactionMetadata);
-    expect([balance(makerA), svm.getAccount(second.offer).exists]).toEqual([600n, false]);
+    expect(t.errorCode(await t.send(taker, refund(taker)))).toBe(6002);
+    t.ok(await t.send(maker, refund(maker)));
+    expect([balance(makerTokenA), await t.account("Offer", second.offer)]).toEqual([600n, null]);
   });
 `,
       }),
