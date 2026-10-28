@@ -5,6 +5,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.17.0 — 2026-10-28
+
+Anchor's account bytes on request (`@layout borsh`, so a TypeSOL program can take over an Anchor program's accounts
+without a migration), lists with a fixed capacity anywhere in account data (`FixedVec`), arrow functions and generic
+helpers, Metaplex collection verification, Core plugins and Bubblegum V2, and a faster UTF-8 check. Existing programs
+keep their layouts and error codes (3004 is new, raised only by `@layout borsh` accounts). Not externally audited (see
+SECURITY.md).
+
 ### Added
 - `/** @layout borsh */` on an account struct stores it with Anchor's bytes (Borsh String / Vec / Option for
   `FixedString` / `FixedVec` / `Option`), so a TypeSOL program can take over an Anchor program's accounts without a
@@ -12,10 +20,6 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   and packs it back when it returns (3003 for bytes that are not a valid value, 3004 when the account is too small).
   Checked byte for byte against an Anchor twin, including switching programs in the middle of a sequence.
   `typesol port` marks Anchor account structs that need it.
-
-### Changed
-- UTF-8 checks of strings run eight ASCII bytes at a time: every official-example instruction with a string argument
-  gets cheaper (create_token_mint 40,919 → 39,828 CU, set_favorites 4,282 → 4,195).
 - `FixedVec<T, N>`: a list with room for N elements (u32 length + N slots, like `FixedString<N>`) as any account field,
   several per struct and in nested structs, with `get` / `set` / `push` / `pop` / `clear` / `.length` / `for … of`;
   `push` on a full one fails with 5104, `fixedVec([…])` writes a whole one. The IDL describes each as a
@@ -40,6 +44,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - Metaplex collections: `createV3`'s `isCollection: true` (CollectionDetails::V1), `createMasterEditionV3(…, maxSupply | null)`,
   `verifyCollection(…)` (Verify with CollectionV1) and `masterEditionAddress(mint)`. The tokens/nft-operations port now
   uses them instead of hand-encoded `invoke`s, checked against the real Token Metadata program.
+
+### Changed
+- IDLs no longer list `FixedString*` / `FixedOption_*` / `FixedVec*` helper types that nothing in them refers to
+  (for example an `Option` used only as an instruction argument, which is Borsh there).
+- UTF-8 checks of strings run eight ASCII bytes at a time: every official-example instruction with a string argument
+  gets cheaper (create_token_mint 40,919 → 39,828 CU, set_favorites 4,282 → 4,195).
 
 ## 0.16.0 — 2026-10-28
 
