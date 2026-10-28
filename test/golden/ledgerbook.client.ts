@@ -632,6 +632,8 @@ export const ledgerbook = {
       return getU64Codec().decode(res.returnData);
     },
   },
+  resolve: {
+  },
   errors: ERRORS,
   errorCode,
   isError,

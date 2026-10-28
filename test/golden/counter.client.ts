@@ -436,6 +436,8 @@ export const counter = {
   },
   views: {
   },
+  resolve: {
+  },
   errors: ERRORS,
   errorCode,
   isError,

@@ -3,7 +3,10 @@
 Every `typesol build` writes a typed client next to the program: `<out>/<name>/<name>.client.ts`. It is one file, it
 depends only on [`@solana/kit`](https://github.com/anza-xyz/kit) (8.5 or later), and it is rewritten on every build, so
 it always matches the program. `typesol client <idl.json>` writes the same kind of client from an Anchor IDL (Anchor 0.30+
-and 1.x), so one client style covers TypeSOL programs and the Anchor programs they talk to.
+and 1.x), so one client style covers TypeSOL programs and the Anchor programs they talk to. `typesol client --address
+<program id> --url <rpc>` reads the IDL from the chain instead: the canonical Program Metadata IDL (`typesol idl
+publish`, Codama), else Anchor's IDL account (`anchor idl init`), so any deployed Anchor or TypeSOL program with a
+published IDL gets a client from its address alone.
 
 ```ts
 import { ledgerbook } from "./target/ledgerbook/ledgerbook.client.js";
@@ -44,6 +47,9 @@ for await (const { signature, event } of ledgerbook.watchEvents(rpcSubscriptions
 // Remaining accounts go after the instruction's own (Anchor's `.remainingAccounts([...])`)
 await ledgerbook.approveMany({ approver: signer, book }, { indices: [0n, 1n] }, [{ address: extra, role: AccountRole.WRITABLE }]);
 
+// has_one accounts that do not sign, read from the account that names them (Anchor resolves `relations` the same way)
+const accounts = await ledgerbook.resolve.someInstruction(rpc, { book }); // fills in what book's Pubkey fields name
+
 // Events of a fetched transaction (getTransaction, json): log events and emitCpi events from inner instructions
 ledgerbook.eventsOf(await rpc.getTransaction(signature, { maxSupportedTransactionVersion: 0 }).send());
 ```
@@ -60,6 +66,7 @@ Kit's own transaction functions work with the instructions as well; `sendInstruc
 | `<program>.accounts.<Name>` | `decode(bytes)`, `encode(value)`, `fetch(rpc, address)`, `fetchMaybe(rpc, address)`, `fetchMultiple(rpc, addresses)`, `fetchAll(rpc, filters?)` (getProgramAccounts by discriminator, plus `{ offset, bytes }` filters), `watch(rpcSubscriptions, address, { abortSignal })`, `discriminator`. `decode` checks the discriminator. |
 | `<program>.pdas.<account>(seeds)` | The PDA (address and bump) for each account an instruction derives. |
 | `<program>.returns.<instruction>(bytes)` | Decodes return data. |
+| `<program>.resolve.<instruction>(rpc, accounts)` | For instructions with `has_one` accounts that do not sign: the accounts with those filled in from the account that names them (fetched and decoded); given ones are kept. |
 | `<program>.views.<instruction>(rpc, feePayer, accounts, args)` | Simulates an instruction that returns a value and decodes it (throws with the logs if it fails). |
 | `<program>.sendInstructions(connection, feePayer, instructions)`, `simulate(rpc, feePayer, instructions)` | One transaction sent and confirmed (kit's sendAndConfirm), or simulated without signatures (error, logs, units, this program's return data). |
 | `<program>.errors`, `errorCode(e)`, `isError(e, name)` | The program's errors (6000+), and for TypeSOL programs also every Anchor framework error (`AnchorError` and the constraints raise them) and TypeSOL's runtime errors. |
@@ -82,9 +89,9 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
 
 - **Errors and events are matched by code and discriminator, not by program.** A program this one calls can raise the
   same error code, and `parseEvents` reads every `Program data:` line that decodes as one of this program's events.
-- **Not filled in automatically** (pass them): accounts named by `has_one` relations, PDAs seeded from fields inside
-  another account or inside an argument, and PDAs whose program comes from an argument. `typesol client` prints a note
-  for each.
+- **Not filled in automatically** (pass them): `has_one` accounts that sign (they have to sign), PDAs seeded from fields
+  inside another account or inside an argument, and PDAs whose program comes from an argument. `typesol client` prints a
+  note for each. `has_one` accounts that do not sign are filled in by `resolve` (it reads the chain).
 - **Left out of a client generated from an Anchor IDL**, with a note: generic types and anything using them, and
   zero-copy (`bytemuck`) accounts.
 - **Not done yet**: a LiteSVM loader for tests (use `svm.addProgramFromFile(ledgerbook.address, soPath)`, or

@@ -271,13 +271,33 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   client: {
-    usage: "typesol client <idl.json> [--out <file.ts>] [--address <base58>]",
-    help: "Generate a typed TypeScript client (on @solana/kit) from an Anchor IDL (0.30+/1.x or TypeSOL). The IDL is validated first;\n  what the client leaves out is printed as notes. `typesol build` already writes <name>.client.ts for TypeSOL programs.",
-    options: { out: { type: "string" }, address: { type: "string" } },
-    run(v, args) {
-      const file = one(args, "<idl.json>");
+    usage:
+      "typesol client <idl.json> [--out <file.ts>] [--address <base58>]\n  typesol client --address <program id> [--url <rpc>] [--config <solana cli config>] [--out <file.ts>]",
+    help: [
+      "Generate a typed TypeScript client (on @solana/kit) from an Anchor IDL (0.30+/1.x or TypeSOL). The IDL is validated first;",
+      "what the client leaves out is printed as notes. `typesol build` already writes <name>.client.ts for TypeSOL programs.",
+      "Without an IDL file, the IDL is read from the chain for the program at --address: the canonical Program Metadata IDL",
+      "(`typesol idl publish`, Codama), else Anchor's IDL account (`anchor idl init`).",
+    ].join("\n  "),
+    options: { out: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" } },
+    async run(v, args) {
       if (v.address && !decodeAddress(v.address as string)) throw new UsageError(`--address "${v.address}" is not a base58 Solana address`);
-      const res = generateClient(readJson(file) as ClientIdl, { address: v.address as string | undefined });
+      let idl: unknown;
+      if (args.length === 0) {
+        if (!v.address) throw new UsageError("pass an IDL file, or --address to read the program's IDL from the chain");
+        const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
+        if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
+        // Loaded only here: the other commands do not need an RPC client.
+        const kit = await import("@solana/kit");
+        const { fetchProgramIdl } = await import("./idlpublish.js");
+        const found = await fetchProgramIdl(kit.createSolanaRpc(clusterUrl(rpcUrl)), kit.address(v.address as string));
+        console.error(`  IDL from ${found.source === "anchor" ? "Anchor's IDL account" : "the Program Metadata program"}`);
+        idl = found.idl;
+      } else {
+        if (v.url) throw new UsageError("--url reads the IDL from the chain: leave out the IDL file");
+        idl = readJson(one(args, "<idl.json>"));
+      }
+      const res = generateClient(idl as ClientIdl, { address: v.address as string | undefined });
       if (v.out) {
         writeFileSync(v.out as string, res.source);
         log(`  wrote ${v.out}`);

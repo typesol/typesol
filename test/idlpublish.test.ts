@@ -8,7 +8,10 @@ import path from "node:path";
 import { build } from "../src/compiler/index.js";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { PROGRAM_METADATA_ID, fetchIdl, metadataAddress, publishIdl } from "../src/idlpublish.js";
+import { PROGRAM_METADATA_ID, anchorIdlAddress, fetchIdl, fetchProgramIdl, metadataAddress, publishIdl } from "../src/idlpublish.js";
+import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
+import { generateClient } from "../src/clientgen.js";
 import { deployFile, fundedSigner, acct } from "./harness.js";
 import { svmChain, upgradeable } from "./chain-helpers.js";
 
@@ -35,6 +38,50 @@ describe("on-chain IDL (Program Metadata program)", () => {
     const at = await publishIdl(chain, { program, idl: out.idl, payer: admin, canonical: true });
     expect(at).toBe(await metadataAddress(program, null));
     expect(await fetchIdl(chain.rpc, program)).toEqual(out.idl);
+  });
+
+  it("reads a program's IDL for a client: Program Metadata first, else Anchor's IDL account", async () => {
+    const out = build(
+      fileURLToPath(new URL("../examples/counter.ts", import.meta.url)),
+      mkdtempSync(path.join(os.tmpdir(), "typesol-idl-")),
+      "11111111111111111111111111111112",
+    );
+    const svm = new LiteSVM();
+    svm.addProgramFromFile(PROGRAM_METADATA_ID, fileURLToPath(new URL("./programs/program_metadata.so", import.meta.url)));
+    const admin = await fundedSigner(svm);
+    const chain = svmChain(svm);
+
+    // An Anchor program: its IDL in the account `anchor idl init` writes (discriminator, authority, length, zlib JSON).
+    const anchorProgram = (await generateKeyPairSigner()).address;
+    const json = Buffer.from(JSON.stringify(out.idl));
+    const zipped = deflateSync(json);
+    const data = Buffer.alloc(44 + zipped.length);
+    createHash("sha256").update("account:IdlAccount").digest().subarray(0, 8).copy(data);
+    data.writeUInt32LE(zipped.length, 40);
+    zipped.copy(data, 44);
+    const at = await anchorIdlAddress(anchorProgram);
+    svm.setAccount({
+      address: at,
+      data: new Uint8Array(data),
+      executable: false,
+      lamports: 10n ** 9n,
+      programAddress: anchorProgram,
+      space: BigInt(data.length),
+    } as never);
+    const fromAnchor = await fetchProgramIdl(chain.rpc, anchorProgram);
+    expect(fromAnchor.source).toBe("anchor");
+    expect(fromAnchor.idl).toEqual(out.idl);
+    expect(generateClient(fromAnchor.idl as never, { address: anchorProgram }).source).toContain("export const counter = {");
+
+    // A program with published metadata: that one, even when an Anchor account exists too.
+    const program = (await generateKeyPairSigner()).address;
+    await upgradeable(svm, program, out.soPath, admin.address);
+    await publishIdl(chain, { program, idl: out.idl, payer: admin, canonical: true });
+    expect((await fetchProgramIdl(chain.rpc, program)).source).toBe("program-metadata");
+
+    // Neither: a clear error naming both places.
+    const none = (await generateKeyPairSigner()).address;
+    await expect(fetchProgramIdl(chain.rpc, none)).rejects.toThrow(/no IDL on chain .* Program Metadata .* Anchor IDL account/s);
   });
 
   it("writes, reads back and updates a program's IDL as non-canonical metadata", async () => {
