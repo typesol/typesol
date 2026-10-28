@@ -28,3 +28,8 @@ export function mustAdd(owner: Signer, bank: Mut<Bank> | null, amount: u64): u64
   log(`bank of ${bank!.owner} holds ${bank!.total}`);
   return bank!.total;
 }
+
+/** A Pubkey in a template string is its base58 text. */
+export function show(k: Pubkey): void {
+  log(`key ${k}`);
+}

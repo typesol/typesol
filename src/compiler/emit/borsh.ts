@@ -57,7 +57,7 @@ export function borshMinSize(s: StructDef, model: Pick<ProgramModel, "structs">)
   return n;
 }
 
-const DESER = `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data is not a valid Borsh value")`;
+const DESER = `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: bytes are not a valid Borsh value")`;
 const SER = `TS_FAIL(TS_ERR_DID_NOT_SERIALIZE, "TypeSOL: account data too small for the value")`;
 
 /** C for `ts_unpack_<S>` and `ts_pack_<S>` of every `@layout borsh` struct. */

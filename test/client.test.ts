@@ -2,6 +2,7 @@
 // meta-identical to the hand-built ones the other tests send, its decoders must read what the programs wrote, and the
 // files must typecheck under strict settings, for TypeSOL programs and for an Anchor IDL.
 import { SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM, SolanaError, type Address, type Instruction, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
+import { web3 } from "@anchor-lang/core";
 import { LiteSVM } from "litesvm";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -249,6 +250,25 @@ describe("generated client: TypeSOL storage types", () => {
     expect(queue.history[3]).toEqual({ kind: "Deposit", amount: 5n });
     expect([...c.accounts.Queue.encode(queue)]).toEqual([...accountData(d.svm, q)]);
     expect(c.parseEvents(deposit.logs())).toEqual([{ name: "Applied", data: { action: { kind: "Deposit", amount: 40n }, balance: 40n } }]);
+  });
+
+  it("borsh-values: @layout borsh struct arguments, return data and events in Anchor's bytes", async () => {
+    const d = await load<Any>("test/fixtures/borsh-values.ts");
+    const c = d.client.borshValues;
+    const owner = await fundedSigner(d.svm);
+    const init = { owner: owner.address, bump: 0, name: "ünï", tags: [1n, 2n], labels: ["a", "bc"], badge: 9n, score: 40n };
+    const create = await c.create({ owner }, { init });
+    // The client's bytes are Anchor's coder's.
+    const anchorInit = { ...init, owner: new web3.PublicKey(owner.address), tags: [new BN(1), new BN(2)], badge: new BN(9), score: new BN(40) };
+    expect(shape(create).data).toEqual(shape(ix(d, "create", { init: anchorInit }, [])).data);
+    expectOk(await send(d.svm, owner, [create]));
+    const card = create.accounts[1].address;
+    const read = expectOk(await send(d.svm, owner, [await c.read({ card })]));
+    expect(c.returns.read(read.returnData().data())).toMatchObject({ ...init, bump: expect.any(Number) });
+    const noted = expectOk(await send(d.svm, owner, [await c.note({ owner }, { title: "hi", amount: 5n })]));
+    expect(c.parseEvents(noted.logs())).toEqual([{ name: "Note", data: { title: "hi", amount: 5n, at: 7n } }]);
+    const echoed = expectOk(await send(d.svm, owner, [await c.echo({}, { n: { title: "x", amount: null, at: 1n }, k: 2n })]));
+    expect(c.returns.echo(echoed.returnData().data())).toEqual({ title: "x", amount: null, at: 3n });
   });
 });
 

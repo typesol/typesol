@@ -457,7 +457,8 @@ export abstract class StorageEmitter extends EmitterBase {
   private wholeAccount(node: ts.Expression): Ref | undefined {
     if (!ts.isIdentifier(node) || this.lookup(node.text)) return undefined;
     const a = this.accounts.get(node.text);
-    if (!a || !(a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded") || a.kind.struct.size === undefined) return undefined;
+    if (!a || !(a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded") || a.kind.struct.size === undefined || a.kind.struct.vec)
+      return undefined;
     this.assertUsable(a, node);
     return { lv: `(*d_${a.name})`, type: { kind: "struct", name: a.kind.struct.name }, writable: false };
   }

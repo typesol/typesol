@@ -99,6 +99,11 @@ describe("subset enforcement", () => {
     ["string .length", `export function f(s: string): void { const n = s.length; }`, /byteLength|number/],
     ["Vec fields that are not last", `export interface S { xs: Vec<u64>; n: u64; }\nexport function f(): void {}`, /must be the last field/],
     [
+      "growing a Vec in a helper without SystemProgram",
+      `export interface S { xs: Vec<u64>; }\nfunction add(s: Mut<S>, p: Mut<Signer>): void { s.xs.push(1n, p); }\nfunction outer(s: Mut<S>, p: Mut<Signer>): void { add(s, p); }\nexport function f(p: Mut<Signer>, s: Mut<S>): void { outer(s, p); }`,
+      /outer\(\) grows a Vec \(push\): the instruction needs a SystemProgram/,
+    ],
+    [
       "growing a Vec without SystemProgram",
       `export interface S { xs: Vec<u64>; }\nexport function f(p: Mut<Signer>, s: Mut<S>): void { s.xs.push(1n, p); }`,
       /need a SystemProgram/,

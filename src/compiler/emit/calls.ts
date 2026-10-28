@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { resolveScalarType } from "../analyze.js";
+import { calleeName, resolveScalarType } from "../analyze.js";
 import { decodeAddress } from "../../keys.js";
 import {
   INT_INFO,
@@ -854,7 +854,31 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: mut } };
   }
 
+  /** Whether a helper (or one it calls) grows a Vec, which needs the instruction's SystemProgram for rent. */
+  private helperGrows(body: ts.Node, seen = new Set<ts.Node>()): boolean {
+    if (seen.has(body)) return false;
+    seen.add(body);
+    let found = false;
+    const visit = (n: ts.Node) => {
+      if (found) return;
+      if (ts.isCallExpression(n)) {
+        // Vec.push(value, payer) grows the account; FixedVec.push(value) does not.
+        if (ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && n.arguments.length === 2) found = true;
+        else if (ts.isIdentifier(n.expression)) {
+          const name = calleeName(n.expression, this.model.helperDecls, this.checker);
+          const callee = name ? (this.model.generics.get(name)?.node ?? this.model.helpers.get(name)?.node) : undefined;
+          if (callee && this.helperGrows(callee, seen)) found = true;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return found;
+  }
+
   protected callHelper(node: ts.CallExpression, h: Helper): Value | undefined {
+    if (this.ix && !this.ix.accounts.some((a) => a.kind.kind === "system" && !a.optional) && h.params.some((p) => p.account) && this.helperGrows(h.node))
+      this.fail(node, `${h.display}() grows a Vec (push): the instruction needs a SystemProgram parameter to top up rent`);
     // Function arguments were bound when the helper was instantiated: they have no C parameter.
     const argNodes = h.fnArgIndexes ? node.arguments.filter((_, i) => !h.fnArgIndexes!.includes(i)) : node.arguments;
     if (argNodes.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);

@@ -393,7 +393,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       // A Pubkey (or Hash) as base58, as Rust's `{}` prints it.
       const t = this.tmp("b58");
       this.line(`TS_Str ${t};`);
-      this.line(`TS_TRY(ts_base58((const uint8_t *)(${typed.c}), 32, &${t}));`);
+      this.line(`TS_TRY(ts_base58_32((const uint8_t *)(${typed.c}), &${t}));`);
       return t;
     }
     this.fail(node, `only strings, integers, booleans and Pubkeys can be joined into text, not ${typeName(typed.type)}`);

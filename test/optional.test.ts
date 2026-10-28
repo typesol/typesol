@@ -1,4 +1,5 @@
-import type { Address } from "@solana/kit";
+import { type Address, getAddressDecoder } from "@solana/kit";
+import { web3 } from "@anchor-lang/core";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
@@ -69,5 +70,20 @@ describe("optional accounts (test/fixtures/optional.ts)", () => {
     expect(Buffer.from(ok.returnData().data()).readBigUInt64LE()).toBe(5n);
     expect(ok.logs()).toContain(`Program log: bank of ${alice.address} holds 5`);
     expect(customError(await must(d.programId))).toBe(5115);
+  });
+
+  it("prints Pubkeys in templates as base58, leading zero bytes and all", async () => {
+    const payer = await fundedSigner(d.svm);
+    const dec = getAddressDecoder();
+    const keys: Uint8Array[] = [new Uint8Array(32), new Uint8Array(32).fill(255), Uint8Array.from({ length: 32 }, (_, i) => (i < 3 ? 0 : i))];
+    const one = new Uint8Array(32);
+    one[31] = 1;
+    keys.push(one);
+    for (let i = 0; i < 40; i++) keys.push(crypto.getRandomValues(new Uint8Array(32)));
+    for (const k of keys) {
+      const text = dec.decode(k);
+      const r = expectOk(await send(d.svm, payer, [ix(d, "show", { k: new web3.PublicKey(k) }, [])]));
+      expect(r.logs()).toContain(`Program log: key ${text}`);
+    }
   });
 });

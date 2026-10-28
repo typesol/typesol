@@ -2193,13 +2193,13 @@ export abstract class CpiEmitter extends CallEmitter {
     const t = this.tmp("evs");
     const b = this.tmp("evb");
     const w = this.tmp("evw");
-    this.line(`TSS_${s.name} *${t};`);
-    this.line(`TS_TRY(ts_alloc(sizeof(TSS_${s.name}), (uint8_t **)&${t}));`);
+    // One pair of heap buffers per emit site, taken on first use: an emit in a loop does not take new heap each pass.
+    this.hoisted.push(`  TSS_${s.name} *${t} = NULL;`, `  uint8_t *${b} = NULL;`);
+    this.line(`if (${t} == NULL) TS_TRY(ts_alloc(sizeof(TSS_${s.name}), (uint8_t **)&${t}));`);
     this.writeAggregate({ lv: `(*${t})`, type: { kind: "struct", name: s.name }, writable: true }, obj);
     // Borsh never takes more than the fixed layout (a String/Vec is 4 + used bytes, an Option 1 + payload).
-    this.line(`uint8_t *${b};`);
     this.line(`uint64_t ${w} = 0;`);
-    this.line(`TS_TRY(ts_alloc(sizeof(TSS_${s.name}), &${b}));`);
+    this.line(`if (${b} == NULL) TS_TRY(ts_alloc(sizeof(TSS_${s.name}), &${b}));`);
     this.line(`TS_TRY(ts_pack_${s.name}(${t}, ${b}, sizeof(TSS_${s.name}), &${w}));`);
     this.sendEvent(s, node, cpi, (put) => put(b, w));
     return undefined;
