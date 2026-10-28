@@ -15,7 +15,7 @@ describe("port: basics/hello-solana", () => {
     const payer = await fundedSigner(d.svm);
     const logs = expectOk(await send(d.svm, payer, [ix(d, "hello", {}, [])])).logs();
     expect(logs).toContain("Program log: Hello, Solana!");
-    expect(logs).toContain(`Program log: ${id}`);
+    expect(logs).toContain(`Program log: Our program's Program ID: ${id}`);
   });
 });
 
@@ -32,62 +32,56 @@ describe("port: basics/processing-instructions", () => {
 });
 
 describe("port: basics/counter", () => {
-  it("initializes a client-allocated counter and increments it", async () => {
+  it("creates the keypair counter and increments it", async () => {
     const d = await deployPort("basics/counter.ts", "BmDHboaj1kBUoinJKKSRqKfMeRKJqQqEbUj1VgzeQe4A");
     const payer = await fundedSigner(d.svm);
     const counter = await generateKeyPairSigner();
-    expectOk(
-      await send(d.svm, payer, [
-        allocate(d.svm, payer, counter, 8 + 8, d.programId),
+    const init = (signs: boolean) =>
+      send(d.svm, payer, [
         ix(d, "initialize_counter", {}, [
           { address: payer.address, signer: payer, writable: true },
-          { address: counter.address, writable: true },
+          signs ? { address: counter.address, signer: counter, writable: true } : { address: counter.address, writable: true },
           { address: SYSTEM_PROGRAM },
         ]),
-      ]),
-    );
+      ]);
+    // The new account must sign, as Anchor's init requires.
+    expect(customError(await init(false))).toBe(3010);
+    expectOk(await init(true));
+    expect(d.idl.instructions.find((i) => i.name === "initialize_counter")!.accounts[1]).toMatchObject({ name: "counter", signer: true, writable: true });
     const count = () => decodeAccount<{ count: BN }>(d, d.svm, "Counter", counter.address).count.toString();
     expect(count()).toBe("0");
+    expect(acct(d.svm, counter.address).data.length).toBe(8 + 8);
     const inc = () => send(d.svm, payer, [ix(d, "increment", {}, [{ address: counter.address, writable: true }])]);
     expectOk(await inc());
     expect(count()).toBe("1");
     expectOk(await inc());
     expect(count()).toBe("2");
-    // A second initialize on the same account is refused (the discriminator is set).
-    expect(
-      customError(
-        await send(d.svm, payer, [
-          ix(d, "initialize_counter", {}, [
-            { address: payer.address, signer: payer, writable: true },
-            { address: counter.address, writable: true },
-            { address: SYSTEM_PROGRAM },
-          ]),
-        ]),
-      ),
-    ).toBe(3000);
+    // A second initialize on the same account is refused.
+    d.svm.expireBlockhash();
+    expect(customError(await init(true))).toBe(3000);
   });
 });
 
 describe("port: basics/account-data", () => {
-  it("stores an address", async () => {
+  it("creates the keypair account and stores an address in Anchor's bytes", async () => {
     const d = await deployPort("basics/account-data.ts", "GpVcgWdgVErgLqsn8VYUch6EqDerMgNqoLSmGyKrd6MR");
     const payer = await fundedSigner(d.svm);
     const info = await generateKeyPairSigner();
     const create = (name: string) =>
       ix(d, "create_address_info", { name, house_number: 136, street: "Mile High Dr.", city: "Solana Beach" }, [
         { address: payer.address, signer: payer, writable: true },
-        { address: info.address, writable: true },
+        { address: info.address, signer: info, writable: true },
         { address: SYSTEM_PROGRAM },
       ]);
     // A name longer than #[max_len(50)] does not fit.
-    expect(customError(await send(d.svm, payer, [allocate(d.svm, payer, info, 8 + 163, d.programId), create("x".repeat(51))]))).toBe(5105);
-    expectOk(await send(d.svm, payer, [allocate(d.svm, payer, info, 8 + 163, d.programId), create("Joe C")]));
-    const a = decodeAccount<{ name: unknown; house_number: number; street: unknown; city: unknown }>(d, d.svm, "AddressInfo", info.address);
-    expect(fixedString(a.name)).toBe("Joe C");
-    expect(a.house_number).toBe(136);
-    expect(fixedString(a.street)).toBe("Mile High Dr.");
-    expect(fixedString(a.city)).toBe("Solana Beach");
+    expect(customError(await send(d.svm, payer, [create("x".repeat(51))]))).toBe(5105);
+    expectOk(await send(d.svm, payer, [create("Joe C")]));
+    const a = decodeAccount<{ name: string; house_number: number; street: string; city: string }>(d, d.svm, "AddressInfo", info.address);
+    expect([a.name, a.house_number, a.street, a.city]).toEqual(["Joe C", 136, "Mile High Dr.", "Solana Beach"]);
+    // Anchor's space: 8 + InitSpace.
     expect(acct(d.svm, info.address).data.length).toBe(8 + 54 + 1 + 54 + 54);
+    // Borsh: house_number right after the 5-byte name.
+    expect(acct(d.svm, info.address).data[8 + 4 + 5]).toBe(136);
   });
 });
 
@@ -158,7 +152,7 @@ describe("port: basics/create-account", () => {
     const fresh = await generateKeyPairSigner();
     const res = expectOk(
       await send(d.svm, payer, [
-        ix(d, "create_system_account", { name: "Joe C", address: "123 Main St" }, [
+        ix(d, "create_system_account", { address_data: { name: "Joe C", address: "123 Main St" } }, [
           { address: payer.address, signer: payer, writable: true },
           { address: fresh.address, signer: fresh, writable: true },
           { address: SYSTEM_PROGRAM },
@@ -171,6 +165,15 @@ describe("port: basics/create-account", () => {
     expect(a.data.length).toBe(span);
     expect(a.lamports).toBe(d.svm.minimumBalanceForRentExemption(BigInt(span)));
     expect(res.logs()).toContain(`Program log: Account span: ${span}`);
+    expect(res.logs()).toContain(`Program log:   New public key will be: ${fresh.address}`);
+    // The argument is Anchor's AddressData in the IDL too.
+    expect(d.idl.types?.find((t) => t.name === "AddressData")?.type).toEqual({
+      kind: "struct",
+      fields: [
+        { name: "name", type: "string" },
+        { name: "address", type: "string" },
+      ],
+    });
   });
 });
 
@@ -183,9 +186,8 @@ describe("port: basics/cross-program-invocation", () => {
     const power = await generateKeyPairSigner();
     expectOk(
       await send(svm, user, [
-        allocate(svm, user, power, 8 + 8, lever.programId),
         ix(lever, "initialize", {}, [
-          { address: power.address, writable: true },
+          { address: power.address, signer: power, writable: true },
           { address: user.address, signer: user, writable: true },
           { address: SYSTEM_PROGRAM },
         ]),
@@ -193,6 +195,7 @@ describe("port: basics/cross-program-invocation", () => {
     );
     const isOn = () => decodeAccount<{ is_on: boolean }>(lever, svm, "PowerStatus", power.address).is_on;
     expect(isOn()).toBe(false);
+    expect(acct(svm, power.address).data.length).toBe(8 + 8); // Anchor's space = 8 + 8
     const pull = (name: string, target = power.address) =>
       send(svm, user, [ix(hand, "pull_lever", { name }, [{ address: target, writable: true }, { address: lever.programId }])]);
     const logs = expectOk(await pull("Chris")).logs();
@@ -221,10 +224,14 @@ describe("port: basics/favorites", () => {
         ]),
       ]);
     const read = () => {
-      const f = decodeAccount<{ number: BN; color: unknown; hobbies: { len: number; items: unknown[] } }>(d, d.svm, "Favorites", favorites);
-      return { number: f.number.toNumber(), color: fixedString(f.color), hobbies: f.hobbies.items.slice(0, f.hobbies.len).map(fixedString) };
+      const f = decodeAccount<{ number: BN; color: string; hobbies: string[] }>(d, d.svm, "Favorites", favorites);
+      return { number: f.number.toNumber(), color: f.color, hobbies: f.hobbies };
     };
-    expectOk(await set(user, ["skiing", "skydiving", "biking"]));
+    const logs = expectOk(await set(user, ["skiing", "skydiving", "biking"])).logs();
+    expect(logs).toContain(`Program log: Greetings from ${d.programId}`);
+    expect(logs).toContain(
+      `Program log: User ${user.address}'s favorite number is 23, favorite color is: purple, and their hobbies are ["skiing", "skydiving", "biking"]`,
+    );
     expect(read()).toEqual({ number: 23, color: "purple", hobbies: ["skiing", "skydiving", "biking"] });
     expect(acct(d.svm, favorites).data.length).toBe(344);
     expectOk(await set(user, ["coding", "reading", "biking", "swimming"]));

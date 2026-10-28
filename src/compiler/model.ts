@@ -231,6 +231,8 @@ export interface Helper {
   statements: readonly ts.Statement[];
   /** A generic helper's instance: type parameter -> the type it stands for. */
   typeArgs?: Map<string, ScalarType>;
+  /** A generic helper's instance: type parameter -> the struct it stands for. */
+  structArgs?: Map<string, string>;
   /** An instance's function parameters: name -> the helper passed for it (its calls go there). */
   fnArgs?: Map<string, string>;
   /** Their argument positions, which have no C parameter. */

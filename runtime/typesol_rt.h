@@ -1100,6 +1100,32 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
   return SUCCESS;
 }
 
+/* Base58 text of `n` bytes (a Pubkey or Hash in a template), on the heap. */
+static inline uint64_t ts_base58(const uint8_t *in, uint64_t n, TS_Str *out) {
+  static const char digits[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  uint8_t b58[64]; /* little-endian base-58 digits; 32 bytes need at most 44 */
+  uint64_t len = 0, zeros = 0;
+  while (zeros < n && in[zeros] == 0) zeros++;
+  for (uint64_t i = zeros; i < n; i++) {
+    uint32_t carry = in[i];
+    for (uint64_t j = 0; j < len; j++) {
+      carry += (uint32_t)b58[j] << 8;
+      b58[j] = (uint8_t)(carry % 58);
+      carry /= 58;
+    }
+    while (carry) {
+      b58[len++] = (uint8_t)(carry % 58);
+      carry /= 58;
+    }
+  }
+  uint8_t *p;
+  TS_TRY(ts_alloc(zeros + len, &p));
+  for (uint64_t i = 0; i < zeros; i++) p[i] = '1';
+  for (uint64_t j = 0; j < len; j++) p[zeros + j] = (uint8_t)digits[b58[len - 1 - j]];
+  *out = ts_str(p, zeros + len);
+  return SUCCESS;
+}
+
 static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
   uint8_t *p;
   TS_TRY(ts_alloc(a.len + b.len, &p));
@@ -1127,6 +1153,41 @@ static inline uint64_t ts_mul_div(uint64_t a, uint64_t b, uint64_t c, bool ceil,
   if (ceil && p % c != 0) q += 1;
   if (q > UINT64_MAX) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
   *out = (uint64_t)q;
+  return SUCCESS;
+}
+
+/* floor or ceil of a * b / c for u128 through a 256-bit product; fails on c == 0 or a result above u128. */
+static uint64_t ts_mul_div_u128(unsigned __int128 a, unsigned __int128 b, unsigned __int128 c, bool ceil, unsigned __int128 *out) {
+  if (c == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");
+  const unsigned __int128 M = (unsigned __int128)UINT64_MAX;
+  unsigned __int128 a0 = a & M, a1 = a >> 64, b0 = b & M, b1 = b >> 64;
+  unsigned __int128 p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+  unsigned __int128 mid = (p00 >> 64) + (p01 & M) + (p10 & M);
+  unsigned __int128 lo = (p00 & M) | (mid << 64);
+  unsigned __int128 hi = p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+  unsigned __int128 q, r;
+  if (hi == 0) {
+    q = lo / c;
+    r = lo % c;
+  } else {
+    /* The quotient fits in 128 bits only when hi < c; then long division of hi:lo by c, one bit at a time. */
+    if (hi >= c) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
+    q = 0;
+    r = hi;
+    for (int i = 127; i >= 0; i--) {
+      bool carry = (r >> 127) != 0;
+      r = (r << 1) | ((lo >> i) & 1);
+      if (carry || r >= c) {
+        r -= c;
+        q |= (unsigned __int128)1 << i;
+      }
+    }
+  }
+  if (ceil && r != 0) {
+    if (q == ~(unsigned __int128)0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
+    q += 1;
+  }
+  *out = q;
   return SUCCESS;
 }
 

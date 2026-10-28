@@ -144,13 +144,24 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "mulDiv":
       case "mulDivCeil": {
-        // a * b / c with a 128-bit intermediate (u64), rounding down or up; aborts if the result does not fit.
-        if (args.length !== 3) this.fail(node, `${builtin}(a, b, c) takes three u64 values`);
-        const [x, y, z] = this.lowerInOrder(args, [U64, U64, U64]);
+        // a * b / c with a double-width intermediate (128-bit for u64, 256-bit for u128), rounding down or up;
+        // aborts if the result does not fit. All three are u64, or all u128 (literals take the others' type).
+        if (args.length !== 3) this.fail(node, `${builtin}(a, b, c) takes three u64 or three u128 values`);
+        const vals: Value[] = [];
+        for (const a of args) {
+          const mark = this.lines.length;
+          const v = this.expr(a);
+          for (let j = 0; j < vals.length; j++) vals[j] = this.settle(vals[j], mark);
+          vals.push(v);
+        }
+        const typed = vals.find((v) => v.literal === undefined);
+        const wide = typed?.type.kind === "int" && typed.type.name === "u128";
+        const ty: Value["type"] = wide ? { kind: "int", name: "u128" } : U64;
+        const [x, y, z] = vals.map((v, i) => this.expect(v.literal !== undefined ? this.literal(v.literal, ty, args[i]) : v, ty, args[i]));
         const t = this.tmp("md");
-        this.line(`uint64_t ${t};`);
-        this.line(`TS_TRY(ts_mul_div(${x.c}, ${y.c}, ${z.c}, ${builtin === "mulDivCeil"}, &${t}));`);
-        return { c: t, type: U64 };
+        this.line(`${wide ? "unsigned __int128" : "uint64_t"} ${t};`);
+        this.line(`TS_TRY(ts_mul_div${wide ? "_u128" : ""}(${x.c}, ${y.c}, ${z.c}, ${builtin === "mulDivCeil"}, &${t}));`);
+        return { c: t, type: ty };
       }
       case "isqrt": {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");
@@ -557,7 +568,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const elemPaths = () => (ts.isPropertyAccessExpression(node.expression) ? this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`) : undefined);
     const resize = (newLen: string, payer: string) => {
       if (info.cap !== undefined) return; // a FixedVec has its room already
-      if (!info.resizable || !v.account) this.fail(node, "only Vecs of declared Mut<...> / Init<...> accounts can grow or shrink");
+      if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
     switch (method) {
@@ -893,6 +904,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);
       // A @layout borsh account goes with the struct it is being worked on as.
       if (p.account.kind === "account" && p.account.struct.layout === "borsh") return `a_${acct.name}, d_${acct.name}`;
+      if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) return `a_${acct.name}, entry_${acct.name}`;
       return `a_${acct.name}`;
     }
     switch (p.type.kind) {

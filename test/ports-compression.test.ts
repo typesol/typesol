@@ -86,7 +86,7 @@ describe.skipIf(!HAVE_BUBBLEGUM)("port: compression/cnft-vault", () => {
     const common = [{ address: NOOP }, { address: COMPRESSION }, { address: BUBBLEGUM }, { address: SYSTEM_PROGRAM }];
     const alice = (await generateKeyPairSigner()).address;
     const one = args(t1, a);
-    expectOk(
+    const withdrawn = expectOk(
       await send(svm, payer, [
         ix(d, "withdraw_cnft", one.args, [
           { address: t1.treeConfig, writable: true },
@@ -98,6 +98,7 @@ describe.skipIf(!HAVE_BUBBLEGUM)("port: compression/cnft-vault", () => {
         ]),
       ]),
     );
+    expect(withdrawn.logs()).toContain(`Program log: attempting to send nft ${a.index} from tree ${t1.tree}`);
     moved(t1, a, alice);
     // Withdrawing it again fails: the vault no longer owns it.
     const again = args(t1, { ...a, owner: vault, delegate: vault } as typeof a);
@@ -201,7 +202,7 @@ describe.skipIf(!HAVE_BUBBLEGUM || !existsSync(programs("mpl_token_metadata.so")
     const uri = "https://example.com/burger.json";
     expectOk(
       await send(svm, payer, [
-        ix(d, "mint", { uri }, [
+        ix(d, "mint", { params: { uri } }, [
           { address: payer.address, signer: payer },
           { address: t.treeConfig, writable: true },
           { address: owner.address },

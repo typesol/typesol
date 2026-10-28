@@ -4,11 +4,12 @@
 // unverified, edition nonce 0). verify: the leaf hash (LeafSchema V1, with the asset id derived under Bubblegum) is
 // computed here and checked by SPL Account Compression's verify_leaf, the proof passed on read-only.
 // PARTIAL:
-//  - interface: `mint` takes `uri` as an argument instead of a MintParams struct (same instruction bytes, different
-//    IDL), since struct arguments need a fixed layout. `bubblegum_program` is pinned to Bubblegum's address.
+//  - interface: `bubblegum_program` is pinned to Bubblegum's address. `MintParams` is a `@layout borsh` struct (Anchor's
+//    bytes and IDL); its uri holds up to 200 bytes, Bubblegum's own limit.
 //  - the `Data` account type of the original's state module is not used by any instruction and is left out.
 import {
   type AccountInfo,
+  type FixedString,
   type Hash,
   type Mut,
   type Program,
@@ -41,6 +42,11 @@ export interface VerifyParams {
   index: u32;
 }
 
+/** @layout borsh */
+export interface MintParams {
+  uri: FixedString<200>;
+}
+
 export function mint(
   payer: Signer,
   treeAuthority: Seeds<Mut<AccountInfo>, ["@merkleTree"], never, "@bubblegumProgram">,
@@ -59,7 +65,7 @@ export function mint(
   tokenMetadataProgram: AccountInfo,
   bubblegumProgram: Program<"BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY">,
   systemProgram: SystemProgram,
-  uri: string,
+  params: MintParams,
 ): void {
   // MintToCollectionV1 with MetadataArgs: name, symbol, uri, seller fee 0, primary sale false, immutable,
   // edition nonce Some(0), token standard Some(NonFungible), collection Some({ verified: false, key }), uses None,
@@ -88,7 +94,7 @@ export function mint(
       hex("9912b22fc59e560f"),
       "BURGER",
       "BURG",
-      uri,
+      params.uri,
       u16(0n),
       false,
       false,

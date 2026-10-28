@@ -514,7 +514,8 @@ export type InitIfNeeded<T> = T extends TokenAccount
       }
     : T &
         AccountMeta & {
-          createIfNeeded(payer: Mut<Signer>, seeds: Seed[]): boolean;
+          /** Like create(payer, seeds, space?), unless the account exists (then it must be this PDA and a T). */
+          createIfNeeded(payer: Mut<Signer>, seeds: Seed[], space?: u64): boolean;
           /** The PDA bump, after createIfNeeded(). */
           readonly pdaBump: u8;
         };
@@ -1123,8 +1124,10 @@ export type Init<T> = T extends TokenAccount
           /**
            * Derive the PDA from `seeds`, verify it matches this account, create it with
            * `payer` funding rent, and write the discriminator. Returns the bump.
+           * With `null`: a new keypair account that signs the transaction (Anchor's `init` without seeds); returns 0.
+           * `space` (Anchor's `space = …`, discriminator included) reserves more than 8 + the struct's size, up to 10240.
            */
-          create(payer: Mut<Signer>, seeds: Seed[]): u8;
+          create(payer: Mut<Signer>, seeds: Seed[] | null, space?: u64): u8;
           /** The PDA bump, after create(). */
           readonly pdaBump: u8;
         };
@@ -1351,7 +1354,7 @@ export declare function i128(value: bigint): i128;
  * << aborts when bits would be lost or the amount is not below the width; >> is arithmetic on signed types;
  * ~ flips the bits within the type's width.
  */
-/** floor(a * b / c) with a 128-bit intermediate; aborts if c is 0 or the result does not fit in u64. */
+/** floor(a * b / c) with a double-width intermediate (all u64, or all u128); aborts if c is 0 or the result does not fit. */
 export declare function mulDiv(a: u64, b: u64, c: u64): u64;
 /** ceil(a * b / c), like mulDiv. */
 export declare function mulDivCeil(a: u64, b: u64, c: u64): u64;

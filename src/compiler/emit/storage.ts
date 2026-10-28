@@ -227,6 +227,8 @@ export abstract class StorageEmitter extends EmitterBase {
   /** Resolve an expression to a storage location, if it names one. */
   protected ref(node: ts.Expression): Ref | undefined {
     if (ts.isParenthesizedExpression(node)) return this.ref(node.expression);
+    const unbanged = this.withoutBang(node);
+    if (unbanged) return this.ref(unbanged);
     this.noOptionalChain(node);
     // A helper's struct result: a local of the caller's, read and copied like any struct.
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
@@ -256,13 +258,13 @@ export abstract class StorageEmitter extends EmitterBase {
           const r: Ref = { lv: `d_${a.name}->${f.name}`, type: f.type, writable: isWritable(a.kind), account: a, path: [f.name] };
           if (f.type.kind === "vec" && f.type.cap !== undefined) r.vec = this.fixedVec(r.lv, f.type.elem, f.type.cap);
           else if (f.type.kind === "vec")
-            // Growing needs the account's length at instruction entry: only instructions know it.
+            // Growing needs the account's length at instruction entry: instructions have it, helpers get it passed.
             r.vec = {
               len: `d_${a.name}->${f.name}__len`,
               items: r.lv,
               fixed: `sizeof(TSS_${a.kind.struct.name})`,
               elemSize: a.kind.struct.vec!.elemSize,
-              resizable: isWritable(a.kind) && !!this.ix,
+              resizable: isWritable(a.kind),
             };
           return r;
         }
@@ -451,6 +453,15 @@ export abstract class StorageEmitter extends EmitterBase {
    * Write a struct or array into storage: from an object literal (field by field, every field
    * required) or by copying another location of the same type.
    */
+  /** A whole struct account copied as a value (`return vault`, `info = vault`): fixed-size structs only. */
+  private wholeAccount(node: ts.Expression): Ref | undefined {
+    if (!ts.isIdentifier(node) || this.lookup(node.text)) return undefined;
+    const a = this.accounts.get(node.text);
+    if (!a || !(a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded") || a.kind.struct.size === undefined) return undefined;
+    this.assertUsable(a, node);
+    return { lv: `(*d_${a.name})`, type: { kind: "struct", name: a.kind.struct.name }, writable: false };
+  }
+
   protected writeAggregate(target: Ref, valueNode: ts.Expression): void {
     if (ts.isParenthesizedExpression(valueNode)) return this.writeAggregate(target, valueNode.expression);
     if (target.type.kind === "option" && target.type.inner.kind === "struct") {
@@ -551,7 +562,18 @@ export abstract class StorageEmitter extends EmitterBase {
       this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
-    const src = this.ref(valueNode);
+    if (ts.isConditionalExpression(valueNode)) {
+      // `cond ? a : b` (places, literals or calls): each branch writes the target. A branch that reads the target
+      // copies it onto itself, which the copies below allow.
+      const cond = this.expect(this.expr(valueNode.condition, BOOL), BOOL, valueNode.condition);
+      this.line(`if (${cond.c}) {`);
+      this.block(() => this.writeAggregate(target, valueNode.whenTrue));
+      this.line(`} else {`);
+      this.block(() => this.writeAggregate(target, valueNode.whenFalse));
+      this.line(`}`);
+      return;
+    }
+    const src = this.ref(valueNode) ?? this.wholeAccount(valueNode);
     if (!src || !sameType(src.type, target.type))
       this.fail(valueNode, `expected a ${typeName(target.type)}: an object literal or another ${typeName(target.type)}`);
     // Same-typed places are either distinct or identical (`a.p = a.p`); ts_copy skips the latter.

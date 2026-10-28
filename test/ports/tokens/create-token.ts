@@ -1,6 +1,6 @@
 // Port of tokens/create-token @ de09019; see test/ports/README.md.
 //
-// PARTIAL (logs only): `msg!("Metadata account address: {}", key)` is two log lines (no Pubkeys in templates).
+// PORTED.
 // Anchor's `init, mint::decimals, mint::authority` on the keypair mint is System CreateAccount + InitializeMint2;
 // the metadata PDA is checked under the Token Metadata program (`seeds::program`) like the original.
 import {
@@ -34,8 +34,7 @@ export function createTokenMint(
   systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key);
   tokenProgram.initializeMint2(mintAccount, tokenDecimals, payer.key, null);
   log("Creating metadata account...");
-  log("Metadata account address: ");
-  log(metadataAccount.key);
+  log(`Metadata account address: ${metadataAccount.key}`);
   // Not mutable, no seller fee; the payer is mint and update authority.
   tokenMetadataProgram.createV3(metadataAccount, mintAccount, payer, payer, payer, systemProgram, tokenName, tokenSymbol, tokenUri, 0n, false);
   log("Token mint created successfully.");

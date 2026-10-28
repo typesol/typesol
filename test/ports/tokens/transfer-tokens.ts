@@ -1,7 +1,6 @@
 // Port of tokens/transfer-tokens @ de09019; see test/ports/README.md.
 //
-// PARTIAL:
-//  - logs: lines that print an address print the label and the address on two lines (no Pubkeys in templates).
+// PORTED.
 import {
   type AccountInfo,
   type Address,
@@ -62,10 +61,8 @@ export function mintToken(
 ): void {
   associatedTokenAccount.createIfNeeded(mintAuthority);
   log("Minting tokens to associated token account...");
-  log("Mint: ");
-  log(mintAccount.key);
-  log("Token Address: ");
-  log(associatedTokenAccount.key);
+  log(`Mint: ${mintAccount.key}`);
+  log(`Token Address: ${associatedTokenAccount.key}`);
   tokenProgram.mintTo(mintAccount, associatedTokenAccount, mintAuthority, withDecimals(amount, mintAccount.decimals));
   log("Token minted successfully.");
 }
@@ -83,12 +80,9 @@ export function transferTokens(
 ): void {
   recipientTokenAccount.createIfNeeded(sender);
   log("Transferring tokens...");
-  log("Mint: ");
-  log(mintAccount.key);
-  log("From Token Address: ");
-  log(senderTokenAccount.key);
-  log("To Token Address: ");
-  log(recipientTokenAccount.key);
+  log(`Mint: ${mintAccount.key}`);
+  log(`From Token Address: ${senderTokenAccount.key}`);
+  log(`To Token Address: ${recipientTokenAccount.key}`);
   tokenProgram.transfer(senderTokenAccount, recipientTokenAccount, sender, withDecimals(amount, mintAccount.decimals));
   log("Tokens transferred successfully.");
 }

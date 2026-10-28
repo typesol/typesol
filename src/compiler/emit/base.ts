@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { type Analysis, type TypeScope, calleeName, resolveScalarType } from "../analyze.js";
+import { type Analysis, type TypeArg, type TypeScope, calleeName, resolveScalarType, structNameOf } from "../analyze.js";
 import type { Reporter } from "../diagnostics.js";
 import {
   type AccountParam,
@@ -12,7 +12,7 @@ import {
   type ValueType,
   isScalar,
 } from "../model.js";
-import { type Value, type Local, type Closure, isStable, cString, valueC, type EmitOptions } from "./shared.js";
+import { type Value, type Ref, type Local, type Closure, isStable, cString, valueC, type EmitOptions } from "./shared.js";
 
 /**
  * State of one function being lowered, and the primitives every layer uses: emitting lines, temporaries,
@@ -65,6 +65,7 @@ export abstract class EmitterBase {
       options: analysis.model.options,
       dataEnums: analysis.model.dataEnums,
       typeArgs: "accounts" in target ? undefined : target.typeArgs,
+      structArgs: "accounts" in target ? undefined : target.structArgs,
     };
     this.checker = analysis.checker;
     this.analysis = analysis;
@@ -133,12 +134,27 @@ export abstract class EmitterBase {
     });
   }
 
+  /** A struct written as a type argument (`pick<Point>(…)`). */
+  private structArg(t: ts.TypeNode): TypeArg | undefined {
+    const name = structNameOf(t, this.scope);
+    return name && this.model.structs.has(name) ? this.fixedStruct(name, t) : undefined;
+  }
+
+  private fixedStruct(name: string, at: ts.Node): TypeArg {
+    const s = this.model.structs.get(name)!;
+    if (s.size === undefined || s.vec) this.fail(at, `${name} has variable-size fields; type parameters stand for fixed-size structs`);
+    return { kind: "struct", name };
+  }
+
   /** A generic call's type arguments: written out (`max<u64>(a, b)`), or the types of the arguments in `T` positions. */
-  private typeArgsOf(node: ts.CallExpression, g: GenericHelper): ScalarType[] {
+  private typeArgsOf(node: ts.CallExpression, g: GenericHelper): TypeArg[] {
     const usage = `write ${g.display}<u64>(…) with the types`;
     if (node.typeArguments) {
       if (node.typeArguments.length !== g.typeParams.length) this.fail(node, `${g.display} takes ${g.typeParams.length} type argument(s)`);
-      return node.typeArguments.map((t) => resolveScalarType(t, this.scope) ?? this.fail(t, "type arguments are integers, boolean, Pubkey or enums"));
+      return node.typeArguments.map(
+        (t) =>
+          resolveScalarType(t, this.scope) ?? this.structArg(t) ?? this.fail(t, "type arguments are integers, boolean, Pubkey, enums or fixed-size structs"),
+      );
     }
     return g.typeParams.map((tp) => {
       for (const [i, p] of g.node.parameters.entries()) {
@@ -152,8 +168,18 @@ export abstract class EmitterBase {
         this.hoisted.length = saved.hoisted;
         this.temp = saved.temp;
         this.reporter.diagnostics.length = saved.diagnostics;
+        if (probe?.type.kind === "structRef") return this.fixedStruct(probe.type.struct, arg);
+        if (!probe) {
+          // A struct place (`p.a`) is not a value: type it as a reference, again without emitting anything.
+          const r = this.reporter.guard(() => this.ref(arg));
+          this.lines.length = saved.lines;
+          this.hoisted.length = saved.hoisted;
+          this.temp = saved.temp;
+          this.reporter.diagnostics.length = saved.diagnostics;
+          if (r?.type.kind === "struct") return this.fixedStruct(r.type.name, arg);
+        }
         if (!probe || probe.literal !== undefined || probe.isNull) continue;
-        if (!isScalar(probe.type as never)) this.fail(arg, `${tp} stands for an integer, boolean, Pubkey or enum, not ${probe.type.kind}`);
+        if (!isScalar(probe.type as never)) this.fail(arg, `${tp} stands for an integer, boolean, Pubkey, enum or struct, not ${probe.type.kind}`);
         const t = probe.type as ScalarType;
         return t.kind === "pubkey" ? (t.hash ? { kind: "pubkey", hash: true } : { kind: "pubkey" }) : t;
       }
@@ -229,7 +255,8 @@ export abstract class EmitterBase {
   protected noOptionalChain(node: ts.Node) {
     if ((ts.isPropertyAccessExpression(node) || ts.isCallExpression(node) || ts.isElementAccessExpression(node)) && node.questionDotToken)
       this.fail(node, "optional chaining (?.) is not supported; check `x !== null` first");
-    if (ts.isNonNullExpression(node)) this.fail(node, "the ! assertion works on Option values only; check `x !== null` so TypeScript narrows it");
+    if (ts.isNonNullExpression(node))
+      this.fail(node, "the ! assertion works on Option values and optional accounts only; check `x !== null` so TypeScript narrows it");
   }
 
   protected lookup(name: string): Local | undefined {
@@ -256,7 +283,24 @@ export abstract class EmitterBase {
     return ts.isIdentifier(node) ? this.imports.get(node.text) : undefined;
   }
 
+  /**
+   * `acct!.field` on an optional account: the same access without `!` (using the account checks that it was passed,
+   * failing with 3020 otherwise). Returns undefined for anything else.
+   */
+  protected withoutBang(node: ts.Expression): ts.PropertyAccessExpression | undefined {
+    if (!ts.isPropertyAccessExpression(node) || !ts.isNonNullExpression(node.expression)) return undefined;
+    const inner = node.expression.expression;
+    if (!ts.isIdentifier(inner) || !this.accounts.get(inner.text)?.optional) return undefined;
+    const plain = ts.factory.createPropertyAccessExpression(inner, node.name);
+    ts.setTextRange(plain, node);
+    (plain as { parent?: ts.Node }).parent = node.parent;
+    return plain;
+  }
+
   protected accountParam(node: ts.Expression, what: string): AccountParam {
+    // `acct!` on an optional account: the account (its use checks it was passed).
+    if (ts.isNonNullExpression(node) && ts.isIdentifier(node.expression) && this.accounts.get(node.expression.text)?.optional)
+      return this.accountParam(node.expression, what);
     if (!ts.isIdentifier(node)) this.fail(node, `${what} must be an account parameter`);
     const a = this.accounts.get(node.text);
     if (!a) this.fail(node, `${what} must be an account parameter, "${node.text}" is not one`);
@@ -285,6 +329,7 @@ export abstract class EmitterBase {
   protected abstract expect(v: Value, want: ValueType | undefined, node: ts.Node): Value;
   protected abstract literal(value: bigint, type: ValueType, node: ts.Node): Value;
   protected abstract expr(node: ts.Expression, hint?: ValueType): Value;
+  protected abstract ref(node: ts.Expression): Ref | undefined;
   protected abstract call(node: ts.CallExpression, topLevel: boolean): Value | undefined;
   protected abstract isRemaining(node: ts.Expression): boolean;
   protected abstract handle(node: ts.Expression): string | undefined;

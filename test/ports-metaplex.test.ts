@@ -120,7 +120,9 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/transfer-tokens", () => {
           { address: SYSTEM_PROGRAM },
         ]),
       ]);
-    expectOk(await mintTo(payer.address, payerAta));
+    const minted = expectOk(await mintTo(payer.address, payerAta)).logs();
+    expect(minted).toContain(`Program log: Mint: ${mint.address}`);
+    expect(minted).toContain(`Program log: Token Address: ${payerAta}`);
     expect(tokenBalance(d.svm, payerAta)).toBe(100n * 10n ** 9n);
     // The ATA must belong to the recipient passed.
     expect(customError(await mintTo(recipient.address, payerAta))).toBe(2009);
@@ -137,7 +139,9 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/transfer-tokens", () => {
           { address: SYSTEM_PROGRAM },
         ]),
       ]);
-    expectOk(await transfer(50));
+    const sent = expectOk(await transfer(50)).logs();
+    expect(sent).toContain(`Program log: From Token Address: ${payerAta}`);
+    expect(sent).toContain(`Program log: To Token Address: ${recipientAta}`);
     expect(tokenBalance(d.svm, recipientAta)).toBe(50n * 10n ** 9n);
     expect(tokenBalance(d.svm, payerAta)).toBe(50n * 10n ** 9n);
     // More than the sender holds: SPL Token refuses (InsufficientFunds = 1).

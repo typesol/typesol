@@ -30,6 +30,13 @@ describe("arrow functions and generic helpers", () => {
     expect(ret(await send(d.svm, payer, [ix(d, "shadow", { x: new BN(5) }, [])]))).toBe(22n);
   });
 
+  it("instantiates generic helpers for struct types", async () => {
+    const payer = await fundedSigner(d.svm);
+    const call = (flip: boolean) => send(d.svm, payer, [ix(d, "struct_generics", { flip, x: new BN(5) }, [])]);
+    expect(ret(await call(false))).toBe(5n * 1000n + 200n);
+    expect(ret(await call(true))).toBe(100n * 1000n + 6n);
+  });
+
   it("instantiates generic helpers for the argument types", async () => {
     const payer = await fundedSigner(d.svm);
     const other = (await generateKeyPairSigner()).address;

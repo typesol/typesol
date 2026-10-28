@@ -96,6 +96,39 @@ describe("typesol port", () => {
     expect(notes.join("\n")).toMatch(/account Thing: its discriminator is not/);
   });
 
+  it("keeps Anchor's bytes for a struct argument with a String, Vec or Option (@layout borsh)", () => {
+    const Profile = {
+      name: "Profile",
+      type: {
+        kind: "struct" as const,
+        fields: [
+          { name: "name", type: "string" },
+          { name: "tags", type: { vec: "u64" } },
+          { name: "badge", type: { option: "u64" } },
+        ],
+      },
+    };
+    const idl: PortIdl = {
+      metadata: { name: "profiles" },
+      instructions: [
+        {
+          name: "set",
+          discriminator: sighash("global:set"),
+          accounts: [{ name: "owner", signer: true }],
+          args: [{ name: "p", type: { defined: { name: "Profile" } } }],
+        },
+      ],
+      types: [Profile],
+    };
+    const { source, notes } = generatePort(idl);
+    expect(source).toContain("@layout borsh");
+    const file = path.join(tmp(), "profiles.ts");
+    writeFileSync(file, source);
+    const ported = buildIdl(generate(file).model, ADDRESS) as unknown as AnyIdl;
+    expect(ported.types?.find((t: { name: string }) => t.name === "Profile")).toMatchObject({ type: Profile.type });
+    expect(notes.join("\n")).not.toMatch(/layout differs/);
+  });
+
   it("compiles awkward IDLs: comment ends in docs, clashing names, reserved words, expressions, tuples, generics", () => {
     const idl: PortIdl = {
       metadata: { name: "9lives" },

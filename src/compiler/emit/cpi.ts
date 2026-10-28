@@ -333,37 +333,65 @@ export abstract class CpiEmitter extends CallEmitter {
   }
 
   protected create(node: ts.CallExpression, target: AccountParam, topLevel: boolean, ifNeeded = false): Value {
-    if (!topLevel) this.fail(node, `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}(...) must be a top-level statement of the instruction`);
+    const call = `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}`;
+    if (!topLevel) this.fail(node, `${call}(...) must be a top-level statement of the instruction`);
     if (this.created.has(target.name)) this.fail(node, `${target.name} is already created`);
-    if (node.arguments.length !== 2) this.fail(node, "create(payer, seeds) takes two arguments");
+    if (node.arguments.length !== 2 && node.arguments.length !== 3) this.fail(node, `${call}(payer, seeds | null, space?) takes two or three arguments`);
     const payer = this.accountParam(node.arguments[0], "the payer");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(node.arguments[0], "the payer must be a Mut<Signer>");
-    const seeds = this.seeds(node.arguments[1], 1);
-    this.recordPda(target, seeds.idl);
     const s = (target.kind as { struct: StructDef }).struct;
+    const keypair = node.arguments[1]!.kind === ts.SyntaxKind.NullKeyword;
+    if (keypair && ifNeeded) this.fail(node.arguments[1]!, "createIfNeeded takes seeds: a keypair account cannot be checked to be the one meant");
+    const seeds = keypair ? undefined : this.seeds(node.arguments[1]!, 1);
+    if (seeds) this.recordPda(target, seeds.idl);
     const b = this.tmp("bump");
+    // The account's size: the struct's (8 + its fixed size, Anchor's InitSpace for @layout borsh), or Anchor's
+    // `space = …` when given, which must hold the struct.
+    const need = `8 + sizeof(TSS_${s.name})`;
+    let space = need;
+    const spaceArg = node.arguments[2];
+    if (spaceArg) {
+      if (s.vec) this.fail(spaceArg, `${s.name} has a growable Vec: its size follows the Vec's length, so it takes no space argument`);
+      const raw = this.expr(spaceArg);
+      const v = this.expect(raw, U64, spaceArg);
+      const min = 8 + this.fieldBytes({ kind: "struct", name: s.name });
+      if (raw.literal !== undefined && raw.literal < BigInt(min)) this.fail(spaceArg, `${s.name} needs at least ${min} bytes (8 + its size)`);
+      space = this.tmp("space");
+      this.line(`uint64_t ${space} = ${v.c};`);
+      this.line(
+        `if (${space} < ${need} || ${space} > 10240) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: space must hold the account and be at most 10240 bytes");`,
+      );
+    }
     this.line(`uint8_t ${b};`);
+    const done = () => {
+      this.created.add(target.name);
+      this.pendingInit.delete(target.name);
+      this.bumps.set(target.name, b);
+    };
+    if (!seeds) {
+      // A new keypair account that signs the transaction (Anchor's `init` without seeds).
+      target.signsInit = true;
+      this.line(`TS_TRY(ts_create_owned(params, a_${payer.name}, a_${target.name}, NULL, 0, params->program_id, ${space}, &${b}));`);
+      this.line(`a_${target.name}->data_len = ${space};`);
+      this.line(`ts_memcpy(a_${target.name}->data, TS_DISC_${s.name}, 8);`);
+      done();
+      return { c: b, type: U8 };
+    }
     if (ifNeeded) {
       // Returns whether it was created now; an existing account must be this PDA, ours, and a ${s.name}.
       const created = this.tmp("created");
       this.line(`bool ${created};`);
       this.line(
-        `TS_TRY(ts_create_pda_if_needed(params, a_${payer.name}, a_${target.name}, ${seeds.name}, ${seeds.count}, TS_DISC_${s.name}, 8 + sizeof(TSS_${s.name}), 8 + ${s.layout === "borsh" ? borshMinSize(s, this.model) : `sizeof(TSS_${s.name})`}, &${b}, &${created}));`,
+        `TS_TRY(ts_create_pda_if_needed(params, a_${payer.name}, a_${target.name}, ${seeds.name}, ${seeds.count}, TS_DISC_${s.name}, ${space}, 8 + ${s.layout === "borsh" ? borshMinSize(s, this.model) : `sizeof(TSS_${s.name})`}, &${b}, &${created}));`,
       );
       // An existing @layout borsh account is unpacked now (a new one starts from the zeroed struct).
       if (s.layout === "borsh")
-        this.line(`if (!${created}) TS_TRY(ts_unpack_${s.name}(a_${target.name}->data + 8, a_${target.name}->data_len - 8, d_${target.name}));`);
-      this.created.add(target.name);
-      this.pendingInit.delete(target.name);
-      this.bumps.set(target.name, b);
+        this.line(`if (!${created}) TS_TRY(ts_unpack_${s.name}(a_${target.name}->data + 8, a_${target.name}->data_len - 8, d_${target.name}, NULL));`);
+      done();
       return { c: created, type: BOOL };
     }
-    this.line(
-      `TS_TRY(ts_create_pda(params, a_${payer.name}, a_${target.name}, ${seeds.name}, ${seeds.count}, TS_DISC_${s.name}, 8 + sizeof(TSS_${s.name}), &${b}));`,
-    );
-    this.created.add(target.name);
-    this.pendingInit.delete(target.name);
-    this.bumps.set(target.name, b);
+    this.line(`TS_TRY(ts_create_pda(params, a_${payer.name}, a_${target.name}, ${seeds.name}, ${seeds.count}, TS_DISC_${s.name}, ${space}, &${b}));`);
+    done();
     return { c: b, type: U8 };
   }
 
@@ -2085,10 +2113,10 @@ export abstract class CpiEmitter extends CallEmitter {
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s) this.fail(node, "emit needs an explicit event type: emit<MyEvent>({ ... })");
-    if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh, an account layout; declare a separate event struct`);
     const obj = node.arguments[0];
     if (node.arguments.length !== (cpi ? 3 : 1) || !ts.isObjectLiteralExpression(obj))
       this.fail(node, "emit<T>({ field: value, ... }) takes one object literal");
+    if (s.layout === "borsh") return this.emitBorshEvent(node, s, obj, cpi);
     const given = new Map<string, ts.Expression>();
     for (const p of obj.properties) {
       if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) given.set(p.name.text, p.initializer);
@@ -2153,13 +2181,44 @@ export abstract class CpiEmitter extends CallEmitter {
         staged.set(name, (put) => put(t, String(n), n));
       }
     }
+    this.sendEvent(s, obj, cpi, (put) => {
+      for (const f of s.fields) staged.get(f.name)!(put);
+    });
+    return undefined;
+  }
+
+  /** emit<T> of a @layout borsh struct: built like account data, then packed as Anchor serializes it. */
+  private emitBorshEvent(node: ts.CallExpression, s: StructDef, obj: ts.ObjectLiteralExpression, cpi?: { authority: string; program: string }): undefined {
+    this.model.events.add(s.name);
+    const t = this.tmp("evs");
+    const b = this.tmp("evb");
+    const w = this.tmp("evw");
+    this.line(`TSS_${s.name} *${t};`);
+    this.line(`TS_TRY(ts_alloc(sizeof(TSS_${s.name}), (uint8_t **)&${t}));`);
+    this.writeAggregate({ lv: `(*${t})`, type: { kind: "struct", name: s.name }, writable: true }, obj);
+    // Borsh never takes more than the fixed layout (a String/Vec is 4 + used bytes, an Option 1 + payload).
+    this.line(`uint8_t *${b};`);
+    this.line(`uint64_t ${w} = 0;`);
+    this.line(`TS_TRY(ts_alloc(sizeof(TSS_${s.name}), &${b}));`);
+    this.line(`TS_TRY(ts_pack_${s.name}(${t}, ${b}, sizeof(TSS_${s.name}), &${w}));`);
+    this.sendEvent(s, node, cpi, (put) => put(b, w));
+    return undefined;
+  }
+
+  /** Discriminator + `body`, logged (emit) or self-invoked (emitCpi). */
+  private sendEvent(
+    s: StructDef,
+    at: ts.Node,
+    cpi: { authority: string; program: string } | undefined,
+    body: (put: (src: string, n: string, bytes?: number) => void) => void,
+  ) {
     const { buf, len, put, finish } = this.byteBuffer("ev", MAX_EVENT + (cpi ? 8 : 0), "TS_ERR_EVENT_TOO_LARGE", "event");
     if (cpi) put("TS_EVENT_IX_TAG", "8", 8);
     const disc = this.tmp("disc");
     this.line(`static const uint8_t ${disc}[8] = ${cBytes(s.eventDiscriminator)};`);
     put(disc, "8", 8);
-    for (const f of s.fields) staged.get(f.name)!(put);
-    finish(obj);
+    body(put);
+    finish(at);
     if (cpi) {
       // Invoke ourselves with the event authority PDA as the only (signing) account; the entrypoint accepts it.
       const m = this.tmp("metas");
@@ -2171,12 +2230,11 @@ export abstract class CpiEmitter extends CallEmitter {
       this.line(`SolInstruction ${ix} = {&a_${cpi.program}->key, ${m}, 1, ${buf}, ${len}};`);
       this.line(`SolSignerSeeds ${signer} = {${sd}, 2};`);
       this.line(`TS_TRY(ts_invoke(params, &${ix}, &${signer}, 1));`);
-      return undefined;
+      return;
     }
     const bytes = this.tmp("evbytes");
     this.line(`SolBytes ${bytes} = {${buf}, ${len}};`);
     this.line(`sol_log_data(&${bytes}, 1);`);
-    return undefined;
   }
 
   /** Structs reachable through the fields of struct `name` (not including itself unless it recurses). */

@@ -134,6 +134,26 @@ export function generatePort(idl: PortIdl): PortResult {
   for (const a of accountNames) mark({ defined: a }, "account");
   for (const e of eventNames) mark({ defined: e }, "event");
   for (const ix of idl.instructions) for (const g of ix.args) mark(g.type, "arg");
+  // Structs passed or returned whole (not inside another type): these can keep Anchor's Borsh bytes with @layout borsh.
+  const whole = new Set<string>();
+  const nested = new Set<string>();
+  const inside = (t: IdlType | undefined) => {
+    if (!t || typeof t === "string") return;
+    const inner = t.vec ?? t.option ?? t.coption ?? t.array?.[0];
+    if (inner) return inside(inner);
+    if (t.defined) nested.add(definedName(t.defined));
+  };
+  for (const ix of idl.instructions) {
+    for (const t of [...ix.args.map((g) => g.type), ix.returns]) {
+      if (t && typeof t === "object" && t.defined) whole.add(definedName(t.defined));
+      else if (t && typeof t === "object") inside(t.vec ?? t.option ?? t.coption ?? t.array?.[0]);
+    }
+  }
+  for (const def of idl.types ?? []) {
+    for (const f of (def.type.fields ?? []) as IdlField[]) if (typeof f === "object" && f && "type" in f) inside(f.type);
+    for (const v of def.type.variants ?? [])
+      for (const f of v.fields ?? []) inside(typeof f === "object" && f && "type" in (f as object) ? (f as IdlField).type : (f as IdlType));
+  }
 
   /**
    * A TypeScript type for an IDL type. `where`: "account" (account data), "struct" (a struct argument: fixed layout
@@ -272,9 +292,10 @@ export function generatePort(idl: PortIdl): PortResult {
     const where: Where = used.has("account") ? "account" : used.has("arg") ? "struct" : used.has("event") ? "event" : "account";
     if (def.type.kind === "struct") {
       const fields = (def.type.fields ?? []) as IdlField[];
-      // An account struct with a String, Vec or Option of its own: `@layout borsh` keeps Anchor's bytes.
-      const borsh =
-        accountNames.has(def.name) && !isTuple(fields) && fields.some((f) => borshOnly(f.type)) && fields.every((f) => borshField(f.type, "") !== undefined);
+      // An account struct, or one passed / returned whole, with a String, Vec or Option of its own: `@layout borsh`
+      // keeps Anchor's bytes.
+      const borshable = accountNames.has(def.name) || (whole.has(def.name) && !nested.has(def.name) && !eventNames.has(def.name));
+      const borsh = borshable && !isTuple(fields) && fields.some((f) => borshOnly(f.type)) && fields.every((f) => borshField(f.type, "") !== undefined);
       const tag = accountNames.has(def.name) ? " (account)" : eventNames.has(def.name) ? ` (event: emit<${typeName(def.name)}>({ … }))` : "";
       const doc = def.docs?.length ? esc(def.docs.join(" ")) : `${def.name}${tag}`;
       out.push(borsh ? `/**\n * ${doc}\n * @layout borsh\n */` : `/** ${doc} */`);
