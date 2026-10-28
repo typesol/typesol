@@ -5,6 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.22.0 — 2026-10-28
+
+Generated clients fill in the accounts Anchor's client still asked you to pass: signers from a default signer, PDAs
+seeded from string and byte fields, PDAs under a program given as an argument, and a helper for PDAs seeded from their
+own fields. Programs and their bytes are unchanged. Not externally audited (see SECURITY.md).
+
 ### Added
 - Generated clients fill in the accounts Anchor's client still asks for:
   - `resolve.<instruction>(rpc, accounts, args?, { signer })` fills signer accounts that were left out with a default
