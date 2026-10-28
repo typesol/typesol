@@ -1,12 +1,8 @@
 // Several growable Vecs in one account: each push / pop / clear moves the Vecs stored after it, the account's size
 // follows every length, and the bytes are what the IDL (and Anchor's coder) say.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CompileError, generate } from "../src/compiler/index.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "./harness.js";
 
 const TOO_SMALL = 3003; // AccountDidNotDeserialize
 
@@ -100,18 +96,7 @@ describe("several growable Vecs in one account", () => {
   });
 
   it("refuses references into a Vec that moves, and a Vec before other fields in Anchor's layout", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-multivec-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type Mut, type Signer, type SystemProgram, type Vec, type u64 } from "typesol";\n${body}\n`);
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
+    const errors = (body: string) => compileErrors(`import { type Mut, type Signer, type SystemProgram, type Vec, type u64 } from "typesol";\n${body}\n`);
     const bag = "export interface E { v: u64; }\nexport interface B { a: Vec<u64>; b: Vec<E>; }\n";
     const ok = `${bag}export function f(p: Mut<Signer>, x: Mut<B>, s: SystemProgram): void { x.a.push(1n, p); const e = x.b.get(0n); e.v = 2n; }`;
     expect(errors(ok)).toBe("");

@@ -5,6 +5,23 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Fixed
+- A helper expanded where it is called (given a closure), and a function a helper made, read a module constant as
+  the instruction argument of the same name; they now see only their parameters and the module.
+- A struct parameter of a closure or expanded helper could be used after a push, pop or clear moved the Vec it points
+  into (a stale pointer); that is refused like any other reference across the move.
+- A closure parameter named like an account read the account; it is refused.
+- A helper from another file, expanded here or typed from an arrow passed to it, resolved its types with this file's
+  imports (an aliased or unimported type failed to compile, or an annotation was dropped); its own file's imports are
+  used, and `applyT<u64>((v) => …)` takes the type given at the call.
+- A struct with a FixedVec held in a data enum variant was read as Borsh when also an argument; that conflict is refused.
+
+### Changed
+- Fewer compute units, same results: the PDA bump search builds its seed list once, a growing account reads the rent
+  sysvar once, integers become text two digits at a time, a lone `${n}` template is not copied again, and
+  `list = fixedVec([])` clears the list in place. For example escrow `make` 3638 → 3605, `take_offer` 7117 → 7058,
+  `transfer_tokens` 8467 → 8367 CU.
+
 ### Added
 - Functions as values: `const h = g`, and functions that return functions (`function adder(n: u64): (x: u64) => u64
   { return (x) => x + n; }`), which make a closure where they are called (`const add5 = adder(5n)`, `adder(5n)(x)`).

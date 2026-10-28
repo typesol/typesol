@@ -1,13 +1,9 @@
 // Token Metadata collections: createV3's isCollection, createMasterEditionV3, verifyCollection (the end-to-end run is the
 // tokens/nft-operations port) and masterEditionAddress.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { address, generateKeyPairSigner, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
 import { describe, expect, it } from "vitest";
-import { CompileError, generate } from "../src/compiler/index.js";
-import { deployFile, expectOk, fundedSigner, ix, send } from "./harness.js";
+import { deployFile, expectOk, fundedSigner, ix, send, compileErrors } from "./harness.js";
 
 const MPL = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
@@ -23,21 +19,10 @@ describe("Token Metadata collections", () => {
   });
 
   it("refuses misuse at compile time", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-mplcoll-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(
-        file,
+    const errors = (body: string) =>
+      compileErrors(
         `import { type AccountInfo, type Mut, type Signer, type SystemProgram, type TokenMetadataProgram, type TokenProgram } from "typesol";\n${body}\n`,
       );
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
     const params =
       "p: Mut<Signer>, e: Mut<AccountInfo>, m: Mut<AccountInfo>, md: Mut<AccountInfo>, ro: AccountInfo, tp: TokenProgram, sys: SystemProgram, mpl: TokenMetadataProgram";
     expect(errors(`export function f(${params}): void { mpl.createMasterEditionV3(e, m, p, p, p, md, tp, sys, 0n); }`)).toBe("");

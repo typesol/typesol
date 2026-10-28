@@ -1,11 +1,7 @@
 // Closures (local functions that read the enclosing function's variables), expanded where they are called.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CompileError, generate } from "../src/compiler/index.js";
-import { BN, SYSTEM_PROGRAM, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { BN, SYSTEM_PROGRAM, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "./harness.js";
 
 describe("closures", () => {
   let d: Deployed;
@@ -81,18 +77,7 @@ describe("closures", () => {
   });
 
   it("refuses recursion and functions used as values", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-closures-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type u64 } from "typesol";\n${body}\n`);
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
+    const errors = (body: string) => compileErrors(`import { type u64 } from "typesol";\n${body}\n`);
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => (v === 0n ? x : g(v - 1n)); return g(3n); }`)).toMatch(/calls itself/);
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; const h = g; return h(1n); }`)).toBe("");
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; let h = g; return h(1n); }`)).toMatch(/bind functions with const/);

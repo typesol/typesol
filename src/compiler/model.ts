@@ -303,7 +303,7 @@ export interface ProgramModel {
    * Functions that return a function (`function adder(n: u64): (x: u64) => u64 { return (x) => x + n; }`): no C
    * function; a call binds the returned function, with the arguments, as a closure where it is made.
    */
-  factories: Map<string, HelperNode>;
+  factories: Map<string, { node: HelperNode; imports: Map<string, string> }>;
   errors: ErrorDef[];
   /** Enum name -> member name -> error */
   errorEnums: Map<string, Map<string, ErrorDef>>;
