@@ -80,6 +80,13 @@ describe("optional accounts (test/fixtures/optional.ts)", () => {
     one[31] = 1;
     keys.push(one);
     for (let i = 0; i < 40; i++) keys.push(crypto.getRandomValues(new Uint8Array(32)));
+    // Every count of leading zero bytes, with random bytes after them.
+    for (let z = 1; z < 32; z++) {
+      const k = crypto.getRandomValues(new Uint8Array(32));
+      k.fill(0, 0, z);
+      if (k[z] === 0) k[z] = 1;
+      keys.push(k);
+    }
     for (const k of keys) {
       const text = dec.decode(k);
       const r = expectOk(await send(d.svm, payer, [ix(d, "show", { k: new web3.PublicKey(k) }, [])]));

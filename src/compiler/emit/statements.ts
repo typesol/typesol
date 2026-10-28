@@ -766,7 +766,23 @@ export abstract class StatementEmitter extends CpiEmitter {
           this.line(`TS_Str ${cur};`);
           this.line(`TS_TRY(ts_str_copy(${current.c}, &${cur}));`);
         }
+        // A local grows in place when it is the newest heap string (a loop of `s += …` copies each piece once); a
+        // template on the right is appended piece by piece.
+        const local = cur === current.c && place.write("X") === `${cur} = X`;
+        const bare = (e: ts.Expression): ts.Expression => (ts.isParenthesizedExpression(e) ? bare(e.expression) : e);
+        const rhsNode = bare(valueNode);
+        if (local && ts.isTemplateExpression(rhsNode)) {
+          const pieces = this.templatePieces(rhsNode);
+          if (pieces.text !== undefined)
+            this.line(`TS_TRY(ts_str_append(&${cur}, ts_str((const uint8_t *)${cString(pieces.text)}, ${Buffer.byteLength(pieces.text, "utf8")})));`);
+          else this.line(`TS_TRY(ts_str_append_parts(&${cur}, ${pieces.arr}, ${pieces.n}));`);
+          return;
+        }
         const rhs = this.toText(valueNode);
+        if (local) {
+          this.line(`TS_TRY(ts_str_append(&${cur}, ${rhs}));`);
+          return;
+        }
         const t = this.tmp("cat");
         this.line(`TS_Str ${t};`);
         this.line(`TS_TRY(ts_str_concat(${cur}, ${rhs}, &${t}));`);

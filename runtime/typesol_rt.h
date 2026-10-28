@@ -1105,46 +1105,122 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
 static uint64_t ts_base58_32(const uint8_t *in, TS_Str *out) {
   static const char digits[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const uint64_t D = 656356768ULL; /* 58^5 */
-  uint32_t limb[8];
-  for (int i = 0; i < 8; i++)
-    limb[i] = (uint32_t)in[4 * i] << 24 | (uint32_t)in[4 * i + 1] << 16 | (uint32_t)in[4 * i + 2] << 8 | (uint32_t)in[4 * i + 3];
-  uint8_t rev[50]; /* base-58 digits, least significant first; 32 bytes need at most 44 */
-  uint64_t len = 0;
+  uint64_t limb[8];
+  for (int i = 0; i < 8; i++) limb[i] = __builtin_bswap32(*(const ts_u32_unaligned *)(in + 4 * i)); /* big-endian words */
+  /* Digits are written as characters from the end of `buf`, five per pass; 32 bytes need at most 44. */
+  char buf[50];
+  uint64_t pos = sizeof(buf);
   int start = 0;
   while (start < 8 && limb[start] == 0) start++;
   while (start < 8) {
     uint64_t rem = 0;
-    for (int i = start; i < 8; i++) {
-      uint64_t cur = (rem << 32) | limb[i];
-      uint64_t q = cur / D;
-      rem = cur - q * D;
-      limb[i] = (uint32_t)q;
-    }
-    while (start < 8 && limb[start] == 0) start++;
-    for (int k = 0; k < 5; k++) {
-      uint64_t q = rem / 58;
-      rev[len++] = (uint8_t)(rem - q * 58);
-      rem = q;
-    }
+    /* One long-division pass from the first nonzero limb, unrolled. */
+#define TS_B58_STEP(i)                       \
+  {                                          \
+    uint64_t cur = (rem << 32) | limb[i];    \
+    uint64_t q = cur / D;                    \
+    rem = cur - q * D;                       \
+    limb[i] = q;                             \
   }
-  while (len > 0 && rev[len - 1] == 0) len--;
+    switch (start) {
+      case 0: TS_B58_STEP(0) /* fallthrough */
+      case 1: TS_B58_STEP(1) /* fallthrough */
+      case 2: TS_B58_STEP(2) /* fallthrough */
+      case 3: TS_B58_STEP(3) /* fallthrough */
+      case 4: TS_B58_STEP(4) /* fallthrough */
+      case 5: TS_B58_STEP(5) /* fallthrough */
+      case 6: TS_B58_STEP(6) /* fallthrough */
+      default: TS_B58_STEP(7)
+    }
+#undef TS_B58_STEP
+    while (start < 8 && limb[start] == 0) start++;
+    uint64_t q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    buf[--pos] = digits[rem];
+  }
+  /* Leading zero digits of the number are not printed; each leading zero byte is a '1'. */
+  while (pos < sizeof(buf) && buf[pos] == '1') pos++;
   uint64_t zeros = 0;
   while (zeros < 32 && in[zeros] == 0) zeros++;
+  uint64_t len = sizeof(buf) - pos;
   uint8_t *p;
   TS_TRY(ts_alloc(zeros + len, &p));
   for (uint64_t i = 0; i < zeros; i++) p[i] = '1';
-  for (uint64_t j = 0; j < len; j++) p[zeros + j] = (uint8_t)digits[rev[len - 1 - j]];
+  ts_memcpy(p + zeros, buf + pos, len);
   *out = ts_str(p, zeros + len);
   return SUCCESS;
 }
 
-static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
+/*
+ * `s += …` on a local string: the pieces are copied right after `s` when it ends where the heap's free space starts
+ * (it was the last thing allocated), and `s` grows in place; otherwise `s` and the pieces are joined into a new string.
+ * Other views of the old `s` keep their length, so they still read the same bytes. The bytes written are past the
+ * heap's top, where no view can point (ts_alloc is the only source of heap pointers and never hands out memory past
+ * the top), so no piece is overwritten while it is copied.
+ */
+static uint64_t ts_str_append_parts(TS_Str *s, const TS_Str *parts, uint64_t n) {
+  uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
+  uint64_t add = 0;
+  for (uint64_t i = 0; i < n; i++) add += parts[i].len;
+  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && *next + add <= TS_HEAP_LENGTH) {
+    for (uint64_t i = 0; i < n; i++) {
+      ts_memcpy((uint8_t *)s->ptr + s->len, parts[i].ptr, parts[i].len);
+      s->len += parts[i].len;
+    }
+    *next += add;
+    return SUCCESS;
+  }
   uint8_t *p;
-  TS_TRY(ts_alloc(a.len + b.len, &p));
-  ts_memcpy(p, a.ptr, a.len);
-  ts_memcpy(p + a.len, b.ptr, b.len);
-  *out = ts_str(p, a.len + b.len);
+  TS_TRY(ts_alloc(s->len + add, &p));
+  ts_memcpy(p, s->ptr, s->len);
+  uint64_t at = s->len;
+  for (uint64_t i = 0; i < n; i++) {
+    ts_memcpy(p + at, parts[i].ptr, parts[i].len);
+    at += parts[i].len;
+  }
+  *s = ts_str(p, at);
   return SUCCESS;
+}
+
+/* `s += b` (and `a + b`, with `s` a copy of `a`): the one-piece case of ts_str_append_parts. */
+static uint64_t ts_str_append(TS_Str *s, TS_Str b) {
+  uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
+  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && *next + b.len <= TS_HEAP_LENGTH) {
+    ts_memcpy((uint8_t *)s->ptr + s->len, b.ptr, b.len);
+    *next += b.len;
+    s->len += b.len;
+    return SUCCESS;
+  }
+  uint8_t *p;
+  TS_TRY(ts_alloc(s->len + b.len, &p));
+  ts_memcpy(p, s->ptr, s->len);
+  ts_memcpy(p + s->len, b.ptr, b.len);
+  *s = ts_str(p, s->len + b.len);
+  return SUCCESS;
+}
+
+/* The pieces of a template literal, joined with one heap allocation and one copy each. */
+static uint64_t ts_str_join(const TS_Str *parts, uint64_t n, TS_Str *out) {
+  uint64_t total = 0;
+  for (uint64_t i = 0; i < n; i++) total += parts[i].len;
+  uint8_t *p;
+  TS_TRY(ts_alloc(total, &p));
+  uint64_t at = 0;
+  for (uint64_t i = 0; i < n; i++) {
+    ts_memcpy(p + at, parts[i].ptr, parts[i].len);
+    at += parts[i].len;
+  }
+  *out = ts_str(p, total);
+  return SUCCESS;
+}
+
+/* `a + b`: a new string (`a` grows in place when it is the newest heap string; its own view keeps its length). */
+static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
+  *out = a;
+  return ts_str_append(out, b);
 }
 
 /* Decimal text of an integer, on the heap. */

@@ -14,6 +14,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   (2024–2039).
 - Bubblegum `mintToCollection` (MintToCollectionV1 on V1 trees, Token Metadata collections).
 
+### Changed
+- Strings are built with less work and heap: a template literal is joined in one allocation (it was copied piece by
+  piece), text known at compile time (literals, string and Pubkey constants) is folded in, `s += …` and `a + b` grow
+  the newest heap string in place, and base58 of a Pubkey is about 20% cheaper. Results are the same; official
+  examples that log addresses use 11–36% fewer compute units (set_favorites 10,244 → 6,601, transfer_tokens
+  9,760 → 8,467, create_system_account 4,664 → 4,075, go_to_park 435 → 372); binaries of programs that build
+  strings grow by up to 2.4 KB.
+
 ## 0.18.0 — 2026-10-28
 
 The remaining Anchor differences, closed: Anchor's argument structs (Strings, Vecs, Options and enums in Borsh),
