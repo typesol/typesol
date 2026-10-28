@@ -790,6 +790,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s || s.size === undefined || s.vec) this.fail(node, "loadForeign needs a fixed-size struct type: loadForeign<Pool>(account, owner)");
+    if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: loadForeign reads fixed layouts only`);
     if (node.arguments.length !== 2) this.fail(node, "loadForeign<T>(account, owner) takes the account and its owning program's address");
     const h = this.anyAccount(node.arguments[0], "loadForeign's account");
     const owner = this.expect(this.expr(node.arguments[1], PUBKEY), PUBKEY, node.arguments[1]);
@@ -810,6 +811,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s || s.size === undefined) this.fail(node, "loadAccount needs an account struct type: loadAccount<MyStruct>(account)");
+    if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: declare it as an instruction parameter (remaining accounts are read in place)`);
     if (node.arguments.length !== 1) this.fail(node, "loadAccount<T>(account) takes one remaining account");
     const h = this.handle(node.arguments[0]);
     if (!h) this.fail(node.arguments[0], "pass a remaining account, e.g. remainingAccounts().get(i)");
@@ -871,6 +873,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       const acct = this.accountParam(n, `${h.name}()'s ${p.name}`);
       const why = accountMismatch(acct.kind, p.account);
       if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);
+      // A @layout borsh account goes with the struct it is being worked on as.
+      if (p.account.kind === "account" && p.account.struct.layout === "borsh") return `a_${acct.name}, d_${acct.name}`;
       return `a_${acct.name}`;
     }
     switch (p.type.kind) {

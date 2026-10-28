@@ -53,7 +53,7 @@ describe("typesol port", () => {
       }
     });
 
-  it("keeps a discriminator the name would not derive, and notes layout differences from Anchor", () => {
+  it("keeps a discriminator the name would not derive, and Anchor's account bytes (@layout borsh)", () => {
     const idl: PortIdl = {
       metadata: { name: "legacy" },
       instructions: [
@@ -86,9 +86,12 @@ describe("typesol port", () => {
     writeFileSync(file, source);
     const ported = buildIdl(generate(file).model, ADDRESS) as unknown as AnyIdl;
     expect(ported.instructions[0].discriminator).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(notes.join("\n")).toMatch(/Thing\.name: Anchor encodes this String/);
-    expect(notes.join("\n")).toMatch(/Thing\.items: a Vec here/);
-    expect(notes.join("\n")).toMatch(/Thing\.best: an Option in account data/);
+    // The account keeps Anchor's layout: its IDL type is Anchor's own.
+    expect(source).toContain("@layout borsh");
+    expect(ported.types?.find((t: { name: string }) => t.name === "Thing")).toMatchObject({ type: idl.types![0]!.type });
+    expect(notes.join("\n")).toMatch(/Thing\.name: set the String's capacity to Anchor's #\[max_len\]/);
+    expect(notes.join("\n")).toMatch(/Thing\.items: set the Vec's capacity/);
+    expect(notes.join("\n")).not.toMatch(/layout differs/);
     expect(notes.join("\n")).toMatch(/errors: .*6100/);
     expect(notes.join("\n")).toMatch(/account Thing: its discriminator is not/);
   });

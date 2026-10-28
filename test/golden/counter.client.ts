@@ -162,6 +162,7 @@ export const ERRORS: Record<number, { name: string; msg?: string }> = {
   3000: { name: "AccountDiscriminatorAlreadySet" },
   3002: { name: "AccountDiscriminatorMismatch" },
   3003: { name: "AccountDidNotDeserialize" },
+  3004: { name: "AccountDidNotSerialize" },
   3005: { name: "AccountNotEnoughKeys" },
   3006: { name: "AccountNotMutable" },
   3007: { name: "AccountOwnedByWrongProgram" },
@@ -188,7 +189,7 @@ export const ERRORS: Record<number, { name: string; msg?: string }> = {
   6000: { name: "Unauthorized", msg: "Only the counter's authority can change it" },
   6001: { name: "RequireFailed1", msg: "counter is below the expected minimum" },
 };
-export type ErrorName = "InstructionMissing" | "InstructionFallbackNotFound" | "InstructionDidNotDeserialize" | "ConstraintHasOne" | "ConstraintSigner" | "ConstraintOwner" | "ConstraintRentExempt" | "ConstraintSeeds" | "ConstraintExecutable" | "ConstraintAssociated" | "ConstraintAddress" | "ConstraintTokenMint" | "ConstraintTokenOwner" | "ConstraintMintMintAuthority" | "ConstraintMintFreezeAuthority" | "ConstraintDuplicateMutableAccount" | "AccountDiscriminatorAlreadySet" | "AccountDiscriminatorMismatch" | "AccountDidNotDeserialize" | "AccountNotEnoughKeys" | "AccountNotMutable" | "AccountOwnedByWrongProgram" | "InvalidProgramId" | "InvalidProgramExecutable" | "AccountNotSigner" | "AccountNotInitialized" | "AccountReallocExceedsLimit" | "InvalidNumericConversion" | "ArithmeticOverflow" | "DivisionByZero" | "SysvarUnavailable" | "IndexOutOfBounds" | "StringTooLong" | "ReturnDataMismatch" | "EventTooLarge" | "EmptyOption" | "HeapExhausted" | "OracleRejected" | "WrongEnumVariant" | "TooManyAccounts" | "NoReturnData" | "AccountMissing" | "Unauthorized" | "RequireFailed1";
+export type ErrorName = "InstructionMissing" | "InstructionFallbackNotFound" | "InstructionDidNotDeserialize" | "ConstraintHasOne" | "ConstraintSigner" | "ConstraintOwner" | "ConstraintRentExempt" | "ConstraintSeeds" | "ConstraintExecutable" | "ConstraintAssociated" | "ConstraintAddress" | "ConstraintTokenMint" | "ConstraintTokenOwner" | "ConstraintMintMintAuthority" | "ConstraintMintFreezeAuthority" | "ConstraintDuplicateMutableAccount" | "AccountDiscriminatorAlreadySet" | "AccountDiscriminatorMismatch" | "AccountDidNotDeserialize" | "AccountDidNotSerialize" | "AccountNotEnoughKeys" | "AccountNotMutable" | "AccountOwnedByWrongProgram" | "InvalidProgramId" | "InvalidProgramExecutable" | "AccountNotSigner" | "AccountNotInitialized" | "AccountReallocExceedsLimit" | "InvalidNumericConversion" | "ArithmeticOverflow" | "DivisionByZero" | "SysvarUnavailable" | "IndexOutOfBounds" | "StringTooLong" | "ReturnDataMismatch" | "EventTooLarge" | "EmptyOption" | "HeapExhausted" | "OracleRejected" | "WrongEnumVariant" | "TooManyAccounts" | "NoReturnData" | "AccountMissing" | "Unauthorized" | "RequireFailed1";
 /**
  * The custom program error code in a failed transaction or simulation (a kit SolanaError, LiteSVM's result, a number
  * or a message), or null. The code does not say which program raised it: a program this one calls can raise the same

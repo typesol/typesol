@@ -184,6 +184,29 @@ describe("hardening: strings", () => {
       expect(customError(await send(d.svm, payer, [{ ...good, data: new Uint8Array(data) }]))).toBe(102);
     }
   });
+
+  it("checks UTF-8 after ASCII runs of every length (the 8-byte ASCII fast path)", async () => {
+    const d = await deployFile(fixture("strings"));
+    const payer = await fundedSigner(d.svm);
+    const good = ix(d, "check", { s: "ab" }, []);
+    const call = (bytes: number[]) => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32LE(bytes.length);
+      return send(d.svm, payer, [{ ...good, data: new Uint8Array(Buffer.concat([Buffer.from(good.data!).subarray(0, 8), len, Buffer.from(bytes)])) }]);
+    };
+    for (let run = 0; run <= 17; run++) {
+      const ascii = Array.from({ length: run }, (_, i) => 0x61 + (i % 26));
+      // Valid: a 2-, 3- and 4-byte sequence after the run, then more ASCII.
+      for (const ok of [
+        [0xc3, 0xa9],
+        [0xe2, 0x82, 0xac],
+        [0xf0, 0x9f, 0x98, 0x80],
+      ])
+        expectOk(await call([...ascii, ...ok, 0x7a, 0x7a]));
+      // Invalid: a lone continuation, an overlong, a surrogate, a truncated sequence at the end.
+      for (const bad of [[0x80], [0xc0, 0xaf], [0xed, 0xa0, 0x80], [0xe2, 0x82]]) expect(customError(await call([...ascii, ...bad]))).toBe(102);
+    }
+  });
 });
 
 describe("hardening: evaluation order", () => {

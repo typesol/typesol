@@ -15,7 +15,8 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount) |
 | 3000 | account already exists / initialized (AccountDiscriminatorAlreadySet) |
 | 3002 | discriminator mismatch (AccountDiscriminatorMismatch) |
-| 3003 | data too small, not an initialized token account / mint, or a read past the end (AccountDidNotDeserialize) |
+| 3003 | data too small, not an initialized token account / mint, a read past the end, or a `@layout borsh` account whose bytes are not a valid Borsh value (AccountDidNotDeserialize) |
+| 3004 | a `@layout borsh` account too small for the value it would now hold (AccountDidNotSerialize) |
 | 3005 | not enough accounts (AccountNotEnoughKeys) |
 | 3006 | account must be writable (AccountNotMutable) |
 | 3007 | wrong owner program (AccountOwnedByWrongProgram) |

@@ -4,8 +4,9 @@
  * It writes the account structs, enums, errors, events and one function per instruction with its accounts and
  * arguments, bodies left to fill in. Instructions keep their discriminators (an explicit `@discriminator` when the
  * name would derive another), account structs keep their names (so their discriminators), errors keep their order —
- * so existing clients keep working when the layout allows it. Where TypeSOL stores data differently from Anchor's Borsh
- * layout (String, Option and a Vec that is not the last field in account data), it says so in a note and a comment.
+ * so existing clients keep working. Account structs holding a String, Vec or Option get `@layout borsh`, so they keep
+ * Anchor's bytes (existing accounts stay readable); where a layout still differs (a String or Vec nested in a struct, a
+ * data enum, a COption) it says so in a note and a comment.
  */
 import { createHash } from "node:crypto";
 import { cNameProblem } from "./compiler/analyze.js";
@@ -202,6 +203,48 @@ export function generatePort(idl: PortIdl): PortResult {
     return `${use("u64")} /* TODO */`;
   };
 
+  /** A String, Vec or Option at a struct's top level: Borsh-sized in Anchor. */
+  const borshOnly = (t: IdlType) => t === "string" || t === "bytes" || (typeof t === "object" && (!!t.vec || !!t.option));
+  /** A field's type in a `@layout borsh` struct, or undefined when that layout cannot hold it. Notes the capacities. */
+  const borshField = (t: IdlType, at: string): string | undefined => {
+    const quiet = at === "";
+    const fixedOk = (u: IdlType): boolean => {
+      if (typeof u === "string") return INTS.has(u) || u === "bool" || u === "pubkey" || u === "publicKey";
+      if (u.array) return Number.isInteger(Number(u.array[1])) && fixedOk(u.array[0]);
+      if (u.defined) {
+        const name = definedName(u.defined);
+        const d = defs.get(name);
+        if (!d || skipped.has(name) || helperDefs.has(name)) return false;
+        if (d.type.kind === "enum") return (d.type.variants ?? []).every((v) => !v.fields?.length);
+        return ((d.type.fields ?? []) as IdlField[]).every((f) => fixedOk(f.type));
+      }
+      return false;
+    };
+    if (t === "string") {
+      if (!quiet) notes.push(`${at}: set the String's capacity to Anchor's #[max_len] (Borsh bytes are kept: @layout borsh)`);
+      return `${use("FixedString")}<32> /* TODO: #[max_len] */`;
+    }
+    if (t === "bytes") return borshField({ vec: "u8" }, at);
+    if (typeof t === "object" && t.vec) {
+      const elem =
+        t.vec === "string"
+          ? `${use("FixedString")}<32> /* TODO: #[max_len] */`
+          : fixedOk(t.vec) && !quiet
+            ? tsType(t.vec, "account", at)
+            : fixedOk(t.vec)
+              ? "x"
+              : undefined;
+      if (elem === undefined) return undefined;
+      if (!quiet) notes.push(`${at}: set the Vec's capacity to Anchor's #[max_len] (Borsh bytes are kept: @layout borsh)`);
+      return `${use("FixedVec")}<${elem}, 8> /* TODO: #[max_len] */`;
+    }
+    if (typeof t === "object" && t.option) {
+      if (!fixedOk(t.option)) return undefined;
+      return quiet ? "x" : `${use("Option")}<${tsType(t.option, "account", at)}>`;
+    }
+    if (!fixedOk(t)) return undefined;
+    return quiet ? "x" : tsType(t, "account", at);
+  };
   const esc = (s: string) => s.replace(/\*\//g, "* /");
   const docs = (lines: string[] | undefined, pad = "") => (lines?.length ? `${pad}/** ${esc(lines.join(" "))} */\n` : "");
   const out: string[] = [];
@@ -229,15 +272,20 @@ export function generatePort(idl: PortIdl): PortResult {
     const where: Where = used.has("account") ? "account" : used.has("arg") ? "struct" : used.has("event") ? "event" : "account";
     if (def.type.kind === "struct") {
       const fields = (def.type.fields ?? []) as IdlField[];
+      // An account struct with a String, Vec or Option of its own: `@layout borsh` keeps Anchor's bytes.
+      const borsh =
+        accountNames.has(def.name) && !isTuple(fields) && fields.some((f) => borshOnly(f.type)) && fields.every((f) => borshField(f.type, "") !== undefined);
       const tag = accountNames.has(def.name) ? " (account)" : eventNames.has(def.name) ? ` (event: emit<${typeName(def.name)}>({ … }))` : "";
-      out.push(docs(def.docs).trimEnd() || `/** ${def.name}${tag} */`);
+      const doc = def.docs?.length ? esc(def.docs.join(" ")) : `${def.name}${tag}`;
+      out.push(borsh ? `/**\n * ${doc}\n * @layout borsh\n */` : `/** ${doc} */`);
       out.push(`export interface ${typeName(def.name)} {`);
       const seen = new Set<string>();
       fields.forEach((f, i) => {
         let n = ident(f.name, true);
         while (seen.has(n)) n = `${n}2`;
         seen.add(n);
-        out.push(`${docs(f.docs, "  ")}  ${n}: ${tsType(f.type, where, `${def.name}.${f.name}`, i === fields.length - 1)};`);
+        const ty = borsh ? borshField(f.type, `${def.name}.${f.name}`)! : tsType(f.type, where, `${def.name}.${f.name}`, i === fields.length - 1);
+        out.push(`${docs(f.docs, "  ")}  ${n}: ${ty};`);
       });
       out.push("}", "");
     } else {

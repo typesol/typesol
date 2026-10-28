@@ -231,6 +231,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "anchor_profile"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "anchor_vault"
 version = "0.1.0"
 dependencies = [

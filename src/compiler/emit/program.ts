@@ -2,6 +2,7 @@ import type { Analysis } from "../analyze.js";
 import { type FieldType, type StructDef } from "../model.js";
 import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fixedVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
+import { emitBorshCodecs } from "./borsh.js";
 
 /**
  * The whole C translation unit: type declarations (structs, options, enums, events), every helper and instruction
@@ -101,6 +102,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   for (const e of model.dataEnums.values()) deps({ kind: "dataEnum", name: e.name });
 
   for (const k of model.constants.values()) if (typeof k.value === "object") out.push(`static const SolPubkey TSK_${k.name} = {${cBytes(k.value.pubkey)}};`);
+  out.push(...emitBorshCodecs(model));
   const helpers = [...model.helpers.values()];
   for (const h of helpers) out.push(helperSignature(h) + ";");
   if (helpers.length) out.push("");

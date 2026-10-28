@@ -252,8 +252,10 @@ export function accountMismatch(have: ParamKind, want: ParamKind): string | unde
 export function helperSignature(h: Helper): string {
   const params = ["TsParams *params"];
   for (const p of h.params) {
-    if (p.account) params.push(`TsAccount *a_${p.name}`);
-    else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
+    if (p.account) {
+      params.push(`TsAccount *a_${p.name}`);
+      if (p.account.kind === "account" && p.account.struct.layout === "borsh") params.push(`TSS_${p.account.struct.name} *d_${p.name}`);
+    } else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
     else if (p.type.kind === "pubkey")
       params.push(`SolPubkey p_${p.name}`); // by value: a copy taken at the call
     else if (p.type.kind === "arrayArg") params.push(storageDecl(p.type.array, `(*p_${p.name})`));

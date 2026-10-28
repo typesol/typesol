@@ -1,7 +1,19 @@
 import ts from "typescript";
 import { snakeCase } from "../analyze.js";
 import { decodeAddress } from "../../keys.js";
-import { INT_INFO, type FieldType, type IdlSeed, type Instruction, type ScalarType, isScalar, isWritable, scalarSize, typeName } from "../model.js";
+import {
+  INT_INFO,
+  type FieldType,
+  type IdlSeed,
+  type Instruction,
+  type ScalarType,
+  type StructDef,
+  isScalar,
+  isWritable,
+  scalarSize,
+  typeName,
+} from "../model.js";
+import { borshMinSize } from "./borsh.js";
 import { MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature } from "./shared.js";
 import { StatementEmitter } from "./statements.js";
 
@@ -15,7 +27,7 @@ export class FunctionEmitter extends StatementEmitter {
     this.scopes = [new Map()];
     this.line(`(void)params;`);
     for (const p of h.params)
-      if (p.account && p.account.kind === "account")
+      if (p.account && p.account.kind === "account" && p.account.struct.layout !== "borsh")
         this.line(`TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + 8);`);
     for (const stmt of h.statements) this.reporter.guard(() => this.statement(stmt));
     // A helper with a result must return one; falling off the end would leave it unset.
@@ -38,8 +50,11 @@ export class FunctionEmitter extends StatementEmitter {
       const k = a.kind;
       if (k.kind === "signer") head.push(`  TS_TRY(ts_check_signer(${v}));`);
       if (isWritable(k)) head.push(`  TS_TRY(ts_check_writable(${v}));`);
+      // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       if (k.kind === "account")
-        head.push(`  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, sizeof(TSS_${k.struct.name})));`);
+        head.push(
+          `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : `sizeof(TSS_${k.struct.name})`}));`,
+        );
       // A token account created by this instruction is checked where it is created (create/createIfNeeded).
       if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
       if (k.kind === "mint") head.push(`  TS_TRY(ts_check_mint(${v}));`);
@@ -69,7 +84,14 @@ export class FunctionEmitter extends StatementEmitter {
       }
       if (k.kind === "zeroed") head.push(`  TS_TRY(ts_init_zeroed(${v}, params->program_id, TS_DISC_${k.struct.name}, sizeof(TSS_${k.struct.name})));`);
       if (k.kind === "initIfNeeded" && k.struct.vec) this.reporter.fail(a.node, "InitIfNeeded accounts cannot end in a Vec yet");
-      if (k.kind === "account" || k.kind === "init" || k.kind === "zeroed" || k.kind === "initIfNeeded") {
+      if ((k.kind === "account" || k.kind === "init" || k.kind === "initIfNeeded") && k.struct.layout === "borsh") {
+        // Worked on as its fixed-layout struct on the heap, packed back when the instruction returns. The heap is zero at
+        // entry and these are its first allocations (before the body uses it), so a string's padding and a list's
+        // unused slots start as zero: ts_unpack_* only writes what the Borsh bytes hold.
+        const S = k.struct.name;
+        head.push(`  TSS_${S} *d_${a.name} = NULL;`, `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&d_${a.name}));`);
+        if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}));`);
+      } else if (k.kind === "account" || k.kind === "init" || k.kind === "zeroed" || k.kind === "initIfNeeded") {
         head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + 8);`);
         if (k.struct.vec) {
           head.push(`  uint64_t entry_${a.name} = ${v}->data_len;`, `  (void)entry_${a.name};`);
@@ -259,13 +281,25 @@ export class FunctionEmitter extends StatementEmitter {
   /** CloseTo<…> accounts are closed when the instruction succeeds, at every return. */
   protected epilogue(): string[] {
     if (!this.ix) return [];
-    return this.ix.accounts
-      .filter((a) => a.constraints.closeTo)
+    // @layout borsh accounts go back to their Borsh bytes (unless closed, or never created).
+    const packs = this.ix.accounts
+      .filter((a) => (a.kind.kind === "account" ? a.kind.mut : a.kind.kind === "init" || a.kind.kind === "initIfNeeded"))
+      .filter((a) => (a.kind as { struct: StructDef }).struct.layout === "borsh")
       .map((a) => {
-        const line = `TS_TRY(ts_close(a_${a.name}, a_${a.constraints.closeTo}));`;
-        const optional = this.optionalIn(line);
-        return optional.length ? `if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) ${line}` : line;
+        const v = `a_${a.name}`;
+        const S = (a.kind as { struct: StructDef }).struct.name;
+        return `if (${a.optional ? `${v} != NULL && ` : ""}${v}->data_len >= 8 && ts_key_eq(&${v}->owner, params->program_id)) TS_TRY(ts_pack_${S}(d_${a.name}, ${v}->data + 8, ${v}->data_len - 8));`;
       });
+    return [
+      ...packs,
+      ...this.ix.accounts
+        .filter((a) => a.constraints.closeTo)
+        .map((a) => {
+          const line = `TS_TRY(ts_close(a_${a.name}, a_${a.constraints.closeTo}));`;
+          const optional = this.optionalIn(line);
+          return optional.length ? `if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) ${line}` : line;
+        }),
+    ];
   }
 
   protected constraintChecks(ix: Instruction): string[] {

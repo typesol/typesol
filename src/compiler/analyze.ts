@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CompileError, Reporter, type Diagnostic } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
+import { borshIdentical } from "./emit/borsh.js";
 import {
   optionKey,
   INT_INFO,
@@ -484,6 +485,14 @@ export function analyze(entry: string): Analysis {
     if (!ix) continue;
     instructions.push(ix);
     for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
+    for (const a of ix.args) {
+      const seen = new Set<string>();
+      collectStructs(a.type, structs, dataEnums, seen);
+      for (const s of seen)
+        if (structs.get(s)!.layout === "borsh") reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} is @layout borsh, an account layout only`);
+    }
+    if (ix.returns?.kind === "struct" && structs.get(ix.returns.name)!.layout === "borsh")
+      reporter.error(fn.node.type ?? fn.node, `${ix.returns.name} is @layout borsh, an account layout only; return another struct`);
     // Arguments are Borsh: a FixedVec's padded layout is account data only.
     for (const a of ix.args) {
       const seen = new Set<string>();
@@ -776,6 +785,11 @@ function analyzeStructs(
         reporter,
       );
       const name = decl.name.text;
+      // `/** @layout borsh */`: stored as Anchor stores it.
+      const layoutTag = ts.getJSDocTags(decl).find((t) => t.tagName.text === "layout");
+      const layoutText = typeof layoutTag?.comment === "string" ? layoutTag.comment.trim() : undefined;
+      if (layoutTag && layoutText !== "borsh" && layoutText !== "fixed")
+        reporter.fail(layoutTag, "@layout is borsh (Anchor's account bytes) or fixed (the default)");
       structs.set(name, {
         name,
         fields,
@@ -783,6 +797,7 @@ function analyzeStructs(
         accountDiscriminator: discriminator(`account:${name}`),
         eventDiscriminator: discriminator(`event:${name}`),
         node: decl,
+        layout: layoutText === "borsh" ? "borsh" : "fixed",
       });
     });
   }
@@ -917,6 +932,7 @@ function analyzeStructs(
     state.set(s.name, "done");
   };
   for (const s of structs.values()) reporter.guard(() => visit(s));
+  for (const s of structs.values()) if (s.layout === "borsh") reporter.guard(() => checkBorshLayout(s, structs, reporter));
   for (const e of dataEnums.values()) reporter.guard(() => sizeOf({ kind: "dataEnum", name: e.name }, e.node));
   return structs;
 }
@@ -960,6 +976,35 @@ function checkCaptures(l: HelperSource, localDecls: Set<ts.Node>, checker: ts.Ty
   if (fn.body) visit(fn.body);
 }
 
+/**
+ * A `@layout borsh` struct: its own fields may be FixedString (Borsh String), FixedVec (Borsh Vec) and Option; anything
+ * nested must already be Borsh-identical (fixed-size scalars, Pubkeys, enums, arrays and structs of them).
+ */
+function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, reporter: Reporter) {
+  const model = { structs };
+  const fixed = (t: FieldType) => borshIdentical(t, model);
+  for (const f of s.fields) {
+    const t = f.type;
+    const at = s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name) ?? s.node;
+    if (fixed(t) || t.kind === "fstring") continue;
+    if (t.kind === "vec" && t.cap === undefined)
+      reporter.fail(at, "a @layout borsh struct cannot end in a growable Vec<T>; use FixedVec<T, N> (Anchor's #[max_len(N)] Vec)");
+    if (t.kind === "vec" && (fixed(t.elem) || t.elem.kind === "fstring")) continue;
+    if (t.kind === "option" && fixed(t.inner as FieldType)) continue;
+    if (t.kind === "struct" && structs.get(t.name)?.layout === "borsh")
+      reporter.fail(at, `${t.name} is @layout borsh itself: only account structs take a layout; nest a struct without one`);
+    reporter.fail(
+      at,
+      `${typeName(t)} in a @layout borsh struct: its fields may be fixed-size values, FixedString<N>, FixedVec<T, N> (of those or of FixedString) and Option<T>; nested structs and lists hold fixed-size values only`,
+    );
+  }
+  for (const other of structs.values())
+    for (const f of other.fields) {
+      const inner = f.type.kind === "array" || f.type.kind === "vec" ? f.type.elem : f.type.kind === "option" ? (f.type.inner as FieldType) : f.type;
+      if (inner.kind === "struct" && inner.name === s.name)
+        reporter.error(s.node.name, `${s.name} is @layout borsh, so it is account data only; ${other.name}.${f.name} cannot hold one`);
+    }
+}
 function analyzeHelper(fn: HelperNode, name: string, display: string, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Helper {
   if (!fn.body) reporter.fail(fn, "helper functions need a body");
   if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
@@ -1368,6 +1413,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       const s = structOf(inner());
       if (!s) reporter.fail(node, "Zeroed<T> needs a struct declared in this program");
       if (s.vec) reporter.fail(node, `${s.name} ends in a Vec; Zeroed<T> is for fixed-size (large) accounts`);
+      if (s.layout === "borsh") reporter.fail(node, `${s.name} is @layout borsh; Zeroed<T> reads large accounts in place, so it takes fixed layouts only`);
       return { kind: "zeroed", struct: s };
     }
     case "Mut": {

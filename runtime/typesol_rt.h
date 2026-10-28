@@ -34,6 +34,7 @@
 #define TS_ERR_ALREADY_INITIALIZED 3000    /* AccountDiscriminatorAlreadySet */
 #define TS_ERR_DISCRIMINATOR 3002          /* AccountDiscriminatorMismatch */
 #define TS_ERR_ACCOUNT_TOO_SMALL 3003      /* AccountDidNotDeserialize */
+#define TS_ERR_DID_NOT_SERIALIZE 3004      /* AccountDidNotSerialize */
 #define TS_ERR_TOKEN_ACCOUNT 3003          /* AccountDidNotDeserialize (not an initialized token account) */
 #define TS_ERR_MINT 3003                   /* AccountDidNotDeserialize (not an initialized mint) */
 #define TS_ERR_NOT_ENOUGH_ACCOUNTS 3005    /* AccountNotEnoughKeys */
@@ -162,8 +163,11 @@ static inline TS_Str ts_str(const uint8_t *ptr, uint64_t len) {
 static inline bool ts_utf8_valid(const uint8_t *p, uint64_t n) {
   uint64_t i = 0;
   while (i < n) {
+    /* ASCII eight bytes at a time (no high bit set), then byte by byte up to the next multi-byte sequence. */
+    while (i + 8 <= n && (ts_ld64(p + i) & 0x8080808080808080ULL) == 0) i += 8;
+    while (i < n && p[i] < 0x80) i++;
+    if (i == n) break;
     uint8_t c = p[i];
-    if (c < 0x80) { i++; continue; }
     uint64_t len;
     uint32_t cp;
     if (c >= 0xc2 && c <= 0xdf) { len = 2; cp = c & 0x1f; }
@@ -670,16 +674,17 @@ static inline uint64_t ts_realloc(TsParams *params, TsAccount *payer, TsAccount 
   return ts_resize(params, payer, acct, new_len, entry_len);
 }
 
+/* `space` for a new account; an existing one needs `min_space` (less for a @layout borsh account). */
 static inline uint64_t ts_create_pda_if_needed(TsParams *params, TsAccount *payer, TsAccount *acct,
                                                SolSignerSeed *seeds, int n, const uint8_t disc[8], uint64_t space,
-                                               uint8_t *bump_out, bool *created) {
+                                               uint64_t min_space, uint8_t *bump_out, bool *created) {
   if (ts_key_eq(&acct->owner, params->program_id)) {
     SolPubkey derived;
     uint8_t bump;
     if (ts_find_pda(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
         !ts_key_eq(&derived, &acct->key))
       TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
-    if (acct->data_len < space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
+    if (acct->data_len < min_space) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
     if (!ts_mem_eq(acct->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
     *bump_out = bump;
     *created = false;

@@ -53,6 +53,14 @@ const fixedEnumName = (name: string) => `FixedEnum_${name}`;
  * IDL type of a field or value. `borshOption` picks the encoding of Option: Borsh `option` for
  * instruction arguments and events, the fixed { is_some, value } struct for account data.
  */
+/** IDL type of a @layout borsh account's field: Anchor's own (`string`, `{ vec }`, `{ option }`). */
+function borshIdlType(t: FieldType): unknown {
+  if (t.kind === "fstring") return "string";
+  if (t.kind === "vec") return { vec: borshIdlType(t.elem) };
+  if (t.kind === "option") return { option: idlType(t.inner) };
+  return idlType(t);
+}
+
 function idlType(t: FieldType | ValueType, borshOption = false): unknown {
   switch (t.kind) {
     case "int":
@@ -126,7 +134,7 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
 export function buildIdl(model: ProgramModel, address: string, version = "0.1.0") {
   const structs = [...model.structs.values()];
   const usedStructs = structs.filter((s) => model.accountStructs.has(s.name) || model.events.has(s.name) || s.size !== undefined);
-  return {
+  const idl = {
     address,
     metadata: { name: model.name, version, spec: "0.1.0", description: "Built with TypeSOL" },
     instructions: model.instructions.map((ix) => ({
@@ -149,7 +157,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
           fields: s.fields.map((f) => ({
             name: snakeCase(f.name),
             ...docsOf(s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name)),
-            type: idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),
+            type: s.layout === "borsh" ? borshIdlType(f.type) : idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),
           })),
         },
       })),
@@ -230,4 +238,12 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         })),
     ],
   };
+  // FixedString / FixedVec / FixedOption types only @layout borsh accounts declared (they list theirs as string / vec /
+  // option) are left out.
+  // FixedVecs first: a kept one may name a FixedString.
+  for (const prefix of [/^FixedVec\d/, /^FixedOption_/, /^FixedString\d/]) {
+    const text = JSON.stringify([idl.instructions, idl.types.filter((t) => !prefix.test(t.name))]);
+    idl.types = idl.types.filter((t) => !prefix.test(t.name) || text.includes(`"name":"${t.name}"`));
+  }
+  return idl;
 }
