@@ -1105,35 +1105,51 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
 static uint64_t ts_base58_32(const uint8_t *in, TS_Str *out) {
   static const char digits[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const uint64_t D = 656356768ULL; /* 58^5 */
-  uint32_t limb[8];
-  for (int i = 0; i < 8; i++)
-    limb[i] = (uint32_t)in[4 * i] << 24 | (uint32_t)in[4 * i + 1] << 16 | (uint32_t)in[4 * i + 2] << 8 | (uint32_t)in[4 * i + 3];
-  uint8_t rev[50]; /* base-58 digits, least significant first; 32 bytes need at most 44 */
-  uint64_t len = 0;
+  uint64_t limb[8];
+  for (int i = 0; i < 8; i++) limb[i] = __builtin_bswap32(*(const ts_u32_unaligned *)(in + 4 * i)); /* big-endian words */
+  /* Digits are written as characters from the end of `buf`, five per pass; 32 bytes need at most 44. */
+  char buf[50];
+  uint64_t pos = sizeof(buf);
   int start = 0;
   while (start < 8 && limb[start] == 0) start++;
   while (start < 8) {
     uint64_t rem = 0;
-    for (int i = start; i < 8; i++) {
-      uint64_t cur = (rem << 32) | limb[i];
-      uint64_t q = cur / D;
-      rem = cur - q * D;
-      limb[i] = (uint32_t)q;
-    }
-    while (start < 8 && limb[start] == 0) start++;
-    for (int k = 0; k < 5; k++) {
-      uint64_t q = rem / 58;
-      rev[len++] = (uint8_t)(rem - q * 58);
-      rem = q;
-    }
+    /* One long-division pass from the first nonzero limb, unrolled. */
+#define TS_B58_STEP(i)                       \
+  {                                          \
+    uint64_t cur = (rem << 32) | limb[i];    \
+    uint64_t q = cur / D;                    \
+    rem = cur - q * D;                       \
+    limb[i] = q;                             \
   }
-  while (len > 0 && rev[len - 1] == 0) len--;
+    switch (start) {
+      case 0: TS_B58_STEP(0) /* fallthrough */
+      case 1: TS_B58_STEP(1) /* fallthrough */
+      case 2: TS_B58_STEP(2) /* fallthrough */
+      case 3: TS_B58_STEP(3) /* fallthrough */
+      case 4: TS_B58_STEP(4) /* fallthrough */
+      case 5: TS_B58_STEP(5) /* fallthrough */
+      case 6: TS_B58_STEP(6) /* fallthrough */
+      default: TS_B58_STEP(7)
+    }
+#undef TS_B58_STEP
+    while (start < 8 && limb[start] == 0) start++;
+    uint64_t q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    q = rem / 58; buf[--pos] = digits[rem - q * 58]; rem = q;
+    buf[--pos] = digits[rem];
+  }
+  /* Leading zero digits of the number are not printed; each leading zero byte is a '1'. */
+  while (pos < sizeof(buf) && buf[pos] == '1') pos++;
   uint64_t zeros = 0;
   while (zeros < 32 && in[zeros] == 0) zeros++;
+  uint64_t len = sizeof(buf) - pos;
   uint8_t *p;
   TS_TRY(ts_alloc(zeros + len, &p));
   for (uint64_t i = 0; i < zeros; i++) p[i] = '1';
-  for (uint64_t j = 0; j < len; j++) p[zeros + j] = (uint8_t)digits[rev[len - 1 - j]];
+  ts_memcpy(p + zeros, buf + pos, len);
   *out = ts_str(p, zeros + len);
   return SUCCESS;
 }
