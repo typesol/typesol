@@ -1,13 +1,10 @@
 // Arrow functions (top-level and local, capturing nothing) and generic helpers (an instance per set of types).
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateKeyPairSigner } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CompileError, generate } from "../src/compiler/index.js";
+import { generate } from "../src/compiler/index.js";
 import { pk } from "./ports-helpers.js";
-import { BN, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "./harness.js";
+import { BN, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed, compileErrors } from "./harness.js";
 
 describe("arrow functions and generic helpers", () => {
   let d: Deployed;
@@ -53,18 +50,7 @@ describe("arrow functions and generic helpers", () => {
   });
 
   it("refuses closures, missing types and what it cannot instantiate", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-arrows-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type u8, type u64, type Pubkey } from "typesol";\nexport interface S { n: u64 }\n${body}\n`);
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
+    const errors = (body: string) => compileErrors(`import { type u8, type u64, type Pubkey } from "typesol";\nexport interface S { n: u64 }\n${body}\n`);
     // Closures compile now (test/closures.test.ts runs them).
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n); }`)).toBe("");
     expect(errors(`export function f(x: u64): u64 { let k = 1n; const g = (): u64 => k; return g(); }`)).toBe("");

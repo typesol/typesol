@@ -16,11 +16,11 @@ import {
   signTransactionMessageWithSigners,
 } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "../src/compiler/index.js";
+import { build, CompileError, generate } from "../src/compiler/index.js";
 
 export { BN, address, lamports };
 export const SYSTEM_PROGRAM = address("11111111111111111111111111111111");
@@ -49,8 +49,31 @@ export async function deployFile(file: string, opts: { svm?: LiteSVM; programId?
   const res = build(file, out, programId);
   const svm = opts.svm ?? new LiteSVM();
   svm.addProgramFromFile(programId, res.soPath);
+  rmSync(out, { recursive: true, force: true }); // loaded: the build files are not needed again
   const idl = res.idl as unknown as Idl;
   return { svm, programId, coder: new BorshCoder(idl), idl };
+}
+
+let scratch: string | undefined;
+/**
+ * Compile `source` (a whole file, `import`s included) and return its compile errors joined by " | ", or "" when it
+ * compiles. The files go to one temporary directory, removed when the test process exits.
+ */
+export function compileErrors(source: string): string {
+  if (!scratch) {
+    scratch = mkdtempSync(path.join(os.tmpdir(), "typesol-errors-"));
+    const dir = scratch;
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  }
+  const file = path.join(scratch, `p${Math.random().toString(36).slice(2)}.ts`);
+  writeFileSync(file, source);
+  try {
+    generate(file);
+    return "";
+  } catch (e) {
+    if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
+    throw e;
+  }
 }
 
 export async function fundedSigner(svm: LiteSVM, sol = 10n): Promise<KeyPairSigner> {

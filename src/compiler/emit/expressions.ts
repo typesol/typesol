@@ -119,7 +119,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     // `x!` on an Option: its value, aborting with 5108 when it is empty (JS would carry the null on).
     if (ts.isNonNullExpression(node)) {
       const v = this.expr(node.expression, hint && hint.kind !== "option" ? ({ kind: "option", inner: hint } as ValueType) : hint);
-      if (v.type.kind !== "option") this.fail(node, "! works on Option values; check optional accounts with `x !== null`");
+      if (v.type.kind !== "option") this.fail(node, "! works on Option values and optional accounts (acct!.field); check other values with `x !== null`");
       return this.unwrap(v, node);
     }
     if (ts.isPropertyAccessExpression(node) && node.questionDotToken) return this.optionalChain(node);
@@ -145,6 +145,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isTemplateExpression(node)) {
       // `a${x}b${y}c`: one join on the heap (or a literal when every piece is known at compile time).
       const pieces = this.templatePieces(node);
+      if (pieces.only !== undefined) return { c: pieces.only, type: STRING };
       if (pieces.text !== undefined)
         return { c: `ts_str((const uint8_t *)${cString(pieces.text)}, ${Buffer.byteLength(pieces.text, "utf8")})`, type: STRING, stringLiteral: pieces.text };
       const t = this.tmp("tpl");
@@ -158,7 +159,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       if (l) {
-        if (l.closure) this.fail(node, `"${node.text}" is a function: TypeSOL functions are called (${node.text}(…)), not passed around or stored`);
+        if (l.closure)
+          this.fail(
+            node,
+            `"${node.text}" is a function: call it (${node.text}(…)), bind it with const, or pass it to a helper or list method; it cannot be stored or returned as a value`,
+          );
         if (l.type.kind === "array") this.fail(node, `"${node.text}" is an array; use .get(i)`);
         if (l.type.kind === "vec") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
         if (l.type.kind === "remaining") return { c: "", type: l.type };
@@ -183,7 +188,10 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       }
       if (this.accounts.has(node.text)) this.fail(node, `"${node.text}" is an account; use ${node.text}.key for its address`);
       if (calleeName(node, this.model.helperDecls, this.checker) || this.model.helpers.has(node.text))
-        this.fail(node, `"${node.text}" is a function: TypeSOL functions are called (${node.text}(…)), not passed around or stored`);
+        this.fail(
+          node,
+          `"${node.text}" is a function: call it (${node.text}(…)), bind it with const, or pass it to a helper or list method; it cannot be stored or returned as a value`,
+        );
       this.fail(node, `unknown name "${node.text}"`);
     }
     if (ts.isPropertyAccessExpression(node)) return this.property(node);
@@ -371,8 +379,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
    * TS_Str (`arr`, `n` entries). When a later piece runs statements, earlier pieces that view account text are copied
    * first, as JS reads them then.
    */
-  protected templatePieces(node: ts.TemplateExpression): { text: string; arr?: undefined; n?: undefined } | { text?: undefined; arr: string; n: number } {
-    const parts: { c?: string; text?: string }[] = [];
+  protected templatePieces(
+    node: ts.TemplateExpression,
+  ):
+    | { text: string; arr?: undefined; n?: undefined; only?: undefined }
+    | { text?: undefined; arr: string; n: number; only?: undefined }
+    | { only: string; text?: undefined } {
+    const parts: { c?: string; text?: string; converted?: boolean }[] = [];
     const lit = (text: string) => {
       if (!text) return;
       const last = parts.at(-1);
@@ -385,13 +398,16 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (known !== undefined) lit(known);
       else {
         const mark = this.lines.length;
-        const c = this.toText(span.expression);
+        const converted = { yes: false };
+        const c = this.toText(span.expression, converted);
         for (const p of parts) if (p.c !== undefined) p.c = this.settle({ c: p.c, type: STRING }, mark).c;
-        parts.push({ c });
+        parts.push({ c, converted: converted.yes });
       }
       lit(span.literal.text);
     }
     if (parts.every((p) => p.text !== undefined)) return { text: parts.map((p) => p.text).join("") };
+    // `${n}` alone: the text a conversion just made (or a constant one) is already a string of its own; no join.
+    if (parts.length === 1 && parts[0]!.converted) return { only: parts[0]!.c! };
     const strOf = (text: string) => `ts_str((const uint8_t *)${cString(text)}, ${Buffer.byteLength(text, "utf8")})`;
     const arr = this.tmp("parts");
     this.line(`TS_Str ${arr}[${parts.length}] = {${parts.map((p) => (p.text !== undefined ? strOf(p.text) : p.c)).join(", ")}};`);
@@ -416,9 +432,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     return undefined;
   }
 
-  protected toText(node: ts.Expression): string {
+  /** `${node}`'s text; `converted.yes` when it was made from a non-string value (new text, not a view of other text). */
+  protected toText(node: ts.Expression, converted?: { yes: boolean }): string {
     const v = this.expr(node);
     if (v.type.kind === "string") return v.c;
+    if (converted) converted.yes = true;
     if (v.type.kind === "option" && (v.type.inner.kind === "int" || v.type.inner.kind === "bool")) {
       // `${opt}`: the value, or "null" like JS.
       const inner = v.type.inner;
@@ -476,12 +494,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       (ts.isBigIntLiteral(node.whenFalse) || ts.isPrefixUnaryExpression(node.whenFalse));
     if (!type && !bothLiteral && (ts.isBigIntLiteral(node.whenTrue) || node.whenTrue.kind === ts.SyntaxKind.NullKeyword)) {
       // Type the non-literal branch first, without emitting it, to give the literal its type.
-      const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-      const probe = this.reporter.guard(() => this.expr(node.whenFalse));
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
+      const probe = this.probe(() => this.expr(node.whenFalse));
       if (probe && probe.literal === undefined && !probe.isNull) type = probe.type;
     }
     this.block(() => {

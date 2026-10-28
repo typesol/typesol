@@ -369,9 +369,19 @@ static inline uint64_t ts_create_pda_address(const SolSignerSeed *seeds, int n, 
 /* sol_try_find_program_address: the canonical (highest) bump. */
 static inline uint64_t ts_find_pda(const SolSignerSeed *seeds, int n, const SolPubkey *program, SolPubkey *out, uint8_t *bump_out) {
   if (!ts_pda_seeds_ok(seeds, n, TS_MAX_PDA_SEEDS - 1)) return 1; /* not SUCCESS: the PDA syscalls fail the same inputs */
+  /* The seed list is built once; each attempt only changes the bump byte it points at. */
+  SolBytes parts[TS_MAX_PDA_SEEDS + 2];
+  int k = 0;
+  for (int i = 0; i < n; i++) parts[k++] = (SolBytes){seeds[i].addr, seeds[i].len};
+  uint8_t bump = 255;
+  parts[k++] = (SolBytes){&bump, 1};
+  parts[k++] = (SolBytes){program->x, 32};
+  parts[k++] = (SolBytes){(const uint8_t *)"ProgramDerivedAddress", 21};
   for (int b = 255; b >= 0; b--) {
-    uint8_t bump = (uint8_t)b;
-    if (ts_pda_hash(seeds, n, &bump, program, out)) {
+    bump = (uint8_t)b;
+    sol_sha256(parts, k, out->x);
+    uint8_t ignored;
+    if (sol_curve_validate_point(0 /* CURVE25519_EDWARDS */, out->x, &ignored) != 0) {
       *bump_out = bump;
       return SUCCESS;
     }
@@ -493,10 +503,9 @@ static inline void ts_write_le(uint8_t *p, uint64_t v, int n) { ts_memcpy(p, &v,
 uint64_t sol_get_rent_sysvar(void *ret);
 uint64_t sol_get_clock_sysvar(void *ret);
 
-static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
-  /* Rent { lamports_per_byte_year: u64, exemption_threshold: f64, burn_percent: u8 } */
-  uint64_t rent[3] = {0};
-  if (sol_get_rent_sysvar(rent) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: rent sysvar unavailable");
+/* The minimum balance of `data_len` bytes under `rent`, the Rent sysvar
+   { lamports_per_byte_year: u64, exemption_threshold: f64, burn_percent: u8 }. */
+static inline uint64_t ts_minimum_balance_of(const uint64_t rent[3], uint64_t data_len, uint64_t *out) {
   uint64_t bytes, per_year;
   if (ts_add_overflow_u64(data_len, 128, &bytes) || ts_mul_overflow_u64(bytes, rent[0], &per_year))
     TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
@@ -517,6 +526,18 @@ static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
   if (lamports >= 18446744073709551615.0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
   *out = (uint64_t)lamports;
   return SUCCESS;
+}
+
+static inline uint64_t ts_rent(uint64_t rent[3]) {
+  rent[0] = rent[1] = rent[2] = 0;
+  if (sol_get_rent_sysvar(rent) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: rent sysvar unavailable");
+  return SUCCESS;
+}
+
+static inline uint64_t ts_minimum_balance(uint64_t data_len, uint64_t *out) {
+  uint64_t rent[3];
+  TS_TRY(ts_rent(rent));
+  return ts_minimum_balance_of(rent, data_len, out);
 }
 
 /* Clock sysvar word `i`: 0 slot, 2 epoch (u64). */
@@ -791,9 +812,10 @@ static inline uint64_t ts_resize(TsParams *params, TsAccount *payer, TsAccount *
   if (new_len > old_len) {
     /* The payer always funds the extra rent, even when the account already holds enough lamports: those may be
        deposits, which must not become rent (and shrinking never pays anything back, see ts_realloc). */
-    uint64_t old_rent, new_rent;
-    TS_TRY(ts_minimum_balance(old_len, &old_rent));
-    TS_TRY(ts_minimum_balance(new_len, &new_rent));
+    uint64_t rent[3], old_rent, new_rent;
+    TS_TRY(ts_rent(rent)); /* read once: the sysvar cannot change within the instruction */
+    TS_TRY(ts_minimum_balance_of(rent, old_len, &old_rent));
+    TS_TRY(ts_minimum_balance_of(rent, new_len, &new_rent));
     if (new_rent > old_rent) {
       if (payer == NULL) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: growing an account needs a payer");
       TS_TRY(ts_system_transfer(params, payer, acct, new_rent - old_rent));
@@ -1340,18 +1362,32 @@ static inline uint64_t ts_str_i128(__int128 v, TS_Str *out) {
   return ts_str_u128(mag, v < 0, out);
 }
 
+/* "00" … "99": two digits per division. */
+static const char TS_DIGIT_PAIRS[201] =
+    "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+    "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
 static inline uint64_t ts_str_u64(uint64_t v, bool negative, TS_Str *out) {
+  /* Written from the end, two digits at a time, then copied out in one go. */
   uint8_t tmp[21];
-  int n = 0;
-  do {
-    tmp[n++] = (uint8_t)('0' + v % 10);
-    v /= 10;
-  } while (v);
-  if (negative) tmp[n++] = '-';
+  int i = 21;
+  while (v >= 100) {
+    uint64_t q = v / 100, r = v - q * 100;
+    tmp[--i] = (uint8_t)TS_DIGIT_PAIRS[2 * r + 1];
+    tmp[--i] = (uint8_t)TS_DIGIT_PAIRS[2 * r];
+    v = q;
+  }
+  if (v >= 10) {
+    tmp[--i] = (uint8_t)TS_DIGIT_PAIRS[2 * v + 1];
+    tmp[--i] = (uint8_t)TS_DIGIT_PAIRS[2 * v];
+  } else
+    tmp[--i] = (uint8_t)('0' + v);
+  if (negative) tmp[--i] = '-';
+  uint64_t n = (uint64_t)(21 - i);
   uint8_t *p;
-  TS_TRY(ts_alloc((uint64_t)n, &p));
-  for (int i = 0; i < n; i++) p[i] = tmp[n - 1 - i];
-  *out = ts_str(p, (uint64_t)n);
+  TS_TRY(ts_alloc(n, &p));
+  ts_memcpy(p, tmp + i, n);
+  *out = ts_str(p, n);
   return SUCCESS;
 }
 static inline uint64_t ts_str_i64(int64_t v, TS_Str *out) {

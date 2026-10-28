@@ -338,6 +338,12 @@ export abstract class StatementEmitter extends CpiEmitter {
         let idx: ts.Expression = indexId;
         let k = 0;
         for (const st of stages) {
+          if (st.kind === "map") {
+            const ret = st.fn.body && !ts.isBlock(st.fn.body) ? st.fn.body : undefined;
+            const bare = ret && ts.isParenthesizedExpression(ret) ? ret.expression : ret;
+            if (bare && ts.isObjectLiteralExpression(bare))
+              this.fail(st.fn, "a map to structs is stored, with the struct type: const ys: FixedVec<MyStruct, N> = xs.map((x) => ({ … }))");
+          }
           const closure: Closure = { node: st.fn, name: `${st.kind}'s callback`, scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
           const v = this.expandClosure(closure, [element, idx].slice(0, st.fn.parameters.length), st.fn);
           if (st.kind === "filter") {
@@ -1023,6 +1029,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           const pieces = this.templatePieces(rhsNode);
           if (pieces.text !== undefined)
             this.line(`TS_TRY(ts_str_append(&${cur}, ts_str((const uint8_t *)${cString(pieces.text)}, ${Buffer.byteLength(pieces.text, "utf8")})));`);
+          else if (pieces.only !== undefined) this.line(`TS_TRY(ts_str_append(&${cur}, ${pieces.only}));`);
           else this.line(`TS_TRY(ts_str_append_parts(&${cur}, ${pieces.arr}, ${pieces.n}));`);
           return;
         }

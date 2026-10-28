@@ -73,15 +73,7 @@ export abstract class StorageEmitter extends EmitterBase {
   }
 
   protected looksLikeDataEnum(node: ts.Expression): boolean {
-    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-    try {
-      return this.reporter.guard(() => this.ref(node))?.type.kind === "dataEnum";
-    } finally {
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
-    }
+    return this.probe(() => this.ref(node))?.type.kind === "dataEnum";
   }
 
   protected variantIndex(enumName: string, lit: ts.Expression): number {
@@ -219,16 +211,8 @@ export abstract class StorageEmitter extends EmitterBase {
   protected looksLikeStructPlace(node: ts.Expression): boolean {
     if (ts.isParenthesizedExpression(node)) return this.looksLikeStructPlace(node.expression);
     if (ts.isConditionalExpression(node)) return this.looksLikeStructPlace(node.whenTrue) && this.looksLikeStructPlace(node.whenFalse);
-    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-    try {
-      const r = this.reporter.guard(() => this.ref(node));
-      return r?.type.kind === "struct";
-    } finally {
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
-    }
+    const r = this.probe(() => this.ref(node));
+    return r?.type.kind === "struct";
   }
 
   /** `fixedArray<T, N>(fill)` as a local declaration. */
@@ -573,6 +557,11 @@ export abstract class StorageEmitter extends EmitterBase {
       const t = target.type as FieldType & { kind: "vec"; cap: number };
       const els = valueNode.elements;
       if (els.length > t.cap) this.fail(valueNode, `${els.length} elements do not fit in ${typeName(t)}`);
+      // Empty: nothing reads the old list, so it is cleared in place (length 0, every slot zero).
+      if (els.length === 0) {
+        this.line(`ts_memzero(&${target.lv}, sizeof(${target.lv}));`);
+        return;
+      }
       const tmp = this.tmp("fv");
       this.line(`${fixedVecC(t)} ${tmp};`);
       this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
@@ -654,15 +643,7 @@ export abstract class StorageEmitter extends EmitterBase {
 
   /** The kind of storage an expression names (struct, array, dataEnum…), without emitting code or failing. */
   protected peekKind(node: ts.Expression): FieldType["kind"] | undefined {
-    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-    try {
-      return this.reporter.guard(() => this.ref(node))?.type.kind;
-    } finally {
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
-    }
+    return this.probe(() => this.ref(node))?.type.kind;
   }
 
   protected place(node: ts.Expression): { type: ValueType; read: string; write: (c: string) => string } {
