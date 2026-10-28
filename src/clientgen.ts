@@ -163,6 +163,11 @@ const TAKEN = [
   "required",
   "meta",
   "programFromBytes",
+  "ownProp",
+  "readRelation",
+  "memcmp",
+  "cpiData",
+  "FetchedTransaction",
   "fixedString",
   "fixedOption",
   "unitEnum",
@@ -351,6 +356,9 @@ const pascal = (s: string) => {
   return c.charAt(0).toUpperCase() + c.slice(1);
 };
 const prop = (s: string) => (NAME.test(s) && !JS_RESERVED.has(s) ? s : JSON.stringify(s));
+/** Text safe to print on a terminal (notes, errors): C0 and C1 control characters and bidi overrides escaped. */
+const printable = (s: string) =>
+  s.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 /** Text that can sit inside a block comment: printable ASCII, no comment terminator. */
 const commentText = (s: string) => s.replace(/[^\x20-\x7e]/g, " ").replace(/\*\//g, "* /");
 const doc = (lines: unknown, indent = "") =>
@@ -366,7 +374,7 @@ const sortCodeUnits = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 /** Throws ClientIdlError unless every value that reaches the generated source is well-formed. */
 function validate(idl: ClientIdl, programAddress: string | undefined) {
   const fail = (what: string): never => {
-    throw new ClientIdlError(`invalid IDL: ${what}`);
+    throw new ClientIdlError(printable(`invalid IDL: ${what}`));
   };
   const name = (n: unknown, where: string) => (typeof n === "string" && NAME.test(n) ? n : fail(`${where}: name ${JSON.stringify(n)} is not an identifier`));
   const byteList = (b: unknown, where: string) =>
@@ -377,13 +385,29 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
     const o = t as Record<string, unknown>;
     if (o.array !== undefined) {
       if (!Array.isArray(o.array) || o.array.length !== 2) fail(`${where}: bad array type`);
+      const len = (o.array as unknown[])[1];
+      // A length: a whole number, or a const generic parameter (`{ generic: "N" }`).
+      if (typeof len === "object" && len !== null) name((len as { generic?: unknown }).generic, `${where} array length`);
+      else if (!(Number.isSafeInteger(len) && (len as number) >= 0)) fail(`${where}: array length ${JSON.stringify(len)} is not a whole number`);
       type((o.array as unknown[])[0], where);
       return;
     }
     for (const k of ["vec", "option", "coption"]) if (o[k] !== undefined) return type(o[k], where);
     if (o.defined !== undefined) {
       const d = o.defined as unknown;
-      name(typeof d === "string" ? d : (d as { name?: unknown })?.name, where);
+      if (typeof d === "string") return void name(d, where);
+      if (typeof d !== "object" || d === null) return fail(`${where}: bad defined type ${JSON.stringify(d)}`);
+      name((d as { name?: unknown }).name, where);
+      // Generic arguments: `{ kind: "type", type }` or `{ kind: "const", value: "4" }`.
+      const args = (d as { generics?: unknown }).generics;
+      if (args === undefined) return;
+      if (!Array.isArray(args)) return fail(`${where}: generic arguments must be a list`);
+      for (const a of args as unknown[]) {
+        const g = (typeof a === "object" && a !== null ? a : {}) as { kind?: unknown; type?: unknown; value?: unknown };
+        if (g.kind === "type") type(g.type, `${where} generic argument`);
+        else if (g.kind !== "const" || !(typeof g.value === "string" && /^\d{1,15}$/.test(g.value)))
+          fail(`${where}: bad generic argument ${JSON.stringify(a)}`);
+      }
       return;
     }
     if (o.generic !== undefined) return void name(o.generic, where);
@@ -435,6 +459,16 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
   for (const t of idl.types ?? []) {
     name(t.name, "type");
     if (typeof t.type !== "object" || t.type === null) fail(`type ${t.name} has no definition`);
+    if (t.generics !== undefined) {
+      if (!Array.isArray(t.generics)) fail(`type ${t.name}: generics must be a list`);
+      for (const g of t.generics) name((g as { name?: unknown } | null)?.name, `type ${t.name} generic parameter`);
+    }
+    if (t.repr !== undefined) {
+      const align = (t.repr as { align?: unknown } | null)?.align;
+      if (typeof t.repr !== "object" || t.repr === null) fail(`type ${t.name}: bad repr`);
+      if (align !== undefined && !(Number.isSafeInteger(align) && (align as number) > 0 && Number.isInteger(Math.log2(align as number))))
+        fail(`type ${t.name}: repr align ${JSON.stringify(align)} is not a power of two`);
+    }
     fields(t.type.fields, `type ${t.name}`);
     for (const v of t.type.variants ?? []) {
       name(v.name, `type ${t.name} variant`);
@@ -494,20 +528,23 @@ function monomorphize(idl: ClientIdl): ClientIdl {
     return pascal((definedName(t) ?? "T").replace(/[^A-Za-z0-9_]/g, ""));
   };
   const hasGeneric = (t: unknown): boolean => JSON.stringify(t ?? null).includes('"generic"');
-  const inst = (t: IdlType, env: Env): IdlType => {
+  // Instantiations can nest without end (`A<T> { next: Option<A<Vec<T>>> }`): cap their number and nesting.
+  const MAX_INSTANCES = 256;
+  const MAX_DEPTH = 16;
+  const inst = (t: IdlType, env: Env, depth = 0): IdlType => {
     if (typeof t === "string") return t;
     if (t.generic !== undefined) {
       const v = env.get(t.generic);
       return v === undefined || typeof v === "number" ? t : v;
     }
-    if (t.vec !== undefined) return { vec: inst(t.vec, env) };
-    if (t.option !== undefined) return { option: inst(t.option, env) };
-    if (t.coption !== undefined) return { coption: inst(t.coption, env) };
+    if (t.vec !== undefined) return { vec: inst(t.vec, env, depth) };
+    if (t.option !== undefined) return { option: inst(t.option, env, depth) };
+    if (t.coption !== undefined) return { coption: inst(t.coption, env, depth) };
     if (t.array) {
       const len = t.array[1] as unknown;
       const g = typeof len === "object" && len !== null ? (len as { generic?: string }).generic : undefined;
       const n = g !== undefined ? env.get(g) : len;
-      return { array: [inst(t.array[0], env), typeof n === "number" ? n : len] };
+      return { array: [inst(t.array[0], env, depth), typeof n === "number" ? n : len] };
     }
     const name = definedName(t);
     const args = typeof t.defined === "object" ? (t.defined.generics ?? []) : [];
@@ -519,7 +556,7 @@ function monomorphize(idl: ClientIdl): ClientIdl {
           : undefined
         : a?.type === undefined
           ? undefined
-          : inst(a.type, env),
+          : inst(a.type, env, depth),
     );
     const def = defs.get(name);
     const params = (def?.generics ?? []) as { kind?: string; name?: string }[];
@@ -533,6 +570,10 @@ function monomorphize(idl: ClientIdl): ClientIdl {
     const key = JSON.stringify([name, values]);
     let made1 = made.get(key);
     if (!made1) {
+      if (extra.length >= MAX_INSTANCES || depth >= MAX_DEPTH)
+        throw new ClientIdlError(
+          `generic type ${name} is instantiated ${depth >= MAX_DEPTH ? `more than ${MAX_DEPTH} levels deep` : `more than ${MAX_INSTANCES} times`} (a generic type that uses itself with growing arguments?)`,
+        );
       let base = `${name}${values.map((v) => label(v!)).join("")}`;
       if (!NAME.test(base)) base = `${name}Instance`;
       made1 = base;
@@ -541,7 +582,7 @@ function monomorphize(idl: ClientIdl): ClientIdl {
       made.set(key, made1);
       const env2: Env = new Map(params.map((p, i) => [p.name!, values[i]!]));
       const body = def.type;
-      const field = (f: IdlField | IdlType) => (isField(f) ? { ...f, type: inst(f.type, env2) } : inst(f, env2));
+      const field = (f: IdlField | IdlType) => (isField(f) ? { ...f, type: inst(f.type, env2, depth + 1) } : inst(f, env2, depth + 1));
       extra.push({
         ...def,
         name: made1,
@@ -550,7 +591,7 @@ function monomorphize(idl: ClientIdl): ClientIdl {
           ...body,
           ...(body.fields ? { fields: body.fields.map(field) } : {}),
           ...(body.variants ? { variants: body.variants.map((v) => ({ ...v, ...(v.fields ? { fields: v.fields.map(field) } : {}) })) } : {}),
-          ...(body.alias !== undefined ? { alias: inst(body.alias, env2) } : {}),
+          ...(body.alias !== undefined ? { alias: inst(body.alias, env2, depth + 1) } : {}),
         },
       });
     }
@@ -580,6 +621,17 @@ function monomorphize(idl: ClientIdl): ClientIdl {
 }
 
 export function generateClient(idl: ClientIdl, opts: { address?: string } = {}): ClientGenResult {
+  try {
+    const res = generate(idl, opts);
+    return { ...res, notes: res.notes.map(printable) };
+  } catch (e) {
+    if (e instanceof ClientIdlError) throw e;
+    // A malformed IDL that validation let through is still the IDL's fault: the same error, the original as cause.
+    throw new ClientIdlError(printable(`cannot generate a client from this IDL: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
+  }
+}
+
+function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
   const programAddress = opts.address ?? idl.address;
   validate(idl, programAddress);
   idl = monomorphize(idl);
@@ -674,7 +726,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   function issue(t: IdlType): string | undefined {
     if (typeof t === "string") {
       if (t in INTS || t in FLOATS || ["bool", "pubkey", "publicKey", "string", "bytes"].includes(t)) return undefined;
-      return `type "${t}" is not supported`;
+      return `type ${JSON.stringify(t)} is not supported`;
     }
     if (t.generic !== undefined) return "generic parameters are not supported";
     if (t.array) return Number.isInteger(Number(t.array[1])) ? issue(t.array[0]) : "array lengths must be numbers (generic lengths are not supported)";
@@ -696,12 +748,12 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     else if (zeroCopy(d)) {
       const l = structLayout(d);
       if (typeof l === "string") why = l;
-    } else if (d.serialization && d.serialization !== "borsh") why = `type ${n} uses ${d.serialization} serialization, which is not supported`;
+    } else if (d.serialization && d.serialization !== "borsh") why = `type ${n} uses ${JSON.stringify(d.serialization)} serialization, which is not supported`;
     else if (special(n)?.kind === "foption") why = issue((special(n) as { inner: IdlType }).inner);
     else if (d.type.kind === "struct") why = (d.type.fields ?? []).map((f) => issue(isField(f) ? f.type : f)).find(Boolean);
     else if (d.type.kind === "enum") why = (d.type.variants ?? []).flatMap((v) => (v.fields ?? []).map((f) => issue(isField(f) ? f.type : f))).find(Boolean);
     else if (d.type.kind === "type" && d.type.alias !== undefined) why = issue(d.type.alias);
-    else why = `type ${n} (${d.type.kind}) is not supported`;
+    else why = `type ${n} (${JSON.stringify(d.type.kind)}) is not supported`;
     typeIssues.set(n, why);
     return why;
   }
@@ -790,7 +842,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     if (s?.kind === "fenum") return (use("fixCodecSize"), `fixCodecSize(get${tsName(s.base)}Codec(), ${s.size})`);
     return `get${tsName(n)}Codec()`;
   }
-  /** Byte size of a fixed-size IDL type (undefined when it varies). */
+  /** Byte size of a fixed-size IDL type (undefined when it varies). Memoized by type name, so shared types are sized once. */
+  const sizes = new Map<string, number | undefined>();
   function idlSize(t: IdlType): number | undefined {
     if (typeof t === "string") {
       if (t in INTS) return INTS[t]! / 8;
@@ -805,6 +858,13 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     }
     const n = definedName(t);
     if (n === undefined) return undefined;
+    if (sizes.has(n)) return sizes.get(n);
+    sizes.set(n, undefined); // a type that holds itself has no fixed size
+    const size = definedSize(n);
+    sizes.set(n, size);
+    return size;
+  }
+  function definedSize(n: string): number | undefined {
     const sp = special(n);
     if (sp?.kind === "fstring") return 4 + sp.cap;
     if (sp?.kind === "fvec") {
@@ -1115,8 +1175,9 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
       : "";
 
     // Locals: given accounts and fixed addresses first, then PDAs in dependency order. `null` leaves an optional
-    // account out (sent as the program id); `undefined` fills it in.
-    const input = (a: Flat) => `input${NAME.test(a.key) && !JS_RESERVED.has(a.key) ? `.${a.key}` : `[${JSON.stringify(a.key)}]`}`;
+    // account out (sent as the program id); `undefined` fills it in. Accounts are read as own properties, so one named
+    // `constructor` or `toString` is not taken from Object.prototype.
+    const input = (a: Flat) => `ownProp(input, ${JSON.stringify(a.key)})`;
     const fill = (a: Flat, value: string) => (a.optional ? `${input(a)} === null ? null : (${input(a)} ?? ${value})` : `${input(a)} ?? ${value}`);
     const lines: string[] = [];
     for (const a of flat) {
@@ -1185,7 +1246,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     ixKeys.push(`${prop(fn)}: build${P}`);
     // `resolve.<instruction>`: what needs the chain or the caller's wallet, filled in on a copy of the accounts in this
     // order: signers (a default signer), has_one accounts, then PDAs seeded from other accounts' fields.
-    const acc = (f: Flat) => `acc${NAME.test(f.key) && !JS_RESERVED.has(f.key) ? `.${f.key}` : `[${JSON.stringify(f.key)}]`}`;
+    const acc = (f: Flat) => `ownProp(acc, ${JSON.stringify(f.key)})`;
+    const setAcc = (f: Flat) => `acc${NAME.test(f.key) && !JS_RESERVED.has(f.key) ? `.${f.key}` : `[${JSON.stringify(f.key)}]`}`;
     // A field's value as seed bytes: scalars by their codec, strings as UTF-8, byte fields as they are.
     const seedOfField = (t: IdlType, v: string): string | undefined => {
       if (typeof t === "string") {
@@ -1299,8 +1361,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         const rewrite = (e: string) =>
           e
             .replace(/\bargs\.([A-Za-z0-9_$]+)/g, "seeds.$1")
-            .replace(/key\(acc\.([A-Za-z0-9_$]+)!\)/g, "key(seeds.$1)")
-            .replace(/key\(acc\["([^"]+)"\]!\)/g, 'key(seeds["$1"])');
+            .replace(
+              /key\(ownProp\(acc, "([^"]+)"\)!\)/g,
+              (_, k: string) => `key(seeds${NAME.test(k) && !JS_RESERVED.has(k) ? `.${k}` : `[${JSON.stringify(k)}]`})`,
+            );
         use("type ProgramDerivedAddress", "getProgramDerivedAddress");
         pdaFns.set(pn, {
           json,
@@ -1316,17 +1380,36 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         lines: [
           `      if (${acc(a)} === undefined) {`,
           ...[...bases.values()].map(({ base, A }) => `        const ${"$$" + base.key} = await ${A}.fetch(rpc, key(${acc(base)}!));`),
-          `        ${acc(a)} = (await getProgramDerivedAddress({ programAddress: ${program}, seeds: [${seeds.join(", ")}] }))[0];`,
+          `        ${setAcc(a)} = (await getProgramDerivedAddress({ programAddress: ${program}, seeds: [${seeds.join(", ")}] }))[0];`,
           `      }`,
         ],
       });
     }
+    // A has_one source the builder derives (a `config` PDA) is derived here too, after the accounts its seeds name,
+    // so its fields can be read.
+    const needed = new Set<string>();
+    const need = (k: string) => {
+      if (!resolvable.has(k) || needed.has(k)) return;
+      needed.add(k);
+      for (const d of resolvable.get(k)!.deps) need(d);
+    };
+    for (const r of rels) need(r.source.key);
+    const derived = order.filter((a) => needed.has(a.key));
+    const ref = (f: Flat) => (f.address ? `(${acc(f)} ?? address(${JSON.stringify(f.address)}))` : acc(f));
+    const sub = (e: string) => e.replace(/key\(\$([A-Za-z0-9_]+)\)/g, (_, k: string) => `key(${ref(flat.find((f) => f.key === k)!)}, ${JSON.stringify(k)})`);
+    const deriveLines = derived.map((a) => {
+      const r = resolvable.get(a.key)!;
+      return `      if (${acc(a)} === undefined) ${setAcc(a)} = (await getProgramDerivedAddress({ programAddress: ${sub(r.program ?? "PROGRAM_ADDRESS")}, seeds: [${r.seeds.map(sub).join(", ")}] }))[0];`;
+    });
     if (rels.length || fieldPdas.length || signers.length) {
       const filled = [...signers, ...rels.map((r) => r.a), ...fieldPdas.map((f) => f.a)];
       const keysOf = [...new Set(filled.map((a) => JSON.stringify(a.key)))].join(" | ");
-      const withArgs = fieldPdas.some((f) => f.usesArgs);
+      const withArgs =
+        fieldPdas.some((f) => f.usesArgs) ||
+        derived.some((a) => /\bargs\./.test([...resolvable.get(a.key)!.seeds, resolvable.get(a.key)!.program ?? ""].join(" ")));
       const what = [
         ...(signers.length ? [`${signers.map((a) => a.key).join(", ")} (options.signer when left out)`] : []),
+        ...derived.map((a) => `${a.key} (derived, to read it)`),
         ...rels.map((r) => `${r.a.key} (from ${r.source.key}.${camel(r.a.name)})`),
         ...fieldPdas.map((f) => `${f.a.key} (a PDA seeded from account fields)`),
       ].join(", ");
@@ -1337,9 +1420,13 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
           [
             ...signers.map(
               (a) =>
-                `      if (${acc(a)} === undefined) {\n        if (!options.signer) throw new Error(${JSON.stringify(`${ix.name}: pass ${a.key}, or a default signer as options.signer`)});\n        ${acc(a)} = options.signer;\n      }`,
+                `      if (${acc(a)} === undefined) {\n        if (!options.signer) throw new Error(${JSON.stringify(`${ix.name}: pass ${a.key}, or a default signer as options.signer`)});\n        ${setAcc(a)} = options.signer;\n      }`,
             ),
-            ...rels.map((r) => `      ${acc(r.a)} ??= await readRelation(rpc, key(${acc(r.source)}!), ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]);`),
+            ...deriveLines,
+            ...rels.map(
+              (r) =>
+                `      if (${acc(r.a)} === undefined) ${setAcc(r.a)} = await readRelation(rpc, ${ref(r.source)}, ${JSON.stringify(r.source.key)}, ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]);`,
+            ),
             ...fieldPdas.flatMap((f) => f.lines),
           ].join("\n") +
           `\n      void rpc;\n      return acc as ${P}Accounts;\n    },`,
@@ -1395,8 +1482,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     {
       name: "key",
       lines: [
-        `const key = (v: TransactionSigner | Address | undefined | null): Address => {`,
-        `  if (v === undefined || v === null) throw new Error("a seed account is missing");`,
+        `const key = (v: TransactionSigner | Address | undefined | null, name?: string): Address => {`,
+        `  if (v === undefined || v === null) throw new Error(name === undefined ? "a seed account is missing" : "a seed account is missing: pass " + name);`,
         `  return isSigner(v) ? v.address : v;`,
         `};`,
       ],
@@ -1418,10 +1505,25 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     },
     { name: "programFromBytes", lines: [`const programFromBytes = (b: Uint8Array): Address => getAddressDecoder().decode(b);`] },
     {
+      name: "ownProp",
+      lines: [
+        `/** An account given in \`o\` (an own property: never one inherited from Object.prototype, such as \`constructor\`). */`,
+        `const ownProp = <T extends object, K extends keyof T>(o: T, k: K): T[K] | undefined => (Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);`,
+      ],
+    },
+    {
       name: "readRelation",
       lines: [
-        `/** A Pubkey field of an account on chain, read by the first reader that knows its type. */`,
-        `const readRelation = async (rpc: Rpc<GetAccountInfoApi>, at: Address, name: string, readers: ((data: ReadonlyUint8Array) => Address | undefined)[]): Promise<Address> => {`,
+        `/** A Pubkey field (\`name\`) of an account on chain (\`from\`), read by the first reader that knows its type. */`,
+        `const readRelation = async (`,
+        `  rpc: Rpc<GetAccountInfoApi>,`,
+        `  from: TransactionSigner | Address | undefined,`,
+        `  fromName: string,`,
+        `  name: string,`,
+        `  readers: ((data: ReadonlyUint8Array) => Address | undefined)[],`,
+        `): Promise<Address> => {`,
+        `  if (from === undefined) throw new Error("cannot fill in " + name + ": pass " + fromName + ", the account it is read from");`,
+        `  const at = key(from);`,
         `  const found = await fetchEncodedAccount(rpc, at);`,
         `  if (!found.exists) throw new Error("cannot fill in " + name + ": account " + at + " does not exist");`,
         `  for (const read of readers) {`,
@@ -1556,6 +1658,11 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  for (let cur: unknown = e, depth = 0; cur !== undefined && cur !== null && depth < 8; depth++) {`,
     `    if (typeof cur === "number") return cur;`,
     `    if (isSolanaError(cur, SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM)) return Number(cur.context.code);`,
+    `    // The JSON an RPC node returns (simulations, signature statuses): { InstructionError: [0, { Custom: 6000 }] }.`,
+    `    if (typeof cur === "object" && "InstructionError" in cur && Array.isArray(cur.InstructionError)) {`,
+    `      const inner: unknown = cur.InstructionError[1];`,
+    `      if (typeof inner === "object" && inner !== null && "Custom" in inner) return Number(inner.Custom);`,
+    `    }`,
     `    if (typeof cur === "object" && "err" in cur && typeof cur.err === "function") cur = String(cur.err());`,
     `    if (typeof cur === "string" || cur instanceof Error) {`,
     `      const m = /custom program error: (0x[0-9a-f]+)|Custom(?:\\(|\\s*\\{\\s*code:\\s*)(\\d+)/i.exec(String(cur instanceof Error ? cur.message : cur));`,
@@ -1590,14 +1697,25 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
       : `  void data;\n  return null;`,
     `}`,
     `/**`,
-    ` * Events in a transaction's log messages (\`Program data:\` lines, as \`emit\` writes them). Lines are matched by`,
-    ` * discriminator, whichever program wrote them; lines that do not decode are skipped. \`emitCpi\` events travel in inner`,
-    ` * instructions: see parseCpiEvents and eventsOf.`,
+    ` * Events in a transaction's log messages (\`Program data:\` lines, as \`emit\` writes them). Only this program's lines`,
+    ` * count: the \`Program <id> invoke\` and \`success\` / \`failed\` lines are followed, and a data line is read only while`,
+    ` * this program is the innermost one running (as Anchor's EventParser does). Lines that do not decode are skipped.`,
+    ` * \`emitCpi\` events travel in inner instructions: see eventsOf.`,
     ` */`,
     `export function parseEvents(logs: readonly string[]): Event[] {`,
     `  const found: Event[] = [];`,
+    `  const running: string[] = [];`,
     `  for (const line of logs) {`,
-    `    if (!line.startsWith("Program data: ")) continue;`,
+    `    const invoke = /^Program (\\S+) invoke \\[\\d+\\]$/.exec(line);`,
+    `    if (invoke) {`,
+    `      running.push(invoke[1]!);`,
+    `      continue;`,
+    `    }`,
+    `    if (/^Program \\S+ (success$|failed)/.test(line)) {`,
+    `      running.pop();`,
+    `      continue;`,
+    `    }`,
+    `    if (running.at(-1) !== PROGRAM_ADDRESS || !line.startsWith("Program data: ")) continue;`,
     `    let data: ReadonlyUint8Array;`,
     `    try {`,
     `      data = getBase64Encoder().encode(line.slice("Program data: ".length));`,
@@ -1609,7 +1727,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  }`,
     `  return found;`,
     `}`,
-    `/** \`emitCpi\` events: the data of inner instructions (bytes, or base58 as RPC returns them) that carry one. */`,
+    `/**`,
+    ` * \`emitCpi\` events in instruction data (bytes, or base58 as RPC returns them). This does not check which program the`,
+    ` * instructions called, so give it only this program's inner instructions; eventsOf picks them from a transaction.`,
+    ` */`,
     `export function parseCpiEvents(instructionData: Iterable<ReadonlyUint8Array | string>): Event[] {`,
     `  const tag = new Uint8Array([228, 69, 165, 46, 81, 203, 154, 29]);`,
     `  const found: Event[] = [];`,
@@ -1626,16 +1747,38 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  }`,
     `  return found;`,
     `}`,
-    `/** Every event of a fetched transaction (getTransaction, json encoding): its logs, then its inner instructions. */`,
-    `export function eventsOf(tx: { meta: { logMessages?: readonly string[] | null; innerInstructions?: readonly { instructions: readonly { data: string }[] }[] | null } | null } | null): Event[] {`,
-    `  const meta = tx?.meta;`,
-    `  if (!meta) return [];`,
-    `  return [...parseEvents(meta.logMessages ?? []), ...parseCpiEvents((meta.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))];`,
+    `/** A transaction as getTransaction returns it (json encoding), as far as events need it. */`,
+    `export interface FetchedTransaction {`,
+    `  transaction?: { message: { accountKeys: readonly (string | { pubkey: string })[] } } | null;`,
+    `  meta: {`,
+    `    logMessages?: readonly string[] | null;`,
+    `    innerInstructions?: readonly { instructions: readonly { programIdIndex?: number; data: string }[] }[] | null;`,
+    `    loadedAddresses?: { writable: readonly string[]; readonly: readonly string[] } | null;`,
+    `  } | null;`,
+    `}`,
+    `/** The data of the inner instructions of \`tx\` that call this program (found by their program's account index). */`,
+    `function cpiData(tx: FetchedTransaction): string[] {`,
+    `  const keys = [`,
+    `    ...(tx.transaction?.message.accountKeys ?? []).map((k) => (typeof k === "string" ? k : k.pubkey)),`,
+    `    ...(tx.meta?.loadedAddresses?.writable ?? []),`,
+    `    ...(tx.meta?.loadedAddresses?.readonly ?? []),`,
+    `  ];`,
+    `  return (tx.meta?.innerInstructions ?? []).flatMap((g) =>`,
+    `    g.instructions.filter((i) => i.programIdIndex !== undefined && keys[i.programIdIndex] === PROGRAM_ADDRESS).map((i) => i.data),`,
+    `  );`,
     `}`,
     `/**`,
-    ` * Events of every transaction that mentions the program, as their logs arrive, until \`abortSignal\` aborts. With`,
-    ` * \`rpc\`, \`emitCpi\` events too: a transaction in which the program invoked itself is fetched (getTransaction) and its`,
-    ` * inner instructions read, after its log events.`,
+    ` * Every event of a fetched transaction (getTransaction, json encoding): its log events, then the \`emitCpi\` events of`,
+    ` * its inner instructions that call this program (read only when \`tx.transaction\` gives the account keys).`,
+    ` */`,
+    `export function eventsOf(tx: FetchedTransaction | null): Event[] {`,
+    `  if (!tx?.meta) return [];`,
+    `  return [...parseEvents(tx.meta.logMessages ?? []), ...parseCpiEvents(cpiData(tx))];`,
+    `}`,
+    `/**`,
+    ` * Events of every transaction that mentions the program and succeeded, as their logs arrive, until \`abortSignal\``,
+    ` * aborts (a failed transaction's events did not happen). With \`rpc\`, \`emitCpi\` events too: a transaction in which`,
+    ` * the program invoked itself is fetched (getTransaction) and its inner instructions read, after its log events.`,
     ` */`,
     `export async function* watchEvents(`,
     `  rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>,`,
@@ -1644,6 +1787,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  const logs = await rpcSubscriptions.logsNotifications({ mentions: [PROGRAM_ADDRESS] }, options.commitment ? { commitment: options.commitment } : {}).subscribe({ abortSignal: options.abortSignal });`,
     `  const selfInvoke = new RegExp("^Program " + PROGRAM_ADDRESS + " invoke \\\\[([2-9]|\\\\d{2,})\\\\]$");`,
     `  for await (const n of logs) {`,
+    `    if (n.value.err !== null) continue;`,
     `    for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };`,
     `    if (!options.rpc || !n.value.logs.some((l) => selfInvoke.test(l))) continue;`,
     `    // The transaction can trail its logs by a moment: a few tries.`,
@@ -1652,7 +1796,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `        .getTransaction(n.value.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: options.commitment === "finalized" ? "finalized" : "confirmed" })`,
     `        .send();`,
     `      if (tx) {`,
-    `        for (const event of parseCpiEvents((tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))) yield { signature: n.value.signature, event };`,
+    `        for (const event of parseCpiEvents(cpiData(tx))) yield { signature: n.value.signature, event };`,
     `        break;`,
     `      }`,
     `      await new Promise((resolve) => setTimeout(resolve, 400));`,
