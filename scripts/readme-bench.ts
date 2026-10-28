@@ -1,5 +1,5 @@
 /**
- * Refresh the README numbers from a four-way benchmark run (the benchmarks repository's results.json):
+ * Refresh the README numbers from a four-way benchmark run (results.json of github.com/typesol/benchmarks):
  * the summary chart (assets/readme/benchmarks-{dark,light}.svg) and the table between the bench markers in README.md.
  *
  *   node scripts/readme-bench.ts ../benchmarks/results.json
