@@ -709,6 +709,8 @@ export function resolveValueType(node: ts.TypeNode, scope: TypeScope, allowVec =
     return { kind: "dataEnumArg", name: node.typeName.text };
   if (allowVec && typesolName(node, scope.imports) === "Vec") {
     const elemNode = (node as ts.TypeReferenceNode).typeArguments?.[0];
+    // Vec<string>: Borsh Vec<String>, read as views of the instruction data.
+    if (elemNode?.kind === ts.SyntaxKind.StringKeyword) return { kind: "vecArg", elem: { kind: "string" } };
     const elem = elemNode && resolveScalarType(elemNode, scope);
     if (elem) return { kind: "vecArg", elem };
   }

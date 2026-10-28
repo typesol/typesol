@@ -6,6 +6,9 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `Vec<string>` instruction arguments (Anchor's `Vec<String>`): `.get(i)`, `.length`, `for … of`, list callbacks,
+  helper parameters, storing into `FixedVec<FixedString<N>, M>`, and re-encoding through `invoke`; each string is
+  checked as UTF-8 on entry (102).
 - Metaplex Core plugin values: MasterEdition, VerifiedCreators, Autograph, FreezeExecute, PermanentFreezeExecute, and
   royalty rule sets (`ruleSet: { programAllowList | programDenyList }`).
 - Bubblegum: `delegateV2`, `freezeV2`, `thawV2`, `setNonTransferableV2`, `updateMetadataV2`, `verifyCreatorV2`,

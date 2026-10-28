@@ -1962,6 +1962,20 @@ export abstract class CpiEmitter extends CallEmitter {
         continue;
       }
       const vec = ts.isIdentifier(el) ? this.lookup(el.text) : undefined;
+      if (vec?.type.kind === "vecArg" && vec.type.elem.kind === "string") {
+        // Borsh Vec<String> again: the count, then each string's length and bytes.
+        const n = this.tmp("vlen");
+        const i = this.tmp("vi");
+        const sl = this.tmp("slen");
+        this.line(`uint32_t ${n} = ${vec.c}.len;`);
+        put(`&${n}`, "4", 4);
+        this.line(`for (uint32_t ${i} = 0; ${i} < ${n}; ${i}++) {`);
+        this.line(`uint32_t ${sl} = (uint32_t)((const TS_Str *)${vec.c}.ptr)[${i}].len;`);
+        put(`&${sl}`, "4");
+        put(`((const TS_Str *)${vec.c}.ptr)[${i}].ptr`, `${sl}`);
+        this.line(`}`);
+        continue;
+      }
       if (vec?.type.kind === "vecArg") {
         const n = this.tmp("vlen");
         this.line(`uint32_t ${n} = ${vec.c}.len;`);

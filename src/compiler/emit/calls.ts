@@ -451,6 +451,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (l?.type.kind === "vecArg") {
           if (method !== "get" || args.length !== 1) this.fail(node, "Vec arguments are read-only: use .get(i) and .length");
           const elem = l.type.elem;
+          if (elem.kind === "string") {
+            const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
+            return { c: `(((const TS_Str *)${l.c}.ptr)[${idx}])`, type: STRING };
+          }
           if (!isScalar(elem)) this.fail(node, `read a field of the element: ${callee.expression.text}.get(i).field`);
           const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
           const t = this.tmp("el");
