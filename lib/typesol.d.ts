@@ -50,6 +50,14 @@ export interface ListMethods<T> {
   includes(value: T): boolean;
   /** The index of the first element equal to `value`, or -1. */
   indexOf(value: T): i64;
+  /**
+   * The elements `fn` maps them to (integers, booleans, Pubkeys or enums). Use it right away (another list method,
+   * `.length`, `for … of`: one loop, nothing stored) or store it (`const ys = xs.map(…)`: a FixedVec on the stack, as
+   * big as `xs`; from a `Vec`, annotate it: `const ys: FixedVec<u64, 16> = …`).
+   */
+  map<U>(fn: (x: T, index: u64) => U): FixedVec<U, never>;
+  /** The elements `fn` holds for, used or stored like `map`'s; callbacks after it get the index among those. */
+  filter(fn: (x: T, index: u64) => boolean): FixedVec<T, never>;
 }
 
 export interface FixedArray<T, N extends number> extends ListMethods<T> {

@@ -241,6 +241,7 @@ export abstract class StorageEmitter extends EmitterBase {
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       if (l && l.type.kind === "array") return { lv: l.c, type: l.type, writable: !l.readonly };
+      if (l && l.type.kind === "vec") return this.withFixedVec({ lv: l.c, type: l.type, writable: true });
       // A struct loaded from a remaining account.
       if (l && l.type.kind === "structRef") return { lv: `(*${l.c})`, type: { kind: "struct", name: l.type.struct }, writable: l.type.writable };
       if (l && l.type.kind === "enumRef") return { lv: `(*${l.c})`, type: { kind: "dataEnum", name: l.type.name }, writable: l.type.writable };
@@ -620,7 +621,7 @@ export abstract class StorageEmitter extends EmitterBase {
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       if (!l) this.fail(node, `"${node.text}" is not a local variable`);
-      if (l.type.kind === "array") this.fail(node, `use ${node.text}.set(i, v) to change array elements`);
+      if (l.type.kind === "array" || l.type.kind === "vec") this.fail(node, `use ${node.text}.set(i, v) to change list elements`);
       if (!l.mutable) this.fail(node, `"${node.text}" is const or an argument and cannot be reassigned`);
       if (l.type.kind === "pubkey") return { type: l.type, read: `(&${l.c})`, write: (c) => `${l.c} = *(${c})` };
       return { type: l.type, read: l.c, write: (c) => `${l.c} = ${c}` };

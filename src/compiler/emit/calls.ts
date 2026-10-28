@@ -455,8 +455,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
       // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
       if (LIST_METHODS.has(method)) {
         const l = ts.isIdentifier(callee.expression) ? this.lookup(callee.expression.text) : undefined;
-        if (l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(callee.expression)) return this.listMethod(node, method);
+        if (l?.type.kind === "vecArg" || l?.type.kind === "array" || this.isPipeline(callee.expression) || this.peekArray(callee.expression))
+          return this.listMethod(node, method);
       }
+      // A map / filter chain is consumed by a list method, `.length` or for…of, or stored: const ys = xs.map(…).
+      if (this.isPipeline(node))
+        this.fail(node, `${method} builds a new list: store it (const ys = xs.${method}(…)), or use it right away with a list method, .length or for…of`);
       // Vec<T> instruction arguments are read-only views.
       if (ts.isIdentifier(callee.expression)) {
         const l = this.lookup(callee.expression.text);

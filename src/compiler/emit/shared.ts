@@ -69,7 +69,8 @@ export interface Ref {
 
 export interface Local {
   c: string;
-  type: ValueType | (FieldType & { kind: "array" });
+  /** A value, or a local FixedArray / FixedVec (`fixedArray<T, N>(…)`, `const ys = xs.map(…)`) held in place. */
+  type: ValueType | (FieldType & { kind: "array" }) | (FieldType & { kind: "vec"; cap: number });
   mutable: boolean;
   /** Pubkey held as a `const SolPubkey *` (helper parameters) rather than a value. */
   ptr?: boolean;

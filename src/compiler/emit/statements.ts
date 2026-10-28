@@ -1,7 +1,7 @@
 import ts from "typescript";
-import { MAX_RETURN_DATA, resolveValueType, structNameOf } from "../analyze.js";
-import { INT_INFO, type ScalarType, type ValueType, isWritable, optionKey, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, type Value, type Local, type Closure, cString, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
+import { MAX_RETURN_DATA, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
+import { INT_INFO, type FieldType, type ScalarType, type ValueType, isWritable, optionKey, scalarSize, typeName } from "../model.js";
+import { U64, BOOL, type Value, type Local, type Closure, cString, fixedVecC, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
 
 /**
@@ -229,37 +229,190 @@ export abstract class StatementEmitter extends CpiEmitter {
       (n as { parent?: ts.Node }).parent = stmt;
       return n;
     };
-    const indexId = place(f.createIdentifier(index));
-    const length = place(f.createPropertyAccessExpression(stmt.expression, "length"));
-    const get = place(f.createCallExpression(place(f.createPropertyAccessExpression(stmt.expression, "get")), undefined, [indexId]));
-    // The element's declaration: the source's own name (so aliasing checks find its uses) bound to list.get(i).
-    const decl = f.createVariableDeclaration(d.name, undefined, undefined, get);
-    ts.setTextRange(decl, d);
-    (decl as { parent?: ts.Node }).parent = list;
-    const declList = { ...list, flags: ts.NodeFlags.Const, declarations: [decl] } as unknown as ts.VariableDeclarationList;
-
+    void place;
     const ci = this.tmp("of_i");
     const label = this.tmp("ts_continue_");
+    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true }, (element) => {
+      // The element's declaration: the source's own name (so aliasing checks find its uses) bound to the element.
+      const decl = f.createVariableDeclaration(d.name, undefined, undefined, element);
+      ts.setTextRange(decl, d);
+      (decl as { parent?: ts.Node }).parent = list;
+      const declList = { ...list, flags: ts.NodeFlags.Const, declarations: [decl] } as unknown as ts.VariableDeclarationList;
+      this.variable(declList);
+      this.loops.push(label);
+      this.line(`{`);
+      this.block(() => this.body(stmt.statement));
+      this.line(`}`);
+      this.loops.pop();
+    });
+  }
+
+  /** `xs.map(…)` / `xs.filter(…)` (or a chain of them): a list built element by element, not stored anywhere yet. */
+  protected isPipeline(e: ts.Expression): e is ts.CallExpression {
+    return ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && (e.expression.name.text === "map" || e.expression.name.text === "filter");
+  }
+
+  /** The list under a chain of map / filter calls, and the calls in the order they run. */
+  protected pipelineStages(e: ts.Expression) {
+    const stages: { kind: "map" | "filter"; fn: ts.ArrowFunction | ts.FunctionExpression }[] = [];
+    let base = e;
+    while (this.isPipeline(base)) {
+      const access = base.expression as ts.PropertyAccessExpression;
+      const kind = access.name.text as "map" | "filter";
+      if (base.arguments.length !== 1) this.fail(base, `${kind}() takes one argument: the callback`);
+      const fn = base.arguments[0]!;
+      if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) this.fail(fn, `pass ${kind} an arrow function written here: xs.${kind}((x) => …)`);
+      if (fn.parameters.length > 2) this.fail(fn.parameters[2]!, `${kind}'s callback takes the element and its index`);
+      stages.unshift({ kind, fn });
+      base = access.expression;
+    }
+    if (stages.length) {
+      const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
+      if (!(l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(base)))
+        this.fail(base, "map and filter work on a Vec, FixedArray or FixedVec");
+    }
+    return { base, stages };
+  }
+
+  /**
+   * Run `body` for each element of a list, or of a chain of `map` / `filter` calls on one (`xs.filter(f).map(g)`):
+   * one index loop over the list (its length read every step, as `for … of`), each callback expanded in it. A
+   * filter skips to the next element, a map binds its result, so a chain builds no list. `body` gets the element (as
+   * `list.get(i)` gives it, structs by reference, or the mapped value) and its index in the chain's output (after a
+   * filter, the count of elements it let through, as JS gives callbacks).
+   */
+  protected eachElement(
+    list: ts.Expression,
+    at: ts.Node,
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean },
+    body: (element: ts.Expression, index: ts.Expression) => void,
+  ): void {
+    const f = ts.factory;
+    const place = <T extends ts.Node>(n: T): T => {
+      ts.setTextRange(n, at);
+      (n as { parent?: ts.Node }).parent = at;
+      return n;
+    };
+    const { base, stages } = this.pipelineStages(list);
+    const { index, ci } = names;
+    const indexId = place(f.createIdentifier(index));
+    const length = place(f.createPropertyAccessExpression(base, "length"));
+    const get = place(f.createCallExpression(place(f.createPropertyAccessExpression(base, "get")), undefined, [indexId]));
+    const next = names.next ?? (stages.some((s) => s.kind === "filter") ? this.tmp("ts_next_") : undefined);
     this.line(`{`);
     this.block(() => {
       this.line(`uint64_t ${ci} = 0;`);
       this.scopes.at(-1)!.set(index, { c: ci, type: U64, mutable: false });
+      const counters = stages
+        .filter((st) => st.kind === "filter")
+        .map(() => {
+          const k = this.tmp("lm_k");
+          this.line(`uint64_t ${k} = 0;`);
+          return k;
+        });
       this.line(`while (1) {`);
       this.block(() => {
-        const n = this.expect(this.expr(length, U64), U64, stmt.expression);
+        const n = this.expect(this.expr(length, U64), U64, base);
         this.line(`if (!(${ci} < ${n.c})) break;`);
-        this.variable(declList);
-        this.loops.push(label);
-        this.line(`{`);
-        this.block(() => this.body(stmt.statement));
-        this.line(`}`);
-        this.loops.pop();
-        this.line(`${label}:;`);
+        let element: ts.Expression = get;
+        let idx: ts.Expression = indexId;
+        let k = 0;
+        for (const st of stages) {
+          const closure: Closure = { node: st.fn, name: `${st.kind}'s callback`, scopes: [...this.scopes] };
+          const v = this.expandClosure(closure, [element, idx].slice(0, st.fn.parameters.length), st.fn);
+          if (st.kind === "filter") {
+            if (!v) this.fail(st.fn, "filter's callback returns a boolean");
+            const b = this.expect(v, BOOL, st.fn);
+            this.line(`if (!(${b.c})) goto ${next};`);
+            const id = `__lk${this.temp++}`;
+            const ic = this.tmp("lm_ki");
+            this.line(`uint64_t ${ic} = ${counters[k++]}++;`);
+            this.scopes.at(-1)!.set(id, { c: ic, type: U64, mutable: false });
+            idx = place(f.createIdentifier(id));
+          } else {
+            if (!v) this.fail(st.fn, "map's callback returns the new element");
+            const mv = v.literal !== undefined ? this.literal(v.literal, U64, st.fn) : v;
+            if (!["int", "bool", "pubkey", "enum"].includes(mv.type.kind))
+              this.fail(st.fn, `map's callback returns integers, booleans, Pubkeys or enums (the new list's elements), not ${typeName(mv.type)}`);
+            const id = `__lv${this.temp++}`;
+            const mc = this.tmp("lm_v");
+            this.line(mv.type.kind === "pubkey" ? `SolPubkey ${mc} = *(${mv.c});` : `${valueC(mv.type)} ${mc} = ${mv.c};`);
+            this.scopes.at(-1)!.set(id, { c: mc, type: mv.type, mutable: false });
+            element = place(f.createIdentifier(id));
+          }
+        }
+        body(element, idx);
+        if (next && (names.alwaysNext || counters.length)) this.line(`${next}:;`);
         this.line(`${ci}++;`);
       });
       this.line(`}`);
     });
     this.line(`}`);
+  }
+
+  /**
+   * `const ys = xs.map(…)` / `xs.filter(…)`: the chain's elements in a local FixedVec, as big as the list it starts
+   * from (a FixedArray's length, a FixedVec's capacity) or as annotated (`const ys: FixedVec<u64, 16> = …`, needed
+   * when it starts from a Vec). It lives on the stack, so it holds at most 2 KiB; one more element than it holds aborts.
+   */
+  protected localList(d: ts.VariableDeclaration, init: ts.CallExpression, c: string): FieldType & { kind: "vec"; cap: number } {
+    const { base, stages } = this.pipelineStages(init);
+    let cap: number | undefined;
+    let annotatedElem: FieldType | undefined;
+    if (d.type) {
+      const t = d.type;
+      const args = ts.isTypeReferenceNode(t) ? (t.typeArguments ?? []) : [];
+      const n = args[1] && ts.isLiteralTypeNode(args[1]) && ts.isNumericLiteral(args[1].literal) ? Number(args[1].literal.text) : NaN;
+      const elemNode = args[0];
+      const sn = elemNode && structNameOf(elemNode, this.scope);
+      annotatedElem = elemNode
+        ? (resolveScalarType(elemNode, this.scope) ?? (sn && this.model.structs.has(sn) ? { kind: "struct", name: sn } : undefined))
+        : undefined;
+      if (!ts.isTypeReferenceNode(t) || typesolName(t, this.scope.imports) !== "FixedVec" || !annotatedElem || !Number.isInteger(n) || n < 1)
+        this.fail(t, "annotate the new list as FixedVec<T, N> (N a literal)");
+      cap = n;
+    } else {
+      const r = this.reporter.guard(() => this.ref(base));
+      const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
+      if (r?.type.kind === "array") cap = r.type.len;
+      else if (r?.type.kind === "vec" && r.type.cap !== undefined) cap = r.type.cap;
+      if (cap === undefined || l?.type.kind === "vecArg")
+        this.fail(init, "this list has no fixed size: annotate the new one with its capacity, const ys: FixedVec<T, N> = …");
+    }
+    // The element type: the last map's result, else the list's own elements (known once the loop is emitted).
+    const declAt = this.lines.length;
+    this.line(`/* ${c} */`);
+    let elem: FieldType | undefined = stages.some((st) => st.kind === "map") ? undefined : this.listElem(base);
+    const cap0 = cap!;
+    this.eachElement(init, init, { index: `__ml${this.temp++}`, ci: this.tmp("ml_i") }, (element) => {
+      if (!elem) {
+        const v = this.expr(element);
+        elem = v.type as FieldType;
+      }
+      const target = annotatedElem ?? elem;
+      const sub = { lv: `${c}.items[${c}.len]`, type: target, writable: true };
+      this.line(`if (${c}.len >= ${cap0}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the new list is full");`);
+      const vt = this.storageValueType(target);
+      if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(element, vt), vt, element)).c) + ";");
+      else this.writeAggregate(sub, element);
+      this.line(`${c}.len++;`);
+    });
+    const t = { kind: "vec", elem: annotatedElem ?? elem!, cap: cap0 } as FieldType & { kind: "vec"; cap: number };
+    const bytes = 4 + this.fieldBytes(t.elem) * cap0;
+    if (bytes > 2048) this.fail(init, `the new list takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB (a smaller FixedVec<T, N>)`);
+    this.model.localVecs.set(fixedVecC(t), t);
+    const pad = "  ".repeat(this.indent);
+    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero(&${c}, sizeof(${c}));`;
+    return t;
+  }
+
+  /** The element type of a Vec, FixedArray, FixedVec or Vec argument. */
+  protected listElem(list: ts.Expression): FieldType {
+    const l = ts.isIdentifier(list) ? this.lookup(list.text) : undefined;
+    if (l?.type.kind === "vecArg") return l.type.elem;
+    const r = this.ref(list);
+    if (r && (r.type.kind === "array" || r.type.kind === "vec")) return r.type.elem;
+    this.fail(list, "expected a Vec, FixedArray or FixedVec");
   }
 
   /** Whether `e` is the remaining accounts (or a const bound to them). */
@@ -394,9 +547,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.fail(cb, `pass ${method} an arrow function written here: xs.${method}((x) => …)`);
     const fn = cb as ts.ArrowFunction | ts.FunctionExpression;
     const index = `__lm${this.temp++}`;
-    const indexId = place(f.createIdentifier(index));
-    const length = place(f.createPropertyAccessExpression(list, "length"));
-    const element = place(f.createCallExpression(place(f.createPropertyAccessExpression(list, "get")), undefined, [indexId]));
+    void place;
     const I64: ValueType = { kind: "int", name: "i64" };
 
     // The result, declared before the loop.
@@ -439,59 +590,48 @@ export abstract class StatementEmitter extends CpiEmitter {
     const findDecl = method === "find" ? this.lines.length - 1 : -1;
 
     const ci = this.tmp("lm_i");
-    this.line(`{`);
-    this.block(() => {
-      this.line(`uint64_t ${ci} = 0;`);
-      this.scopes.at(-1)!.set(index, { c: ci, type: U64, mutable: false });
-      this.line(`while (1) {`);
-      this.block(() => {
-        const n = this.expect(this.expr(length, U64), U64, list);
-        this.line(`if (!(${ci} < ${n.c})) break;`);
-        if (valueForm) {
-          const eq = place(f.createBinaryExpression(element, ts.SyntaxKind.EqualsEqualsEqualsToken, place(f.createIdentifier(needle!))));
-          const hit = this.expect(this.expr(eq, BOOL), BOOL, node);
-          this.line(`if (${hit.c}) {`);
-          this.line(method === "includes" ? `  ${res} = true;` : `  ${res} = (int64_t)${ci};`);
-          this.line(`  break;`);
-          this.line(`}`);
+    this.eachElement(list, node, { index, ci }, (element, indexId) => {
+      if (valueForm) {
+        const eq = place(f.createBinaryExpression(element, ts.SyntaxKind.EqualsEqualsEqualsToken, place(f.createIdentifier(needle!))));
+        const hit = this.expect(this.expr(eq, BOOL), BOOL, node);
+        this.line(`if (${hit.c}) {`);
+        this.line(method === "includes" ? `  ${res} = true;` : `  ${res} = (int64_t)${this.expr(indexId, U64).c};`);
+        this.line(`  break;`);
+        this.line(`}`);
+      } else {
+        const closure: Closure = { node: fn, name: `${method}'s callback`, scopes: [...this.scopes] };
+        const accId = method === "reduce" ? place(f.createIdentifier(`__acc${this.temp++}`)) : undefined;
+        if (accId) this.scopes.at(-1)!.set(accId.text, { c: res, type: accType!, mutable: true });
+        const all = method === "reduce" ? [accId!, element, indexId] : [element, indexId];
+        const v = this.expandClosure(closure, all.slice(0, fn.parameters.length), cb);
+        if (method === "forEach") {
+          if (v) this.fail(cb, "forEach's callback returns nothing");
+        } else if (method === "reduce") {
+          if (!v) this.fail(cb, "reduce's callback returns the new accumulator");
+          const nv = this.expect(v, accType!, cb);
+          this.line(accType!.kind === "pubkey" ? `${res} = *(${nv.c});` : `${res} = ${nv.c};`);
         } else {
-          const closure: Closure = { node: fn, name: `${method}'s callback`, scopes: [...this.scopes] };
-          const accId = method === "reduce" ? place(f.createIdentifier(`__acc${this.temp++}`)) : undefined;
-          if (accId) this.scopes.at(-1)!.set(accId.text, { c: res, type: accType!, mutable: true });
-          const all = method === "reduce" ? [accId!, element, indexId] : [element, indexId];
-          const v = this.expandClosure(closure, all.slice(0, fn.parameters.length), cb);
-          if (method === "forEach") {
-            if (v) this.fail(cb, "forEach's callback returns nothing");
-          } else if (method === "reduce") {
-            if (!v) this.fail(cb, "reduce's callback returns the new accumulator");
-            const nv = this.expect(v, accType!, cb);
-            this.line(accType!.kind === "pubkey" ? `${res} = *(${nv.c});` : `${res} = ${nv.c};`);
-          } else {
-            if (!v) this.fail(cb, `${method}'s callback returns a boolean`);
-            const b = this.expect(v, BOOL, cb);
-            if (method === "some") this.line(`if (${b.c}) { ${res} = true; break; }`);
-            if (method === "every") this.line(`if (!(${b.c})) { ${res} = false; break; }`);
-            if (method === "findIndex") this.line(`if (${b.c}) { ${res} = (int64_t)${ci}; break; }`);
-            if (method === "find") {
-              this.line(`if (${b.c}) {`);
-              this.block(() => {
-                const e = this.expr(element);
-                elemType = e.type;
-                if (!["int", "bool", "pubkey", "enum"].includes(e.type.kind))
-                  this.fail(node, "find returns an Option of the element, so the elements must be integers, booleans, Pubkeys or enums; use findIndex");
-                this.line(`${res}.some = 1;`);
-                this.line(e.type.kind === "pubkey" ? `${res}.v = *(${e.c});` : `${res}.v = ${e.c};`);
-                this.line(`break;`);
-              });
-              this.line(`}`);
-            }
+          if (!v) this.fail(cb, `${method}'s callback returns a boolean`);
+          const b = this.expect(v, BOOL, cb);
+          if (method === "some") this.line(`if (${b.c}) { ${res} = true; break; }`);
+          if (method === "every") this.line(`if (!(${b.c})) { ${res} = false; break; }`);
+          if (method === "findIndex") this.line(`if (${b.c}) { ${res} = (int64_t)${this.expr(indexId, U64).c}; break; }`);
+          if (method === "find") {
+            this.line(`if (${b.c}) {`);
+            this.block(() => {
+              const e = this.expr(element);
+              elemType = e.type;
+              if (!["int", "bool", "pubkey", "enum"].includes(e.type.kind))
+                this.fail(node, "find returns an Option of the element, so the elements must be integers, booleans, Pubkeys or enums; use findIndex");
+              this.line(`${res}.some = 1;`);
+              this.line(e.type.kind === "pubkey" ? `${res}.v = *(${e.c});` : `${res}.v = ${e.c};`);
+              this.line(`break;`);
+            });
+            this.line(`}`);
           }
         }
-        this.line(`${ci}++;`);
-      });
-      this.line(`}`);
+      }
     });
-    this.line(`}`);
     if (method === "find") {
       const inner = elemType as ScalarType;
       this.model.options.set(optionKey(inner), inner);
@@ -587,6 +727,11 @@ export abstract class StatementEmitter extends CpiEmitter {
       const fn = ts.isCallExpression(init) ? this.exportName(init.expression) : undefined;
       if (fn === "fixedArray") {
         const t = this.localArray(init as ts.CallExpression, c);
+        this.scopes.at(-1)!.set(name, { c, type: t, mutable });
+        continue;
+      }
+      if (this.isPipeline(init)) {
+        const t = this.localList(d, init, c);
         this.scopes.at(-1)!.set(name, { c, type: t, mutable });
         continue;
       }

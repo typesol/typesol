@@ -100,6 +100,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   };
   for (const s of model.structs.values()) emitStruct(s);
   for (const e of model.dataEnums.values()) deps({ kind: "dataEnum", name: e.name });
+  for (const t of model.localVecs.values()) deps(t);
 
   for (const k of model.constants.values()) if (typeof k.value === "object") out.push(`static const SolPubkey TSK_${k.name} = {${cBytes(k.value.pubkey)}};`);
   out.push(...emitBorshCodecs(model));

@@ -5,6 +5,15 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `map` and `filter` on Vecs, FixedArrays, FixedVecs and Vec arguments. A chain used right away
+  (`xs.filter(f).map(g).reduce(h, 0n)`, `.length`, `for … of`, any list method) is one loop that builds no list;
+  callbacks after a filter get the index among the elements it let through, as in JS. Stored (`const ys = xs.map(f)`),
+  it is a FixedVec on the stack as big as the list it starts from, or as annotated (`const ys: FixedVec<u64, 16> = …`,
+  needed for a `Vec`); a list one element too small aborts with 5104.
+- Arrow functions written as helper arguments (`applyTwice((x) => x * 3n, v)`), typed from the helper's parameter when
+  left unannotated, when they read none of the enclosing function's variables.
+
 ## 0.22.0 — 2026-10-28
 
 Generated clients fill in the accounts Anchor's client still asked you to pass (signers from a default signer, PDAs

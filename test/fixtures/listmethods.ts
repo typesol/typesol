@@ -68,3 +68,54 @@ export function scan(payer: Signer, book: Account<Book>, xs: Vec<u64>, who: Pubk
   require(missing === -1n, "missing");
   return i64(big) * 1000n + where * 100n + (isAdmin ? 10n : 0n) + i64(logSum);
 }
+
+export interface ChainOut {
+  openCount: u64;
+  doubled: u64;
+  postFilterIndex: u64;
+  forOfTotal: u64;
+  bigLength: u64;
+  bigSecond: u64;
+  mappedSecond: u64;
+  qtysAfterPush: u64;
+  qtysSum: u64;
+  openSecondQty: u64;
+}
+
+/** map / filter: fused into one loop when used right away, stored as local lists when bound. */
+export function chains(payer: Signer, book: Account<Book>, xs: Vec<u64>): ChainOut {
+  const openCount = book.orders.filter((o) => o.open).length;
+  const doubled = book.orders
+    .filter((o) => o.open)
+    .map((o) => o.qty * 2n)
+    .reduce((a: u64, q) => a + q, 0n);
+  const postFilterIndex = book.orders.filter((o) => o.open).findIndex((o) => o.qty === 7n);
+  let forOfTotal = 0n;
+  for (const v of xs.filter((x) => x > 5n).map((x, i) => x * 10n + i)) {
+    if (v > 200n) continue;
+    forOfTotal += v;
+  }
+  const big: FixedVec<u64, 4> = xs.filter((x) => x > 5n);
+  const mapped: FixedVec<u64, 4> = xs.filter((x) => x > 5n).map((x, i) => x * 10n + i);
+  const qtys = book.orders.map((o) => o.qty);
+  qtys.push(1n);
+  const open = book.orders.filter((o) => o.open);
+  return {
+    openCount,
+    doubled,
+    postFilterIndex: u64(postFilterIndex),
+    forOfTotal,
+    bigLength: big.length,
+    bigSecond: big.get(1n),
+    mappedSecond: mapped.get(1n),
+    qtysAfterPush: qtys.length,
+    qtysSum: qtys.reduce((a: u64, q) => a + q, 0n),
+    openSecondQty: open.get(1n).qty,
+  };
+}
+
+/** A stored list one element too small aborts (5104), like push() on a full FixedVec. */
+export function tooSmall(payer: Signer, xs: Vec<u64>): u64 {
+  const ys: FixedVec<u64, 1> = xs.filter((x) => x > 0n);
+  return ys.length;
+}

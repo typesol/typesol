@@ -79,3 +79,10 @@ export function higher(x: u64): u64 {
   const dbl = (v: u64): u64 => v * 2n;
   return applyTwice(inc, x) * 1000n + compose(dbl, inc, x);
 }
+
+/** Arrows written as helper arguments, typed by the parameter they are passed for or by their own annotations. */
+export function lambdas(x: u64): u64 {
+  const a = applyTwice((v) => v * 3n, x);
+  const b = compose((v: u64): u64 => v + 10n, function (v) { return v - 1n; }, x);
+  return a * 1000n + b;
+}

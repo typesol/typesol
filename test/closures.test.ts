@@ -50,6 +50,11 @@ describe("closures", () => {
     expect(await run("higher", { x: new BN(5) })).toBe(7024n);
   });
 
+  it("pass arrow functions written at the call to helpers", async () => {
+    // applyTwice(v => 3v, 5) = 45; compose(+10, -1, 5) = applyTwice(+10, 4) = 24.
+    expect(await run("lambdas", { x: new BN(5) })).toBe(45024n);
+  });
+
   it("refuses recursion and functions used as values", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-closures-"));
     const errors = (body: string) => {
@@ -67,7 +72,7 @@ describe("closures", () => {
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; const h = g; return h(1n); }`)).toMatch(/is a function/);
     const apply = "function apply(f: (x: u64) => u64, v: u64): u64 { return f(v); }\n";
     expect(errors(`${apply}export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return apply(g, 1n); }`)).toMatch(/can only be called there/);
-    expect(errors(`${apply}export function f(x: u64): u64 { return apply((v: u64): u64 => v, x); }`)).toMatch(/a named function/);
+    expect(errors(`${apply}export function f(x: u64): u64 { return apply((v) => v + x, 1n); }`)).toMatch(/can only run there/);
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n, 2n); }`)).toMatch(/Expected 1 arguments/);
   });
 });
