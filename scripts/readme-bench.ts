@@ -14,20 +14,23 @@ interface Results {
   generated: string;
   rounds: number;
   programs: Record<string, { cu: Record<string, Record<Impl, number>>; binaryKb: Record<Impl, number> }>;
+  /** What the run used (typesol/benchmarks records it); the column headers name the versions from here. */
+  toolchain?: { anchorLang?: string | null; pinocchio?: string | null };
 }
 type Impl = "typesol" | "pinocchio" | "native" | "anchor";
-
-const IMPLS: { key: Impl; name: string; column: string }[] = [
-  { key: "typesol", name: "TypeSOL", column: "TypeSOL" },
-  { key: "pinocchio", name: "Pinocchio", column: "Pinocchio 0.10" },
-  { key: "native", name: "Native Rust", column: "Native Rust" },
-  { key: "anchor", name: "Anchor", column: "Anchor 1.0.2" },
-];
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const file = process.argv[2];
 if (!file) throw new Error("usage: node scripts/readme-bench.ts <results.json>");
 const r = JSON.parse(readFileSync(file, "utf8")) as Results;
+// Pinocchio as major.minor (0.10.2 → 0.10), Anchor as the exact crate version.
+const minor = (v: string | null | undefined) => v?.split(".").slice(0, 2).join(".");
+const IMPLS: { key: Impl; name: string; column: string }[] = [
+  { key: "typesol", name: "TypeSOL", column: "TypeSOL" },
+  { key: "pinocchio", name: "Pinocchio", column: r.toolchain?.pinocchio ? `Pinocchio ${minor(r.toolchain.pinocchio)}` : "Pinocchio" },
+  { key: "native", name: "Native Rust", column: "Native Rust" },
+  { key: "anchor", name: "Anchor", column: r.toolchain?.anchorLang ? `Anchor ${r.toolchain.anchorLang}` : "Anchor" },
+];
 const rows = Object.entries(r.programs).flatMap(([program, p]) => Object.entries(p.cu).map(([ix, cu]) => ({ name: `${program}.${ix}`, cu })));
 const programs = Object.keys(r.programs);
 
