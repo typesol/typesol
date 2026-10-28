@@ -15,6 +15,7 @@ import {
   type GetMultipleAccountsApi,
   type GetProgramAccountsApi,
   type GetSignatureStatusesApi,
+  type GetTransactionApi,
   type Instruction,
   type LogsNotificationsApi,
   type ProgramDerivedAddress,
@@ -369,10 +370,32 @@ export function eventsOf(tx: { meta: { logMessages?: readonly string[] | null; i
   if (!meta) return [];
   return [...parseEvents(meta.logMessages ?? []), ...parseCpiEvents((meta.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))];
 }
-/** Events of every transaction that mentions the program, as their logs arrive, until `abortSignal` aborts. */
-export async function* watchEvents(rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>, options: { abortSignal: AbortSignal; commitment?: Commitment }): AsyncGenerator<{ signature: Signature; event: Event }> {
+/**
+ * Events of every transaction that mentions the program, as their logs arrive, until `abortSignal` aborts. With
+ * `rpc`, `emitCpi` events too: a transaction in which the program invoked itself is fetched (getTransaction) and its
+ * inner instructions read, after its log events.
+ */
+export async function* watchEvents(
+  rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>,
+  options: { abortSignal: AbortSignal; commitment?: Commitment; rpc?: Rpc<GetTransactionApi> },
+): AsyncGenerator<{ signature: Signature; event: Event }> {
   const logs = await rpcSubscriptions.logsNotifications({ mentions: [PROGRAM_ADDRESS] }, options.commitment ? { commitment: options.commitment } : {}).subscribe({ abortSignal: options.abortSignal });
-  for await (const n of logs) for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };
+  const selfInvoke = new RegExp("^Program " + PROGRAM_ADDRESS + " invoke \\[([2-9]|\\d{2,})\\]$");
+  for await (const n of logs) {
+    for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };
+    if (!options.rpc || !n.value.logs.some((l) => selfInvoke.test(l))) continue;
+    // The transaction can trail its logs by a moment: a few tries.
+    for (let attempt = 0; attempt < 5 && !options.abortSignal.aborted; attempt++) {
+      const tx = await options.rpc
+        .getTransaction(n.value.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: options.commitment === "finalized" ? "finalized" : "confirmed" })
+        .send();
+      if (tx) {
+        for (const event of parseCpiEvents((tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))) yield { signature: n.value.signature, event };
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
 }
 
 // ---- Transactions ----

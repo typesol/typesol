@@ -250,6 +250,7 @@ const KIT_TYPES = [
   "GetMultipleAccountsApi",
   "GetProgramAccountsApi",
   "GetSignatureStatusesApi",
+  "GetTransactionApi",
   "LogsNotificationsApi",
   "RpcSubscriptions",
   "SendTransactionApi",
@@ -737,7 +738,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   const accountOut: string[] = [];
   const accountKeys: string[] = [];
   /** Each account's decoder object and its Pubkey fields (snake_case), for has_one relations. */
-  const accountConsts: { A: string; pubkeys: Set<string> }[] = [];
+  const accountConsts: { name: string; A: string; pubkeys: Set<string> }[] = [];
   for (const a of idl.accounts ?? []) {
     if (!defs.has(a.name) || typeIssue(a.name) || special(a.name)) {
       notes.push(`account ${a.name}: ${typeIssue(a.name) ?? "no type definition"}; it is left out`);
@@ -789,7 +790,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     );
     accountKeys.push(`${prop(a.name)}: ${A}`);
     const fields = ((defs.get(a.name)!.type.fields ?? []) as IdlField[]).filter((f) => typeof f === "object" && f !== null && "name" in f);
-    accountConsts.push({ A, pubkeys: new Set(fields.filter((f) => f.type === "pubkey" || f.type === "publicKey").map((f) => f.name)) });
+    accountConsts.push({ name: a.name, A, pubkeys: new Set(fields.filter((f) => f.type === "pubkey" || f.type === "publicKey").map((f) => f.name)) });
   }
 
   // ---- Events -----------------------------------------------------------------------------------------------
@@ -1000,18 +1001,82 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         break;
       }
     }
-    if (rels.length) {
-      const keysOf = rels.map((r) => JSON.stringify(r.a.key)).join(" | ");
+    // PDAs seeded from fields of another account of the instruction (Anchor `seeds = [b"vault", book.owner]`): the
+    // account is read on chain, then the PDA derived. Only scalar fields (integers, bool, Pubkey, unit enums).
+    const inputOf = (f: Flat) => `input${NAME.test(f.key) && !JS_RESERVED.has(f.key) ? `.${f.key}` : `[${JSON.stringify(f.key)}]`}`;
+    const scalarSeed = (t: IdlType | undefined): boolean => {
+      if (t === undefined) return false;
+      if (typeof t === "string") return t in INTS || t === "bool" || t === "pubkey" || t === "publicKey";
+      if (!t.defined) return false;
+      const d = defs.get(definedName(t) ?? "");
+      return d?.type.kind === "enum" && (d.type.variants ?? []).every((v) => !v.fields?.length);
+    };
+    const fieldPdas: { a: Flat; lines: string[]; usesArgs: boolean }[] = [];
+    for (const a of flat) {
+      if (!a.pda || a.address || resolvable.has(a.key) || a.optional) continue;
+      const p = a.pda.program;
+      if (p && p.kind !== "const") continue;
+      const bases = new Map<string, { base: Flat; A: string }>();
+      const seeds: string[] = [];
+      let ok = true;
+      let usesArgs = false;
+      for (const sd of a.pda.seeds) {
+        if (sd.kind === "const") seeds.push(bytes(sd.value!));
+        else if (sd.kind === "arg") {
+          const e = seedExpr(sd, a.group);
+          if (typeof e !== "string") ok = false;
+          else (seeds.push(e), (usesArgs = true));
+        } else if (!sd.path!.includes(".")) {
+          const t = byPath(sd.path!, a.group);
+          if (!t || t === a || auto(t) || t.optional) ok = false;
+          else seeds.push(`getAddressEncoder().encode(key(${inputOf(t)}))`);
+        } else {
+          const parts = sd.path!.split(".");
+          const base = parts.length === 2 ? byPath(parts[0]!, a.group) : undefined;
+          const acc = accountConsts.find((c) => c.name === sd.account);
+          const field = ((defs.get(sd.account ?? "")?.type.fields ?? []) as IdlField[]).find((f) => typeof f === "object" && f !== null && f.name === parts[1]);
+          if (!base || base === a || base.optional || auto(base) || !acc || !field || !scalarSeed(field.type)) ok = false;
+          else {
+            bases.set(base.key, { base, A: acc.A });
+            seeds.push(`${codec(field.type)}.encode(${"$$" + base.key}[${JSON.stringify(camel(parts[1]!))}])`);
+          }
+        }
+        if (!ok) break;
+      }
+      if (!ok || bases.size === 0) continue;
+      const program = p ? `programFromBytes(${bytes(p.value!)})` : "PROGRAM_ADDRESS";
+      fieldPdas.push({
+        a,
+        usesArgs,
+        lines: [
+          `      const ${"$" + a.key} =`,
+          `        ${inputOf(a)} ??`,
+          `        (await (async () => {`,
+          ...[...bases.values()].map(({ base, A }) => `          const ${"$$" + base.key} = await ${A}.fetch(rpc, key(${inputOf(base)}));`),
+          `          return (await getProgramDerivedAddress({ programAddress: ${program}, seeds: [${seeds.join(", ")}] }))[0];`,
+          `        })());`,
+        ],
+      });
+    }
+    if (rels.length || fieldPdas.length) {
+      const filled = [...rels.map((r) => r.a), ...fieldPdas.map((f) => f.a)];
+      const keysOf = filled.map((a) => JSON.stringify(a.key)).join(" | ");
+      const withArgs = fieldPdas.some((f) => f.usesArgs);
+      const what = [
+        ...rels.map((r) => `${r.a.key} (from ${r.source.key}.${camel(r.a.name)})`),
+        ...fieldPdas.map((f) => `${f.a.key} (a PDA seeded from account fields)`),
+      ].join(", ");
       resolveKeys.push(
-        `    /** ${P}Accounts with ${rels.map((r) => `${r.a.key} (from ${r.source.key}.${camel(r.a.name)})`).join(", ")} read from the chain when left out. */\n` +
-          `    async ${prop(fn)}(rpc: Rpc<GetAccountInfoApi>, input: Omit<${P}Accounts, ${keysOf}> & Partial<Pick<${P}Accounts, ${keysOf}>>): Promise<${P}Accounts> {\n` +
-          rels
-            .map(
+        `    /** ${P}Accounts with ${what} read from the chain when left out. */\n` +
+          `    async ${prop(fn)}(rpc: Rpc<GetAccountInfoApi>, input: Omit<${P}Accounts, ${keysOf}> & Partial<Pick<${P}Accounts, ${keysOf}>>${withArgs ? `, args: ${P}Args` : ""}): Promise<${P}Accounts> {\n` +
+          [
+            ...rels.map(
               (r) =>
-                `      const ${"$" + r.a.key} = input${NAME.test(r.a.key) && !JS_RESERVED.has(r.a.key) ? `.${r.a.key}` : `[${JSON.stringify(r.a.key)}]`} ?? (await readRelation(rpc, key(input${NAME.test(r.source.key) && !JS_RESERVED.has(r.source.key) ? `.${r.source.key}` : `[${JSON.stringify(r.source.key)}]`}), ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]));`,
-            )
-            .join("\n") +
-          `\n      return { ...input, ${rels.map((r) => `${prop(r.a.key)}: ${"$" + r.a.key}`).join(", ")} } as ${P}Accounts;\n    },`,
+                `      const ${"$" + r.a.key} = ${inputOf(r.a)} ?? (await readRelation(rpc, key(${inputOf(r.source)}), ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]));`,
+            ),
+            ...fieldPdas.flatMap((f) => f.lines),
+          ].join("\n") +
+          `\n      return { ...input, ${filled.map((a) => `${prop(a.key)}: ${"$" + a.key}`).join(", ")} } as ${P}Accounts;\n    },`,
       );
     }
     if (ix.returns !== undefined) {
@@ -1284,10 +1349,32 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  if (!meta) return [];`,
     `  return [...parseEvents(meta.logMessages ?? []), ...parseCpiEvents((meta.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))];`,
     `}`,
-    `/** Events of every transaction that mentions the program, as their logs arrive, until \`abortSignal\` aborts. */`,
-    `export async function* watchEvents(rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>, options: { abortSignal: AbortSignal; commitment?: Commitment }): AsyncGenerator<{ signature: Signature; event: Event }> {`,
+    `/**`,
+    ` * Events of every transaction that mentions the program, as their logs arrive, until \`abortSignal\` aborts. With`,
+    ` * \`rpc\`, \`emitCpi\` events too: a transaction in which the program invoked itself is fetched (getTransaction) and its`,
+    ` * inner instructions read, after its log events.`,
+    ` */`,
+    `export async function* watchEvents(`,
+    `  rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>,`,
+    `  options: { abortSignal: AbortSignal; commitment?: Commitment; rpc?: Rpc<GetTransactionApi> },`,
+    `): AsyncGenerator<{ signature: Signature; event: Event }> {`,
     `  const logs = await rpcSubscriptions.logsNotifications({ mentions: [PROGRAM_ADDRESS] }, options.commitment ? { commitment: options.commitment } : {}).subscribe({ abortSignal: options.abortSignal });`,
-    `  for await (const n of logs) for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };`,
+    `  const selfInvoke = new RegExp("^Program " + PROGRAM_ADDRESS + " invoke \\\\[([2-9]|\\\\d{2,})\\\\]$");`,
+    `  for await (const n of logs) {`,
+    `    for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };`,
+    `    if (!options.rpc || !n.value.logs.some((l) => selfInvoke.test(l))) continue;`,
+    `    // The transaction can trail its logs by a moment: a few tries.`,
+    `    for (let attempt = 0; attempt < 5 && !options.abortSignal.aborted; attempt++) {`,
+    `      const tx = await options.rpc`,
+    `        .getTransaction(n.value.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: options.commitment === "finalized" ? "finalized" : "confirmed" })`,
+    `        .send();`,
+    `      if (tx) {`,
+    `        for (const event of parseCpiEvents((tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))) yield { signature: n.value.signature, event };`,
+    `        break;`,
+    `      }`,
+    `      await new Promise((resolve) => setTimeout(resolve, 400));`,
+    `    }`,
+    `  }`,
     `}`,
     "",
     `// ---- Transactions ----`,

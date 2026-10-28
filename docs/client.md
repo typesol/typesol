@@ -42,7 +42,7 @@ const several = await ledgerbook.accounts.Book.fetchMultiple(rpc, [a, b]); // (B
 
 // Live updates, until the AbortSignal aborts
 for await (const book of ledgerbook.accounts.Book.watch(rpcSubscriptions, address, { abortSignal })) render(book);
-for await (const { signature, event } of ledgerbook.watchEvents(rpcSubscriptions, { abortSignal })) show(event);
+for await (const { signature, event } of ledgerbook.watchEvents(rpcSubscriptions, { abortSignal, rpc })) show(event); // with rpc: emitCpi events too
 
 // Remaining accounts go after the instruction's own (Anchor's `.remainingAccounts([...])`)
 await ledgerbook.approveMany({ approver: signer, book }, { indices: [0n, 1n] }, [{ address: extra, role: AccountRole.WRITABLE }]);
@@ -66,7 +66,7 @@ Kit's own transaction functions work with the instructions as well; `sendInstruc
 | `<program>.accounts.<Name>` | `decode(bytes)`, `encode(value)`, `fetch(rpc, address)`, `fetchMaybe(rpc, address)`, `fetchMultiple(rpc, addresses)`, `fetchAll(rpc, filters?)` (getProgramAccounts by discriminator, plus `{ offset, bytes }` filters), `watch(rpcSubscriptions, address, { abortSignal })`, `discriminator`. `decode` checks the discriminator. |
 | `<program>.pdas.<account>(seeds)` | The PDA (address and bump) for each account an instruction derives. |
 | `<program>.returns.<instruction>(bytes)` | Decodes return data. |
-| `<program>.resolve.<instruction>(rpc, accounts)` | For instructions with `has_one` accounts that do not sign: the accounts with those filled in from the account that names them (fetched and decoded); given ones are kept. |
+| `<program>.resolve.<instruction>(rpc, accounts, args?)` | Fills in what needs the chain: `has_one` accounts that do not sign (read from the account that names them) and PDAs seeded from another account's fields (`seeds = [b"vault", book.owner]`: the account is read, then the PDA derived). Given accounts are kept. |
 | `<program>.views.<instruction>(rpc, feePayer, accounts, args)` | Simulates an instruction that returns a value and decodes it (throws with the logs if it fails). |
 | `<program>.sendInstructions(connection, feePayer, instructions)`, `simulate(rpc, feePayer, instructions)` | One transaction sent and confirmed (kit's sendAndConfirm), or simulated without signatures (error, logs, units, this program's return data). |
 | `<program>.errors`, `errorCode(e)`, `isError(e, name)` | The program's errors (6000+), and for TypeSOL programs also every Anchor framework error (`AnchorError` and the constraints raise them) and TypeSOL's runtime errors. |
@@ -89,11 +89,12 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
 
 - **Errors and events are matched by code and discriminator, not by program.** A program this one calls can raise the
   same error code, and `parseEvents` reads every `Program data:` line that decodes as one of this program's events.
-- **Not filled in automatically** (pass them): `has_one` accounts that sign (they have to sign), PDAs seeded from fields
-  inside another account or inside an argument, and PDAs whose program comes from an argument. `typesol client` prints a
-  note for each. `has_one` accounts that do not sign are filled in by `resolve` (it reads the chain).
+- **Not filled in automatically** (pass them): `has_one` accounts that sign (they have to sign), PDAs seeded from an
+  account's own fields or from fields inside an argument, PDAs seeded from non-scalar fields (strings, structs), and PDAs
+  whose program comes from an argument. `typesol client` prints a note for each. `has_one` accounts that do not sign and
+  PDAs seeded from another account's scalar fields are filled in by `resolve` (it reads the chain).
 - **Left out of a client generated from an Anchor IDL**, with a note: generic types and anything using them, and
   zero-copy (`bytemuck`) accounts.
 - **Not done yet**: a LiteSVM loader for tests (use `svm.addProgramFromFile(ledgerbook.address, soPath)`, or
-  `typesol/testing`). `watchEvents` reads log events; `emitCpi` events are in inner instructions, which log
-  subscriptions do not carry (use `eventsOf` on the fetched transaction).
+  `typesol/testing`). `watchEvents` reads log events; with `rpc` it also fetches each transaction in which the program
+  invoked itself and reads its `emitCpi` events (log subscriptions do not carry inner instructions).

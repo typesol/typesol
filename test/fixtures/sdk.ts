@@ -8,6 +8,7 @@ import {
   type Init,
   type Mut,
   type Pubkey,
+  type Seeds,
   type SelfProgram,
   type Signer,
   type SystemProgram,
@@ -55,4 +56,9 @@ export function countRest(): u64 {
 /** `has_one = owner` with an owner that does not sign: the client can read it from the tally. */
 export function poke(tally: HasOne<Mut<Tally>, "owner">, owner: AccountInfo): void {
   tally.count += 1n;
+}
+
+/** A PDA seeded from the tally's fields (Anchor `seeds = [b"stash", tally.owner, tally.count]`). */
+export function stash(tally: Account<Tally>, stash: Seeds<AccountInfo, ["stash", "@tally.owner", "@tally.count"]>): u64 {
+  return tally.count;
 }
