@@ -162,6 +162,11 @@ static inline TS_Str ts_str(const uint8_t *ptr, uint64_t len) {
 static inline bool ts_utf8_valid(const uint8_t *p, uint64_t n) {
   uint64_t i = 0;
   while (i < n) {
+    /* Eight ASCII bytes at a time (no high bit set), then one sequence at a time. */
+    if (i + 8 <= n && (ts_ld64(p + i) & 0x8080808080808080ULL) == 0) {
+      i += 8;
+      continue;
+    }
     uint8_t c = p[i];
     if (c < 0x80) { i++; continue; }
     uint64_t len;
