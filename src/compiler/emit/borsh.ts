@@ -57,7 +57,7 @@ export function borshMinSize(s: StructDef, model: Pick<ProgramModel, "structs">)
   return n;
 }
 
-const DESER = `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data is not a valid Borsh value")`;
+const DESER = `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: bytes are not a valid Borsh value")`;
 const SER = `TS_FAIL(TS_ERR_DID_NOT_SERIALIZE, "TypeSOL: account data too small for the value")`;
 
 /** C for `ts_unpack_<S>` and `ts_pack_<S>` of every `@layout borsh` struct. */
@@ -238,16 +238,18 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
 
     out.push(
       `/* ${s.name} as Borsh (Anchor's account layout) <-> its fixed-layout struct. */`,
-      `__attribute__((noinline)) static uint64_t ts_unpack_${s.name}(const uint8_t *src, uint64_t len, TSS_${s.name} *out) {`,
+      `__attribute__((noinline)) static uint64_t ts_unpack_${s.name}(const uint8_t *src, uint64_t len, TSS_${s.name} *out, uint64_t *used) {`,
       `  if (len < ${min}) ${DESER};`,
       `  uint64_t at = 0;`,
       ...unpackLines,
+      `  if (used) *used = at;`,
       `  return SUCCESS;`,
       `}`,
-      `__attribute__((noinline)) static uint64_t ts_pack_${s.name}(const TSS_${s.name} *in, uint8_t *dst, uint64_t cap) {`,
+      `__attribute__((noinline)) static uint64_t ts_pack_${s.name}(const TSS_${s.name} *in, uint8_t *dst, uint64_t cap, uint64_t *written) {`,
       `  if (cap < ${min}) ${SER};`,
       `  uint64_t at = 0;`,
       ...packLines,
+      `  if (written) *written = at;`,
       `  return SUCCESS;`,
       `}`,
       "",

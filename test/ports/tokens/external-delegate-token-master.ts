@@ -1,8 +1,6 @@
 // Port of tokens/external-delegate-token-master @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - keypair init: `user_account` is a keypair account Anchor creates in `initialize`; here it is a Zeroed<UserAccount>
-//    the client allocates in the same transaction (Init<T> only creates PDAs).
 //  - account layout / interface: there is no conversion between byte arrays and the 32-byte Hash that
 //    verifySecp256k1 compares, so `ethereum_address` is stored (and passed to `set_ethereum_address`) as a Hash
 //    holding the 20-byte address left-padded with 12 zero bytes, instead of `[u8; 20]`.
@@ -13,6 +11,7 @@ import {
   type Account,
   type Hash,
   type HasOne,
+  type Init,
   type Mut,
   type Owner,
   type Pubkey,
@@ -21,7 +20,6 @@ import {
   type SystemProgram,
   type TokenAccount,
   type TokenProgram,
-  type Zeroed,
   type u8,
   type u64,
   keccak256,
@@ -46,7 +44,8 @@ export enum ErrorCode {
   NonceOverflow = "Nonce overflow",
 }
 
-export function initialize(userAccount: Zeroed<UserAccount>, authority: Mut<Signer>, systemProgram: SystemProgram): void {
+export function initialize(userAccount: Init<UserAccount>, authority: Mut<Signer>, systemProgram: SystemProgram): void {
+  userAccount.create(authority, null);
   userAccount.authority = authority.key;
   userAccount.nonce = 0n;
 }

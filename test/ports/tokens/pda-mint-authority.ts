@@ -1,7 +1,6 @@
 // Port of tokens/pda-mint-authority @ de09019; see test/ports/README.md.
 //
-// PARTIAL:
-//  - logs: address lines are split in two (no Pubkeys in templates).
+// PORTED.
 import {
   type TokenAccount,
   type InitIfNeeded,
@@ -70,10 +69,8 @@ export function mintToken(
   require(mintConfig.admin === payer.key, TokenMinterError.Unauthorized);
   associatedTokenAccount.createIfNeeded(payer);
   log("Minting token to associated token account...");
-  log("Mint: ");
-  log(mintAccount.key);
-  log("Token Address: ");
-  log(associatedTokenAccount.key);
+  log(`Mint: ${mintAccount.key}`);
+  log(`Token Address: ${associatedTokenAccount.key}`);
   let scaled = amount;
   for (let i = 0n; i < u64(mintAccount.decimals); i++) scaled *= 10n;
   tokenProgram.mintTo(mintAccount, associatedTokenAccount, mintAccount, scaled, ["mint", mintAccount.pdaBump]);

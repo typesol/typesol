@@ -139,7 +139,7 @@ export const MAX_CPI_ALLOCATION = 10 * 1024;
 export interface Analysis {
   model: ProgramModel;
   /** A generic helper's instance for these type arguments (analyzed once, then kept in `model.helpers`). */
-  instantiate(g: GenericHelper, typeArgs: ScalarType[], fnArgs?: string[]): Helper;
+  instantiate(g: GenericHelper, typeArgs: TypeArg[], fnArgs?: string[]): Helper;
   /** TypeScript's checker: used for narrowing (which variant a data-enum value is in a branch). */
   checker: ts.TypeChecker;
   sourceFile: ts.SourceFile;
@@ -150,11 +150,22 @@ export interface Analysis {
   reporter: Reporter;
 }
 
+/** What a generic helper's type parameter stands for: a scalar, or a fixed-size struct. */
+export type TypeArg = ScalarType | { kind: "struct"; name: string };
+
+/** A struct named by a type reference, through the type parameters of a generic helper's instance. */
+export function structNameOf(node: ts.TypeNode, scope: Pick<TypeScope, "structArgs">): string | undefined {
+  if (!ts.isTypeReferenceNode(node) || !ts.isIdentifier(node.typeName) || node.typeArguments?.length) return undefined;
+  return scope.structArgs?.get(node.typeName.text) ?? node.typeName.text;
+}
+
 /** What type resolution needs: imports, unit enums, and where to record Option<T> uses. */
 export interface TypeScope {
   imports: Map<string, string>;
   /** Inside a generic helper's instance: type parameter -> the type it stands for. */
   typeArgs?: Map<string, ScalarType>;
+  /** Inside a generic helper's instance: type parameter -> the struct it stands for. */
+  structArgs?: Map<string, string>;
   enums: Map<string, EnumDef>;
   dataEnums?: Map<string, DataEnumDef>;
   options: Map<string, ScalarType | { kind: "struct"; name: string }>;
@@ -477,14 +488,30 @@ export function analyze(entry: string): Analysis {
     if (h) helpers.set(h.name, h);
   }
   const instances = new Map<string, Helper>();
-  const instantiate = (g: GenericHelper, typeArgs: ScalarType[], fnArgs: string[] = []): Helper => {
-    const key = [g.name, ...typeArgs.map(scalarKey), ...fnArgs.map((f) => `fn_${f}`)].join("__");
+  const instantiate = (g: GenericHelper, typeArgs: TypeArg[], fnArgs: string[] = []): Helper => {
+    const argKey = (t: TypeArg) => (t.kind === "struct" ? `S${t.name}` : scalarKey(t));
+    const key = [g.name, ...typeArgs.map(argKey), ...fnArgs.map((f) => `fn_${f}`)].join("__");
     const done = instances.get(key);
     if (done) return done;
-    const bound = new Map(g.typeParams.map((n, i) => [n, typeArgs[i]] as const));
-    const display = `${g.display}<${[...typeArgs.map(typeName), ...fnArgs].join(", ")}>`;
-    const h = analyzeHelper(g.node, key, display, reporter, { ...scopeFor(g.imports), typeArgs: bound }, structs, new Set(g.fnParams));
+    const bound = new Map<string, ScalarType>();
+    const boundStructs = new Map<string, string>();
+    g.typeParams.forEach((n, i) => {
+      const t = typeArgs[i]!;
+      if (t.kind === "struct") boundStructs.set(n, t.name);
+      else bound.set(n, t);
+    });
+    const display = `${g.display}<${[...typeArgs.map((t) => (t.kind === "struct" ? t.name : typeName(t))), ...fnArgs].join(", ")}>`;
+    const h = analyzeHelper(
+      g.node,
+      key,
+      display,
+      reporter,
+      { ...scopeFor(g.imports), typeArgs: bound, structArgs: boundStructs },
+      structs,
+      new Set(g.fnParams),
+    );
     h.typeArgs = bound;
+    h.structArgs = boundStructs;
     if (g.fnParams.length) {
       h.fnArgs = new Map(g.fnParams.map((i, k) => [(g.node.parameters[i]!.name as ts.Identifier).text, fnArgs[k]!] as const));
       h.fnArgIndexes = g.fnParams;
@@ -506,17 +533,18 @@ export function analyze(entry: string): Analysis {
     for (const a of ix.args) {
       const seen = new Set<string>();
       collectStructs(a.type, structs, dataEnums, seen);
+      // A @layout borsh struct is decoded as a whole argument; inside lists or enums it would need a fixed size.
+      const whole = a.type.kind === "structRef" ? a.type.struct : undefined;
       for (const s of seen)
-        if (structs.get(s)!.layout === "borsh") reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} is @layout borsh, an account layout only`);
+        if (structs.get(s)!.layout === "borsh" && s !== whole)
+          reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} is @layout borsh; pass it as a whole argument, not inside a list or enum`);
     }
-    if (ix.returns?.kind === "struct" && structs.get(ix.returns.name)!.layout === "borsh")
-      reporter.error(fn.node.type ?? fn.node, `${ix.returns.name} is @layout borsh, an account layout only; return another struct`);
-    // Arguments are Borsh: a FixedVec's padded layout is account data only.
+    // Arguments are Borsh: a FixedVec's padded layout is account data only (a @layout borsh struct's FixedVec is a Borsh Vec).
     for (const a of ix.args) {
       const seen = new Set<string>();
       collectStructs(a.type, structs, dataEnums, seen);
       for (const s of seen)
-        if (structs.get(s)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined))
+        if (structs.get(s)!.layout !== "borsh" && structs.get(s)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined))
           reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} holds a FixedVec, which only account data can; pass a Vec<T> argument instead`);
     }
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
@@ -613,7 +641,7 @@ export function resolveArgAggregate(node: ts.TypeNode, scope: TypeScope, structs
     const scalar = resolveScalarType(t, scope);
     if (scalar) return scalar;
     if (ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) && !t.typeArguments?.length) {
-      const s = structs.get(t.typeName.text);
+      const s = structs.get(structNameOf(t, scope)!);
       if (s && s.size !== undefined && !s.vec) return { kind: "struct", name: s.name };
     }
     if (typesolName(t, scope.imports) === "FixedArray") {
@@ -1047,7 +1075,8 @@ function analyzeHelper(
   if (!fn.type) reporter.fail(fn.name ?? fn, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
   let returns: Helper["returns"] = fn.type.kind === ts.SyntaxKind.VoidKeyword ? undefined : resolveScalarType(fn.type, scope);
   if (fn.type.kind !== ts.SyntaxKind.VoidKeyword && !returns) {
-    const s = ts.isTypeReferenceNode(fn.type) && ts.isIdentifier(fn.type.typeName) && !fn.type.typeArguments ? structs.get(fn.type.typeName.text) : undefined;
+    const sn = structNameOf(fn.type, scope);
+    const s = sn ? structs.get(sn) : undefined;
     if (s && (s.size === undefined || s.vec))
       reporter.fail(fn.type, `${s.name} has variable-size fields and cannot be returned; return a struct of fixed size`);
     if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey, a struct or a type parameter");

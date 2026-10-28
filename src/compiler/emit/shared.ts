@@ -264,6 +264,8 @@ export function helperSignature(h: Helper): string {
     if (p.account) {
       params.push(`TsAccount *a_${p.name}`);
       if (p.account.kind === "account" && p.account.struct.layout === "borsh") params.push(`TSS_${p.account.struct.name} *d_${p.name}`);
+      // A writable account with a growable Vec: its length at instruction entry, for push / pop / clear.
+      if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) params.push(`uint64_t entry_${p.name}`);
     } else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
     else if (p.type.kind === "pubkey")
       params.push(`SolPubkey p_${p.name}`); // by value: a copy taken at the call

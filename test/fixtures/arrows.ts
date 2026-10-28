@@ -50,3 +50,17 @@ export function shadow(x: u64): u64 {
   const double = (v: u64): u64 => v * 4n;
   return double(x) + pairOf(1n, 2n).b;
 }
+
+// Struct type arguments: written out or taken from the arguments; locals of type T are struct copies.
+function swapIf<T>(flip: boolean, a: T, b: T): T {
+  const kept: T = flip ? b : a;
+  return kept;
+}
+export function structGenerics(flip: boolean, x: u64): u64 {
+  const p: Pair = { a: x, b: x + 1n };
+  const q: Pair = { a: 100n, b: 200n };
+  const r = swapIf(flip, p, q);
+  const s = swapIf<Pair>(!flip, p, q);
+  return r.a * 1000n + s.b;
+}
+

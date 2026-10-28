@@ -1,15 +1,14 @@
 // Port of basics/cross-program-invocation (programs/lever) @ de09019; see test/ports/README.md.
 //
-// PARTIAL (keypair init): Anchor creates `power` (a keypair account, space 8 + 8) in `initialize`; TypeSOL's Init<T>
-// only creates PDAs, so it is a Zeroed<PowerStatus> the client allocates in the same transaction.
-import { type Mut, type Signer, type SystemProgram, type Zeroed, log } from "typesol";
+// PORTED: `power` is a keypair account created in `initialize` with Anchor's `space = 8 + 8`.
+import { type Init, type Mut, type Signer, type SystemProgram, log } from "typesol";
 
 export interface PowerStatus {
   isOn: boolean;
 }
 
-export function initialize(power: Zeroed<PowerStatus>, user: Mut<Signer>, systemProgram: SystemProgram): void {
-  power.isOn = false;
+export function initialize(power: Init<PowerStatus>, user: Mut<Signer>, systemProgram: SystemProgram): void {
+  power.create(user, null, 8n + 8n);
 }
 
 export function switchPower(power: Mut<PowerStatus>, name: string): void {

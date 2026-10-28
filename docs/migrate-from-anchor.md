@@ -31,7 +31,8 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `#[derive(Accounts)] struct Ctx` + `ctx.accounts.x` | the instruction's parameters, in the same order |
 | `Signer<'info>` / `#[account(mut)] Signer` | `Signer` / `Mut<Signer>` |
 | `Account<'info, T>` / `#[account(mut)]` | `Account<T>` / `Mut<T>` |
-| `#[account(init, payer = p, space = …, seeds = […], bump)]` | `Init<T>`, then `const bump = acct.create(p, ["seed", other.key])` (space is computed) |
+| `#[account(init, payer = p, space = …, seeds = […], bump)]` | `Init<T>`, then `const bump = acct.create(p, ["seed", other.key])` (space is computed; `acct.create(p, […], 8n + 64n)` keeps an explicit `space`) |
+| `#[account(init, payer = p, space = …)]` (a keypair account) | `Init<T>`, then `acct.create(p, null)` (the account signs the transaction, as in Anchor) |
 | `init_if_needed` | `InitIfNeeded<T>`, then `const created = acct.createIfNeeded(p, seeds)` |
 | `seeds = [b"vault", owner.key().as_ref()], bump = vault.bump` | `Seeds<Mut<Vault>, ["vault", "@owner"], "bump">` |
 | `seeds = [b"offer", offer.maker.as_ref(), offer.id.to_le_bytes().as_ref()]` | `Seeds<…, ["offer", "@offer.maker", "@offer.id"], "bump">` |
@@ -78,7 +79,8 @@ Anchor stores it (`FixedString<N>` / `FixedVec<T, N>` / `Option<T>` become Borsh
 adds it for you. It costs some compute (the account is unpacked and packed in every instruction that uses it) but stays
 several times cheaper than Anchor. Accounts using them need a migration (or a new program) rather
 than an in-place upgrade, unless they use `@layout borsh`. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
-matches byte for byte.
+matches byte for byte. A `@layout borsh` struct passed as a whole argument, returned or emitted is Borsh too, so an
+Anchor instruction that takes or returns a struct with `String` / `Vec` / `Option` fields keeps its client bytes.
 
 ## Code
 

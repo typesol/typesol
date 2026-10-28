@@ -244,6 +244,23 @@ describe(`differential arithmetic fuzzing (seed ${SEED}, ${RUNS} runs per case)`
       let r = sqrt(x);
       if (fmt(got) !== fmt({ ok: r })) mismatches.push(`isqrt128 ${x}: chain ${fmt(got)}, model ${r}`);
     }
+    // u128 mulDiv: products past 128 bits take the 256-bit path; sometimes a small c so the quotient overflows.
+    const w128 = { bits: 128, signed: false };
+    for (let i = 0; i < Math.min(RUNS, 120); i++) {
+      const op = Number(rng.next() % 2n);
+      const [a, b] = [sample(rng, w128), sample(rng, w128)];
+      const r = rng.next() % 10n;
+      const c = r === 0n ? 0n : r === 1n ? sample(rng, { bits: 64, signed: false }) : sample(rng, w128);
+      let want: Outcome;
+      if (c === 0n) want = { err: DIV_ZERO };
+      else {
+        const q = op === 0 ? (a * b) / c : (a * b + c - 1n) / c;
+        want = q > range(w128).max ? { err: OVERFLOW } : { ok: q };
+      }
+      const big = (x: bigint) => new BN(x.toString());
+      const got = outcome(await send(d.svm, payer, [ix(d, "mul_div128", { op, a: big(a), b: big(b), c: big(c) }, [])]), w128);
+      if (fmt(got) !== fmt(want)) mismatches.push(`mulDiv128 op=${op} a=${a} b=${b} c=${c}: chain ${fmt(got)}, model ${fmt(want)}`);
+    }
     expect(mismatches.slice(0, 5)).toEqual([]);
   });
 

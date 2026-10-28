@@ -127,7 +127,7 @@ describe("@layout borsh", () => {
       const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
       writeFileSync(
         file,
-        `import { type Account, type FixedString, type FixedVec, type Mut, type Vec, type Zeroed, type u64, emit, loadAccount, remainingAccounts } from "typesol";\n${body}\n`,
+        `import { type Account, type FixedArray, type FixedString, type FixedVec, type Mut, type Vec, type Zeroed, type u64, emit, loadAccount, remainingAccounts } from "typesol";\n${body}\n`,
       );
       try {
         generate(file);
@@ -144,9 +144,11 @@ describe("@layout borsh", () => {
     expect(
       errors(`export interface In { name: FixedString<8> }\n/** @layout borsh */\nexport interface S { inner: In }\nexport function f(s: Mut<S>): void {}`),
     ).toMatch(/nested structs and lists hold fixed-size values only/);
-    expect(errors(`${S}export function f(s: S): void {}`)).toMatch(/an account layout only/);
+    // Whole arguments, return values and events are Borsh (test/borsh-values.test.ts); inside a list they are not.
+    expect(errors(`${S}export function f(s: S): S { return s; }`)).toBe("");
+    expect(errors(`${S}export function f(s: FixedArray<S, 2>): void {}`)).toMatch(/pass it as a whole argument/);
     expect(errors(`${S}export function f(s: Zeroed<S>): void {}`)).toMatch(/Zeroed<T>/);
-    expect(errors(`${S}export function f(): void { emit<S>({ n: 1n, name: "x" }); }`)).toMatch(/declare a separate event struct/);
+    expect(errors(`${S}export function f(): void { emit<S>({ n: 1n, name: "x" }); }`)).toBe("");
     expect(errors(`${S}export function f(): void { const s = loadAccount<S>(remainingAccounts().get(0n)); }`)).toMatch(/instruction parameter/);
     expect(errors(`${S}export interface T { s: S }\nexport function f(t: Mut<T>): void {}`)).toMatch(/account data only/);
   });

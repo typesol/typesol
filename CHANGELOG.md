@@ -37,6 +37,18 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   new 2018 ConstraintMintDecimals). The IDL marks keypair-created accounts as signers.
 - `SystemAccount` / `Mut<SystemAccount>`: Anchor's `SystemAccount`, refused with 3011 (AccountNotSystemOwned) when
   another program owns it.
+- `@layout borsh` structs as whole instruction arguments, return values and events, in Anchor's Borsh bytes (a
+  FixedString is a String, a FixedVec a Vec, an Option one byte when empty). Arguments are checked as Borsh
+  deserialization does, UTF-8 included (102 otherwise). `return vault` returns a whole struct account.
+- `mulDiv` / `mulDivCeil` on u128 through a 256-bit product (all three u128; literals take that type).
+- Growable `Vec<T>` `push` / `pop` / `clear` inside helpers that take the account as `Mut<T>` (with its payer and
+  SystemProgram, as in instructions).
+- Type parameters standing for fixed-size structs (`pick<Point>(…)`, or taken from struct arguments), and `cond ? a : b`
+  for struct values (places, literals or calls).
+- `acct.create(payer, null)` on `Init<T>`: Anchor's `init` of a keypair account (it must sign; 3010 otherwise), and an
+  optional third argument for Anchor's `space = …` on `create` / `createIfNeeded`.
+- `acct!` on optional accounts (fails with 5115 when it was left out), Pubkeys / Hashes in template strings (base58),
+  and data-enum arguments whose variants carry fixed-size structs or arrays.
 
 ## 0.17.0 — 2026-10-28
 

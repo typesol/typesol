@@ -92,12 +92,17 @@ describe("subset enforcement", () => {
     ["structs that contain themselves", `export interface Node { next: Node; }\nexport function f(): void {}`, /contains itself/],
     ["variable strings in account data", `export interface S { name: string; }\nexport function f(a: Mut<S>): void {}`, /cannot be account data/],
     [
-      "Pubkeys inside template strings",
-      "export function f(b: Account<Box>): void { const s = `owner ${b.owner}`; }",
-      /only strings, integers and booleans can be joined/,
+      "a space smaller than the account",
+      `export function f(p: Mut<Signer>, b: Init<Box>, s: SystemProgram): void { b.create(p, null, 16n); }`,
+      /needs at least 48 bytes/,
     ],
     ["string .length", `export function f(s: string): void { const n = s.length; }`, /byteLength|number/],
     ["Vec fields that are not last", `export interface S { xs: Vec<u64>; n: u64; }\nexport function f(): void {}`, /must be the last field/],
+    [
+      "growing a Vec in a helper without SystemProgram",
+      `export interface S { xs: Vec<u64>; }\nfunction add(s: Mut<S>, p: Mut<Signer>): void { s.xs.push(1n, p); }\nfunction outer(s: Mut<S>, p: Mut<Signer>): void { add(s, p); }\nexport function f(p: Mut<Signer>, s: Mut<S>): void { outer(s, p); }`,
+      /outer\(\) grows a Vec \(push\): the instruction needs a SystemProgram/,
+    ],
     [
       "growing a Vec without SystemProgram",
       `export interface S { xs: Vec<u64>; }\nexport function f(p: Mut<Signer>, s: Mut<S>): void { s.xs.push(1n, p); }`,

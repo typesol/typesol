@@ -13,7 +13,7 @@ import {
   scalarSize,
   typeName,
 } from "../model.js";
-import { borshMinSize } from "./borsh.js";
+import { borshIdentical, borshMinSize } from "./borsh.js";
 import { MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature } from "./shared.js";
 import { StatementEmitter } from "./statements.js";
 
@@ -95,7 +95,7 @@ export class FunctionEmitter extends StatementEmitter {
         // unused slots start as zero: ts_unpack_* only writes what the Borsh bytes hold.
         const S = k.struct.name;
         head.push(`  TSS_${S} *d_${a.name} = NULL;`, `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&d_${a.name}));`);
-        if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}));`);
+        if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}, NULL));`);
       } else if (k.kind === "account" || k.kind === "init" || k.kind === "zeroed" || k.kind === "initIfNeeded") {
         head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + 8);`);
         if (k.struct.vec) {
@@ -210,6 +210,28 @@ export class FunctionEmitter extends StatementEmitter {
           const checks = this.validation(`((${fieldC(elem)} *)arg_${a.name}.ptr)[${i}]`, elem, "    ");
           if (checks.length) head.push(`  for (uint64_t ${i} = 0; ${i} < arg_${a.name}.len; ${i}++) {`, ...checks, `  }`);
         }
+      } else if (a.type.kind === "structRef" && this.model.structs.get(a.type.struct)!.layout === "borsh") {
+        // A @layout borsh struct: Borsh-decoded into its fixed-layout struct, as its accounts are.
+        const S = a.type.struct;
+        const v = `arg_${a.name}`;
+        const used = `used_${a.name}`;
+        head.push(
+          `  TSS_${S} *${v};`,
+          `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&${v}));`,
+          `  uint64_t ${used} = 0;`,
+          `  if (ts_unpack_${S}(${at}, params->data_len - off, ${v}, &${used}) != SUCCESS) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid ${S} argument");`,
+          `  off += ${used};`,
+        );
+        // Strings from outside are checked as UTF-8 (account data was checked when it was written).
+        for (const f of this.model.structs.get(S)!.fields) {
+          const bad = `TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid UTF-8 in a string argument")`;
+          if (f.type.kind === "fstring") head.push(`  if (!ts_utf8_valid(${v}->${f.name}.bytes, ${v}->${f.name}.len)) ${bad};`);
+          else if (f.type.kind === "vec" && f.type.elem.kind === "fstring")
+            head.push(
+              `  for (uint64_t i = 0; i < ${v}->${f.name}.len; i++)`,
+              `    if (!ts_utf8_valid(${v}->${f.name}.items[i].bytes, ${v}->${f.name}.items[i].len)) ${bad};`,
+            );
+        }
       } else if (a.type.kind === "structRef" || a.type.kind === "arrayArg") {
         // Fixed layouts are Borsh-identical: copy to the heap, then check bools, enums, options and strings.
         const v = `arg_${a.name}`;
@@ -239,8 +261,20 @@ export class FunctionEmitter extends StatementEmitter {
               head.push(`    if (!ts_utf8_valid(${lv}.ptr, ${lv}.len)) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid UTF-8 in a string argument");`);
               continue;
             }
+            if (!isScalar(f.type) && borshIdentical(f.type, this.model)) {
+              // A struct or array whose Borsh bytes are its fixed layout: copied, then checked (bools, enums).
+              const lv = `${v}.v.${variant.name}.${f.name}`;
+              const size = this.fieldBytes(f.type);
+              head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
+              head.push(`    ts_memcpy(&${lv}, params->data + off, ${size});`, `    off += ${size};`);
+              head.push(...this.validation(lv, f.type, "    "));
+              continue;
+            }
             if (!isScalar(f.type))
-              this.reporter.fail(a.node, `${e.name}.${variant.name}.${f.name}: enum arguments carry integers, booleans, Pubkeys, enums and strings`);
+              this.reporter.fail(
+                a.node,
+                `${e.name}.${variant.name}.${f.name}: enum arguments carry integers, booleans, Pubkeys, enums, strings and fixed-size structs and arrays of those`,
+              );
             const size = scalarSize(f.type as ScalarType);
             head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
             head.push(`    ts_memcpy(&${v}.v.${variant.name}.${f.name}, params->data + off, ${size});`, `    off += ${size};`);
@@ -301,7 +335,7 @@ export class FunctionEmitter extends StatementEmitter {
       .map((a) => {
         const v = `a_${a.name}`;
         const S = (a.kind as { struct: StructDef }).struct.name;
-        return `if (${a.optional ? `${v} != NULL && ` : ""}${v}->data_len >= 8 && ts_key_eq(&${v}->owner, params->program_id)) TS_TRY(ts_pack_${S}(d_${a.name}, ${v}->data + 8, ${v}->data_len - 8));`;
+        return `if (${a.optional ? `${v} != NULL && ` : ""}${v}->data_len >= 8 && ts_key_eq(&${v}->owner, params->program_id)) TS_TRY(ts_pack_${S}(d_${a.name}, ${v}->data + 8, ${v}->data_len - 8, NULL));`;
       });
     return [
       ...packs,

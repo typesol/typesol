@@ -122,6 +122,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       return this.unwrap(v, node);
     }
     if (ts.isPropertyAccessExpression(node) && node.questionDotToken) return this.optionalChain(node);
+    const unbanged = this.withoutBang(node);
+    if (unbanged) return this.expr(unbanged, hint);
     this.noOptionalChain(node);
     if (ts.isBigIntLiteral(node)) {
       const value = BigInt(node.text.slice(0, -1).replace(/_/g, ""));
@@ -387,7 +389,14 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       this.line(this.textOfInt(typed.type.name, typed.c, t));
       return t;
     }
-    this.fail(node, `only strings, integers and booleans can be joined into text, not ${typeName(typed.type)}`);
+    if (typed.type.kind === "pubkey") {
+      // A Pubkey (or Hash) as base58, as Rust's `{}` prints it.
+      const t = this.tmp("b58");
+      this.line(`TS_Str ${t};`);
+      this.line(`TS_TRY(ts_base58_32((const uint8_t *)(${typed.c}), &${t}));`);
+      return t;
+    }
+    this.fail(node, `only strings, integers, booleans and Pubkeys can be joined into text, not ${typeName(typed.type)}`);
   }
 
   /** C statement writing the decimal text of an integer into the TS_Str `out`. */

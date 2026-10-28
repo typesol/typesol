@@ -22,7 +22,7 @@ import {
   pda,
   send,
 } from "./harness.js";
-import { addrBytes, allocate, ataOf, createMint, deployPort, fundAta, pk, tokenBalance } from "./ports-helpers.js";
+import { addrBytes, ataOf, createMint, deployPort, fundAta, pk, tokenBalance } from "./ports-helpers.js";
 
 const le64 = (n: bigint) => new Uint8Array(getU64Encoder().encode(n));
 
@@ -429,9 +429,8 @@ describe("port: tokens/external-delegate-token-master", () => {
     const userAccount = await generateKeyPairSigner();
     expectOk(
       await send(svm, authority, [
-        allocate(svm, authority, userAccount, 8 + 32 + 32 + 8, d.programId),
         ix(d, "initialize", {}, [
-          { address: userAccount.address, writable: true },
+          { address: userAccount.address, signer: userAccount, writable: true },
           { address: authority.address, signer: authority, writable: true },
           { address: SYSTEM_PROGRAM },
         ]),

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { resolveValueType } from "../analyze.js";
+import { resolveValueType, structNameOf } from "../analyze.js";
 import { INT_INFO, type ScalarType, type ValueType, isWritable, optionKey, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, type Value, type Local, type Closure, cString, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
@@ -83,7 +83,16 @@ export abstract class StatementEmitter extends CpiEmitter {
       const t = this.tmp("ret");
       this.line(`TSS_${returns.name} ${t};`);
       this.writeAggregate({ lv: t, type: returns, writable: true }, stmt.expression);
-      this.line(`sol_set_return_data((const uint8_t *)&${t}, sizeof(${t}));`);
+      if (this.model.structs.get(returns.name)!.layout === "borsh") {
+        // A @layout borsh struct returns its Borsh bytes, as Anchor's return data does.
+        const b = this.tmp("retb");
+        const w = this.tmp("retw");
+        this.line(`uint8_t *${b};`);
+        this.line(`TS_TRY(ts_alloc(sizeof(${t}), &${b}));`);
+        this.line(`uint64_t ${w} = 0;`);
+        this.line(`TS_TRY(ts_pack_${returns.name}(&${t}, ${b}, sizeof(${t}), &${w}));`);
+        this.line(`sol_set_return_data(${b}, ${w});`);
+      } else this.line(`sol_set_return_data((const uint8_t *)&${t}, sizeof(${t}));`);
       for (const l of this.epilogue()) this.line(l);
       this.line(`return SUCCESS;`);
       return;
@@ -573,10 +582,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       // Struct values: `const p: Point = { x, y }` (or a copy of another Point) is a local of its own.
-      const structType =
-        d.type && ts.isTypeReferenceNode(d.type) && ts.isIdentifier(d.type.typeName) && !d.type.typeArguments
-          ? this.model.structs.get(d.type.typeName.text)
-          : undefined;
+      const structType = d.type && structNameOf(d.type, this.scope) ? this.model.structs.get(structNameOf(d.type, this.scope)!) : undefined;
       if (structType) {
         if (mutable) this.fail(d, "bind struct values with const (their fields can still be updated)");
         if (structType.size === undefined || structType.vec) this.fail(d.type!, `${structType.name} has variable-size fields and cannot be a local`);

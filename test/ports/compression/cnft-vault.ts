@@ -7,7 +7,6 @@
 //    and calls the fixed MPL_BUBBLEGUM_ID.
 //  - IDL: the proof lengths are named `proof1_length` / `proof2_length` (snake case of proof1Length), where the original
 //    says `proof_1_length` / `proof_2_length`; the instruction bytes are the same.
-//  - logs: the tree addresses are logged on their own lines (no Pubkeys in templates).
 import {
   type AccountInfo,
   type Hash,
@@ -42,8 +41,7 @@ export function withdrawCnft(
   nonce: u64,
   index: u32,
 ): void {
-  log(`attempting to send nft ${index} from tree`);
-  log(merkleTree.key);
+  log(`attempting to send nft ${index} from tree ${merkleTree.key}`);
   // Bubblegum Transfer: tree config, leaf owner (the vault, signing), leaf delegate, new owner, merkle tree, log
   // wrapper, compression program, system program, then the proof.
   invoke(
@@ -89,9 +87,7 @@ export function withdrawTwoCnfts(
   index2: u32,
   proof2Length: u8,
 ): void {
-  log("attempting to send nfts from trees");
-  log(merkleTree1.key);
-  log(merkleTree2.key);
+  log(`attempting to send nfts from trees ${merkleTree1.key} and ${merkleTree2.key}`);
   const rest = remainingAccounts();
   log("withdrawing cNFT#1");
   invoke(

@@ -169,6 +169,11 @@ export function mathU64(op: u8, a: u64, b: u64, c: u64): u64 {
   return max(a, b);
 }
 
+/** 0: mulDiv, 1: mulDivCeil (u128, 256-bit intermediate) */
+export function mulDiv128(op: u8, a: u128, b: u128, c: u128): u128 {
+  return op === 0n ? mulDiv(a, b, c) : mulDivCeil(a, b, c);
+}
+
 export function isqrt128(a: u128): u128 {
   return isqrt(a);
 }
