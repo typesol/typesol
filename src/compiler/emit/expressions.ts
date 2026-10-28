@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { base58 } from "../../keys.js";
 import { calleeName, resolveValueType } from "../analyze.js";
 import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, optionKey, sameType, typeName } from "../model.js";
 import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
@@ -142,22 +143,14 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       return { c: `ts_str((const uint8_t *)${cString(node.text)}, ${len})`, type: STRING, stringLiteral: node.text };
     }
     if (ts.isTemplateExpression(node)) {
-      // `a${x}b${y}c` -> concatenations on the heap
-      let acc = this.tmp("tpl");
-      const head = node.head.text;
-      this.line(`TS_Str ${acc} = ts_str((const uint8_t *)${cString(head)}, ${Buffer.byteLength(head, "utf8")});`);
-      for (const span of node.templateSpans) {
-        for (const piece of [
-          this.toText(span.expression),
-          `ts_str((const uint8_t *)${cString(span.literal.text)}, ${Buffer.byteLength(span.literal.text, "utf8")})`,
-        ]) {
-          const next = this.tmp("tpl");
-          this.line(`TS_Str ${next};`);
-          this.line(`TS_TRY(ts_str_concat(${acc}, ${piece}, &${next}));`);
-          acc = next;
-        }
-      }
-      return { c: acc, type: STRING };
+      // `a${x}b${y}c`: one join on the heap (or a literal when every piece is known at compile time).
+      const pieces = this.templatePieces(node);
+      if (pieces.text !== undefined)
+        return { c: `ts_str((const uint8_t *)${cString(pieces.text)}, ${Buffer.byteLength(pieces.text, "utf8")})`, type: STRING, stringLiteral: pieces.text };
+      const t = this.tmp("tpl");
+      this.line(`TS_Str ${t};`);
+      this.line(`TS_TRY(ts_str_join(${pieces.arr}, ${pieces.n}, &${t}));`);
+      return { c: t, type: STRING };
     }
     if (node.kind === ts.SyntaxKind.NullKeyword) return { c: "", type: BOOL, isNull: true };
     if (node.kind === ts.SyntaxKind.TrueKeyword) return { c: "true", type: BOOL };
@@ -365,6 +358,56 @@ export abstract class ExpressionEmitter extends StorageEmitter {
   }
 
   /** A string view of a string, integer or boolean (for concatenation and templates). */
+  /**
+   * A template literal's pieces in order, text known at compile time folded in: all text (`text`), or a C array of
+   * TS_Str (`arr`, `n` entries). When a later piece runs statements, earlier pieces that view account text are copied
+   * first, as JS reads them then.
+   */
+  protected templatePieces(node: ts.TemplateExpression): { text: string; arr?: undefined; n?: undefined } | { text?: undefined; arr: string; n: number } {
+    const parts: { c?: string; text?: string }[] = [];
+    const lit = (text: string) => {
+      if (!text) return;
+      const last = parts.at(-1);
+      if (last?.text !== undefined) last.text += text;
+      else parts.push({ text });
+    };
+    lit(node.head.text);
+    for (const span of node.templateSpans) {
+      const known = this.constantText(span.expression);
+      if (known !== undefined) lit(known);
+      else {
+        const mark = this.lines.length;
+        const c = this.toText(span.expression);
+        for (const p of parts) if (p.c !== undefined) p.c = this.settle({ c: p.c, type: STRING }, mark).c;
+        parts.push({ c });
+      }
+      lit(span.literal.text);
+    }
+    if (parts.every((p) => p.text !== undefined)) return { text: parts.map((p) => p.text).join("") };
+    const strOf = (text: string) => `ts_str((const uint8_t *)${cString(text)}, ${Buffer.byteLength(text, "utf8")})`;
+    const arr = this.tmp("parts");
+    this.line(`TS_Str ${arr}[${parts.length}] = {${parts.map((p) => (p.text !== undefined ? strOf(p.text) : p.c)).join(", ")}};`);
+    return { arr, n: parts.length };
+  }
+
+  /**
+   * The text of `${e}` when it is known at compile time: a string literal or constant, a non-negative integer
+   * literal, a boolean literal, or a Pubkey constant (its base58). Undefined otherwise.
+   */
+  protected constantText(e: ts.Expression): string | undefined {
+    if (ts.isParenthesizedExpression(e)) return this.constantText(e.expression);
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
+    if (e.kind === ts.SyntaxKind.TrueKeyword) return "true";
+    if (e.kind === ts.SyntaxKind.FalseKeyword) return "false";
+    if (ts.isBigIntLiteral(e)) return BigInt(e.text.slice(0, -1).replace(/_/g, "")).toString();
+    if (ts.isIdentifier(e) && !this.lookup(e.text)) {
+      const k = this.model.constants.get(e.text);
+      if (k && typeof k.value === "string") return k.value;
+      if (k && typeof k.value === "object") return base58(Uint8Array.from(k.value.pubkey));
+    }
+    return undefined;
+  }
+
   protected toText(node: ts.Expression): string {
     const v = this.expr(node);
     if (v.type.kind === "string") return v.c;
