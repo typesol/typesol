@@ -149,7 +149,7 @@ describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
     expect(customError(ext)).toBe(2030);
   });
 
-  it("MintOf<Mint, \"auth\">: Anchor's mint::authority naming the parameter (2016)", async () => {
+  it('MintOf<Mint, "auth">: Anchor\'s mint::authority naming the parameter (2016)', async () => {
     const payer = await fundedSigner(d.svm);
     const [mint] = await pda(d.programId, ["ext", payer.address]);
     const create = [
