@@ -35,5 +35,13 @@ describe("Metaplex Core plugins", () => {
     );
     expect(errors(`core.removePlugin(asset, null, payer, null, sys, "Edition")`)).toBe("");
     expect(errors(`core.burnAsset(asset, null, payer, null); core.mintPlugin(asset)`)).not.toBe("");
+    const add = (plugin: string) => errors(`core.addExternalPlugin(asset, null, payer, null, sys, ${plugin})`);
+    expect(add(`{ kind: "AppData", dataAuthority: "owner", schema: "json" }`)).toBe("");
+    expect(add(`{ kind: "Oracle", baseAddress: other.key, checks: [{ event: "transfer", canReject: true }], resultsOffset: 8n }`)).toBe("");
+    expect(add(`{ kind: "Oracle", baseAddress: other.key, checks: [{ event: "mint" as never }] }`)).toMatch(/event is "create", "transfer"/);
+    expect(add(`{ kind: "AppData", dataAuthority: "owner", hookedProgram: other.key } as never`)).toMatch(/AppData takes dataAuthority, schema and authority/);
+    expect(add(`{ kind: "LifecycleHook", hookedProgram: other.key, checks: [], extraAccounts: [{ kind: "customPda" } as never] }`)).toMatch(
+      /an extra account is/,
+    );
   });
 });

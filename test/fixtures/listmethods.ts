@@ -1,6 +1,7 @@
 // some / every / find / findIndex / reduce / includes / indexOf / forEach on Vec, FixedArray, FixedVec and Vec arguments.
 import {
   type Account,
+  type FixedString,
   type FixedVec,
   type Init,
   type Mut,
@@ -10,6 +11,7 @@ import {
   type Vec,
 
 
+  byteLength,
   fixedArray,
   fixedVec,
   i64,
@@ -118,4 +120,16 @@ export function chains(payer: Signer, book: Account<Book>, xs: Vec<u64>): ChainO
 export function tooSmall(payer: Signer, xs: Vec<u64>): u64 {
   const ys: FixedVec<u64, 1> = xs.filter((x) => x > 0n);
   return ys.length;
+}
+
+export interface Pair {
+  qty: u64;
+  doubled: u64;
+}
+
+/** map to structs and to text, stored as annotated FixedVecs (each result written into its slot). */
+export function pairs(payer: Signer, book: Account<Book>): u64 {
+  const ps: FixedVec<Pair, 8> = book.orders.filter((o) => o.open).map((o) => ({ qty: o.qty, doubled: o.qty * 2n }));
+  const names: FixedVec<FixedString<8>, 4> = book.orders.map((o) => (o.open ? "open" : "closed"));
+  return ps.length * 1000n + ps.get(1n).doubled * 10n + byteLength(names.get(1n));
 }

@@ -21,3 +21,13 @@ export function fire(payer: Signer, holder: Account<Holder>, ids: FixedVec<u64, 
   emit<Listed>({ n: 0n, xs: fixedVec([9n]), tags: tags });
   return ids.reduce((a: u64, x) => a + x, 0n);
 }
+
+export interface Ticket {
+  id: u64;
+  legs: FixedVec<u64, 3>;
+}
+
+/** A struct argument holding a FixedVec: only an argument, so it is read as Anchor sends it (the FixedVec a Borsh Vec). */
+export function place(payer: Signer, ticket: Ticket): u64 {
+  return ticket.id * 100n + ticket.legs.length * 10n + ticket.legs.reduce((a: u64, x) => a + x, 0n);
+}

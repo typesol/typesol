@@ -1,7 +1,18 @@
 import ts from "typescript";
-import { MAX_RETURN_DATA, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
-import { INT_INFO, type FieldType, type ScalarType, type ValueType, isWritable, optionKey, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, type Value, type Local, type Closure, cString, fixedVecC, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
+import { MAX_RETURN_DATA, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
+import {
+  INT_INFO,
+  type AccountParam,
+  type FieldType,
+  type ScalarType,
+  type ValueType,
+  isScalar,
+  isWritable,
+  optionKey,
+  scalarSize,
+  typeName,
+} from "../model.js";
+import { U64, BOOL, type Value, type Local, type Closure, type Ref, cString, fixedVecC, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
 
 /**
@@ -247,6 +258,15 @@ export abstract class StatementEmitter extends CpiEmitter {
     });
   }
 
+  /** The function an identifier names (a closure, a local function or a helper), as something to expand; else undefined. */
+  protected functionNamed(id: ts.Identifier): Closure | undefined {
+    const l = this.lookup(id.text);
+    if (l) return l.closure;
+    const name = calleeName(id, this.model.helperDecls, this.checker);
+    const h = name ? (this.model.helpers.get(name) ?? this.model.generics.get(name)) : undefined;
+    return h ? { node: h.node, name: h.display, scopes: [] } : undefined;
+  }
+
   /** `xs.map(…)` / `xs.filter(…)` (or a chain of them): a list built element by element, not stored anywhere yet. */
   protected isPipeline(e: ts.Expression): e is ts.CallExpression {
     return ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && (e.expression.name.text === "map" || e.expression.name.text === "filter");
@@ -365,8 +385,12 @@ export abstract class StatementEmitter extends CpiEmitter {
       const n = args[1] && ts.isLiteralTypeNode(args[1]) && ts.isNumericLiteral(args[1].literal) ? Number(args[1].literal.text) : NaN;
       const elemNode = args[0];
       const sn = elemNode && structNameOf(elemNode, this.scope);
+      const fs = elemNode && typesolName(elemNode, this.scope.imports) === "FixedString" ? (elemNode as ts.TypeReferenceNode).typeArguments?.[0] : undefined;
+      const fcap = fs && ts.isLiteralTypeNode(fs) && ts.isNumericLiteral(fs.literal) ? Number(fs.literal.text) : NaN;
+      if (Number.isInteger(fcap) && fcap >= 1) this.model.fstrings.add(fcap);
       annotatedElem = elemNode
-        ? (resolveScalarType(elemNode, this.scope) ?? (sn && this.model.structs.has(sn) ? { kind: "struct", name: sn } : undefined))
+        ? (resolveScalarType(elemNode, this.scope) ??
+          (sn && this.model.structs.has(sn) ? { kind: "struct", name: sn } : Number.isInteger(fcap) && fcap >= 1 ? { kind: "fstring", cap: fcap } : undefined))
         : undefined;
       if (!ts.isTypeReferenceNode(t) || typesolName(t, this.scope.imports) !== "FixedVec" || !annotatedElem || !Number.isInteger(n) || n < 1)
         this.fail(t, "annotate the new list as FixedVec<T, N> (N a literal)");
@@ -384,19 +408,36 @@ export abstract class StatementEmitter extends CpiEmitter {
     this.line(`/* ${c} */`);
     let elem: FieldType | undefined = stages.some((st) => st.kind === "map") ? undefined : this.listElem(base);
     const cap0 = cap!;
-    this.eachElement(init, init, { index: `__ml${this.temp++}`, ci: this.tmp("ml_i") }, (element) => {
-      if (!elem) {
-        const v = this.expr(element);
-        elem = v.type as FieldType;
-      }
-      const target = annotatedElem ?? elem;
-      const sub = { lv: `${c}.items[${c}.len]`, type: target, writable: true };
-      this.line(`if (${c}.len >= ${cap0}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the new list is full");`);
-      const vt = this.storageValueType(target);
-      if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(element, vt), vt, element)).c) + ";");
-      else this.writeAggregate(sub, element);
-      this.line(`${c}.len++;`);
-    });
+    // A last map to structs or FixedStrings (annotated) writes each result straight into its slot.
+    const last = stages.at(-1);
+    if (last?.kind === "map" && annotatedElem && !isScalar(annotatedElem)) {
+      const target = annotatedElem;
+      const inner = (init.expression as ts.PropertyAccessExpression).expression;
+      this.eachElement(inner, init, { index: `__ml${this.temp++}`, ci: this.tmp("ml_i") }, (element, index) => {
+        this.line(`if (${c}.len >= ${cap0}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the new list is full");`);
+        const closure: Closure = { node: last.fn, name: "map's callback", scopes: [...this.scopes] };
+        this.expandClosure(closure, [element, index].slice(0, last.fn.parameters.length), last.fn, {
+          lv: `${c}.items[${c}.len]`,
+          type: target,
+          writable: true,
+        });
+        this.line(`${c}.len++;`);
+      });
+      elem = target;
+    } else
+      this.eachElement(init, init, { index: `__ml${this.temp++}`, ci: this.tmp("ml_i") }, (element) => {
+        if (!elem) {
+          const v = this.expr(element);
+          elem = v.type as FieldType;
+        }
+        const target = annotatedElem ?? elem;
+        const sub = { lv: `${c}.items[${c}.len]`, type: target, writable: true };
+        this.line(`if (${c}.len >= ${cap0}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the new list is full");`);
+        const vt = this.storageValueType(target);
+        if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(element, vt), vt, element)).c) + ";");
+        else this.writeAggregate(sub, element);
+        this.line(`${c}.len++;`);
+      });
     const t = { kind: "vec", elem: annotatedElem ?? elem!, cap: cap0 } as FieldType & { kind: "vec"; cap: number };
     const bytes = 4 + this.fieldBytes(t.elem) * cap0;
     if (bytes > 2048) this.fail(init, `the new list takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB (a smaller FixedVec<T, N>)`);
@@ -450,11 +491,13 @@ export abstract class StatementEmitter extends CpiEmitter {
    * was declared with, so a block around the call that declares the same name does not change what it reads, and
    * writes to captured `let`s are seen by the enclosing function. Returns the result (undefined for no value).
    */
-  protected expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined {
+  protected expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node, into?: Ref): Value | undefined {
     const fn = c.node;
     if (this.inlining.has(fn)) this.fail(node, `${c.name} calls itself: closures cannot be recursive`);
     if (args.length !== fn.parameters.length) this.fail(node, `${c.name}() takes ${fn.parameters.length} argument(s)`);
     const params = new Map<string, Local>();
+    // Account parameters (of a helper expanded here) name the caller's accounts while the body runs.
+    const aliases = new Map<string, AccountParam>();
     fn.parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken) this.fail(p, "closure parameters are plain names");
       const arg = args[i]!;
@@ -462,6 +505,14 @@ export abstract class StatementEmitter extends CpiEmitter {
       // A function parameter (of a helper expanded here): the function given, expanded where the body calls it.
       if (p.type && ts.isFunctionTypeNode(p.type)) {
         params.set(name, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
+        return;
+      }
+      if (p.type && ts.isIdentifier(arg) && !this.lookup(arg.text) && this.accounts.has(arg.text) && !resolveValueType(p.type, this.scope)) {
+        const acct = this.accounts.get(arg.text)!;
+        const other = this.accounts.get(name);
+        if (other && other !== acct)
+          this.fail(p.name, `${c.name}'s parameter ${name} names an account of the caller's too; rename the parameter (it is expanded where it is called)`);
+        aliases.set(name, acct);
         return;
       }
       const c2 = `l_${name}_${this.temp++}`;
@@ -491,10 +542,13 @@ export abstract class StatementEmitter extends CpiEmitter {
       declAt: this.lines.length,
       pad: "  ".repeat(this.indent),
       node: fn,
+      into,
     };
     this.line(declared ? `${declared.kind === "pubkey" ? "SolPubkey" : valueC(declared)} ${frame.result};` : `/* ${frame.result} */`);
     const saved = { scopes: this.scopes, loops: this.loops.splice(0) };
     this.scopes = [...c.scopes, params];
+    const shadowed = [...aliases.keys()].map((n) => [n, this.accounts.get(n)] as const);
+    for (const [n, a] of aliases) this.accounts.set(n, a);
     this.inlining.add(fn);
     this.inlineFrames.push(frame);
     try {
@@ -508,7 +562,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           const ret = ts.factory.createReturnStatement(body);
           ts.setTextRange(ret, body);
           (ret as { parent?: ts.Node }).parent = fn;
-          if (ts.isCallExpression(body) && !frame.type) {
+          if (ts.isCallExpression(body) && !frame.type && !into) {
             const v = this.call(body, false);
             if (v) this.closureResult(v, body, frame);
           } else this.closureReturn(ret, frame);
@@ -519,6 +573,10 @@ export abstract class StatementEmitter extends CpiEmitter {
     } finally {
       this.inlineFrames.pop();
       this.inlining.delete(fn);
+      for (const [n, a] of shadowed) {
+        if (a) this.accounts.set(n, a);
+        else this.accounts.delete(n);
+      }
       this.scopes = saved.scopes;
       this.loops.push(...saved.loops);
     }
@@ -649,6 +707,15 @@ export abstract class StatementEmitter extends CpiEmitter {
 
   /** `return` inside an expanded closure: the value goes to the closure's result, then past its body. */
   protected closureReturn(stmt: ts.ReturnStatement, frame: (typeof this.inlineFrames)[number]) {
+    if (frame.into && stmt.expression) {
+      // Written straight into its place (an object literal for a struct, text for a FixedString, or a value).
+      const target = frame.into;
+      const vt = this.storageValueType(target.type);
+      if (vt) this.line(this.writeStorage(target, this.ownedString(this.expect(this.expr(stmt.expression, vt), vt, stmt.expression)).c) + ";");
+      else this.writeAggregate(target, stmt.expression);
+      this.line(`goto ${frame.label};`);
+      return;
+    }
     if (!stmt.expression) {
       if (frame.type) this.fail(stmt, "this function returns a value");
       this.line(`goto ${frame.label};`);
@@ -730,6 +797,14 @@ export abstract class StatementEmitter extends CpiEmitter {
       const c = `l_${name}_${this.temp++}`;
 
       const init = d.initializer;
+      // A function as a value: another name for one (`const h = g`), or the one a function returns (`adder(5n)`).
+      const made = ts.isCallExpression(init) ? this.madeFunction(init) : undefined;
+      const alias = ts.isIdentifier(init) ? this.functionNamed(init) : undefined;
+      if (made || alias) {
+        if (mutable) this.fail(d, "bind functions with const");
+        this.scopes.at(-1)!.set(name, { c: "", type: BOOL, mutable: false, closure: (made ?? alias)! });
+        continue;
+      }
       const fn = ts.isCallExpression(init) ? this.exportName(init.expression) : undefined;
       if (fn === "fixedArray") {
         const t = this.localArray(init as ts.CallExpression, c);

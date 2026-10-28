@@ -96,3 +96,35 @@ export function capturing(x: u64): u64 {
   };
   return applyTwice(addX, 1n) * 1000n + compose((v) => v * x, addX, 2n) * 10n + calls;
 }
+
+/** Functions that make functions, functions as values, and a generic helper given a closure. */
+function adder(n: u64): (x: u64) => u64 {
+  return (x: u64): u64 => x + n;
+}
+const scaler =
+  (k: u64) =>
+  (x: u64): u64 =>
+    x * k;
+function applyT<T>(f: (x: T) => T, v: T): T {
+  return f(v);
+}
+export function made(x: u64): u64 {
+  const add5 = adder(5n);
+  const triple = scaler(3n);
+  let seen = 0n;
+  const track = (v: u64): u64 => {
+    seen += v;
+    return v;
+  };
+  const t2 = track;
+  return add5(x) * 10_000n + triple(x) * 100n + adder(1n)(x) + applyT<u64>(t2, 7n) * 0n + seen;
+}
+
+/** A helper taking an account, given a closure: expanded where it is called, the account its own. */
+function bump(c: Mut<Cart>, f: (x: u64) => u64): void {
+  c.total = f(c.total);
+}
+export function bumpTotal(payer: Signer, cart: Mut<Cart>, by: u64): u64 {
+  bump(cart, (t) => t + by);
+  return cart.total;
+}

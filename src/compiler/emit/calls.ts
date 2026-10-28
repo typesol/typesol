@@ -9,6 +9,7 @@ import {
   type FieldType,
   type Helper,
   type IntName,
+  type ScalarType,
   isScalar,
   isWritable,
   sameType,
@@ -38,6 +39,7 @@ import {
   emptySizeC,
   vecLenCheck,
   type Closure,
+  type Local,
 } from "./shared.js";
 import { ExpressionEmitter } from "./expressions.js";
 
@@ -446,9 +448,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     if (builtin) this.fail(callee, `${builtin} cannot be called here`);
 
+    // `adder(5n)(1n)`: the function a function returns, called right away.
+    if (ts.isCallExpression(callee)) {
+      const made = this.madeFunction(callee);
+      if (made) return this.expandClosure(made, node.arguments, node);
+    }
     if (ts.isIdentifier(callee)) {
       const local = this.lookup(callee.text);
+      if (local?.closure && this.returnedFunction(local.closure.node))
+        this.fail(node, `${callee.text} returns a function: bind it (const f = ${callee.text}(…)) or call it right away (${callee.text}(…)(…))`);
       if (local?.closure) return this.expandClosure(local.closure, node.arguments, node);
+      const name = calleeName(callee, this.model.helperDecls, this.checker) ?? callee.text;
+      if (!local && this.model.factories.has(name))
+        this.fail(node, `${callee.text} returns a function: bind it (const f = ${callee.text}(…)) or call it right away (${callee.text}(…)(…))`);
     }
     const inlined = this.helperWithClosure(node);
     if (inlined) return inlined.value;
@@ -929,15 +941,78 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected helperWithClosure(node: ts.CallExpression): { value: Value | undefined } | undefined {
     const g = this.givenClosure(node);
     if (!g) return undefined;
-    if (g.typeParams.length)
-      this.fail(node, `${g.display} has type parameters, so it takes only functions that read nothing around them; pass the values the function needs instead`);
-    for (const p of g.node.parameters)
-      if (p.type && !ts.isFunctionTypeNode(p.type) && !resolveValueType(p.type, this.scope))
-        this.fail(
-          node,
-          `${g.display} takes accounts or lists, so it cannot be expanded here for the function that reads the variables around it; pass the values it needs instead`,
-        );
-    return { value: this.expandClosure({ node: g.node, name: g.display, scopes: [] }, node.arguments, node) };
+    // Type parameters: bound from the call (as an instance would be) while the body is expanded.
+    const saved = this.scope;
+    if (g.typeParams.length) {
+      const typeArgs = this.typeArgsOf(node, g);
+      const bound = new Map<string, ScalarType>();
+      const structs = new Map<string, string>();
+      g.typeParams.forEach((n, i) => {
+        const t = typeArgs[i]!;
+        if (t.kind === "struct") structs.set(n, t.name);
+        else bound.set(n, t);
+      });
+      this.scope = { ...this.scope, typeArgs: bound, structArgs: structs };
+    }
+    try {
+      return { value: this.expandClosure({ node: g.node, name: g.display, scopes: [] }, node.arguments, node) };
+    } finally {
+      this.scope = saved;
+    }
+  }
+
+  /** The function a function returns (`return (x) => x + n`, or an arrow body `(n) => (x) => x + n`), if it returns one. */
+  protected returnedFunction(fn: Closure["node"]): ts.ArrowFunction | ts.FunctionExpression | undefined {
+    const strip = (e: ts.Expression | undefined): ts.Expression | undefined => (e && ts.isParenthesizedExpression(e) ? strip(e.expression) : e);
+    const body = fn.body;
+    let ret: ts.Expression | undefined;
+    if (body && !ts.isBlock(body)) ret = strip(body);
+    else if (body && body.statements.length === 1 && ts.isReturnStatement(body.statements[0]!)) ret = strip(body.statements[0].expression);
+    if (ret && (ts.isArrowFunction(ret) || ts.isFunctionExpression(ret))) return ret;
+    if (fn.type && ts.isFunctionTypeNode(fn.type))
+      this.fail(fn, "a function that returns a function has one statement: return (x) => … (the function it makes)");
+    return undefined;
+  }
+
+  /**
+   * `adder(5n)`, where `adder` returns a function: the arguments are evaluated here into locals of the current block,
+   * and the function it returns is bound to them as a closure (expanded where it is called, like any closure).
+   */
+  protected madeFunction(call: ts.CallExpression): Closure | undefined {
+    if (!ts.isIdentifier(call.expression)) return undefined;
+    const local = this.lookup(call.expression.text);
+    let maker: Closure | undefined = local?.closure;
+    if (!maker && !local) {
+      const name = calleeName(call.expression, this.model.helperDecls, this.checker) ?? call.expression.text;
+      const node = this.model.factories.get(name);
+      if (node) maker = { node, name: call.expression.text, scopes: [] };
+    }
+    if (!maker) return undefined;
+    const made = this.returnedFunction(maker.node);
+    if (!made) return undefined;
+    const fn = maker.node;
+    if (call.arguments.length !== fn.parameters.length) this.fail(call, `${maker.name}() takes ${fn.parameters.length} argument(s)`);
+    const params = new Map<string, Local>();
+    fn.parameters.forEach((p, i) => {
+      if (!ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken) this.fail(p, "parameters are plain names");
+      const arg = call.arguments[i]!;
+      if (p.type && ts.isFunctionTypeNode(p.type)) {
+        params.set(p.name.text, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
+        return;
+      }
+      const annotated = p.type ? resolveValueType(p.type, this.scope) : undefined;
+      let v = this.expr(arg, annotated);
+      if (v.literal !== undefined && !annotated) v = this.literal(v.literal, U64, arg);
+      const type = annotated ?? v.type;
+      if (!["int", "bool", "pubkey", "string", "enum", "option"].includes(type.kind))
+        this.fail(arg, `the function made keeps integers, booleans, Pubkeys, strings, enums or Options, not ${typeName(type)}`);
+      v = this.expect(v, type, arg);
+      const c = `l_${p.name.text}_${this.temp++}`;
+      if (type.kind === "pubkey") this.line(`SolPubkey ${c} = *(${v.c});`);
+      else this.line(`${valueC(type)} ${c} = ${this.ownedString(v).c};`);
+      params.set(p.name.text, { c, type, mutable: true });
+    });
+    return { node: made, name: `the function ${maker.name}() made`, scopes: [...maker.scopes, params] };
   }
 
   /** A function given for a function parameter of an expanded helper or closure, as something to expand. */

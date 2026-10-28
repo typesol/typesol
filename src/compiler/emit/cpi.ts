@@ -41,7 +41,7 @@ import {
 import { CallEmitter } from "./calls.js";
 
 /** One piece of a Metaplex instruction's Borsh data: fixed bytes, or a value lowered and serialized in source order. */
-type MplField = { bytes: number[] } | { value: ts.Expression; type: ValueType };
+type MplField = { bytes: number[] } | { value: ts.Expression; type: ValueType } | { c: string; n: string };
 
 /**
  * Bubblegum instructions that replace a leaf: discriminator, accounts in order ([label, writable, signer, optional,
@@ -1595,7 +1595,8 @@ export abstract class CpiEmitter extends CallEmitter {
         const name = this.tmp("bytes");
         this.line(`static const uint8_t ${name}[${f.bytes.length}] = ${cBytes(f.bytes)};`);
         put(name, String(f.bytes.length), f.bytes.length);
-      } else this.serialize(this.expect(this.expr(f.value, f.type), f.type, f.value), f.value, put);
+      } else if ("c" in f) put(f.c, f.n);
+      else this.serialize(this.expect(this.expr(f.value, f.type), f.type, f.value), f.value, put);
     }
     finish(at);
     return { buf, len };
@@ -1878,11 +1879,235 @@ export abstract class CpiEmitter extends CallEmitter {
         this.cpi(p, metas, data.buf, data.len, seedsAt(4));
         return undefined;
       }
+      case "addExternalPlugin":
+      case "removeExternalPlugin":
+      case "writeExternalPluginData": {
+        // Add/RemoveExternalPluginAdapterV1: asset, collection, payer, authority, systemProgram, logWrapper;
+        // WriteExternalPluginAdapterDataV1 has a buffer account (left out: the data is in the instruction) before systemProgram.
+        const write = method === "writeExternalPluginData";
+        const n = write ? 7 : 6;
+        if (a.length !== n && a.length !== n + 1)
+          this.fail(
+            node,
+            `${method}(asset, collection | null, payer, authority | null, systemProgram, ${method === "addExternalPlugin" ? "plugin" : write ? "key, data" : "key"}, signerSeeds?)`,
+          );
+        const metas = [
+          this.mplMeta(a[0], core, "the asset", true, false),
+          this.mplMeta(a[1], core, "the collection", true, false),
+          this.mplMeta(a[2], core, "the payer", true, true),
+          this.mplMeta(a[3], core, "the authority", false, true),
+          ...(write ? [self] : []),
+          this.mplMeta(a[4], core, "the system program", false, false),
+          self,
+        ];
+        const body =
+          method === "addExternalPlugin"
+            ? this.coreExternalPlugin(a[5]!)
+            : write
+              ? [...this.coreExternalKey(a[5]!), ...this.coreExternalData(a[6]!)]
+              : this.coreExternalKey(a[5]!);
+        const data = this.mplData(node, 1024, [{ bytes: [{ addExternalPlugin: 22, removeExternalPlugin: 24, writeExternalPluginData: 28 }[method]] }, ...body]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(n));
+        return undefined;
+      }
+      case "addCollectionExternalPlugin":
+      case "removeCollectionExternalPlugin":
+      case "writeCollectionExternalPluginData": {
+        // The same on a collection: collection, payer, authority, (buffer,) systemProgram, logWrapper.
+        const write = method === "writeCollectionExternalPluginData";
+        const n = write ? 6 : 5;
+        if (a.length !== n && a.length !== n + 1)
+          this.fail(
+            node,
+            `${method}(collection, payer, authority | null, systemProgram, ${method === "addCollectionExternalPlugin" ? "plugin" : write ? "key, data" : "key"}, signerSeeds?)`,
+          );
+        const metas = [
+          this.mplMeta(a[0], core, "the collection", true, false),
+          this.mplMeta(a[1], core, "the payer", true, true),
+          this.mplMeta(a[2], core, "the authority", false, true),
+          ...(write ? [self] : []),
+          this.mplMeta(a[3], core, "the system program", false, false),
+          self,
+        ];
+        const body =
+          method === "addCollectionExternalPlugin"
+            ? this.coreExternalPlugin(a[4]!)
+            : write
+              ? [...this.coreExternalKey(a[4]!), ...this.coreExternalData(a[5]!)]
+              : this.coreExternalKey(a[4]!);
+        const data = this.mplData(node, 1024, [
+          { bytes: [{ addCollectionExternalPlugin: 23, removeCollectionExternalPlugin: 25, writeCollectionExternalPluginData: 29 }[method]] },
+          ...body,
+        ]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(n));
+        return undefined;
+      }
     }
     this.fail(
       node.expression,
-      `Metaplex Core supports createAsset, createCollection, addPlugin, updatePlugin, removePlugin (and the Collection forms), transferAsset and burnAsset, not ${method}`,
+      `Metaplex Core supports createAsset, createCollection, addPlugin, updatePlugin, removePlugin, addExternalPlugin, removeExternalPlugin, writeExternalPluginData (and the Collection forms), transferAsset and burnAsset, not ${method}`,
     );
+  }
+
+  /** The fields of a Core object literal (`{ kind: "AppData", … }`) by name. */
+  private coreProps(node: ts.Expression, what: string): Map<string, ts.Expression> {
+    let n = node;
+    while (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isSatisfiesExpression(n)) n = n.expression;
+    if (!ts.isObjectLiteralExpression(n)) this.fail(n, `${what} is an object literal: { kind: "…", … }`);
+    const props = new Map<string, ts.Expression>();
+    for (const q of n.properties) {
+      if (ts.isPropertyAssignment(q) && ts.isIdentifier(q.name)) props.set(q.name.text, q.initializer);
+      else if (ts.isShorthandPropertyAssignment(q)) props.set(q.name.text, q.name);
+      else this.fail(q, "write the fields as name: value");
+    }
+    return props;
+  }
+
+  /** PluginAuthority: "none" | "owner" | "updateAuthority" (literals), or an address. */
+  private coreAuthority(n: ts.Expression): MplField[] {
+    if (ts.isStringLiteral(n)) {
+      const i = ["none", "owner", "updateAuthority"].indexOf(n.text);
+      if (i < 0) this.fail(n, 'an authority is "none", "owner", "updateAuthority" or a Pubkey');
+      return [{ bytes: [i] }];
+    }
+    return [{ bytes: [3] }, { value: n, type: PUBKEY }];
+  }
+
+  private coreOption(n: ts.Expression | undefined, inner: (n: ts.Expression) => MplField[]): MplField[] {
+    return n ? [{ bytes: [1] }, ...inner(n)] : [{ bytes: [0] }];
+  }
+
+  private coreSchema(n: ts.Expression): MplField[] {
+    const i = ts.isStringLiteral(n) ? ["binary", "json", "msgpack"].indexOf(n.text) : -1;
+    if (i < 0) this.fail(n, 'schema is "binary", "json" or "msgpack"');
+    return [{ bytes: [i] }];
+  }
+
+  /** Vec<(HookableLifecycleEvent, ExternalCheckResult)>: `[{ event: "transfer", canReject: true }, …]`. */
+  private coreChecks(n: ts.Expression | undefined, at: ts.Node): MplField[] {
+    if (!n || !ts.isArrayLiteralExpression(n)) this.fail(n ?? at, 'checks is a list: [{ event: "transfer", canApprove: true, canReject: true }]');
+    const out: MplField[] = [{ bytes: [n.elements.length & 0xff, 0, 0, 0] }];
+    for (const e of n.elements) {
+      const p = this.coreProps(e, "a lifecycle check");
+      const ev = p.get("event");
+      const i = ev && ts.isStringLiteral(ev) ? ["create", "transfer", "burn", "update", "execute"].indexOf(ev.text) : -1;
+      if (i < 0) this.fail(ev ?? e, 'event is "create", "transfer", "burn", "update" or "execute"');
+      let flags = 0;
+      for (const [k, bit] of [
+        ["canListen", 1],
+        ["canApprove", 2],
+        ["canReject", 4],
+      ] as const) {
+        const v = p.get(k);
+        if (v && v.kind !== ts.SyntaxKind.TrueKeyword && v.kind !== ts.SyntaxKind.FalseKeyword) this.fail(v, `${k} is true or false`);
+        if (v?.kind === ts.SyntaxKind.TrueKeyword) flags |= bit;
+      }
+      for (const k of p.keys())
+        if (!["event", "canListen", "canApprove", "canReject"].includes(k))
+          this.fail(e, `a lifecycle check has event, canListen, canApprove and canReject, not ${k}`);
+      out.push({ bytes: [i, flags, 0, 0, 0] });
+    }
+    return out;
+  }
+
+  /** ExtraAccount: `{ kind: "address", address, isSigner?, isWritable? }` or a preconfigured one (`{ kind: "owner" }`, …). */
+  private coreExtraAccount(n: ts.Expression): MplField[] {
+    const p = this.coreProps(n, "an extra account");
+    const kind = p.get("kind");
+    const kinds = ["program", "collection", "owner", "recipient", "asset", "customPda", "address"];
+    const i = kind && ts.isStringLiteral(kind) ? kinds.indexOf(kind.text) : -1;
+    if (i < 0 || i === 5) this.fail(kind ?? n, 'an extra account is { kind: "address", address } or "program", "collection", "owner", "recipient", "asset"');
+    const flag = (k: string) => {
+      const v = p.get(k);
+      if (v && v.kind !== ts.SyntaxKind.TrueKeyword && v.kind !== ts.SyntaxKind.FalseKeyword) this.fail(v, `${k} is true or false`);
+      return v?.kind === ts.SyntaxKind.TrueKeyword ? 1 : 0;
+    };
+    if (i === 6) {
+      const addr = p.get("address");
+      if (!addr) this.fail(n, "an address extra account needs address");
+      return [{ bytes: [6] }, { value: addr, type: PUBKEY }, { bytes: [flag("isSigner"), flag("isWritable")] }];
+    }
+    return [{ bytes: [i, flag("isSigner"), flag("isWritable")] }];
+  }
+
+  /**
+   * ExternalPluginAdapterInitInfo from a literal: `{ kind: "AppData", dataAuthority, schema? }`, `{ kind: "Oracle",
+   * baseAddress, checks, resultsOffset?, baseAddressConfig? }`, `{ kind: "LifecycleHook", hookedProgram, checks,
+   * extraAccounts?, dataAuthority?, schema? }` and the Linked forms (collections); `authority?` is the plugin's own.
+   */
+  protected coreExternalPlugin(n: ts.Expression): MplField[] {
+    const p = this.coreProps(n, "a Core external plugin");
+    const kind = p.get("kind");
+    const kinds = ["LifecycleHook", "Oracle", "AppData", "LinkedLifecycleHook", "LinkedAppData"];
+    const i = kind && ts.isStringLiteral(kind) ? kinds.indexOf(kind.text) : -1;
+    if (i < 0) this.fail(kind ?? n, `a Core external plugin is ${kinds.join(", ")}`);
+    const allowed: Record<number, string[]> = {
+      0: ["hookedProgram", "checks", "extraAccounts", "dataAuthority", "schema"],
+      1: ["baseAddress", "checks", "baseAddressConfig", "resultsOffset"],
+      2: ["dataAuthority", "schema"],
+      3: ["hookedProgram", "checks", "extraAccounts", "dataAuthority", "schema"],
+      4: ["dataAuthority", "schema"],
+    };
+    for (const k of p.keys())
+      if (k !== "kind" && k !== "authority" && !allowed[i]!.includes(k)) this.fail(n, `${kinds[i]} takes ${allowed[i]!.join(", ")} and authority, not ${k}`);
+    const need = (k: string) => p.get(k) ?? this.fail(n, `${kinds[i]} needs ${k}`);
+    const auth = this.coreOption(p.get("authority"), (x) => this.coreAuthority(x));
+    const schema = this.coreOption(p.get("schema"), (x) => this.coreSchema(x));
+    if (i === 2 || i === 4) return [{ bytes: [i] }, ...this.coreAuthority(need("dataAuthority")), ...auth, ...schema];
+    if (i === 1) {
+      const offset = p.get("resultsOffset");
+      const off: MplField[] = !offset
+        ? [{ bytes: [0] }]
+        : ts.isStringLiteral(offset) && (offset.text === "none" || offset.text === "anchor")
+          ? [{ bytes: [1, offset.text === "none" ? 0 : 1] }]
+          : [{ bytes: [1, 2] }, { value: offset, type: U64 }];
+      return [
+        { bytes: [1] },
+        { value: need("baseAddress"), type: PUBKEY },
+        ...auth,
+        ...this.coreChecks(need("checks"), n),
+        ...this.coreOption(p.get("baseAddressConfig"), (x) => this.coreExtraAccount(x)),
+        ...off,
+      ];
+    }
+    const extras = p.get("extraAccounts");
+    if (extras && !ts.isArrayLiteralExpression(extras)) this.fail(extras, "extraAccounts is a list of extra accounts");
+    return [
+      { bytes: [i] },
+      { value: need("hookedProgram"), type: PUBKEY },
+      ...auth,
+      ...this.coreChecks(need("checks"), n),
+      ...(extras ? [{ bytes: [1, extras.elements.length & 0xff, 0, 0, 0] }, ...extras.elements.flatMap((e) => this.coreExtraAccount(e))] : [{ bytes: [0] }]),
+      ...this.coreOption(p.get("dataAuthority"), (x) => this.coreAuthority(x)),
+      ...schema,
+    ];
+  }
+
+  /** ExternalPluginAdapterKey: `{ kind: "AppData", dataAuthority }`, `{ kind: "Oracle", address }`, `{ kind: "LifecycleHook", address }`, … */
+  protected coreExternalKey(n: ts.Expression): MplField[] {
+    const p = this.coreProps(n, "a Core external plugin key");
+    const kind = p.get("kind");
+    const kinds = ["LifecycleHook", "Oracle", "AppData", "LinkedLifecycleHook", "LinkedAppData"];
+    const i = kind && ts.isStringLiteral(kind) ? kinds.indexOf(kind.text) : -1;
+    if (i < 0) this.fail(kind ?? n, `a Core external plugin key is ${kinds.join(", ")}`);
+    if (i === 2 || i === 4) return [{ bytes: [i] }, ...this.coreAuthority(p.get("dataAuthority") ?? this.fail(n, `${kinds[i]}'s key is its dataAuthority`))];
+    return [
+      { bytes: [i] },
+      { value: p.get("address") ?? this.fail(n, `${kinds[i]}'s key is its address (the oracle's base address or the hooked program)`), type: PUBKEY },
+    ];
+  }
+
+  /** The data written: Option<Vec<u8>> from a string, a Vec<u8> argument, or null (clears it). */
+  protected coreExternalData(n: ts.Expression): MplField[] {
+    if (n.kind === ts.SyntaxKind.NullKeyword) return [{ bytes: [0] }];
+    const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
+    if (l?.type.kind === "vecArg") {
+      if (l.type.elem.kind !== "int" || l.type.elem.name !== "u8") this.fail(n, "data is a string, a Vec<u8> argument or null");
+      const t = this.tmp("dl");
+      this.line(`uint32_t ${t} = (uint32_t)${l.c}.len;`);
+      return [{ bytes: [1] }, { c: `&${t}`, n: "4" }, { c: `${l.c}.ptr`, n: `(uint64_t)${t}` }];
+    }
+    return [{ bytes: [1] }, { value: n, type: STRING }];
   }
 
   /** PluginType (u8) from a kind string literal: removePlugin(…, "FreezeDelegate"). */

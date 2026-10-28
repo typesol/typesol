@@ -53,6 +53,9 @@ describe("list methods", () => {
     const words = Array.from({ length: 10 }, (_, k) => out.readBigUInt64LE(k * 8));
     // orders [5 open, 0 closed, 7 open]; xs [3, 15, 20] filtered (> 5) to [15, 20], mapped with the post-filter index.
     expect(words).toEqual([2n, 24n, 1n, 150n, 2n, 20n, 201n, 4n, 13n, 7n]);
+    const p = expectOk(await send(d.svm, payer, [ix(d, "pairs", {}, [{ address: payer.address, signer: payer }, { address: book }])]));
+    // Open orders (5, 7) as { qty, doubled }: 2 of them, the second doubled 14; names[1] is "closed" (6 bytes).
+    expect(Buffer.from(p.returnData().data()).readBigUInt64LE(0)).toBe(2000n + 140n + 6n);
   });
 
   it("refuses a full stored list at runtime, and map / filter shapes it cannot compile", async () => {

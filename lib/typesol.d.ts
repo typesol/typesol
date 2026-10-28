@@ -650,6 +650,43 @@ export type CorePlugin = (
   | { kind: "PermanentFreezeExecute"; frozen: boolean }
 ) & { authority?: CorePluginAuthority };
 export type CorePluginKind = CorePlugin["kind"] | "Groups";
+/** When a Core lifecycle event reaches an external plugin, and what the plugin may do about it. */
+export interface CoreLifecycleCheck {
+  event: "create" | "transfer" | "burn" | "update" | "execute";
+  canListen?: boolean;
+  canApprove?: boolean;
+  canReject?: boolean;
+}
+/** An account Core passes to an external plugin: one it already has, or an address. */
+export type CoreExtraAccount =
+  | { kind: "program" | "collection" | "owner" | "recipient" | "asset"; isSigner?: boolean; isWritable?: boolean }
+  | { kind: "address"; address: Pubkey; isSigner?: boolean; isWritable?: boolean };
+/**
+ * A Metaplex Core external plugin adapter, written as an object literal: data a third party writes (`AppData`), an
+ * account that approves or rejects lifecycle events (`Oracle`), or a program called on them (`LifecycleHook`); the
+ * `Linked` forms go on a collection, for each of its assets. `authority` manages the adapter itself.
+ */
+export type CoreExternalPlugin = (
+  | { kind: "AppData" | "LinkedAppData"; dataAuthority: CorePluginAuthority; schema?: "binary" | "json" | "msgpack" }
+  | {
+      kind: "Oracle";
+      baseAddress: Pubkey;
+      checks: CoreLifecycleCheck[];
+      baseAddressConfig?: CoreExtraAccount;
+      resultsOffset?: "none" | "anchor" | u64;
+    }
+  | {
+      kind: "LifecycleHook" | "LinkedLifecycleHook";
+      hookedProgram: Pubkey;
+      checks: CoreLifecycleCheck[];
+      extraAccounts?: CoreExtraAccount[];
+      dataAuthority?: CorePluginAuthority;
+      schema?: "binary" | "json" | "msgpack";
+    }
+) & { authority?: CorePluginAuthority };
+/** Which external plugin: an AppData by its data authority, an Oracle by its base address, a LifecycleHook by its program. */
+export type CoreExternalPluginKey =
+  { kind: "AppData" | "LinkedAppData"; dataAuthority: CorePluginAuthority } | { kind: "Oracle" | "LifecycleHook" | "LinkedLifecycleHook"; address: Pubkey };
 
 export interface MplCoreProgram extends AccountMeta {
   readonly __mpl_core: void;
@@ -751,6 +788,61 @@ export interface MplCoreProgram extends AccountMeta {
     authority: AccountMeta | null,
     systemProgram: SystemProgram,
     kind: CorePluginKind,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** AddExternalPluginAdapterV1, signed by the update authority as `authority` (`null`: the payer). */
+  addExternalPlugin(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    plugin: CoreExternalPlugin,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  removeExternalPlugin(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    key: CoreExternalPluginKey,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** WriteExternalPluginAdapterDataV1, signed by the plugin's data authority: `data` replaces what it holds (`null` clears it). */
+  writeExternalPluginData(
+    asset: AccountMeta,
+    collection: AccountMeta | null,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    key: CoreExternalPluginKey,
+    data: string | Vec<u8> | null,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  addCollectionExternalPlugin(
+    collection: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    plugin: CoreExternalPlugin,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  removeCollectionExternalPlugin(
+    collection: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    key: CoreExternalPluginKey,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  writeCollectionExternalPluginData(
+    collection: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    systemProgram: SystemProgram,
+    key: CoreExternalPluginKey,
+    data: string | Vec<u8> | null,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
   /** TransferV1, signed by the owner (or a delegate) as `authority` (`null`: the payer). */
