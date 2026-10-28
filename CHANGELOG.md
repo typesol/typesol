@@ -6,6 +6,16 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `/** @layout borsh */` on an account struct stores it with Anchor's bytes (Borsh String / Vec / Option for
+  `FixedString` / `FixedVec` / `Option`), so a TypeSOL program can take over an Anchor program's accounts without a
+  migration; its IDL lists Anchor's own types. An instruction unpacks the account into the fixed layout when it starts
+  and packs it back when it returns (3003 for bytes that are not a valid value, 3004 when the account is too small).
+  Checked byte for byte against an Anchor twin, including switching programs in the middle of a sequence.
+  `typesol port` marks Anchor account structs that need it.
+
+### Changed
+- UTF-8 checks of strings run eight ASCII bytes at a time: every official-example instruction with a string argument
+  gets cheaper (create_token_mint 40,919 → 39,828 CU, set_favorites 4,282 → 4,195).
 - `FixedVec<T, N>`: a list with room for N elements (u32 length + N slots, like `FixedString<N>`) as any account field,
   several per struct and in nested structs, with `get` / `set` / `push` / `pop` / `clear` / `.length` / `for … of`;
   `push` on a full one fails with 5104, `fixedVec([…])` writes a whole one. The IDL describes each as a

@@ -91,6 +91,11 @@ export interface StructDef {
   accountDiscriminator: number[];
   eventDiscriminator: number[];
   node: ts.InterfaceDeclaration;
+  /**
+   * How account data stores it: "fixed" (every field at a fixed offset, the default) or "borsh" (`@layout borsh`:
+   * Anchor's bytes, where strings, Vecs and Options take only what they hold).
+   */
+  layout: "fixed" | "borsh";
 }
 
 export type TokenProgramKind = "token" | "token2022" | "tokenInterface";

@@ -64,11 +64,17 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `Option<T>` | `Option<T>`: fixed size (1 + size of T) |
 | `#[derive(AnchorSerialize…)] enum` | `export enum` (unit variants) or a data enum `type A = { kind: "X"; … } \| …` |
 
-TypeSOL keeps account data at a fixed layout, so three Anchor layouts differ: a Borsh `String` is variable-length (TypeSOL
-uses `FixedString<N>`), a Borsh `Option` takes 1 byte when empty (TypeSOL always reserves the value), and a `Vec` can be
-anywhere in an Anchor struct (TypeSOL keeps a growable one last; a `FixedVec<T, N>` elsewhere always takes its full
-capacity, where Anchor packs the elements and moves the fields after them). Accounts using them need a migration (or a new program) rather
-than an in-place upgrade. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
+TypeSOL keeps account data at a fixed layout by default, so three Anchor layouts differ: a Borsh `String` is
+variable-length (TypeSOL uses `FixedString<N>`), a Borsh `Option` takes 1 byte when empty (TypeSOL always reserves the
+value), and a `Vec` can be anywhere in an Anchor struct (TypeSOL keeps a growable one last; a `FixedVec<T, N>` elsewhere
+always takes its full capacity, where Anchor packs the elements and moves the fields after them).
+
+To keep an Anchor program's existing accounts, mark the struct `/** @layout borsh */`: it is then stored exactly as
+Anchor stores it (`FixedString<N>` / `FixedVec<T, N>` / `Option<T>` become Borsh String / Vec / Option, N being the
+`#[max_len]`), its IDL type is Anchor's, and the upgraded program reads and writes the accounts in place. `typesol port`
+adds it for you. It costs some compute (the account is unpacked and packed in every instruction that uses it) but stays
+several times cheaper than Anchor. Accounts using them need a migration (or a new program) rather
+than an in-place upgrade, unless they use `@layout borsh`. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
 matches byte for byte.
 
 ## Code

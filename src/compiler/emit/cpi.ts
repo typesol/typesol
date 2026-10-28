@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { discriminator, snakeCase } from "../analyze.js";
+import { borshMinSize } from "./borsh.js";
 import {
   INT_INFO,
   type AccountParam,
@@ -185,8 +186,11 @@ export abstract class CpiEmitter extends CallEmitter {
       const created = this.tmp("created");
       this.line(`bool ${created};`);
       this.line(
-        `TS_TRY(ts_create_pda_if_needed(params, a_${payer.name}, a_${target.name}, ${seeds.name}, ${seeds.count}, TS_DISC_${s.name}, 8 + sizeof(TSS_${s.name}), &${b}, &${created}));`,
+        `TS_TRY(ts_create_pda_if_needed(params, a_${payer.name}, a_${target.name}, ${seeds.name}, ${seeds.count}, TS_DISC_${s.name}, 8 + sizeof(TSS_${s.name}), 8 + ${s.layout === "borsh" ? borshMinSize(s, this.model) : `sizeof(TSS_${s.name})`}, &${b}, &${created}));`,
       );
+      // An existing @layout borsh account is unpacked now (a new one starts from the zeroed struct).
+      if (s.layout === "borsh")
+        this.line(`if (!${created}) TS_TRY(ts_unpack_${s.name}(a_${target.name}->data + 8, a_${target.name}->data_len - 8, d_${target.name}));`);
       this.created.add(target.name);
       this.pendingInit.delete(target.name);
       this.bumps.set(target.name, b);
@@ -1622,6 +1626,7 @@ export abstract class CpiEmitter extends CallEmitter {
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s) this.fail(node, "emit needs an explicit event type: emit<MyEvent>({ ... })");
+    if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh, an account layout; declare a separate event struct`);
     const obj = node.arguments[0];
     if (node.arguments.length !== (cpi ? 3 : 1) || !ts.isObjectLiteralExpression(obj))
       this.fail(node, "emit<T>({ field: value, ... }) takes one object literal");

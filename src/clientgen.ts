@@ -108,6 +108,7 @@ export const TYPESOL_ERRORS: Record<number, string> = {
   3000: "AccountDiscriminatorAlreadySet",
   3002: "AccountDiscriminatorMismatch",
   3003: "AccountDidNotDeserialize",
+  3004: "AccountDidNotSerialize",
   3005: "AccountNotEnoughKeys",
   3006: "AccountNotMutable",
   3007: "AccountOwnedByWrongProgram",
