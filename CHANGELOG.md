@@ -5,6 +5,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- Generated clients: remaining accounts on every instruction builder; `accounts.<Name>.fetchMultiple`, `fetchAll`
+  (getProgramAccounts by discriminator, with `{ offset, bytes }` filters) and `watch` (account subscription);
+  `sendInstructions` (send and confirm), `simulate`, and `views.<instruction>` (a return value by simulation, Anchor's
+  `.view()`); `parseCpiEvents` / `eventsOf` for `emitCpi` events, and `watchEvents` (log subscription). Every Anchor
+  framework error has its name in `errors`, so `isError` knows the codes `AnchorError` and the constraints raise.
+
 ## 0.19.0 — 2026-10-28
 
 Anchor's error codes where TypeSOL raised its own: `TokenOf` / `MintOf` constraints that name the parameters as

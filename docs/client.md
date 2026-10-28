@@ -25,23 +25,45 @@ ledgerbook.errorCode(e); // 6002
 // Events written by `emit`, from a transaction's log messages
 for (const ev of ledgerbook.parseEvents(logs)) if (ev.name === "Filed") ev.data.amount;
 
-// Return data of an instruction that returns a value
+// Return data of an instruction that returns a value, or the value itself by simulation (Anchor's `.view()`)
 ledgerbook.returns.total(returnDataBytes); // bigint
+await ledgerbook.views.total(rpc, signer, { book }, { status: Status.Approved }); // bigint, nothing sent
+
+// Send and confirm (one transaction, signers in the accounts sign too), or simulate
+const signature = await ledgerbook.sendInstructions({ rpc, rpcSubscriptions }, signer, [create, file]);
+const { err, logs, unitsConsumed, returnData } = await ledgerbook.simulate(rpc, signer, [file]);
+
+// Every Book of the program, or those with given bytes at an offset (after the 8-byte discriminator)
+const books = await ledgerbook.accounts.Book.fetchAll(rpc); // [{ address, data }]
+const several = await ledgerbook.accounts.Book.fetchMultiple(rpc, [a, b]); // (Book | null)[]
+
+// Live updates, until the AbortSignal aborts
+for await (const book of ledgerbook.accounts.Book.watch(rpcSubscriptions, address, { abortSignal })) render(book);
+for await (const { signature, event } of ledgerbook.watchEvents(rpcSubscriptions, { abortSignal })) show(event);
+
+// Remaining accounts go after the instruction's own (Anchor's `.remainingAccounts([...])`)
+await ledgerbook.approveMany({ approver: signer, book }, { indices: [0n, 1n] }, [{ address: extra, role: AccountRole.WRITABLE }]);
+
+// Events of a fetched transaction (getTransaction, json): log events and emitCpi events from inner instructions
+ledgerbook.eventsOf(await rpc.getTransaction(signature, { maxSupportedTransactionVersion: 0 }).send());
 ```
 
-Send instructions the usual kit way (`createTransactionMessage` … `signTransactionMessageWithSigners`). Signer
-accounts take a `TransactionSigner`, which kit uses to sign; an `Address` works too when you sign separately.
+Signer accounts take a `TransactionSigner`, which kit uses to sign; an `Address` works too when you sign separately.
+Kit's own transaction functions work with the instructions as well; `sendInstructions` is that pipeline in one call.
 
 ## What the client contains
 
 | | |
 | --- | --- |
 | `<program>.<instruction>(accounts, args)` | Builds the `Instruction`. Accounts with a fixed address and PDAs whose seeds are constants, arguments or other accounts' keys are optional and filled in; pass one to override. An optional account passed as `null` is left out (sent as the program id, the convention TypeSOL and Anchor share); left undefined, it is filled in like any other. |
-| `<program>.accounts.<Name>` | `decode(bytes)`, `encode(value)`, `fetch(rpc, address)`, `fetchMaybe(rpc, address)`, `discriminator`. `decode` checks the discriminator. |
+| `<program>.<instruction>(accounts, args, remaining?)` | The same, with remaining accounts appended in order (kit `AccountMeta`s). |
+| `<program>.accounts.<Name>` | `decode(bytes)`, `encode(value)`, `fetch(rpc, address)`, `fetchMaybe(rpc, address)`, `fetchMultiple(rpc, addresses)`, `fetchAll(rpc, filters?)` (getProgramAccounts by discriminator, plus `{ offset, bytes }` filters), `watch(rpcSubscriptions, address, { abortSignal })`, `discriminator`. `decode` checks the discriminator. |
 | `<program>.pdas.<account>(seeds)` | The PDA (address and bump) for each account an instruction derives. |
 | `<program>.returns.<instruction>(bytes)` | Decodes return data. |
-| `<program>.errors`, `errorCode(e)`, `isError(e, name)` | The program's errors (6000+), and for TypeSOL programs also TypeSOL's runtime errors and the Anchor framework errors it uses (2001, 2006, 3007, …). |
-| `<program>.parseEvents(logs)` | Events from `Program data:` log lines. |
+| `<program>.views.<instruction>(rpc, feePayer, accounts, args)` | Simulates an instruction that returns a value and decodes it (throws with the logs if it fails). |
+| `<program>.sendInstructions(connection, feePayer, instructions)`, `simulate(rpc, feePayer, instructions)` | One transaction sent and confirmed (kit's sendAndConfirm), or simulated without signatures (error, logs, units, this program's return data). |
+| `<program>.errors`, `errorCode(e)`, `isError(e, name)` | The program's errors (6000+), and for TypeSOL programs also every Anchor framework error (`AnchorError` and the constraints raise them) and TypeSOL's runtime errors. |
+| `<program>.parseEvents(logs)`, `parseCpiEvents(data)`, `eventsOf(tx)`, `watchEvents(rpcSubscriptions, { abortSignal })` | Events from `Program data:` log lines, from `emitCpi` inner instructions (bytes or base58), from a fetched transaction (both), or live from log subscriptions. |
 | Types and codecs | Every defined type as a TypeScript type (`Book`, the decoded value) and an input type (`BookArgs`, which also accepts `number` for 64- and 128-bit integers), with a kit codec (`getBookCodec()`). |
 
 Types follow the program's TypeScript: `u64`/`i64`/`u128`/`i128` are `bigint` (inputs accept `number` too), smaller
@@ -65,5 +87,6 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
   for each.
 - **Left out of a client generated from an Anchor IDL**, with a note: generic types and anything using them, and
   zero-copy (`bytemuck`) accounts.
-- **Not done yet**: events sent with `emitCpi` (they travel in inner instructions, not logs), and a LiteSVM loader for
-  tests (use `svm.addProgramFromFile(ledgerbook.address, soPath)`).
+- **Not done yet**: a LiteSVM loader for tests (use `svm.addProgramFromFile(ledgerbook.address, soPath)`, or
+  `typesol/testing`). `watchEvents` reads log events; `emitCpi` events are in inner instructions, which log
+  subscriptions do not carry (use `eventsOf` on the fetched transaction).
