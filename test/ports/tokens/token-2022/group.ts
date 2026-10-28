@@ -1,30 +1,24 @@
 // Port of tokens/token-2022/group @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - the PDA mint (["group"]) Anchor makes with `init`, `mint::*` and `extensions::group_pointer::*` is created in the
-//    body as that does: CreateAccount sized for the extension (signed with the PDA's seeds), GroupPointer Initialize,
-//    then InitializeMint2.
 //  - check_mint_data reads the GroupPointer extension by walking the TLV list with readData (what
 //    StateWithExtensions::get_extension does) and requires it to name the mint; the original logs it with `{:?}`.
 import {
-  type AccountInfo,
+  type Mint,
+  type Init,
   type AccountMeta,
   type Mut,
   type Pubkey,
-  type Seeds,
   type Signer,
   type SystemProgram,
   type Token2022Program,
   type u16,
   log,
   readData,
-  rentExempt,
   require,
   u64,
 } from "typesol";
 
-/** Base mint (padded to 165) + account type (1) + GroupPointer TLV (2 + 2 + 64). */
-const MINT_SIZE_GROUP_POINTER = 234n;
 const GROUP_POINTER: u16 = 20n;
 
 export enum GroupError {
@@ -44,18 +38,11 @@ function extensionOffset(account: AccountMeta, ext: u16): u64 {
   return 0n;
 }
 
-export function testInitializeGroup(
-  payer: Mut<Signer>,
-  mintAccount: Seeds<Mut<AccountInfo>, ["group"]>,
-  tokenProgram: Token2022Program,
-  systemProgram: SystemProgram,
-): void {
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE_GROUP_POINTER), MINT_SIZE_GROUP_POINTER, tokenProgram.key, [
-    "group",
-    mintAccount.pdaBump,
-  ]);
-  tokenProgram.initializeGroupPointer(mintAccount, mintAccount.key, mintAccount.key);
-  tokenProgram.initializeMint2(mintAccount, 2n, mintAccount.key, mintAccount.key);
+export function testInitializeGroup(payer: Mut<Signer>, mintAccount: Init<Mint>, tokenProgram: Token2022Program, systemProgram: SystemProgram): void {
+  // `init, seeds = [b"group"], mint::*, extensions::group_pointer::*`
+  mintAccount.create(payer, ["group"], 2n, mintAccount.key, mintAccount.key, {
+    groupPointer: { authority: mintAccount.key, groupAddress: mintAccount.key },
+  });
   // check_mint_data
   const at = extensionOffset(mintAccount, GROUP_POINTER);
   require(at > 0n && readData<Pubkey>(mintAccount, at + 32n) === mintAccount.key, GroupError.MissingGroupPointer);

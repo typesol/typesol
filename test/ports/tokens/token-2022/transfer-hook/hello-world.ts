@@ -4,6 +4,7 @@
 // the source account's `transferring` flag with isTransferring().
 // The two interface instructions use the SPL transfer-hook discriminators, like `#[instruction(discriminator = …)]`.
 import {
+  type Init,
   transferHookAuthority,
   isTransferring,
   type AccountInfo,
@@ -19,7 +20,6 @@ import {
   initExtraAccountMetas,
   log,
   pubkey,
-  rentExempt,
   require,
   transferHookProgram,
   u64,
@@ -27,18 +27,14 @@ import {
 } from "typesol";
 
 const PROGRAM_ID = pubkey("jY5DfVksJT8Le38LCaQhz5USeiGu4rUeVSS8QRAMoba");
-/** Base mint (padded to 165) + account type + TransferHook TLV (2 + 2 + 64). */
-const MINT_WITH_TRANSFER_HOOK = 234n;
 /** Token-2022 extension types. */
 
 export enum TransferError {
   IsNotCurrentlyTransferring = "The token is not currently transferring",
 }
 
-export function initialize(payer: Mut<Signer>, mintAccount: Mut<Signer>, tokenProgram: Token2022Program, systemProgram: SystemProgram, decimals: u8): void {
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_WITH_TRANSFER_HOOK), MINT_WITH_TRANSFER_HOOK, tokenProgram.key);
-  tokenProgram.initializeTransferHook(mintAccount, payer.key, PROGRAM_ID);
-  tokenProgram.initializeMint2(mintAccount, decimals, payer.key, null);
+export function initialize(payer: Mut<Signer>, mintAccount: Init<Mint>, tokenProgram: Token2022Program, systemProgram: SystemProgram, decimals: u8): void {
+  mintAccount.create(payer, null, decimals, payer.key, null, { transferHook: { authority: payer.key, programId: PROGRAM_ID } });
   // check_mint_data
   require(transferHookAuthority(mintAccount) === payer.key, "transfer hook authority");
   require(transferHookProgram(mintAccount) === PROGRAM_ID, "transfer hook program");

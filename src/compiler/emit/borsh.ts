@@ -50,8 +50,8 @@ export function borshMinSize(s: StructDef, model: Pick<ProgramModel, "structs">)
   let n = 0;
   for (const f of s.fields) {
     const t = f.type;
-    if (t.kind === "fstring" || t.kind === "vec") n += 4;
-    else if (t.kind === "option") n += 1;
+    if (t.kind === "fstring" || t.kind === "vec" || t.kind === "string") n += 4;
+    else if (t.kind === "option" || t.kind === "dataEnum") n += 1;
     else n += fixedBytes(t, model);
   }
   return n;
@@ -88,7 +88,8 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
     };
     // Bounds: the caller checked `len >= MIN` (the smallest Borsh form). Fixed-size pieces then always fit; only a
     // String / Vec / Option payload is checked, against what is left after the fields that follow it still need.
-    const minOf = (t: FieldType) => (t.kind === "fstring" || t.kind === "vec" ? 4 : t.kind === "option" ? 1 : fixedBytes(t, model));
+    const minOf = (t: FieldType) =>
+      t.kind === "fstring" || t.kind === "vec" || t.kind === "string" ? 4 : t.kind === "option" || t.kind === "dataEnum" ? 1 : fixedBytes(t, model);
     const minAfter = s.fields.map((_, i) => s.fields.slice(i + 1).reduce((n, f) => n + minOf(f.type), 0));
     const need = (n: string, rest: number, pad: string) => `${pad}if (${n} > len - at - ${rest}) ${DESER};`;
     const room = (n: string, rest: number, pad: string) => `${pad}if (${n} > cap - at - ${rest}) ${SER};`;
@@ -154,6 +155,48 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
             `${pad}}`,
           ];
         }
+        case "string": {
+          // A view of the bytes it was read from (arguments only), checked as UTF-8 as Borsh String deserialization does.
+          const l = tmp("n");
+          return [
+            `${pad}uint32_t ${l} = (uint32_t)ts_read_le(src + at, 4);`,
+            `${pad}at += 4;`,
+            need(l, rest, pad),
+            `${pad}if (!ts_utf8_valid(src + at, ${l})) ${DESER};`,
+            `${pad}${lv} = ts_str(src + at, ${l});`,
+            `${pad}at += ${l};`,
+          ];
+        }
+        case "dataEnum": {
+          const e = model.dataEnums.get(t.name)!;
+          const tag = tmp("tag");
+          const lines = [
+            `${pad}uint8_t ${tag} = src[at++];`,
+            `${pad}if (${tag} >= ${e.variants.length}) ${DESER};`,
+            `${pad}${lv}.tag = ${tag};`,
+            `${pad}switch (${tag}) {`,
+          ];
+          e.variants.forEach((v, i) => {
+            lines.push(`${pad}case ${i}: {`);
+            for (const f of v.fields) {
+              const flv = `${lv}.v.${v.name}.${f.name}`;
+              if (f.type.kind === "string") {
+                lines.push(`${pad}  if (4 > len - at - ${rest}) ${DESER};`, ...unpackVar(f.type, flv, rest, `${pad}  `));
+                continue;
+              }
+              const n = fixedBytes(f.type, model);
+              lines.push(
+                need(String(n), rest, `${pad}  `),
+                `${pad}  ts_memcpy(&${flv}, src + at, ${n});`,
+                `${pad}  at += ${n};`,
+                ...validate(f.type, flv, `${pad}  `),
+              );
+            }
+            lines.push(`${pad}  break;`, `${pad}}`);
+          });
+          lines.push(`${pad}}`);
+          return lines;
+        }
         default:
           throw new Error(`unreachable: ${t.kind} in a Borsh account`);
       }
@@ -204,6 +247,35 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
             `${pad}  at += ${n};`,
             `${pad}}`,
           ];
+        }
+        case "string": {
+          const l = tmp("n");
+          return [
+            `${pad}uint32_t ${l} = (uint32_t)${lv}.len;`,
+            room(`4 + (uint64_t)${l}`, rest, pad),
+            `${pad}ts_write_le(dst + at, ${l}, 4);`,
+            `${pad}ts_memcpy(dst + at + 4, ${lv}.ptr, ${l});`,
+            `${pad}at += 4 + (uint64_t)${l};`,
+          ];
+        }
+        case "dataEnum": {
+          const e = model.dataEnums.get(t.name)!;
+          const lines = [room("1", rest, pad), `${pad}dst[at++] = ${lv}.tag;`, `${pad}switch (${lv}.tag) {`];
+          e.variants.forEach((v, i) => {
+            lines.push(`${pad}case ${i}: {`);
+            for (const f of v.fields) {
+              const flv = `${lv}.v.${v.name}.${f.name}`;
+              if (f.type.kind === "string") {
+                lines.push(...packVar(f.type, flv, rest, `${pad}  `));
+                continue;
+              }
+              const n = fixedBytes(f.type, model);
+              lines.push(room(String(n), rest, `${pad}  `), `${pad}  ts_memcpy(dst + at, &${flv}, ${n});`, `${pad}  at += ${n};`);
+            }
+            lines.push(`${pad}  break;`, `${pad}}`);
+          });
+          lines.push(`${pad}}`);
+          return lines;
         }
         default:
           throw new Error(`unreachable: ${t.kind} in a Borsh account`);

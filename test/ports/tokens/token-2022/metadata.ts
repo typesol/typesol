@@ -1,18 +1,17 @@
 // Port of tokens/token-2022/metadata @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - the mint (a keypair `init` with `extensions::metadata_pointer::*`) is created in the body as Anchor's does it:
-//    CreateAccount sized for MetadataPointer, MetadataPointer Initialize, InitializeMint2.
-//    `extensions::metadata_pointer::metadata_address = mint_account` is checked by walking the TLV list (6000 here).
-//  - interface: `initialize` takes TokenMetadataArgs (`@layout borsh`, Anchor's bytes and IDL; each string up to 200
-//    bytes). `update_field` takes `field: AnchorField` and `value` as two arguments: the same instruction bytes as
-//    UpdateFieldArgs, a different IDL (TypeSOL argument structs cannot hold a data enum yet), and `Key` is a named
-//    field where the original has a tuple. A Key named "name", "symbol" or "uri" updates that field.
+//  - `extensions::metadata_pointer::metadata_address = mint_account` on the later instructions is checked by walking
+//    the TLV list (6000 here).
+//  - interface: TokenMetadataArgs and UpdateFieldArgs are `@layout borsh` structs (Anchor's bytes; TokenMetadataArgs'
+//    strings hold up to 200 bytes). AnchorField's `Key` is a named field where the original has a tuple (the same
+//    bytes; the IDL names it). A Key named "name", "symbol" or "uri" updates that field.
 //  - update_field tops the mint up to the rent of its new size. For a Key field the port funds a new entry (key and
 //    value); when the key already exists that is more than the original's exact amount, by the old entry's size.
 //  - logs: the original logs the field, the updated TokenMetadata and the lamports with `{:?}`; the port logs the
 //    lamport lines only.
 import {
+  type Init,
   type AccountInfo,
   type FixedString,
   type AccountMeta,
@@ -32,8 +31,6 @@ import {
   u64,
 } from "typesol";
 
-/** Base mint (padded to 165) + account type (1) + MetadataPointer TLV (2 + 2 + 64). */
-const MINT_SIZE_METADATA_POINTER = 234n;
 const METADATA_POINTER: u16 = 18n;
 const TOKEN_METADATA: u16 = 19n;
 
@@ -42,6 +39,12 @@ export enum MetadataError {
 }
 
 export type AnchorField = { kind: "Name" } | { kind: "Symbol" } | { kind: "Uri" } | { kind: "Key"; key: string };
+
+/** @layout borsh */
+export interface UpdateFieldArgs {
+  field: AnchorField;
+  value: string;
+}
 
 /** @layout borsh */
 export interface TokenMetadataArgs {
@@ -71,7 +74,7 @@ function checkPointsAtItself(mint: AccountMeta): void {
 
 export function initialize(
   payer: Mut<Signer>,
-  mintAccount: Mut<Signer>,
+  mintAccount: Init<Mint>,
   tokenProgram: Token2022Program,
   systemProgram: SystemProgram,
   args: TokenMetadataArgs,
@@ -79,9 +82,8 @@ export function initialize(
   const name: string = args.name;
   const symbol: string = args.symbol;
   const uri: string = args.uri;
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE_METADATA_POINTER), MINT_SIZE_METADATA_POINTER, tokenProgram.key);
-  tokenProgram.initializeMetadataPointer(mintAccount, payer.key, mintAccount.key);
-  tokenProgram.initializeMint2(mintAccount, 2n, payer.key, null);
+  // `init, mint::decimals = 2, mint::authority = payer, extensions::metadata_pointer::…`
+  mintAccount.create(payer, null, 2n, payer.key, null, { metadataPointer: { authority: payer.key, metadataAddress: mintAccount.key } });
   // TokenMetadata::tlv_size_of: TLV header (4) + authority (32) + mint (32) + three Borsh strings + empty Vec (4).
   const dataLen = 4n + 32n + 32n + 12n + u64(byteLength(name)) + u64(byteLength(symbol)) + u64(byteLength(uri)) + 4n;
   systemProgram.transfer(payer, mintAccount, rentExempt(dataLen));
@@ -93,9 +95,10 @@ export function updateField(
   mintAccount: Mut<Mint>,
   tokenProgram: Token2022Program,
   systemProgram: SystemProgram,
-  field: AnchorField,
-  value: string,
+  args: UpdateFieldArgs,
 ): void {
+  const field = args.field;
+  const value = args.value;
   checkPointsAtItself(mintAccount);
   const at = extensionOffset(mintAccount, TOKEN_METADATA);
   const oldLen = u64(readData<u16>(mintAccount, at - 2n));

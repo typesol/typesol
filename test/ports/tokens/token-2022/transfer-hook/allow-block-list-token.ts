@@ -44,8 +44,6 @@ import {
 } from "typesol";
 
 const PROGRAM_ID = pubkey("3ku1ZEGvBEEfhaYsAzBZuecTPEa58ZRhoVqHVGpGxVGi");
-/** Base mint (padded to 165) + account type + PermanentDelegate (4 + 32) + TransferHook (4 + 64) + MetadataPointer (4 + 64). */
-const MINT_SIZE = 338n;
 const TOKEN_METADATA: u16 = 19n;
 
 export enum ABListError {
@@ -219,19 +217,18 @@ function modeName(mode: Mode): string {
 
 export function initMint(
   payer: Mut<Signer>,
-  mint: Mut<Signer>,
+  mint: Init<Mint>,
   extraMetasAccount: Mut<AccountInfo>,
   systemProgram: SystemProgram,
   tokenProgram: Token2022Program,
   args: InitMintArgs,
 ): void {
-  // `init` with mint::* and extensions::*.
-  systemProgram.createAccount(payer, mint, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key);
-  tokenProgram.initializePermanentDelegate(mint, args.permanentDelegate);
-  tokenProgram.initializeTransferHook(mint, args.transferHookAuthority, PROGRAM_ID);
-  tokenProgram.initializeMetadataPointer(mint, payer.key, mint.key);
-  // The payer as mint authority, a freeze authority.
-  tokenProgram.initializeMint2(mint, args.decimals, payer.key, args.freezeAuthority);
+  // `init` with mint::* (the payer as mint authority, a freeze authority) and extensions::*.
+  mint.create(payer, null, args.decimals, payer.key, args.freezeAuthority, {
+    permanentDelegate: args.permanentDelegate,
+    transferHook: { authority: args.transferHookAuthority, programId: PROGRAM_ID },
+    metadataPointer: { authority: payer.key, metadataAddress: mint.key },
+  });
   // Token Metadata (metadata = the mint), then the AB mode and, in Mixed mode, the threshold.
   tokenProgram.initializeMetadata(mint, payer, payer, args.name, args.symbol, args.uri);
   tokenProgram.updateMetadataField(mint, payer, "AB", modeName(args.mode));
