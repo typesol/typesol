@@ -517,6 +517,20 @@ export type InitIfNeeded<T> = T extends TokenAccount
           freezeAuthority: Pubkey | null,
           tokenProgram?: TokenProgram | Token2022Program | TokenInterface,
         ): boolean;
+        /**
+         * With extensions: created with them, or an existing mint must carry them with these keys, as Anchor's
+         * `extensions::…` constraints check (2024–2039). groupPointer, groupMemberPointer, metadataPointer,
+         * closeAuthority, permanentDelegate and transferHook only.
+         */
+        createIfNeeded(
+          payer: Mut<Signer>,
+          seeds: Seed[] | null,
+          decimals: u8,
+          mintAuthority: Pubkey,
+          freezeAuthority: Pubkey | null,
+          extensions: MintExtensions,
+          tokenProgram?: Token2022Program | TokenInterface,
+        ): boolean;
         readonly pdaBump: u8;
       }
     : T &
@@ -539,6 +553,15 @@ export type InitIfNeeded<T> = T extends TokenAccount
  * They nest: `CloseTo<HasOne<Mut<Vault>, "owner">, "owner">`.
  */
 export type HasOne<A, Field extends string> = A & { readonly __hasOne?: Field };
+/**
+ * Anchor's `token::mint = mintParam, token::authority = authorityParam` on an existing token account, naming the
+ * parameters (2014 / 2015); `never` leaves one out.
+ */
+export type TokenOf<A, MintParam extends string, AuthorityParam extends string = never> = A & { readonly __tokenOf?: [MintParam, AuthorityParam] };
+/** Anchor's `mint::authority = a, mint::freeze_authority = f` on an existing mint, naming the parameters (2016 / 2017). */
+export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extends string = never> = A & {
+  readonly __mintOf?: [AuthorityParam, FreezeAuthorityParam];
+};
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
   /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */
@@ -772,6 +795,31 @@ export interface BubblegumProgram extends AccountMeta {
     symbol: string,
     uri: string,
     sellerFeeBasisPoints: u16,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /**
+   * MintToCollectionV1 on a V1 tree: the leaf joins a Token Metadata collection (Bubblegum verifies it; the collection
+   * authority signs, its record PDA is `null` when it is the update authority itself). Creators default to none,
+   * `isMutable` to true, `editionNonce` to None.
+   */
+  mintToCollection(
+    treeConfig: AccountMeta,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta,
+    merkleTree: AccountMeta,
+    payer: Signer,
+    treeDelegate: AccountMeta,
+    collectionAuthority: AccountMeta,
+    collectionAuthorityRecordPda: AccountMeta | null,
+    collectionMint: AccountMeta,
+    collectionMetadata: AccountMeta,
+    collectionEdition: AccountMeta,
+    bubblegumSigner: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    tokenMetadataProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    metadata: CompressedMetadata & { editionNonce?: u8 },
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
   /**
@@ -1382,7 +1430,90 @@ export declare function invoke(
 ): void;
 
 /** Abort with the given error unless `condition` holds. Use a string enum member or a string literal. */
-export declare function require(condition: boolean, error: string): asserts condition;
+/**
+ * Anchor's own error codes (anchor-lang `ErrorCode`): `require(condition, AnchorError.AccountDidNotDeserialize)` fails
+ * with that code, as `require!(condition, ErrorCode::AccountDidNotDeserialize)` does. Not listed in the IDL's errors.
+ */
+export declare enum AnchorError {
+  InstructionMissing = 100,
+  InstructionFallbackNotFound = 101,
+  InstructionDidNotDeserialize = 102,
+  InstructionDidNotSerialize = 103,
+  IdlInstructionStub = 1000,
+  IdlInstructionInvalidProgram = 1001,
+  IdlAccountNotEmpty = 1002,
+  EventInstructionStub = 1500,
+  ConstraintMut = 2000,
+  ConstraintHasOne = 2001,
+  ConstraintSigner = 2002,
+  ConstraintRaw = 2003,
+  ConstraintOwner = 2004,
+  ConstraintRentExempt = 2005,
+  ConstraintSeeds = 2006,
+  ConstraintExecutable = 2007,
+  ConstraintState = 2008,
+  ConstraintAssociated = 2009,
+  ConstraintAssociatedInit = 2010,
+  ConstraintClose = 2011,
+  ConstraintAddress = 2012,
+  ConstraintZero = 2013,
+  ConstraintTokenMint = 2014,
+  ConstraintTokenOwner = 2015,
+  ConstraintMintMintAuthority = 2016,
+  ConstraintMintFreezeAuthority = 2017,
+  ConstraintMintDecimals = 2018,
+  ConstraintSpace = 2019,
+  ConstraintAccountIsNone = 2020,
+  ConstraintTokenTokenProgram = 2021,
+  ConstraintMintTokenProgram = 2022,
+  ConstraintAssociatedTokenTokenProgram = 2023,
+  ConstraintMintGroupPointerExtension = 2024,
+  ConstraintMintGroupPointerExtensionAuthority = 2025,
+  ConstraintMintGroupPointerExtensionGroupAddress = 2026,
+  ConstraintMintGroupMemberPointerExtension = 2027,
+  ConstraintMintGroupMemberPointerExtensionAuthority = 2028,
+  ConstraintMintGroupMemberPointerExtensionMemberAddress = 2029,
+  ConstraintMintMetadataPointerExtension = 2030,
+  ConstraintMintMetadataPointerExtensionAuthority = 2031,
+  ConstraintMintMetadataPointerExtensionMetadataAddress = 2032,
+  ConstraintMintCloseAuthorityExtension = 2033,
+  ConstraintMintCloseAuthorityExtensionAuthority = 2034,
+  ConstraintMintPermanentDelegateExtension = 2035,
+  ConstraintMintPermanentDelegateExtensionDelegate = 2036,
+  ConstraintMintTransferHookExtension = 2037,
+  ConstraintMintTransferHookExtensionAuthority = 2038,
+  ConstraintMintTransferHookExtensionProgramId = 2039,
+  RequireViolated = 2500,
+  RequireEqViolated = 2501,
+  RequireKeysEqViolated = 2502,
+  RequireNeqViolated = 2503,
+  RequireKeysNeqViolated = 2504,
+  RequireGtViolated = 2505,
+  RequireGteViolated = 2506,
+  AccountDiscriminatorAlreadySet = 3000,
+  AccountDiscriminatorNotFound = 3001,
+  AccountDiscriminatorMismatch = 3002,
+  AccountDidNotDeserialize = 3003,
+  AccountDidNotSerialize = 3004,
+  AccountNotEnoughKeys = 3005,
+  AccountNotMutable = 3006,
+  AccountOwnedByWrongProgram = 3007,
+  InvalidProgramId = 3008,
+  InvalidProgramExecutable = 3009,
+  AccountNotSigner = 3010,
+  AccountNotSystemOwned = 3011,
+  AccountNotInitialized = 3012,
+  AccountNotProgramData = 3013,
+  AccountNotAssociatedTokenAccount = 3014,
+  AccountSysvarMismatch = 3015,
+  AccountReallocExceedsLimit = 3016,
+  AccountDuplicateReallocs = 3017,
+  DeclaredProgramIdMismatch = 4100,
+  TryingToInitPayerAsProgramAccount = 4101,
+  InvalidNumericConversion = 4102,
+  Deprecated = 5000,
+}
+export declare function require(condition: boolean, error: string | AnchorError): asserts condition;
 
 /** Write a string, integer or pubkey to the program log. */
 export declare function log(value: string | bigint | Pubkey | Hash): void;

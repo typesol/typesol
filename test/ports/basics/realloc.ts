@@ -1,9 +1,6 @@
 // Port of basics/realloc @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - keypair init: Anchor creates `message_account` as a keypair account sized to the input. TypeSOL's Init<T> only
-//    creates PDAs and Zeroed<T> refuses Vec-ending (resizable) accounts, so the account is the PDA
-//    ["message", payer].
 //  - interface: `input: String` is taken as `Vec<u8>` (the same Borsh bytes: u32 length + data) because TypeSOL
 //    strings cannot be read byte by byte. The account stores `message: Vec<u8>`, byte-identical to Anchor's Borsh
 //    String; the account is exactly 8 + 4 + len bytes, as `Message::required_space` computes.
@@ -18,7 +15,8 @@ export interface Message {
 }
 
 export function initialize(payer: Mut<Signer>, messageAccount: Init<Message>, systemProgram: SystemProgram, input: Vec<u8>): void {
-  messageAccount.create(payer, ["message", payer.key]);
+  // A keypair account, as Anchor's `init` without seeds; it grows to the input as it is pushed.
+  messageAccount.create(payer, null);
   for (let i = 0n; i < input.length; i++) messageAccount.message.push(input.get(i), payer);
 }
 

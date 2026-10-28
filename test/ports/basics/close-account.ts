@@ -1,10 +1,10 @@
 // Port of basics/close-account @ de09019; see test/ports/README.md.
 //
-// PARTIAL (account layout): Anchor stores `name: String` (#[max_len(50)]) Borsh-encoded, so the bytes after it move
-// with its length. TypeSOL account strings are FixedString<50> (u32 length + 50 bytes, fixed offsets). The account
-// size (8 + 1 + 32 + 4 + 50) and every field value are the same; only the byte positions of shorter names differ.
+// PORTED: `@layout borsh` keeps Anchor's bytes (`name: String` with #[max_len(50)] is a FixedString<50>) and its size,
+// 8 + 1 + 32 + 4 + 50.
 import { type CloseTo, type FixedString, type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemProgram, type u8 } from "typesol";
 
+/** @layout borsh */
 export interface UserState {
   bump: u8;
   user: Pubkey;

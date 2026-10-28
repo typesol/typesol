@@ -2,7 +2,7 @@
 //
 // PARTIAL:
 //  - `extensions::metadata_pointer::metadata_address = mint_account` on the later instructions is checked by walking
-//    the TLV list (6000 here).
+//    the TLV list, failing with Anchor's ConstraintMintMetadataPointerExtensionMetadataAddress (2032).
 //  - interface: TokenMetadataArgs and UpdateFieldArgs are `@layout borsh` structs (Anchor's bytes; TokenMetadataArgs'
 //    strings hold up to 200 bytes). AnchorField's `Key` is a named field where the original has a tuple (the same
 //    bytes; the IDL names it). A Key named "name", "symbol" or "uri" updates that field.
@@ -11,6 +11,7 @@
 //  - logs: the original logs the field, the updated TokenMetadata and the lamports with `{:?}`; the port logs the
 //    lamport lines only.
 import {
+  AnchorError,
   type Init,
   type AccountInfo,
   type FixedString,
@@ -33,10 +34,6 @@ import {
 
 const METADATA_POINTER: u16 = 18n;
 const TOKEN_METADATA: u16 = 19n;
-
-export enum MetadataError {
-  WrongMetadataPointer = "The mint's metadata pointer does not point at the mint",
-}
 
 export type AnchorField = { kind: "Name" } | { kind: "Symbol" } | { kind: "Uri" } | { kind: "Key"; key: string };
 
@@ -69,7 +66,7 @@ function extensionOffset(account: AccountMeta, ext: u16): u64 {
 /** `extensions::metadata_pointer::metadata_address = mint_account`. */
 function checkPointsAtItself(mint: AccountMeta): void {
   const at = extensionOffset(mint, METADATA_POINTER);
-  require(at > 0n && readData<Pubkey>(mint, at + 32n) === mint.key, MetadataError.WrongMetadataPointer);
+  require(at > 0n && readData<Pubkey>(mint, at + 32n) === mint.key, AnchorError.ConstraintMintMetadataPointerExtensionMetadataAddress);
 }
 
 export function initialize(

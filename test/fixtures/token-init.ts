@@ -5,11 +5,13 @@ import {
   type Init,
   type InitIfNeeded,
   type Mint,
+  type MintOf,
   type Mut,
   type Signer,
   type SystemAccount,
   type SystemProgram,
   type TokenAccount,
+  type Token2022Program,
   type TokenInterface,
   type u8,
   type u64,
@@ -57,3 +59,20 @@ export function tip(from: Mut<Signer>, to: Mut<SystemAccount>, systemProgram: Sy
   systemProgram.transfer(from, to, amount);
 }
 
+
+/** Anchor `init_if_needed` + `extensions::metadata_pointer::…` + `extensions::close_authority::…` on a PDA mint. */
+export function extMint(payer: Mut<Signer>, mint: InitIfNeeded<Mint>, pointsTo: AccountInfo, tokenProgram: Token2022Program, systemProgram: SystemProgram): boolean {
+  const created = mint.createIfNeeded(payer, ["ext", payer.key], 6n, payer.key, null, {
+    metadataPointer: { authority: payer.key, metadataAddress: pointsTo.key },
+    closeAuthority: payer.key,
+  });
+  return created;
+}
+
+/** The same PDA mint without extensions. */
+export function plainExtMint(payer: Mut<Signer>, mint: Init<Mint>, tokenProgram: Token2022Program, systemProgram: SystemProgram): void {
+  mint.create(payer, ["ext", payer.key], 6n, payer.key, null);
+}
+
+/** `mint::authority = auth` on an existing mint, naming the parameter. */
+export function checkMint(mint: MintOf<Mint, "auth">, auth: AccountInfo): void {}

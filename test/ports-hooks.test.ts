@@ -124,7 +124,7 @@ describe("port: tokens/token-2022/transfer-hook/transfer-switch", () => {
     expect(customError(await configure(deployer, deployer.address))).toBe(2040);
     expectOk(await configure(deployer, admin.address));
     const stranger = await fundedSigner(svm);
-    expect(customError(await configure(stranger, (await generateKeyPairSigner()).address))).toBe(6002);
+    expect(customError(await configure(stranger, (await generateKeyPairSigner()).address))).toBe(2502);
     expect(customError(await configure(admin, admin.address))).toBe(2040);
 
     const mint = await hookMint(svm, admin, d.programId);

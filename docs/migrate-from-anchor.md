@@ -49,7 +49,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `Program<'info, System>` | `SystemProgram` |
 | `Program<'info, Token>` / `Token2022` / `Interface<'info, TokenInterface>` | `TokenProgram` / `Token2022Program` / `TokenInterface` |
 | `Account<'info, TokenAccount>` / `Account<'info, Mint>` (`InterfaceAccount`) | `TokenAccount` / `Mint` (`Mut<…>` when written) |
-| `token::mint = m, token::authority = a` | `HasOne<TokenAccount, "mint" \| "owner">` against parameters with those names |
+| `token::mint = m, token::authority = a` | `TokenOf<TokenAccount, "m", "a">` (2014 / 2015), or `HasOne<TokenAccount, "mint" \| "owner">` when the parameters have those names; `mint::authority = a, mint::freeze_authority = f` on an existing mint: `MintOf<Mint, "a", "f">` (2016 / 2017) |
 | `extensions::metadata_pointer::authority = a, …` (with `mint::…`) | `mint.create(p, …, { metadataPointer: { authority: a.key, metadataAddress: mint.key }, … })`: transferHook, closeAuthority, permanentDelegate, nonTransferable, groupPointer, groupMemberPointer and more |
 | `#[account(init, payer = p, seeds = […], bump, mint::decimals = 6, mint::authority = a, mint::freeze_authority = f)]` | `Init<Mint>`, then `const bump = mint.create(p, […], 6n, a.key, f.key)` (`null` seeds: a keypair mint; `InitIfNeeded<Mint>` + `createIfNeeded`) |
 | `#[account(init, payer = p, seeds = […], bump, token::mint = m, token::authority = a)]` | `Init<TokenAccount>`, then `vault.create(p, […], m, a.key)` (`InitIfNeeded<TokenAccount>` + `createIfNeeded`) |
@@ -91,6 +91,8 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `-> Result<u64>` / a struct | `: u64` / a struct: sent as return data, listed in the IDL |
 | `#[error_code] enum MyError { #[msg("…")] X }` | `export enum MyError { X = "…" }` (codes from 6000, in order) |
 | `require!(c, MyError::X)`, `err!(MyError::X)` | `require(c, MyError.X)`, `require(false, MyError.X)` |
+| `require_keys_eq!(a, b)`, `err!(ErrorCode::AccountDidNotDeserialize)` (Anchor's own codes) | `require(a === b, AnchorError.RequireKeysEqViolated)`, `require(false, AnchorError.AccountDidNotDeserialize)` |
+| `init_if_needed` + `extensions::…` on a mint | `mint.createIfNeeded(…, { metadataPointer: {…}, … })`: an existing mint is checked as Anchor checks it (2024–2039) |
 | `require_keys_eq!(a, b)` | `require(a === b, …)` |
 | `a.checked_add(b).ok_or(…)?` | `a + b` (every operation is checked; overflow aborts with 5100) |
 | `emit!(Ev { … })` / `emit_cpi!` | `emit<Ev>({ … })` / `emitCpi<Ev>({ … }, eventAuthority, self)` |

@@ -100,6 +100,70 @@ describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
     });
   }
 
+  it("init_if_needed with extensions: creates them, then checks an existing mint as Anchor does (2030 / 2032)", async () => {
+    const payer = await fundedSigner(d.svm);
+    const [mint] = await pda(d.programId, ["ext", payer.address]);
+    const target = (await generateKeyPairSigner()).address;
+    const run = (pointsTo: Address) =>
+      send(d.svm, payer, [
+        ix(d, "ext_mint", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint, writable: true },
+          { address: pointsTo },
+          { address: TOKEN_2022 },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]);
+    expect(
+      Buffer.from(
+        expectOk(await run(target))
+          .returnData()
+          .data(),
+      )[0],
+    ).toBe(1);
+    const m = t22.getMintDecoder().decode(acct(d.svm, mint).data);
+    const kinds = (m.extensions as { value: { __kind: string }[] }).value.map((e) => e.__kind).sort();
+    expect(kinds).toEqual(["MetadataPointer", "MintCloseAuthority"]);
+    d.svm.expireBlockhash();
+    expect(
+      Buffer.from(
+        expectOk(await run(target))
+          .returnData()
+          .data(),
+      )[0],
+    ).toBe(0);
+    // Another metadata address: ConstraintMintMetadataPointerExtensionMetadataAddress.
+    expect(customError(await run((await generateKeyPairSigner()).address))).toBe(2032);
+
+    // A mint at that address without the extensions: ConstraintMintMetadataPointerExtension.
+    const other = await fundedSigner(d.svm);
+    const [plain] = await pda(d.programId, ["ext", other.address]);
+    const accounts = [
+      { address: other.address, signer: other, writable: true },
+      { address: plain, writable: true },
+      { address: TOKEN_2022 },
+      { address: SYSTEM_PROGRAM },
+    ];
+    expectOk(await send(d.svm, other, [ix(d, "plain_ext_mint", {}, accounts)]));
+    const ext = await send(d.svm, other, [ix(d, "ext_mint", {}, [accounts[0]!, accounts[1]!, { address: target }, accounts[2]!, accounts[3]!])]);
+    expect(customError(ext)).toBe(2030);
+  });
+
+  it('MintOf<Mint, "auth">: Anchor\'s mint::authority naming the parameter (2016)', async () => {
+    const payer = await fundedSigner(d.svm);
+    const [mint] = await pda(d.programId, ["ext", payer.address]);
+    const create = [
+      { address: payer.address, signer: payer, writable: true },
+      { address: mint, writable: true },
+      { address: TOKEN_2022 },
+      { address: SYSTEM_PROGRAM },
+    ];
+    expectOk(await send(d.svm, payer, [ix(d, "plain_ext_mint", {}, create)]));
+    const check = (auth: Address) => send(d.svm, payer, [ix(d, "check_mint", {}, [{ address: mint }, { address: auth }])]);
+    expectOk(await check(payer.address));
+    expect(customError(await check((await generateKeyPairSigner()).address))).toBe(2016);
+  });
+
   it("creates a new keypair mint, which must sign", async () => {
     const payer = await fundedSigner(d.svm);
     const mint = await generateKeyPairSigner();

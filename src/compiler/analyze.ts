@@ -111,6 +111,8 @@ const TYPE_EXPORTS = new Set([
   "TokenMetadataProgram",
   "SwitchboardFeed",
   "HasOne",
+  "TokenOf",
+  "MintOf",
   "Seeds",
   "CloseTo",
   "Address",
@@ -1118,7 +1120,15 @@ function analyzeHelper(
       if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
       // Accounts the caller already checked: Signer, AccountInfo, Account<T>/Mut<T>, token accounts, programs.
       const wrapped = typesolName(p.type, scope.imports);
-      if (wrapped === "HasOne" || wrapped === "Seeds" || wrapped === "CloseTo" || wrapped === "Address" || wrapped === "Ata")
+      if (
+        wrapped === "HasOne" ||
+        wrapped === "TokenOf" ||
+        wrapped === "MintOf" ||
+        wrapped === "Seeds" ||
+        wrapped === "CloseTo" ||
+        wrapped === "Address" ||
+        wrapped === "Ata"
+      )
         reporter.fail(p.type, "constraints belong on instruction parameters; helpers take the plain account type");
       const account = resolveAccountKind(p.type, reporter, scope.imports, structs);
       if (account.kind === "init" || account.kind === "initIfNeeded" || account.kind === "zeroed")
@@ -1271,7 +1281,18 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
     const struct =
       a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || a.kind.kind === "zeroed" ? a.kind.struct : undefined;
     reporter.guard(() => {
-      for (const f of c.hasOne) {
+      for (const entry of c.hasOne) {
+        const [f, param = f] = entry.split("=") as [string, string?];
+        if (entry.includes("=")) {
+          if (!accounts.some((o) => o.name === param)) reporter.fail(a.node, `add an account parameter named "${param}"`);
+          if (a.kind.kind === "token" ? f !== "mint" && f !== "owner" : a.kind.kind === "mint" ? false : true)
+            reporter.fail(
+              a.node,
+              a.kind.kind === "token" || a.kind.kind === "mint" ? "TokenOf<…> applies to a TokenAccount" : "TokenOf / MintOf apply to a TokenAccount / Mint",
+            );
+          if (a.kind.kind === "mint" && f !== "mintAuthority" && f !== "freezeAuthority") reporter.fail(a.node, "MintOf<…> applies to a Mint");
+          continue;
+        }
         if (!accounts.some((o) => o.name === f)) reporter.fail(a.node, `HasOne<…, "${f}">: add an account parameter named "${f}"`);
         if (a.kind.kind === "token") {
           if (f !== "mint" && f !== "owner") reporter.fail(a.node, `HasOne on a TokenAccount checks "mint" or "owner", not "${f}"`);
@@ -1312,7 +1333,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   for (const a of accounts) {
     const c = a.constraints;
     const refs = [
-      ...c.hasOne,
+      ...c.hasOne.map((e) => e.split("=").at(-1)!),
       ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1).split(".")[0]!),
       ...(c.seeds?.program?.startsWith("@") ? [c.seeds.program.slice(1)] : []),
       ...(c.closeTo ? [c.closeTo] : []),
@@ -1368,7 +1389,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
 /** Peel HasOne / Seeds / CloseTo wrappers off a parameter type, recording what they ask for. */
 function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<string, string>, out: Constraints): ts.TypeNode {
   const name = typesolName(node, imports);
-  if (!["HasOne", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable"].includes(name ?? "")) return node;
+  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable"].includes(name ?? "")) return node;
   const args = (node as ts.TypeReferenceNode).typeArguments ?? [];
   const lit = (t: ts.TypeNode | undefined): string[] => {
     if (!t) return [];
@@ -1377,6 +1398,17 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     reporter.fail(t, "expected a string literal type");
   };
   if (name === "HasOne") out.hasOne.push(...lit(args[1]));
+  // Anchor's `token::mint = m, token::authority = a` / `mint::authority = a, mint::freeze_authority = f` naming the
+  // parameters: recorded as "field=param" (`never` leaves one out).
+  if (name === "TokenOf" || name === "MintOf") {
+    const [first, second] = name === "TokenOf" ? ["mint", "owner"] : ["mintAuthority", "freezeAuthority"];
+    const one = (t: ts.TypeNode | undefined) => (t && t.kind !== ts.SyntaxKind.NeverKeyword ? lit(t)[0] : undefined);
+    const p1 = one(args[1]);
+    const p2 = one(args[2]);
+    if (!p1 && !p2) reporter.fail(node, `${name}<…> names at least one parameter`);
+    if (p1) out.hasOne.push(`${first}=${p1}`);
+    if (p2) out.hasOne.push(`${second}=${p2}`);
+  }
   if (name === "CloseTo") out.closeTo = lit(args[1])[0];
   if (name === "Owner") {
     const text = lit(args[1])[0];

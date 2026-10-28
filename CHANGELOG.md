@@ -5,6 +5,15 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `TokenOf<TokenAccount, "mintParam", "authorityParam">` and `MintOf<Mint, "authorityParam", "freezeParam">`: Anchor's
+  `token::mint = …` / `mint::authority = …` naming the parameters (2014 / 2015 / 2016 / 2017).
+- `AnchorError`: Anchor's own error codes for `require(condition, AnchorError.X)` (`RequireKeysEqViolated`,
+  `AccountDidNotDeserialize`, the extension constraints …), as `require!` / `err!` with `ErrorCode` raise them.
+- Extensions on `InitIfNeeded<Mint>`: an existing mint is checked as Anchor's `extensions::…` constraints check it
+  (2024–2039).
+- Bubblegum `mintToCollection` (MintToCollectionV1 on V1 trees, Token Metadata collections).
+
 ## 0.18.0 — 2026-10-28
 
 The remaining Anchor differences, closed: Anchor's argument structs (Strings, Vecs, Options and enums in Borsh),

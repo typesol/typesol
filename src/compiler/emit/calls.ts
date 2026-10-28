@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { calleeName, resolveScalarType } from "../analyze.js";
+import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
   INT_INFO,
@@ -1008,6 +1009,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
   }
 
   protected errorRef(node: ts.Expression): ErrorDef {
+    // `AnchorError.X`: one of Anchor's own codes (not one of this program's errors, so not in the IDL).
+    if (ts.isPropertyAccessExpression(node) && this.exportName(node.expression) === "AnchorError") {
+      const code = ANCHOR_ERRORS[node.name.text];
+      if (code === undefined) this.fail(node.name, `AnchorError has no ${node.name.text}`);
+      return { code, name: node.name.text, msg: node.name.text };
+    }
     if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
       const def = this.model.errorEnums.get(node.expression.text)?.get(node.name.text);
       if (def) return def;
