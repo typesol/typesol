@@ -6,10 +6,10 @@
 //  - interface: the `switch` instruction is named `switch_` in the IDL (a reserved word in TypeScript); its
 //    discriminator is the original's, so the instruction bytes are the same.
 //  - configure_admin: `admin` and `new_admin` are both writable, so naming yourself is refused by TypeSOL's aliasing
-//    check (2040) — on the first configuration too, where the original lets the caller become the admin. Its
-//    `require_keys_eq!` fails with this program's NotAdmin (6002) instead of RequireKeysEqViolated (2502); the
+//    check (2040) — on the first configuration too, where the original lets the caller become the admin. The
 //    `require_keys_neq!` case cannot be reached (2040 comes first).
 import {
+  AnchorError,
   isTransferring,
   type Account,
   type AccountInfo,
@@ -30,8 +30,6 @@ import {
 export enum TransferError {
   IsNotCurrentlyTransferring = "The token is not currently transferring",
   SwitchNotOn = "The transfer switch is currently not on",
-  NotAdmin = "Only the admin can configure the admin",
-  SameAdmin = "The new admin is the current admin",
 }
 
 export interface TransferSwitch {
@@ -47,8 +45,8 @@ export interface AdminConfig {
 export function configureAdmin(admin: Mut<Signer>, newAdmin: Mut<AccountInfo>, adminConfig: InitIfNeeded<AdminConfig>, systemProgram: SystemProgram): void {
   adminConfig.createIfNeeded(admin, ["admin-config"]);
   if (adminConfig.isInitialised) {
-    require(admin.key === adminConfig.admin, TransferError.NotAdmin);
-    require(admin.key !== newAdmin.key, TransferError.SameAdmin);
+    require(admin.key === adminConfig.admin, AnchorError.RequireKeysEqViolated);
+    require(admin.key !== newAdmin.key, AnchorError.RequireKeysNeqViolated);
   }
   adminConfig.admin = newAdmin.key;
   adminConfig.isInitialised = true;

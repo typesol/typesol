@@ -4,10 +4,7 @@
 // PDA's, signed by that PDA (the sender approved it as delegate beforehand). The ExtraAccountMetaList lists seven extra
 // accounts: three fixed addresses (WSOL mint, SPL Token, ATA program), the delegate PDA, the two WSOL ATAs as PDAs of the
 // ATA program (account index 7) and the counter PDA.
-// PARTIAL:
-//  - `token::mint = wsol_mint` / `token::authority = delegate|owner` on the WSOL accounts are checked in the body (6002 /
-//    6003), where Anchor raises ConstraintTokenMint / ConstraintTokenOwner (2014 / 2015): HasOne<…> names the parameter
-//    after the field.
+// PORTED: `token::mint` / `token::authority` on the WSOL accounts are TokenOf<…> (2014 / 2015, as Anchor).
 import {
   isTransferring,
   type AccountInfo,
@@ -21,6 +18,7 @@ import {
   type Signer,
   type SystemProgram,
   type TokenAccount,
+  type TokenOf,
   type TokenProgram,
   initExtraAccountMetas,
   log,
@@ -38,8 +36,6 @@ const ATA_PROGRAM_ID = pubkey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 export enum TransferError {
   AmountTooBig = "Amount Too big",
   IsNotCurrentlyTransferring = "The token is not currently transferring",
-  WrongWsolMint = "A WSOL account is not of the WSOL mint",
-  WrongWsolOwner = "A WSOL account has the wrong owner",
 }
 
 export interface CounterAccount {
@@ -78,13 +74,11 @@ export function transferHook(
   tokenProgram: TokenProgram,
   associatedTokenProgram: AssociatedTokenProgram,
   delegate: Seeds<Owner<Mut<AccountInfo>, "11111111111111111111111111111111">, ["delegate"]>,
-  delegateWsolTokenAccount: Mut<TokenAccount>,
-  senderWsolTokenAccount: Mut<TokenAccount>,
+  delegateWsolTokenAccount: TokenOf<Mut<TokenAccount>, "wsolMint", "delegate">,
+  senderWsolTokenAccount: TokenOf<Mut<TokenAccount>, "wsolMint", "owner">,
   counterAccount: Seeds<Mut<CounterAccount>, ["counter"]>,
   amount: u64,
 ): void {
-  require(delegateWsolTokenAccount.mint === wsolMint.key && senderWsolTokenAccount.mint === wsolMint.key, TransferError.WrongWsolMint);
-  require(delegateWsolTokenAccount.owner === delegate.key && senderWsolTokenAccount.owner === owner.key, TransferError.WrongWsolOwner);
   require(isTransferring(sourceToken), TransferError.IsNotCurrentlyTransferring);
   if (amount > 50n) log(`The amount is too big ${amount}`);
   counterAccount.counter += 1n;

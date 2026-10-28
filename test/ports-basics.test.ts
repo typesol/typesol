@@ -4,7 +4,7 @@
 import { type Address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 import { BN, SYSTEM_PROGRAM, type Meta, acct, customError, decodeAccount, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
-import { allocate, deployPort, fixedString } from "./ports-helpers.js";
+import { allocate, deployPort } from "./ports-helpers.js";
 
 const SOL = 1_000_000_000n;
 
@@ -123,9 +123,9 @@ describe("port: basics/close-account", () => {
         ]),
       ]),
     );
-    const s = decodeAccount<{ user: { toBase58(): string }; name: unknown }>(d, d.svm, "UserState", userAccount);
+    const s = decodeAccount<{ user: { toBase58(): string }; name: string }>(d, d.svm, "UserState", userAccount);
     expect(s.user.toBase58()).toBe(user.address);
-    expect(fixedString(s.name)).toBe("John Doe");
+    expect(s.name).toBe("John Doe");
     expect(acct(d.svm, userAccount).data.length).toBe(8 + 1 + 32 + 4 + 50);
     // Someone else cannot close it: the PDA is derived from the signer.
     const other = await fundedSigner(d.svm);
@@ -306,7 +306,8 @@ describe("port: basics/realloc", () => {
   it("sizes the message account to each update, charging and refunding the payer", async () => {
     const d = await deployPort("basics/realloc.ts", "Fod47xKXjdHVQDzkFPBvfdWLm8gEAV4iMSXkfUzCHiSD");
     const payer = await fundedSigner(d.svm);
-    const [message] = await pda(d.programId, ["message", payer.address]);
+    const messageKp = await generateKeyPairSigner();
+    const message = messageKp.address;
     const accounts = [{ address: payer.address, signer: payer, writable: true }, { address: message, writable: true }, { address: SYSTEM_PROGRAM }];
     const bytes = (s: string) => Buffer.from(s, "utf8");
     const check = (s: string) => {
@@ -316,7 +317,9 @@ describe("port: basics/realloc", () => {
       expect(Buffer.from(a.data.subarray(8)).equals(Buffer.concat([Buffer.from(new Uint32Array([s.length]).buffer), bytes(s)]))).toBe(true);
       expect(a.lamports).toBe(d.svm.minimumBalanceForRentExemption(BigInt(a.data.length)));
     };
-    expectOk(await send(d.svm, payer, [ix(d, "initialize", { input: bytes("hello") }, accounts)]));
+    // initialize creates the keypair account, which signs.
+    const init = [accounts[0]!, { address: message, signer: messageKp, writable: true }, accounts[2]!];
+    expectOk(await send(d.svm, payer, [ix(d, "initialize", { input: bytes("hello") }, init)]));
     check("hello");
     expectOk(await send(d.svm, payer, [ix(d, "update", { input: bytes("hello world") }, accounts)]));
     check("hello world");

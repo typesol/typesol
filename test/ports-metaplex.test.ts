@@ -303,9 +303,9 @@ describe.skipIf(!HAVE_METADATA)("port: tokens/nft-operations", () => {
           { address: METADATA_PROGRAM },
         ]),
       ]);
-    // The collection's master edition passed as the item's metadata is not a Metadata account: NotMetadata (6000).
+    // The collection's master edition passed as the item's metadata is not a Metadata account: AccountDidNotDeserialize (3003), as in Anchor.
     // Anchor's Account<MetadataAccount> fails deserializing it instead, with AccountDidNotDeserialize (3003).
-    expect(customError(await verify(collectionEdition))).toBe(6000);
+    expect(customError(await verify(collectionEdition))).toBe(3003);
     expectOk(await verify(nftMetadata));
     expect(parseMetadata(svm, nftMetadata).collection).toEqual({ verified: true, key: collection.address });
   });

@@ -36,17 +36,20 @@ describe("port: tokens/token-2022/cpi-guard", () => {
       ]),
     );
     const [recipient] = await pda(d.programId, ["pda"]);
-    const transfer = () =>
+    const transfer = (withMint = mint) =>
       send(svm, payer, [
         ix(d, "cpi_transfer", {}, [
           { address: payer.address, signer: payer, writable: true },
           { address: token.address, writable: true },
           { address: recipient, writable: true },
-          { address: mint },
+          { address: withMint },
           { address: TOKEN_2022 },
           { address: SYSTEM_PROGRAM },
         ]),
       ]);
+    // token::mint = mint_account: another mint fails with ConstraintTokenMint, as in Anchor.
+    const otherMint = await createMint(svm, payer, { tokenProgram: TOKEN_2022, decimals: 2 });
+    expect(customError(await transfer(otherMint))).toBe(2014);
     const blocked = await transfer();
     expect(blocked).toBeInstanceOf(FailedTransactionMetadata);
     expect((blocked as FailedTransactionMetadata).meta().logs().join("\n")).toMatch(/cpi guard/i);

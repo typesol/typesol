@@ -1,10 +1,10 @@
 // Port of tokens/nft-operations @ de09019; see test/ports/README.md.
 //
-// PARTIAL:
-//  - `Account<MetadataAccount>` / `Account<MasterEditionAccount>` are checked as Token Metadata-owned accounts whose
-//    first byte is the Metadata (4) / MasterEditionV2 (6) key. A wrong key fails with this program's NotMetadata /
-//    NotMasterEdition (6000 / 6001), where Anchor fails deserializing with AccountDidNotDeserialize (3003).
+// PORTED: `Account<MetadataAccount>` / `Account<MasterEditionAccount>` are checked as Token Metadata-owned accounts
+// whose first byte is the Metadata (4) / MasterEditionV2 (6) key; a wrong one fails with AccountDidNotDeserialize
+// (3003), as Anchor's deserialization does.
 import {
+  AnchorError,
   type AccountInfo,
   type Address,
   type AssociatedTokenProgram,
@@ -24,11 +24,6 @@ import {
   require,
   u8,
 } from "typesol";
-
-export enum NftError {
-  NotMetadata = "Not a Token Metadata account",
-  NotMasterEdition = "Not a Token Metadata master edition account",
-}
 
 export function createCollection(
   user: Mut<Signer>,
@@ -128,8 +123,8 @@ export function verifyCollection(
   sysvarInstruction: Address<AccountInfo, "Sysvar1nstructions1111111111111111111111111">,
   tokenMetadataProgram: TokenMetadataProgram,
 ): void {
-  require(readData<u8>(metadata, 0n) === 4n && readData<u8>(collectionMetadata, 0n) === 4n, NftError.NotMetadata);
-  require(readData<u8>(collectionMasterEdition, 0n) === 6n, NftError.NotMasterEdition);
+  require(readData<u8>(metadata, 0n) === 4n && readData<u8>(collectionMetadata, 0n) === 4n, AnchorError.AccountDidNotDeserialize);
+  require(readData<u8>(collectionMasterEdition, 0n) === 6n, AnchorError.AccountDidNotDeserialize);
   tokenMetadataProgram.verifyCollection(
     mintAuthority,
     metadata,

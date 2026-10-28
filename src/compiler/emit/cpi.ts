@@ -423,7 +423,6 @@ export abstract class CpiEmitter extends CallEmitter {
     const extArg = isMint && ext5 && ts.isObjectLiteralExpression(ext5) ? ext5 : undefined;
     const fixedArgs = isMint ? (extArg ? 6 : 5) : 4;
     if (a.length !== fixedArgs && a.length !== fixedArgs + 1) this.fail(node, usage);
-    if (extArg && ifNeeded) this.fail(extArg, "createIfNeeded does not take extensions yet: create the mint with create(…)");
     const payer = this.accountParam(a[0]!, "the payer");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0]!, "the payer must be a Mut<Signer>");
     // The token program: named as the last argument, or the instruction's only token program parameter.
@@ -457,6 +456,7 @@ export abstract class CpiEmitter extends CallEmitter {
     };
     let mint: AccountParam | undefined;
     const extLines: string[] = [];
+    const extChecks: string[] = [];
     let mintSpace = "TS_MINT_LEN";
     if (isMint) {
       take(a[2]!, U8);
@@ -465,9 +465,10 @@ export abstract class CpiEmitter extends CallEmitter {
       if (extArg) {
         if (programs[0]!.kind.kind === "tokenProgram" && programs[0]!.kind.flavor === "token")
           this.fail(extArg, "mint extensions are Token-2022's; use Token2022Program or TokenInterface");
-        const ext = this.mintExtensions(extArg, tp, acct);
+        const ext = this.mintExtensions(extArg, tp, acct, ifNeeded);
         mintSpace = String(ext.space);
         extLines.push(...ext.lines);
+        extChecks.push(...ext.checks);
       }
     } else {
       mint = this.accountParam(a[2]!, "the mint");
@@ -493,6 +494,7 @@ export abstract class CpiEmitter extends CallEmitter {
         this.line(`  TS_TRY(ts_token_existing(params, ${acct}, ${tp}, ${seeds.name}, ${seeds.count}, &${b}));`);
         this.line(`  TS_TRY(ts_check_mint(${acct}));`);
         this.line(`  TS_TRY(ts_check_mint_is(${acct}, (uint8_t)(${decimals!.c}), ${authority!.c}, ${freeze ? freeze.c : "NULL"}));`);
+        for (const l of extChecks) this.line(`  ${l}`);
         this.line(`}`);
       } else for (const l of createLines) this.line(l);
     } else {
@@ -529,7 +531,7 @@ export abstract class CpiEmitter extends CallEmitter {
    * in source order; the returned lines (each extension's Token-2022 initializer, mint writable, before
    * InitializeMint2) run after the account is created, sized for exactly these extensions.
    */
-  protected mintExtensions(lit: ts.ObjectLiteralExpression, tp: string, acct: string): { space: number; lines: string[] } {
+  protected mintExtensions(lit: ts.ObjectLiteralExpression, tp: string, acct: string, ifNeeded = false): { space: number; lines: string[]; checks: string[] } {
     const optKey: ValueType = { kind: "option", inner: PUBKEY };
     this.model.options.set("pubkey", PUBKEY);
     // name: [extension type length, initializer tag, the fields an object value takes ([] for a plain value)]
@@ -677,8 +679,61 @@ export abstract class CpiEmitter extends CallEmitter {
         }
       }
     }
+    // An existing mint (createIfNeeded) is checked as Anchor's `extensions::…` constraints check it: the extension must
+    // be there (its Anchor code) and each key must match (the next codes). Anchor has constraints for these six only.
+    const CHECKS: Record<string, { type: number; code: number; fields: [string, number][] }> = {
+      groupPointer: {
+        type: 20,
+        code: 2024,
+        fields: [
+          ["authority", 0],
+          ["groupAddress", 32],
+        ],
+      },
+      groupMemberPointer: {
+        type: 21,
+        code: 2027,
+        fields: [
+          ["authority", 0],
+          ["memberAddress", 32],
+        ],
+      },
+      metadataPointer: {
+        type: 18,
+        code: 2030,
+        fields: [
+          ["authority", 0],
+          ["metadataAddress", 32],
+        ],
+      },
+      closeAuthority: { type: 3, code: 2033, fields: [["v", 0]] },
+      permanentDelegate: { type: 12, code: 2035, fields: [["v", 0]] },
+      transferHook: {
+        type: 14,
+        code: 2037,
+        fields: [
+          ["authority", 0],
+          ["programId", 32],
+        ],
+      },
+    };
+    const checks: string[] = [];
+    if (ifNeeded)
+      for (const [name, v] of held) {
+        const c = CHECKS[name];
+        if (!c) this.fail(lit, `${name} cannot be checked on an existing mint (Anchor has no constraint for it): create the mint with create(…)`);
+        checks.push(`{ uint64_t eo, el; if (!ts_t22_ext(${acct}, ${c.type}, &eo, &el)) TS_FAIL(${c.code}, "TypeSOL: the mint has no ${name} extension"); }`);
+        c.fields.forEach(([f, at], i) => {
+          const held = v.get(f)!;
+          // The value given: a nonzero-or-zero key, a COption (close authority) or a plain key (permanent delegate).
+          const want = name === "closeAuthority" ? `(${held}.some ? ${held}.v : (SolPubkey){0})` : held;
+          checks.push(
+            `{ SolPubkey k, w = ${want}; if (!ts_t22_key(${acct}, ${c.type}, ${at}, &k)) ts_memzero(&k, 32); if (!ts_key_eq(&k, &w)) TS_FAIL(${c.code + 1 + i}, "TypeSOL: the mint's ${name} ${f === "v" ? "key" : f} differs"); }`,
+          );
+        });
+      }
     // Base account (165, the mint padded to an account's size), the account type byte, then each TLV entry.
-    return { space: 165 + 1 + space, lines };
+    return { space: 165 + 1 + space, lines, checks };
   }
 
   /**
@@ -1901,6 +1956,61 @@ export abstract class CpiEmitter extends CallEmitter {
         this.cpi(p, metas, data.buf, data.len, seedsAt(13));
         return undefined;
       }
+      case "mintToCollection": {
+        // MintToCollectionV1: MintV1's accounts plus the collection authority (signing), its record PDA (or null),
+        // the collection mint, metadata (writable) and master edition, Bubblegum's signer PDA and Token Metadata;
+        // MetadataArgs with Some({ verified: false, key: collection mint }) (Bubblegum verifies it).
+        if (a.length !== 17 && a.length !== 18)
+          this.fail(
+            node,
+            "mintToCollection(treeConfig, leafOwner, leafDelegate, merkleTree, payer, treeDelegate, collectionAuthority, collectionAuthorityRecordPda | null, collectionMint, collectionMetadata, collectionEdition, bubblegumSigner, logWrapper, compressionProgram, tokenMetadataProgram, systemProgram, { name, symbol, uri, sellerFeeBasisPoints, creators?, isMutable?, editionNonce? }, signerSeeds?)",
+          );
+        const metas = [
+          acct(0, "the tree config", true, false),
+          acct(1, "the leaf owner", false, false),
+          acct(2, "the leaf delegate", false, false),
+          acct(3, "the merkle tree", true, false),
+          acct(4, "the payer", false, true),
+          acct(5, "the tree delegate", false, true),
+          acct(6, "the collection authority", false, true),
+          acct(7, "the collection authority record", false, false),
+          acct(8, "the collection mint", false, false),
+          acct(9, "the collection metadata", true, false),
+          acct(10, "the collection edition", false, false),
+          acct(11, "Bubblegum's signer", false, false),
+          acct(12, "the log wrapper", false, false),
+          acct(13, "the compression program", false, false),
+          acct(14, "Token Metadata", false, false),
+          acct(15, "the system program", false, false),
+        ];
+        const md = a[16]!;
+        if (!ts.isObjectLiteralExpression(md))
+          this.fail(md, "the metadata is { name, symbol, uri, sellerFeeBasisPoints, creators?, isMutable?, editionNonce? }");
+        const props = this.literalProps(md, ["name", "symbol", "uri", "sellerFeeBasisPoints", "creators", "isMutable", "editionNonce"], "the metadata");
+        const need = (k: string) => props.get(k) ?? this.fail(md, `the metadata needs ${k}`);
+        // `collectionMint.key`, read where the call is.
+        const key = ts.factory.createPropertyAccessExpression(a[8]! as ts.Identifier, "key");
+        ts.setTextRange(key, a[8]!);
+        (key as { parent?: ts.Node }).parent = node;
+        const nonce = props.get("editionNonce");
+        const data = this.mplData(node, 1024, [
+          { bytes: [153, 18, 178, 47, 197, 158, 86, 15] },
+          { value: need("name"), type: STRING },
+          { value: need("symbol"), type: STRING },
+          { value: need("uri"), type: STRING },
+          { value: need("sellerFeeBasisPoints"), type: { kind: "int", name: "u16" } },
+          { bytes: [0] }, // primarySaleHappened
+          props.get("isMutable") ? { value: props.get("isMutable")!, type: BOOL } : { bytes: [1] },
+          ...(nonce ? [{ bytes: [1] }, { value: nonce, type: U8 }] : [{ bytes: [0] }]),
+          { bytes: [1, 0] }, // tokenStandard Some(NonFungible)
+          { bytes: [1, 0] }, // collection Some({ verified: false, … })
+          { value: key, type: PUBKEY },
+          { bytes: [0, 0] }, // uses None, tokenProgramVersion Original
+          ...this.bubblegumCreators(props.get("creators")),
+        ]);
+        this.cpi(p, metas, data.buf, data.len, seedsAt(17));
+        return undefined;
+      }
     }
     return this.bubblegumV2(node, bg, method);
   }
@@ -2183,7 +2293,7 @@ export abstract class CpiEmitter extends CallEmitter {
     }
     this.fail(
       node.expression,
-      `Bubblegum supports createTree, mint, createTreeV2, mintV2, transferV2, burnV2, ${Object.keys(BUBBLEGUM_OPS).join(", ")}, not ${method}`,
+      `Bubblegum supports createTree, mint, mintToCollection, createTreeV2, mintV2, transferV2, burnV2, ${Object.keys(BUBBLEGUM_OPS).join(", ")}, not ${method}`,
     );
   }
 

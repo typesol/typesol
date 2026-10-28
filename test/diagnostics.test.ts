@@ -102,9 +102,9 @@ describe("subset enforcement", () => {
       /mint extensions: transferFee/,
     ],
     [
-      "mint extensions on createIfNeeded",
-      `export function f(p: Mut<Signer>, m: InitIfNeeded<Mint>, t: Token2022Program, s: SystemProgram): void { m.createIfNeeded(p, ["m"], 0n, p.key, null, { nonTransferable: true } as never); }`,
-      /createIfNeeded does not take extensions/,
+      "unchecked mint extensions on createIfNeeded",
+      `export function f(p: Mut<Signer>, m: InitIfNeeded<Mint>, t: Token2022Program, s: SystemProgram): void { m.createIfNeeded(p, ["m"], 0n, p.key, null, { nonTransferable: true }); }`,
+      /nonTransferable cannot be checked on an existing mint/,
     ],
     [
       "a space smaller than the account",

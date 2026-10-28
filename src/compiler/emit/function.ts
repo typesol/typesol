@@ -382,18 +382,20 @@ export class FunctionEmitter extends StatementEmitter {
       const k = a.kind.kind;
       if (c.hasOne.length && k !== "account" && k !== "token" && k !== "mint")
         this.reporter.fail(a.node, "HasOne applies to existing accounts (Account<T> / Mut<T>), TokenAccount and Mint");
-      for (const f of c.hasOne) {
+      for (const entry of c.hasOne) {
+        // "field=param" (TokenOf / MintOf) or a field checked against the parameter of the same name (HasOne).
+        const [f, p = f] = entry.split("=") as [string, string?];
         if (k === "token")
           out.push(
             f === "mint"
-              ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${f}");`
-              : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${f}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${f}");`,
+              ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${p}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${p}");`
+              : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${p}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${p}");`,
           );
         else if (k === "mint") {
           const at = f === "mintAuthority" ? 0 : 46;
           const code = f === "mintAuthority" ? "TS_ERR_MINT_AUTHORITY" : "TS_ERR_FREEZE_AUTHORITY";
           out.push(
-            `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), &a_${f}->key)) TS_FAIL(${code}, "TypeSOL: ${f} is not the ${f} of ${a.name}");`,
+            `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), &a_${p}->key)) TS_FAIL(${code}, "TypeSOL: ${p} is not the ${f} of ${a.name}");`,
           );
         } else out.push(`  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
       }
