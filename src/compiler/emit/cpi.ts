@@ -409,15 +409,21 @@ export abstract class CpiEmitter extends CallEmitter {
     const ifNeeded = (target.kind as { init?: string }).init === "ifNeeded";
     const call = `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}`;
     const usage = isMint
-      ? `${call}(payer, seeds | null, decimals, mintAuthority, freezeAuthority | null, tokenProgram?)`
+      ? `${call}(payer, seeds | null, decimals, mintAuthority, freezeAuthority | null, extensions?, tokenProgram?)`
       : `${call}(payer, seeds | null, mint, authority, tokenProgram?)`;
     if (!topLevel) this.fail(node, `${call}(...) must be a top-level statement of the instruction`);
     if (this.created.has(target.name)) this.fail(node, `${target.name} is already created`);
     const a = node.arguments;
     if (!isMint && a.length === 1)
       this.fail(node, `${call}(payer) creates an associated token account: wrap it in Ata<…, "owner", "mint">; or call ${usage.slice(call.length)}`);
-    const fixedArgs = isMint ? 5 : 4;
+    // A mint may list its Token-2022 extensions next (Anchor's `extensions::…`), as an object literal.
+    const bare = (e: ts.Expression | undefined): ts.Expression | undefined =>
+      e && (ts.isAsExpression(e) || ts.isParenthesizedExpression(e) || ts.isSatisfiesExpression(e)) ? bare(e.expression) : e;
+    const ext5 = bare(a[5]);
+    const extArg = isMint && ext5 && ts.isObjectLiteralExpression(ext5) ? ext5 : undefined;
+    const fixedArgs = isMint ? (extArg ? 6 : 5) : 4;
     if (a.length !== fixedArgs && a.length !== fixedArgs + 1) this.fail(node, usage);
+    if (extArg && ifNeeded) this.fail(extArg, "createIfNeeded does not take extensions yet: create the mint with create(…)");
     const payer = this.accountParam(a[0]!, "the payer");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0]!, "the payer must be a Mut<Signer>");
     // The token program: named as the last argument, or the instruction's only token program parameter.
@@ -450,10 +456,19 @@ export abstract class CpiEmitter extends CallEmitter {
       vals.push(v);
     };
     let mint: AccountParam | undefined;
+    const extLines: string[] = [];
+    let mintSpace = "TS_MINT_LEN";
     if (isMint) {
       take(a[2]!, U8);
       take(a[3]!, PUBKEY);
       if (a[4]!.kind !== ts.SyntaxKind.NullKeyword) take(a[4]!, PUBKEY);
+      if (extArg) {
+        if (programs[0]!.kind.kind === "tokenProgram" && programs[0]!.kind.flavor === "token")
+          this.fail(extArg, "mint extensions are Token-2022's; use Token2022Program or TokenInterface");
+        const ext = this.mintExtensions(extArg, tp, acct);
+        mintSpace = String(ext.space);
+        extLines.push(...ext.lines);
+      }
     } else {
       mint = this.accountParam(a[2]!, "the mint");
       if (mint.kind.kind !== "mint") this.fail(a[2]!, "pass the Mint parameter the account will hold");
@@ -466,7 +481,8 @@ export abstract class CpiEmitter extends CallEmitter {
     if (isMint) {
       const [decimals, authority, freeze] = vals;
       createLines.push(
-        `TS_TRY(ts_create_owned(params, a_${payer.name}, ${acct}, ${seeds.name}, ${seeds.count}, &${tp}->key, TS_MINT_LEN, &${b}));`,
+        `TS_TRY(ts_create_owned(params, a_${payer.name}, ${acct}, ${seeds.name}, ${seeds.count}, &${tp}->key, ${mintSpace}, &${b}));`,
+        ...extLines,
         `TS_TRY(ts_token_init_mint(params, ${tp}, ${acct}, (uint8_t)(${decimals!.c}), ${authority!.c}, ${freeze ? freeze.c : "NULL"}));`,
       );
       if (ifNeeded) {
@@ -506,6 +522,163 @@ export abstract class CpiEmitter extends CallEmitter {
     this.pendingInit.delete(target.name);
     this.bumps.set(target.name, b);
     return ifNeeded ? { c: created, type: BOOL } : { c: b, type: U8 };
+  }
+
+  /**
+   * The extensions in `mint.create(…, { … })` (Anchor's `extensions::…` constraints): their values are evaluated now,
+   * in source order; the returned lines (each extension's Token-2022 initializer, mint writable, before
+   * InitializeMint2) run after the account is created, sized for exactly these extensions.
+   */
+  protected mintExtensions(lit: ts.ObjectLiteralExpression, tp: string, acct: string): { space: number; lines: string[] } {
+    const optKey: ValueType = { kind: "option", inner: PUBKEY };
+    this.model.options.set("pubkey", PUBKEY);
+    // name: [extension type length, initializer tag, the fields an object value takes ([] for a plain value)]
+    const KINDS: Record<string, { len: number; fields: string[] }> = {
+      transferFee: { len: 108, fields: ["configAuthority", "withdrawAuthority", "basisPoints", "maximumFee"] },
+      closeAuthority: { len: 32, fields: [] },
+      defaultAccountState: { len: 1, fields: [] },
+      nonTransferable: { len: 0, fields: [] },
+      interestBearing: { len: 52, fields: ["rateAuthority", "rate"] },
+      permanentDelegate: { len: 32, fields: [] },
+      transferHook: { len: 64, fields: ["authority", "programId"] },
+      metadataPointer: { len: 64, fields: ["authority", "metadataAddress"] },
+      groupPointer: { len: 64, fields: ["authority", "groupAddress"] },
+      groupMemberPointer: { len: 64, fields: ["authority", "memberAddress"] },
+    };
+    const given = new Map<string, ts.Expression>();
+    for (const p of lit.properties) {
+      const value = ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) ? p.initializer : ts.isShorthandPropertyAssignment(p) ? p.name : undefined;
+      if (!value || !p.name || !ts.isIdentifier(p.name)) this.fail(p, "write the extensions as `name: value` entries");
+      if (!KINDS[p.name.text]) this.fail(p.name, `mint extensions: ${Object.keys(KINDS).join(", ")}`);
+      given.set(p.name.text, value);
+    }
+    const U16: ValueType = { kind: "int", name: "u16" };
+    const I16: ValueType = { kind: "int", name: "i16" };
+    // Values in source order, held in temporaries; the CPIs come later.
+    const held = new Map<string, Map<string, string>>();
+    const keyTmp = (e: ts.Expression, nonZero: boolean) => {
+      // OptionalNonZeroPubkey (32 bytes, zero for none) or COption (a tag byte, then 32).
+      const v = this.expect(this.expr(e, optKey), optKey, e);
+      const t = this.tmp("xk");
+      this.line(`${optC(PUBKEY)} ${t} = ${v.c};`);
+      if (!nonZero) return t;
+      const z = this.tmp("xz");
+      this.line(`SolPubkey ${z};`);
+      this.line(`if (${t}.some) ${z} = ${t}.v; else ts_memzero(&${z}, 32);`);
+      return z;
+    };
+    const scalarTmp = (e: ts.Expression, t: ValueType) => {
+      const v = this.expect(this.expr(e, t), t, e);
+      const n = this.tmp("xv");
+      this.line(`${scalarStorageC(t as ScalarType)} ${n} = ${v.c};`);
+      return n;
+    };
+    for (const [name, e] of given) {
+      const k = KINDS[name]!;
+      const vals = new Map<string, string>();
+      if (k.fields.length) {
+        if (!ts.isObjectLiteralExpression(e)) this.fail(e, `${name}: { ${k.fields.join(", ")} }`);
+        const props = new Map<string, ts.Expression>();
+        for (const p of e.properties) {
+          const value = ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) ? p.initializer : ts.isShorthandPropertyAssignment(p) ? p.name : undefined;
+          if (!value || !p.name || !ts.isIdentifier(p.name) || !k.fields.includes(p.name.text)) this.fail(p, `${name}: { ${k.fields.join(", ")} }`);
+          props.set(p.name.text, value);
+        }
+        for (const f of k.fields) if (!props.has(f)) this.fail(e, `${name} needs ${f}`);
+        for (const [f, v] of props) {
+          if (f === "basisPoints") {
+            const t = scalarTmp(v, U16);
+            this.line(`if (${t} > 10000) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: transfer fee above 10000 basis points");`);
+            vals.set(f, t);
+          } else if (f === "maximumFee") vals.set(f, scalarTmp(v, U64));
+          else if (f === "rate") vals.set(f, scalarTmp(v, I16));
+          else vals.set(f, keyTmp(v, name !== "transferFee"));
+        }
+      } else if (name === "closeAuthority") vals.set("v", keyTmp(e, false));
+      else if (name === "permanentDelegate") {
+        const v = this.expect(this.expr(e, PUBKEY), PUBKEY, e);
+        const t = this.tmp("xk");
+        this.line(`SolPubkey ${t} = *(${v.c});`);
+        vals.set("v", t);
+      } else if (name === "defaultAccountState") {
+        const v = this.expect(this.expr(e, BOOL), BOOL, e);
+        const t = this.tmp("xs");
+        this.line(`uint8_t ${t} = (${v.c}) ? 2 : 1;`); // frozen: AccountState::Frozen, else Initialized
+        vals.set("v", t);
+      } else if (!(e.kind === ts.SyntaxKind.TrueKeyword)) this.fail(e, "nonTransferable: true");
+      held.set(name, vals);
+    }
+    // Each initializer: its bytes, then a CPI with the mint as the only (writable) account.
+    const lines: string[] = [];
+    const cpi = (bytes: [string, number][]) => {
+      const total = bytes.reduce((n, [, k]) => n + k, 0);
+      const buf = this.tmp("xd");
+      lines.push(`{ uint8_t ${buf}[${total}]; uint64_t at = 0;`);
+      for (const [src, n] of bytes) lines.push(`  ts_memcpy(${buf} + at, ${src}, ${n}); at += ${n};`);
+      lines.push(`  SolAccountMeta m[1] = {{&${acct}->key, true, false}};`, `  TS_TRY(ts_cpi(params, ${tp}, ${buf}, at, m, 1, NULL, 0)); }`);
+    };
+    const tag = (n: number) => `(const uint8_t[]){${n}}`;
+    const coption = (t: string): [string, number][] => [
+      [`(const uint8_t[]){${t}.some ? 1 : 0}`, 1],
+      [`&${t}.v`, 32],
+    ];
+    let space = 0;
+    for (const name of Object.keys(KINDS)) {
+      const v = held.get(name);
+      if (!v) continue;
+      space += 4 + KINDS[name]!.len;
+      switch (name) {
+        case "transferFee":
+          cpi([
+            [tag(26), 1],
+            [tag(0), 1],
+            ...coption(v.get("configAuthority")!),
+            ...coption(v.get("withdrawAuthority")!),
+            [`&${v.get("basisPoints")}`, 2],
+            [`&${v.get("maximumFee")}`, 8],
+          ]);
+          break;
+        case "closeAuthority":
+          cpi([[tag(25), 1], ...coption(v.get("v")!)]);
+          break;
+        case "defaultAccountState":
+          cpi([
+            [tag(28), 1],
+            [tag(0), 1],
+            [`&${v.get("v")}`, 1],
+          ]);
+          break;
+        case "nonTransferable":
+          cpi([[tag(32), 1]]);
+          break;
+        case "interestBearing":
+          cpi([
+            [tag(33), 1],
+            [tag(0), 1],
+            [`&${v.get("rateAuthority")}`, 32],
+            [`&${v.get("rate")}`, 2],
+          ]);
+          break;
+        case "permanentDelegate":
+          cpi([
+            [tag(35), 1],
+            [`&${v.get("v")}`, 32],
+          ]);
+          break;
+        default: {
+          const t = { transferHook: 36, metadataPointer: 39, groupPointer: 40, groupMemberPointer: 41 }[name]!;
+          const [f1, f2] = KINDS[name]!.fields;
+          cpi([
+            [tag(t), 1],
+            [tag(0), 1],
+            [`&${v.get(f1!)}`, 32],
+            [`&${v.get(f2!)}`, 32],
+          ]);
+        }
+      }
+    }
+    // Base account (165, the mint padded to an account's size), the account type byte, then each TLV entry.
+    return { space: 165 + 1 + space, lines };
   }
 
   /**

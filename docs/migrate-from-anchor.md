@@ -50,6 +50,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `Program<'info, Token>` / `Token2022` / `Interface<'info, TokenInterface>` | `TokenProgram` / `Token2022Program` / `TokenInterface` |
 | `Account<'info, TokenAccount>` / `Account<'info, Mint>` (`InterfaceAccount`) | `TokenAccount` / `Mint` (`Mut<…>` when written) |
 | `token::mint = m, token::authority = a` | `HasOne<TokenAccount, "mint" \| "owner">` against parameters with those names |
+| `extensions::metadata_pointer::authority = a, …` (with `mint::…`) | `mint.create(p, …, { metadataPointer: { authority: a.key, metadataAddress: mint.key }, … })`: transferHook, closeAuthority, permanentDelegate, nonTransferable, groupPointer, groupMemberPointer and more |
 | `#[account(init, payer = p, seeds = […], bump, mint::decimals = 6, mint::authority = a, mint::freeze_authority = f)]` | `Init<Mint>`, then `const bump = mint.create(p, […], 6n, a.key, f.key)` (`null` seeds: a keypair mint; `InitIfNeeded<Mint>` + `createIfNeeded`) |
 | `#[account(init, payer = p, seeds = […], bump, token::mint = m, token::authority = a)]` | `Init<TokenAccount>`, then `vault.create(p, […], m, a.key)` (`InitIfNeeded<TokenAccount>` + `createIfNeeded`) |
 | `associated_token::mint = m, associated_token::authority = a` | `Ata<TokenAccount, "a", "m">`; `Ata<Init<TokenAccount>, "a", "m">` creates it |

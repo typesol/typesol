@@ -225,7 +225,7 @@ describe("port: tokens/token-2022/metadata", () => {
     expect(metadata()).toMatchObject({ updateAuthority: some(payer.address), name: "TypeSOL", symbol: "TS", uri: "https://typesol.com/meta.json" });
     const update = (field: object, value: string) =>
       send(svm, payer, [
-        ix(d, "update_field", { field, value }, [
+        ix(d, "update_field", { args: { field, value } }, [
           { address: payer.address, signer: payer, writable: true },
           { address: mint.address, writable: true },
           { address: TOKEN_2022 },

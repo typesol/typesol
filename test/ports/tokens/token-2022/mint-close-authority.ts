@@ -1,21 +1,15 @@
 // Port of tokens/token-2022/mint-close-authority @ de09019; see test/ports/README.md.
 //
-// PORTED: Anchor's `extensions::close_authority::authority` init / constraint are initializeMintCloseAuthority and
-// mintCloseAuthority() checks; the mint is created as Anchor's `init` does (CreateAccount sized for the extension,
-// the extension, InitializeMint2), and closeAccount closes the mint.
-import { type Mint, type Mut, type Signer, type SystemProgram, type Token2022Program, mintCloseAuthority, rentExempt, require } from "typesol";
-
-/** Base mint (padded to 165) + account type + MintCloseAuthority TLV (2 + 2 + 32). */
-const MINT_WITH_CLOSE_AUTHORITY = 202n;
+// PORTED: `init` with `extensions::close_authority::authority` is `mint.create(…, { closeAuthority })`, the constraint a
+// mintCloseAuthority() check, and closeAccount closes the mint.
+import { type Init, type Mint, type Mut, type Signer, type SystemProgram, type Token2022Program, mintCloseAuthority, require } from "typesol";
 
 export enum MintCloseAuthorityError {
   WrongCloseAuthority = "The mint's close authority is not the expected one",
 }
 
-export function initialize(payer: Mut<Signer>, mintAccount: Mut<Signer>, tokenProgram: Token2022Program, systemProgram: SystemProgram): void {
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_WITH_CLOSE_AUTHORITY), MINT_WITH_CLOSE_AUTHORITY, tokenProgram.key);
-  tokenProgram.initializeMintCloseAuthority(mintAccount, payer.key);
-  tokenProgram.initializeMint2(mintAccount, 2n, payer.key, null);
+export function initialize(payer: Mut<Signer>, mintAccount: Init<Mint>, tokenProgram: Token2022Program, systemProgram: SystemProgram): void {
+  mintAccount.create(payer, null, 2n, payer.key, null, { closeAuthority: payer.key });
   require(mintCloseAuthority(mintAccount) === payer.key, MintCloseAuthorityError.WrongCloseAuthority);
 }
 

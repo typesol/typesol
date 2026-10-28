@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { CompileError, generate } from "../src/compiler/index.js";
 
 const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-diag-"));
-const HEADER = `import { type Account, type AccountInfo, type FixedArray, type Init, type Mut, type Program, type Pubkey, type Signer, type SystemProgram, type UncheckedProgram, type FixedString, type Option, type Vec, type u64, type HasOne, type Seeds, type CloseTo, type SwitchboardFeed, emit, byteLength, requirePda, loadAccount, remainingAccounts, fixedArray, invoke, readonly, returnData, writable, writableSigner, require, u8 } from "typesol";
+const HEADER = `import { type Account, type AccountInfo, type FixedArray, type Init, type Mut, type Program, type Pubkey, type Signer, type SystemProgram, type UncheckedProgram, type FixedString, type Option, type Vec, type u64, type HasOne, type InitIfNeeded, type Mint, type TokenProgram, type Token2022Program, type Seeds, type CloseTo, type SwitchboardFeed, emit, byteLength, requirePda, loadAccount, remainingAccounts, fixedArray, invoke, readonly, returnData, writable, writableSigner, require, u8 } from "typesol";
 export interface Box { owner: Pubkey; value: u64; }
 `;
 
@@ -91,6 +91,21 @@ describe("subset enforcement", () => {
     ["zero-capacity strings", `export interface S { name: FixedString<0>; }\nexport function f(): void {}`, /capacity 1\.\.1024/],
     ["structs that contain themselves", `export interface Node { next: Node; }\nexport function f(): void {}`, /contains itself/],
     ["variable strings in account data", `export interface S { name: string; }\nexport function f(a: Mut<S>): void {}`, /cannot be account data/],
+    [
+      "mint extensions under SPL Token",
+      `export function f(p: Mut<Signer>, m: Init<Mint>, t: TokenProgram, s: SystemProgram): void { m.create(p, null, 0n, p.key, null, { nonTransferable: true }); }`,
+      /mint extensions are Token-2022's/,
+    ],
+    [
+      "an unknown mint extension",
+      `export function f(p: Mut<Signer>, m: Init<Mint>, t: Token2022Program, s: SystemProgram): void { m.create(p, null, 0n, p.key, null, { soulbound: true } as never); }`,
+      /mint extensions: transferFee/,
+    ],
+    [
+      "mint extensions on createIfNeeded",
+      `export function f(p: Mut<Signer>, m: InitIfNeeded<Mint>, t: Token2022Program, s: SystemProgram): void { m.createIfNeeded(p, ["m"], 0n, p.key, null, { nonTransferable: true } as never); }`,
+      /createIfNeeded does not take extensions/,
+    ],
     [
       "a space smaller than the account",
       `export function f(p: Mut<Signer>, b: Init<Box>, s: SystemProgram): void { b.create(p, null, 16n); }`,

@@ -6,6 +6,11 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `@layout borsh` structs used as arguments, return values or events may hold `string` fields and data enums (with or
+  without strings), as Anchor argument structs do; Borsh accounts may hold data enums without strings.
+- Mint extensions on `Init<Mint>`: `mint.create(payer, seeds | null, decimals, authority, freeze, { … })` with
+  transferFee, closeAuthority, defaultAccountState, nonTransferable, interestBearing, permanentDelegate, transferHook,
+  metadataPointer, groupPointer and groupMemberPointer (Anchor's `extensions::…`).
 - Token-2022 extension instructions: `updateDefaultAccountState`, `updateTransferHook`, `enableRequiredMemoTransfers` /
   `disableRequiredMemoTransfers`, `updateInterestRate`, `transferCheckedWithFee`, `harvestWithheldTokensToMint`,
   `withdrawWithheldTokensFromMint`, `setTransferFee`; the Token Metadata interface: `updateMetadataField`,

@@ -550,8 +550,14 @@ export function analyze(entry: string): Analysis {
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
     if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
     for (const a of ix.accounts)
-      if (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded")
+      if (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded") {
         accountStructs.add(a.kind.struct.name);
+        if (a.kind.struct.viewsOnly)
+          reporter.error(
+            a.node,
+            `${a.kind.struct.name} holds a string (or an enum carrying one), so it is an argument, return value or event; account data uses FixedString<N>`,
+          );
+      }
   }
   checkSnakeDuplicates(
     instructions.map((ix) => ({ name: ix.node.name!.text, node: ix.node.name! })),
@@ -966,7 +972,10 @@ function analyzeStructs(
     state.set(s.name, "visiting");
     let total: number | undefined = 0;
     for (const f of s.fields) {
-      const fsz = sizeOf(f.type, s.node);
+      // In a @layout borsh struct a string (or a data enum carrying one) is held as a TS_Str view: a C size, no layout.
+      const view = s.layout === "borsh" && (f.type.kind === "string" || (f.type.kind === "dataEnum" && sizeOf(f.type, s.node) === undefined));
+      if (view) s.viewsOnly = true;
+      const fsz = view ? (f.type.kind === "string" ? 16 : 1 + dataEnums.get((f.type as { name: string }).name)!.payload) : sizeOf(f.type, s.node);
       total = total === undefined || fsz === undefined ? undefined : total + fsz;
     }
     s.size = total;
@@ -981,7 +990,7 @@ function analyzeStructs(
     state.set(s.name, "done");
   };
   for (const s of structs.values()) reporter.guard(() => visit(s));
-  for (const s of structs.values()) if (s.layout === "borsh") reporter.guard(() => checkBorshLayout(s, structs, reporter));
+  for (const s of structs.values()) if (s.layout === "borsh") reporter.guard(() => checkBorshLayout(s, structs, dataEnums, reporter));
   for (const e of dataEnums.values()) reporter.guard(() => sizeOf({ kind: "dataEnum", name: e.name }, e.node));
   return structs;
 }
@@ -1037,13 +1046,21 @@ function references(l: HelperSource, decls: Set<ts.Node>, checker: ts.TypeChecke
  * A `@layout borsh` struct: its own fields may be FixedString (Borsh String), FixedVec (Borsh Vec) and Option; anything
  * nested must already be Borsh-identical (fixed-size scalars, Pubkeys, enums, arrays and structs of them).
  */
-function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, reporter: Reporter) {
+function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, dataEnums: Map<string, DataEnumDef>, reporter: Reporter) {
   const model = { structs };
   const fixed = (t: FieldType) => borshIdentical(t, model);
   for (const f of s.fields) {
     const t = f.type;
     const at = s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name) ?? s.node;
-    if (fixed(t) || t.kind === "fstring") continue;
+    if (fixed(t) || t.kind === "fstring" || t.kind === "string") continue;
+    if (t.kind === "dataEnum") {
+      // Borsh enum: tag, then the variant's fields; each a fixed-size value or a string.
+      for (const v of dataEnums.get(t.name)?.variants ?? [])
+        for (const vf of v.fields)
+          if (!fixed(vf.type) && vf.type.kind !== "string")
+            reporter.fail(at, `${t.name}.${v.name}.${vf.name} in a @layout borsh struct: enum variants hold fixed-size values and strings`);
+      continue;
+    }
     if (t.kind === "vec" && t.cap === undefined)
       reporter.fail(at, "a @layout borsh struct cannot end in a growable Vec<T>; use FixedVec<T, N> (Anchor's #[max_len(N)] Vec)");
     if (t.kind === "vec" && (fixed(t.elem) || t.elem.kind === "fstring")) continue;

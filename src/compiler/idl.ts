@@ -58,6 +58,8 @@ function borshIdlType(t: FieldType): unknown {
   if (t.kind === "fstring") return "string";
   if (t.kind === "vec") return { vec: borshIdlType(t.elem) };
   if (t.kind === "option") return { option: idlType(t.inner) };
+  // A data enum in a Borsh struct is the Borsh enum itself (tag, then the variant's fields).
+  if (t.kind === "dataEnum") return { defined: { name: t.name } };
   return idlType(t);
 }
 

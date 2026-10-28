@@ -96,6 +96,11 @@ export interface StructDef {
    * Anchor's bytes, where strings, Vecs and Options take only what they hold).
    */
   layout: "fixed" | "borsh";
+  /**
+   * A @layout borsh struct with a `string` field or a data enum carrying strings: they are views of the bytes it was
+   * read from, so it is an argument, return value or event, never account data.
+   */
+  viewsOnly?: boolean;
 }
 
 export type TokenProgramKind = "token" | "token2022" | "tokenInterface";

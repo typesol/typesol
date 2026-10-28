@@ -40,11 +40,11 @@ Status:
 | `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PORTED | |
 | `tokens/token-2022/cpi-guard` | `tokens/token-2022/cpi-guard.ts` | PARTIAL | `token::mint` on the sender fails with 6000, not 2014 (the mint parameter keeps its Anchor name) |
 | `tokens/token-2022/default-account-state` | `tokens/token-2022/default-account-state.ts` | PARTIAL | an Uninitialized state is refused with 6000 before Token-2022's InvalidState |
-| `tokens/token-2022/group` | `tokens/token-2022/group.ts` | PARTIAL | the PDA mint with GroupPointer is created in the body, as Anchor's `init` does; the extension is read by walking the TLV list and not logged with `{:?}` |
+| `tokens/token-2022/group` | `tokens/token-2022/group.ts` | PARTIAL | the GroupPointer extension is read by walking the TLV list and not logged with `{:?}` |
 | `tokens/token-2022/immutable-owner` | `tokens/token-2022/immutable-owner.ts` | PORTED | |
 | `tokens/token-2022/interest-bearing` | `tokens/token-2022/interest-bearing.ts` | PARTIAL | a wrong rate authority fails with 6000 where the original panics |
 | `tokens/token-2022/memo-transfer` | `tokens/token-2022/memo-transfer.ts` | PORTED | |
-| `tokens/token-2022/metadata` | `tokens/token-2022/metadata.ts` | PARTIAL | `update_field` takes the field and value as two arguments (same bytes, different IDL: argument structs cannot hold a data enum yet); a new Key entry is funded even when the key exists; `{:?}` logs left out |
+| `tokens/token-2022/metadata` | `tokens/token-2022/metadata.ts` | PARTIAL | `extensions::metadata_pointer::metadata_address` on the later instructions is checked by walking the TLV list (6000); a new Key entry is funded even when the key exists; `{:?}` logs left out |
 | `tokens/token-2022/mint-close-authority` | `tokens/token-2022/mint-close-authority.ts` | PORTED | |
 | `tokens/token-2022/nft-meta-data-pointer` | `tokens/token-2022/nft-meta-data-pointer.ts` | PARTIAL | session tokens checked by their fields instead of re-deriving their PDA |
 | `tokens/token-2022/non-transferable` | `tokens/token-2022/non-transferable.ts` | PORTED | |

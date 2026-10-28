@@ -1124,6 +1124,16 @@ export type Init<T> = T extends TokenAccount
           freezeAuthority: Pubkey | null,
           tokenProgram?: TokenProgram | Token2022Program | TokenInterface,
         ): u8;
+        /** With Token-2022 extensions (Anchor's `extensions::…`): the mint is sized for them and each is initialized first. */
+        create(
+          payer: Mut<Signer>,
+          seeds: Seed[] | null,
+          decimals: u8,
+          mintAuthority: Pubkey,
+          freezeAuthority: Pubkey | null,
+          extensions: MintExtensions,
+          tokenProgram?: Token2022Program | TokenInterface,
+        ): u8;
         readonly pdaBump: u8;
       }
     : T &
@@ -1285,6 +1295,23 @@ interface Token2022Ops {
   updateMetadataAuthority(mint: AccountMeta, updateAuthority: AccountMeta, newAuthority: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Emit: the whole TokenMetadata as Token-2022's return data. */
   emitMetadata(mint: AccountMeta): void;
+}
+
+/**
+ * Token-2022 extensions for `mint.create(…, extensions)`: Anchor's `extensions::…` constraints. `null` authorities
+ * mean none; `defaultAccountState: true` starts new token accounts frozen (it needs a freeze authority).
+ */
+export interface MintExtensions {
+  transferFee?: { configAuthority: Pubkey | null; withdrawAuthority: Pubkey | null; basisPoints: u16; maximumFee: u64 };
+  closeAuthority?: Pubkey | null;
+  defaultAccountState?: boolean;
+  nonTransferable?: true;
+  interestBearing?: { rateAuthority: Pubkey | null; rate: i16 };
+  permanentDelegate?: Pubkey;
+  transferHook?: { authority: Pubkey | null; programId: Pubkey | null };
+  metadataPointer?: { authority: Pubkey | null; metadataAddress: Pubkey | null };
+  groupPointer?: { authority: Pubkey | null; groupAddress: Pubkey | null };
+  groupMemberPointer?: { authority: Pubkey | null; memberAddress: Pubkey | null };
 }
 
 /** The SPL Token program (Tokenkeg). Its address is checked. */

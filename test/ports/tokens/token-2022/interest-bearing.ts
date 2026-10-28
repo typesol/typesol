@@ -5,6 +5,7 @@
 //    to be the signer: a mismatch fails with this program's error (6000) where the original panics in `assert_eq!`.
 //    The original also logs the extension with `{:?}`.
 import {
+  type Init,
   type AccountMeta,
   type Mint,
   type Mut,
@@ -15,13 +16,10 @@ import {
   type i16,
   type u16,
   readData,
-  rentExempt,
   require,
   u64,
 } from "typesol";
 
-/** Base mint (padded to 165) + account type (1) + InterestBearingConfig TLV (2 + 2 + 52). */
-const MINT_SIZE_INTEREST_BEARING = 222n;
 const INTEREST_BEARING_CONFIG: u16 = 10n;
 
 export enum InterestError {
@@ -46,10 +44,8 @@ function checkMintData(mintAccount: AccountMeta, authority: Pubkey): void {
   require(at > 0n && readData<Pubkey>(mintAccount, at) === authority, InterestError.WrongRateAuthority);
 }
 
-export function initialize(payer: Mut<Signer>, mintAccount: Mut<Signer>, tokenProgram: Token2022Program, systemProgram: SystemProgram, rate: i16): void {
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE_INTEREST_BEARING), MINT_SIZE_INTEREST_BEARING, tokenProgram.key);
-  tokenProgram.initializeInterestBearingMint(mintAccount, payer.key, rate);
-  tokenProgram.initializeMint2(mintAccount, 2n, payer.key, payer.key);
+export function initialize(payer: Mut<Signer>, mintAccount: Init<Mint>, tokenProgram: Token2022Program, systemProgram: SystemProgram, rate: i16): void {
+  mintAccount.create(payer, null, 2n, payer.key, payer.key, { interestBearing: { rateAuthority: payer.key, rate } });
   checkMintData(mintAccount, payer.key);
 }
 

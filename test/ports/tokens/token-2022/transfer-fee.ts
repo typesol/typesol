@@ -7,6 +7,7 @@
 //  - check_mint_data finds TransferFeeConfig by walking the TLV list and requires both authorities to be the payer
 //    (6000 where the original panics in `assert_eq!`); the original also logs the extension with `{:?}`.
 import {
+  type Init,
   type AccountMeta,
   type AssociatedTokenProgram,
   type Ata,
@@ -24,14 +25,11 @@ import {
   log,
   readData,
   remainingAccounts,
-  rentExempt,
   require,
   transferFee,
   u64,
 } from "typesol";
 
-/** Base mint (padded to 165) + account type (1) + TransferFeeConfig TLV (2 + 2 + 108). */
-const MINT_SIZE_TRANSFER_FEE = 278n;
 const TRANSFER_FEE_CONFIG: u16 = 1n;
 
 export enum TransferFeeError {
@@ -53,15 +51,15 @@ function extensionOffset(account: AccountMeta, ext: u16): u64 {
 
 export function initialize(
   payer: Mut<Signer>,
-  mintAccount: Mut<Signer>,
+  mintAccount: Init<Mint>,
   tokenProgram: Token2022Program,
   systemProgram: SystemProgram,
   transferFeeBasisPoints: u16,
   maximumFee: u64,
 ): void {
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE_TRANSFER_FEE), MINT_SIZE_TRANSFER_FEE, tokenProgram.key);
-  tokenProgram.initializeTransferFeeConfig(mintAccount, payer.key, payer.key, transferFeeBasisPoints, maximumFee);
-  tokenProgram.initializeMint2(mintAccount, 2n, payer.key, payer.key);
+  mintAccount.create(payer, null, 2n, payer.key, payer.key, {
+    transferFee: { configAuthority: payer.key, withdrawAuthority: payer.key, basisPoints: transferFeeBasisPoints, maximumFee },
+  });
   // check_mint_data
   const at = extensionOffset(mintAccount, TRANSFER_FEE_CONFIG);
   require(at > 0n && readData<Pubkey>(mintAccount, at) === payer.key && readData<Pubkey>(mintAccount, at + 32n) === payer.key, TransferFeeError.WrongAuthority);
