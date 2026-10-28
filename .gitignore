@@ -14,7 +14,9 @@ keys/
 *.log
 bench/anchor/target/
 !test/programs/*.so
-# Metaplex NFT Open Source License: fetched with scripts/fetch-programs.sh, not redistributed
+# Fetched with scripts/fetch-programs.sh, not kept in the repository (see test/programs/SOURCES.md): Token Metadata,
+# Core and Bubblegum are under the Metaplex NFT Open Source License; the mpl-account-compression pair is Apache-2.0 but
+# fetched alongside them.
 test/programs/mpl_*.so
 # local validator ledgers and fixtures (scripts/localnet.sh), npm pack output, coverage, CLI keypairs
 .localnet*/

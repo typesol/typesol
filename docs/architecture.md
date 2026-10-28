@@ -22,6 +22,21 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 `compiler/index.ts` wires the stages together. `generate()` runs analyze, emit and IDL generation in memory, and
 `build()` also compiles and writes the output files.
 
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `src/` | The compiler (`src/compiler/`) and the tools around it: CLI, workspace, client, CPI and port generators, testing, IDL publishing (source map below) |
+| `runtime/` | `typesol_rt.h`, the C runtime every program includes ([runtime.md](runtime.md)) |
+| `lib/` | `typesol.d.ts`, the language surface programs typecheck against |
+| `ts-plugin/` | The editor plugin (`typesol/ts-plugin`) |
+| `examples/` | Example programs; the `typesol init` templates are copies of three of them |
+| `test/` | The test suite: `fixtures/` (programs the tests compile), `ports/` (TypeSOL rewrites of solana-developers/program-examples), `golden/` (pinned generated clients), `programs/` (third-party program binaries, see its SOURCES.md) |
+| `bench/anchor/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm bench:anchor`) and the zero-copy client test; the benchmarks themselves are in [typesol/benchmarks](https://github.com/typesol/benchmarks) |
+| `scripts/` | `smoke.ts` and `localnet.sh` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers) |
+| `docs/` | User and contributor documentation (also published on typesol.com) |
+| `assets/` | The CLI's logo and the README images (`readme/`, generated) |
+
 ## Source map
 
 | Path | Role |
@@ -34,11 +49,17 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/compiler/idl.ts` | Turns the model into an Anchor IDL: accounts with `pda`, `relations`, `address` and `optional`, plus types, events, errors and docs. |
 | `src/compiler/toolchain.ts` | Finds the Agave SDK and runs clang and lld with the SDK's flags, plus per-function sections, `--gc-sections` and `--strip-all` so unused code and symbol tables stay out of the binary. |
 | `src/compiler/diagnostics.ts` | `Reporter` and `CompileError`: diagnostics with file, line and column. |
+| `src/compiler/anchor-errors.ts` | Anchor's own error codes (`AnchorError.X`), shared by `require` and the generated clients. |
+| `src/compiler/index.ts` | The compiler's API (`generate`, `build`, `verifyBinary`, the build manifest). |
 | `runtime/typesol_rt.h` | The C runtime: error codes, word-wise memory helpers, the entry point's input parser (`ts_deserialize`), account checks, checked math, Borsh helpers, CPIs (System, Token, Token-2022, ATA, Metaplex), oracles and the heap allocator. Header-only and `static inline`, so unused code is dropped. |
 | `src/workspace.ts` | `typesol.json` projects, program keypairs, `typesol init` templates and deploy arguments. |
 | `src/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSOL CPI helpers. |
 | `src/clientgen.ts` | The TypeScript client (`<name>.client.ts`, [client.md](client.md)): reads an IDL, validates it (it may come from anywhere), and writes one `@solana/kit` file. Not part of the compiler core: `workspace.ts` and the CLI write it after `build()`, and `typesol client` writes it for any IDL. |
-| `src/idlpublish.ts` | `typesol idl publish` through the Program Metadata program. |
+| `src/idlpublish.ts` | `typesol idl publish` through the Program Metadata program, and reading a program's IDL back from the chain (Program Metadata or Anchor's IDL account) for `typesol client --address`. |
+| `src/portgen.ts` | `typesol port`: a TypeSOL program skeleton from an Anchor IDL (structs, enums, errors, events, one function per instruction). |
+| `src/templates.ts` | The programs and tests `typesol init --template` writes (copies of `examples/`; a test checks they match). |
+| `src/svmrpc.ts` | `svmConnection`: a kit RPC and subscriptions pair answered by LiteSVM, so generated clients run in tests (exported by `typesol/testing`). |
+| `src/keys.ts` | Base58 and program keypair helpers. |
 | `ts-plugin/index.js` | `typesol/ts-plugin` (CommonJS, loaded by tsserver): runs `typesol check --json --stdin` on program entries and adds the diagnostics. |
 | `src/testing.ts` | `typesol/testing`: LiteSVM test helpers for projects (accounts by name from the IDL, plain values). |
 | `src/onchain.ts` | `typesol verify --address`: a deployed program's ELF, authority and deploy slot under loader v2, v3 or v4. |
@@ -54,7 +75,7 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 
 | File | Layer | Contents |
 | --- | --- | --- |
-| `shared.ts` | | `Value`, `Ref` and `Local`, limits, and the C type helpers (`valueC`, `fieldC`, `storageDecl`, `cString`) |
+| `shared.ts` | | `Value`, `Ref` and `Local`, limits, and the C type helpers (`valueC`, `fieldC`, `storageDecl`, `cString`), growable Vec placement (`vecPlace`, `vecLenCheck`) |
 | `base.ts` | `EmitterBase` | function state; `line()`, `tmp()`, `settle()`, scopes, `fail()`, account lookup |
 | `storage.ts` | `StorageEmitter` | references into account data and locals, reads and writes, indexing, aliasing, argument validation |
 | `expressions.ts` | `ExpressionEmitter` | literals, operators and checked arithmetic, property reads, conditionals, text, casts |
@@ -62,6 +83,9 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 | `cpi.ts` | `CpiEmitter` | seeds and PDAs, `create`, System/Token/ATA/Metaplex CPIs, `invoke`, Borsh serialization, events |
 | `statements.ts` | `StatementEmitter` | variables, assignment, `if`/loops/`switch`, `return` |
 | `function.ts` | `FunctionEmitter` | the instruction prologue (account checks, constraints, argument decoding) and epilogue |
+
+`borsh.ts` writes the Borsh pack/unpack codecs of `@layout borsh` structs, and `program.ts` assembles the C file
+(typedefs, codecs, helpers, instructions, the entry point). `index.ts` is the emitter's export.
 
 ## Rules the emitter keeps
 

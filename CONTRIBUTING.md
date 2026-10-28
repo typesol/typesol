@@ -41,6 +41,9 @@ Every change adds its entry under `## Unreleased` in CHANGELOG.md.
 
 ## Releasing
 
+The organization's [release steps](https://github.com/typesol/.github/blob/main/VERSIONING.md#releasing), for the
+compiler:
+
 1. Merge `develop` into `main` through a pull request with green CI.
 2. On `main`: set `version` in `package.json`, rename `## Unreleased` in CHANGELOG.md to `## <version> — <YYYY-MM-DD>`
    (start a new empty `## Unreleased` above it), commit as `Release v<version>`.
