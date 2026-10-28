@@ -254,6 +254,7 @@ export abstract class CpiEmitter extends CallEmitter {
       ts.isPostfixUnaryExpression(n) ||
       ts.forEachChild(n, mutates) === true;
     const inPlace = !node.elements.some(mutates);
+    const mark = this.lines.length;
     for (const el of node.elements) {
       const desc = this.describeSeed(el);
       if (!desc) idl = undefined;
@@ -291,9 +292,17 @@ export abstract class CpiEmitter extends CallEmitter {
         parts.push(`{(const uint8_t *)&${t}, 1}`);
       } else this.fail(el, "seeds can be strings, Pubkeys, integers or unit enum values");
     }
+    // The same list again (escrow: the vault transfer, then its close) reuses the array declared for the first, when
+    // nothing was copied into temporaries (every entry points at a literal or at the place itself, so the array reads
+    // what a new one would), it has no spare slot (callers never write into those arrays) and it is still in scope.
+    const key = parts.join(", ");
+    const reusable = extra === 0 && parts.length > 0 && this.lines.length === mark;
+    const known = reusable ? this.seedArrays.get(key) : undefined;
+    if (known && this.scopes.includes(known.scope) && this.lines[known.at]?.trim() === known.text) return { name: known.name, count: parts.length, idl };
     const name = this.tmp("seeds");
     const slots = parts.length + extra;
     this.line(`SolSignerSeed ${name}[${Math.max(slots, 1)}] = {${parts.join(", ")}};`);
+    if (reusable) this.seedArrays.set(key, { name, scope: this.scopes[this.scopes.length - 1]!, at: this.lines.length - 1, text: this.lines.at(-1)!.trim() });
     return { name, count: parts.length, idl };
   }
 

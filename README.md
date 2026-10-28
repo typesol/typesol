@@ -246,9 +246,9 @@ toolchain and records them with every result:
 | vault.withdraw | **315** | 370 | 1,176 | 3,628 |
 | vault.shut | **161** | 167 | 950 | 2,024 |
 | escrow.make | **3,605** | 6,179 | 9,240 | 13,304 |
-| escrow.take | **4,035** | 4,051 | 8,500 | 14,365 |
-| escrow.refund | **2,716** | 2,769 | 5,695 | 8,449 |
-| binary, counter / vault / escrow | 13.1 / 16.5 / 23.9 KB | 19.6 / 22.9 / 29.4 KB | 27.9 / 35.0 / 46.5 KB | 145.2 / 158.9 / 190.7 KB |
+| escrow.take | **4,019** | 4,051 | 8,500 | 14,365 |
+| escrow.refund | **2,696** | 2,769 | 5,695 | 8,449 |
+| binary, counter / vault / escrow | 11.0 / 14.1 / 21.3 KB | 19.6 / 22.9 / 29.4 KB | 27.9 / 35.0 / 46.5 KB | 145.2 / 158.9 / 190.7 KB |
 <!-- /bench:table -->
 
 `initialize`, `open` and `make` include the PDA bump search. TypeSOL hashes PDA candidates with the sha256 and

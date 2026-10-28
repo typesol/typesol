@@ -5,6 +5,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Performance
+- Smaller programs, same results: the rent calculation no longer links soft-float (an exact integer equivalent,
+  checked against IEEE doubles), and every failure logs through one shared call. The benchmarked programs are 11.6%
+  smaller in total (counter 13.1 → 11.0 KB, escrow 23.9 → 21.3 KB). A failing instruction costs 2 more compute units;
+  successful ones are unchanged.
+- An identical signer-seed list in the same scope reuses the array declared for the first CPI (escrow `take_offer`
+  7058 → 7044, `refund_offer` 4287 → 4271).
+
 ## 0.24.0 — 2026-10-28
 
 Functions as values, closures for any helper, stored `map` to structs and text, Metaplex Core external plugins, and

@@ -62,11 +62,12 @@
 #define TS_ERR_NO_RETURN 5114
 #define TS_ERR_ACCOUNT_MISSING 5115
 
-#define TS_FAIL(code, msg) \
-  do {                     \
-    sol_log(msg);          \
-    return (code);         \
-  } while (0)
+/* Every failure logs through this one sol_log_ call: each syscall call site costs a 16-byte relocation in the binary. */
+static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg, uint64_t len) {
+  sol_log_(msg, len);
+  return code;
+}
+#define TS_FAIL(code, msg) return ts_fail((code), (msg), sol_strlen(msg))
 
 #define TS_TRY(expr)                 \
   do {                               \
@@ -503,6 +504,49 @@ static inline void ts_write_le(uint8_t *p, uint64_t v, int n) { ts_memcpy(p, &v,
 uint64_t sol_get_rent_sysvar(void *ret);
 uint64_t sol_get_clock_sysvar(void *ret);
 
+/* The general case, in integers: exactly (uint64_t)((double)per_year * threshold) as soft-float computes it (the
+   conversion and the product rounded to nearest, ties to even; NaN, negative and < 1 give 0), or UINT64_MAX when that
+   product is >= 2^64 (no double below 2^64 converts to UINT64_MAX: the largest is 2^64 - 2048). No soft-float routine
+   is linked, which keeps about 1.7 KB out of every program that creates accounts. */
+static __attribute__((noinline, minsize)) uint64_t ts_rent_slow(uint64_t per_year, uint64_t tbits) {
+  uint64_t e = (tbits >> 52) & 0x7ff, f = tbits & 0xfffffffffffffULL;
+  if (e == 0x7ff) return !f && per_year && !(tbits >> 63) ? UINT64_MAX : 0; /* +inf overflows; NaN, inf * 0, -inf: 0 */
+  if ((tbits >> 63) || !per_year || (!e && !f)) return 0;                   /* a negative or zero product */
+  /* Round v * 2^ex (with a sticky bit for bits already dropped) to 53 bits, nearest-even, twice: per_year to a double,
+     then the exact product of the two significands. */
+  uint64_t v = per_year, sticky = 0, mt = e ? f | (1ULL << 52) : f;
+  int64_t ex = (e ? (int64_t)e : 1) - 1075;
+  for (int pass = 0; pass < 2; pass++) {
+    int top = 63;
+    while (!(v >> top)) top--;
+    if (top > 52) {
+      int sh = top - 52;
+      uint64_t rem = v & ((1ULL << sh) - 1), half = 1ULL << (sh - 1);
+      v >>= sh;
+      ex += sh;
+      if (rem > half || (rem == half && (sticky || (v & 1)))) v++;
+      if (v >> 53) v >>= 1, ex++;
+    }
+    if (pass) break;
+    /* v (< 2^53) * mt (< 2^53) as hi:lo, folded to 64 bits with the dropped low bits as the sticky bit. */
+    uint64_t a0 = v & 0xffffffff, a1 = v >> 32, b0 = mt & 0xffffffff, b1 = mt >> 32;
+    uint64_t lo = a0 * b0, mid = a0 * b1 + a1 * b0, hi = a1 * b1;
+    uint64_t lo2 = lo + (mid << 32);
+    hi += (mid >> 32) + (lo2 < lo);
+    lo = lo2;
+    int s = 0;
+    while (hi >> s) s++;
+    v = s ? (hi << (64 - s)) | (lo >> s) : lo;
+    sticky = s ? (lo & ((1ULL << s) - 1)) != 0 : 0;
+    ex += s;
+  }
+  int top = 63;
+  while (!(v >> top)) top--;
+  if (top + ex >= 64) return UINT64_MAX;
+  if (ex >= 0) return v << ex;
+  return ex > -64 ? v >> -ex : 0;
+}
+
 /* The minimum balance of `data_len` bytes under `rent`, the Rent sysvar
    { lamports_per_byte_year: u64, exemption_threshold: f64, burn_percent: u8 }. */
 static inline uint64_t ts_minimum_balance_of(const uint64_t rent[3], uint64_t data_len, uint64_t *out) {
@@ -520,11 +564,9 @@ static inline uint64_t ts_minimum_balance_of(const uint64_t rent[3], uint64_t da
       return SUCCESS;
     }
   }
-  double threshold;
-  ts_memcpy(&threshold, &rent[1], 8);
-  double lamports = (double)per_year * threshold;
-  if (lamports >= 18446744073709551615.0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
-  *out = (uint64_t)lamports;
+  uint64_t lamports = ts_rent_slow(per_year, rent[1]);
+  if (lamports == UINT64_MAX) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
+  *out = lamports;
   return SUCCESS;
 }
 
