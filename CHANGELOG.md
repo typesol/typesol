@@ -5,22 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
-### Fixed
-- A helper expanded where it is called (given a closure), and a function a helper made, read a module constant as
-  the instruction argument of the same name; they now see only their parameters and the module.
-- A struct parameter of a closure or expanded helper could be used after a push, pop or clear moved the Vec it points
-  into (a stale pointer); that is refused like any other reference across the move.
-- A closure parameter named like an account read the account; it is refused.
-- A helper from another file, expanded here or typed from an arrow passed to it, resolved its types with this file's
-  imports (an aliased or unimported type failed to compile, or an annotation was dropped); its own file's imports are
-  used, and `applyT<u64>((v) => …)` takes the type given at the call.
-- A struct with a FixedVec held in a data enum variant was read as Borsh when also an argument; that conflict is refused.
+## 0.24.0 — 2026-10-28
 
-### Changed
-- Fewer compute units, same results: the PDA bump search builds its seed list once, a growing account reads the rent
-  sysvar once, integers become text two digits at a time, a lone `${n}` template is not copied again, and
-  `list = fixedVec([])` clears the list in place. For example escrow `make` 3638 → 3605, `take_offer` 7117 → 7058,
-  `transfer_tokens` 8467 → 8367 CU.
+Functions as values, closures for any helper, stored `map` to structs and text, Metaplex Core external plugins, and
+the fixes and identical-result compute-unit savings from a full code review: expanded helpers see only their own
+scope, generated clients read only their program's events, and IDLs from the chain are read with limits. Not externally
+audited (see SECURITY.md).
 
 ### Added
 - Functions as values: `const h = g`, and functions that return functions (`function adder(n: u64): (x: u64) => u64
@@ -35,7 +25,31 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   their Collection forms, for AppData, Oracle and LifecycleHook (and the Linked forms), checked against the Core program
   (Core itself answers lifecycle hooks with NotAvailable for now).
 
-### Fixed (client SDK)
+### Changed
+- Fewer compute units, same results: the PDA bump search builds its seed list once, a growing account reads the rent
+  sysvar once, integers become text two digits at a time, a lone `${n}` template is not copied again, and
+  `list = fixedVec([])` clears the list in place. For example escrow `make` 3638 → 3605, `take_offer` 7117 → 7058,
+  `transfer_tokens` 8467 → 8367 CU.
+- `eventsOf` takes the transaction with its account keys (`transaction.message.accountKeys`, as getTransaction returns
+  it); without them it reads log events only. `errorCode` / `isError` also read the RPC's JSON error
+  (`{ InstructionError: [0, { Custom: 6000 }] }`).
+- `svmConnection`: `accountNotifications` yields after each later transaction that names the account (no snapshot of
+  it as it is), `logsNotifications` honors `{ mentions }` and includes failed transactions (with `err`), simulation
+  errors are in the RPC's JSON shape, and `getTransaction` returns the account keys and each inner instruction's
+  program index.
+- Compiler messages about accounts with a growable Vec say "has a growable Vec" instead of "ends in a Vec", and the
+  field-type list no longer says `Vec<T> (last)`, since a Vec can be any field (0.23.0).
+
+### Fixed
+- A helper expanded where it is called (given a closure), and a function a helper made, read a module constant as
+  the instruction argument of the same name; they now see only their parameters and the module.
+- A struct parameter of a closure or expanded helper could be used after a push, pop or clear moved the Vec it points
+  into (a stale pointer); that is refused like any other reference across the move.
+- A closure parameter named like an account read the account; it is refused.
+- A helper from another file, expanded here or typed from an arrow passed to it, resolved its types with this file's
+  imports (an aliased or unimported type failed to compile, or an annotation was dropped); its own file's imports are
+  used, and `applyT<u64>((v) => …)` takes the type given at the call.
+- A struct with a FixedVec held in a data enum variant was read as Borsh when also an argument; that conflict is refused.
 - Generated clients read only this program's events: `parseEvents` follows the invoke stack and reads a `Program data:`
   line only while the program is the innermost one running, and `eventsOf` reads only `emitCpi` inner instructions that
   call the program. Another program can no longer forge them.
@@ -51,19 +65,6 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   Program Metadata IDL that links to a URL or another account instead of following it.
 - `typesol/testing`'s `returned()` decodes string, bytes, f32 and f64 return values, and throws for types it cannot
   decode instead of misreading them.
-
-### Changed (client SDK)
-- `eventsOf` takes the transaction with its account keys (`transaction.message.accountKeys`, as getTransaction returns
-  it); without them it reads log events only. `errorCode` / `isError` also read the RPC's JSON error
-  (`{ InstructionError: [0, { Custom: 6000 }] }`).
-- `svmConnection`: `accountNotifications` yields after each later transaction that names the account (no snapshot of
-  it as it is), `logsNotifications` honors `{ mentions }` and includes failed transactions (with `err`), simulation
-  errors are in the RPC's JSON shape, and `getTransaction` returns the account keys and each inner instruction's
-  program index.
-
-### Changed
-- Compiler messages about accounts with a growable Vec say "has a growable Vec" instead of "ends in a Vec", and the
-  field-type list no longer says `Vec<T> (last)`, since a Vec can be any field (0.23.0).
 
 ## 0.23.0 — 2026-10-28
 
