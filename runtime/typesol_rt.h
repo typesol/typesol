@@ -104,6 +104,25 @@ static inline __attribute__((always_inline)) void ts_memcpy(void *dst, const voi
   for (; n; n--) *d++ = *s++;
 }
 
+/* Copy that may overlap (a growable Vec's followers moving when it grows or shrinks): forward or backward as needed. */
+static inline void ts_memmove(void *dst, const void *src, uint64_t n) {
+  uint8_t *d = (uint8_t *)dst;
+  const uint8_t *s = (const uint8_t *)src;
+  if (d == s || n == 0) return;
+  if (d < s) {
+    ts_memcpy(d, s, n); /* forward: each 8-byte load happens before the store that could overlap it */
+    return;
+  }
+  d += n;
+  s += n;
+  for (; n >= 8; n -= 8) {
+    d -= 8;
+    s -= 8;
+    ts_st64(d, ts_ld64(s));
+  }
+  while (n--) *--d = *--s;
+}
+
 static inline __attribute__((always_inline)) void ts_memzero(void *dst, uint64_t n) {
   uint8_t *d = (uint8_t *)dst;
   for (; n >= 8; n -= 8, d += 8) ts_st64(d, 0);

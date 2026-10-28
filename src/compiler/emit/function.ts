@@ -14,7 +14,7 @@ import {
   typeName,
 } from "../model.js";
 import { borshIdentical, borshMinSize } from "./borsh.js";
-import { MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature } from "./shared.js";
+import { MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature, emptySizeC, vecLenCheck } from "./shared.js";
 import { StatementEmitter } from "./statements.js";
 
 /**
@@ -53,7 +53,7 @@ export class FunctionEmitter extends StatementEmitter {
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       if (k.kind === "account")
         head.push(
-          `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : `sizeof(TSS_${k.struct.name})`}));`,
+          `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
         );
       // A token account created by this instruction is checked where it is created (create/createIfNeeded).
       if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
@@ -100,8 +100,7 @@ export class FunctionEmitter extends StatementEmitter {
         head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + 8);`);
         if (k.struct.vec) {
           head.push(`  uint64_t entry_${a.name} = ${v}->data_len;`, `  (void)entry_${a.name};`);
-          if (k.kind === "account")
-            head.push(`  TS_TRY(ts_check_vec_len(${v}, sizeof(TSS_${k.struct.name}), d_${a.name}->${k.struct.vec.name}__len, TS_ELEM_${k.struct.name}));`);
+          if (k.kind === "account") head.push(...vecLenCheck(k.struct, v, `d_${a.name}`));
         }
       }
       // realloc(x, …) needs the size the account had when the instruction started (the 10 KiB growth limit).
@@ -225,6 +224,8 @@ export class FunctionEmitter extends StatementEmitter {
         const size = this.fieldBytes(elem);
         need("4");
         head.push(`  TS_VecArg arg_${a.name};`, `  arg_${a.name}.len = (uint32_t)ts_read_le(${at}, 4);`, `  off += 4;`);
+        if (a.type.cap !== undefined)
+          head.push(`  if (arg_${a.name}.len > ${a.type.cap}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: more elements than the FixedVec argument holds");`);
         need(`(uint64_t)arg_${a.name}.len * ${size}`);
         head.push(`  arg_${a.name}.ptr = ${at};`, `  off += (uint64_t)arg_${a.name}.len * ${size};`);
         // Struct elements are read in place, so check them all now; scalars are checked when read.

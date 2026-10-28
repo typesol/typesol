@@ -86,3 +86,13 @@ export function lambdas(x: u64): u64 {
   const b = compose((v: u64): u64 => v + 10n, function (v) { return v - 1n; }, x);
   return a * 1000n + b;
 }
+
+/** Closures given to helpers: the helper is expanded where it is called, the closure inside it. */
+export function capturing(x: u64): u64 {
+  let calls = 0n;
+  const addX = (v: u64): u64 => {
+    calls += 1n;
+    return v + x;
+  };
+  return applyTwice(addX, 1n) * 1000n + compose((v) => v * x, addX, 2n) * 10n + calls;
+}

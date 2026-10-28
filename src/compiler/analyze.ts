@@ -568,7 +568,10 @@ export function analyze(entry: string): Analysis {
       collectStructs(a.type, structs, dataEnums, seen);
       for (const s of seen)
         if (structs.get(s)!.layout !== "borsh" && structs.get(s)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined))
-          reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} holds a FixedVec, which only account data can; pass a Vec<T> argument instead`);
+          reporter.error(
+            fn.node.name ?? fn.node,
+            `argument ${a.name}: ${s} holds a FixedVec, which only account data can; make ${s} @layout borsh, or pass the list as its own FixedVec<T, N> argument`,
+          );
     }
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
     if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
@@ -685,10 +688,13 @@ export function resolveArgAggregate(node: ts.TypeNode, scope: TypeScope, structs
   const top = fixed(node);
   if (top?.kind === "struct") return { kind: "structRef", struct: top.name, writable: false };
   if (top?.kind === "array") return { kind: "arrayArg", array: top };
-  if (typesolName(node, scope.imports) === "Vec") {
-    const e = (node as ts.TypeReferenceNode).typeArguments?.[0];
+  const list = typesolName(node, scope.imports);
+  if (list === "Vec" || list === "FixedVec") {
+    const [e, n] = (node as ts.TypeReferenceNode).typeArguments ?? [];
     const elem = e && fixed(e);
-    if (elem && (elem.kind === "struct" || elem.kind === "array")) return { kind: "vecArg", elem };
+    const cap = list === "FixedVec" ? numericLiteralArg(n) : undefined;
+    if (list === "FixedVec" && !(cap !== undefined && Number.isInteger(cap) && cap >= 1)) return undefined;
+    if (elem && (elem.kind === "struct" || elem.kind === "array")) return { kind: "vecArg", elem, ...(cap ? { cap } : {}) };
   }
   return undefined;
 }
@@ -743,6 +749,13 @@ export function resolveValueType(node: ts.TypeNode, scope: TypeScope, allowVec =
     if (elemNode?.kind === ts.SyntaxKind.StringKeyword) return { kind: "vecArg", elem: { kind: "string" } };
     const elem = elemNode && resolveScalarType(elemNode, scope);
     if (elem) return { kind: "vecArg", elem };
+  }
+  // FixedVec<T, N> as an argument: a Borsh Vec of at most N elements (more fail to deserialize), read like a Vec argument.
+  if (allowVec && typesolName(node, scope.imports) === "FixedVec") {
+    const [elemNode, n] = (node as ts.TypeReferenceNode).typeArguments ?? [];
+    const elem = elemNode && resolveScalarType(elemNode, scope);
+    const cap = numericLiteralArg(n);
+    if (elem && cap !== undefined && Number.isInteger(cap) && cap >= 1) return { kind: "vecArg", elem, cap };
   }
   return resolveScalarType(node, scope);
 }
@@ -851,12 +864,7 @@ function analyzeStructs(
         const problem = cNameProblem(name);
         if (problem) reporter.fail(m.name, problem);
         const type = fieldType(m.type);
-        if (type.kind === "vec" && type.cap === undefined && m !== decl.members[decl.members.length - 1])
-          reporter.fail(
-            m,
-            "a Vec<T> field must be the last field of the struct (its length changes the account size); use FixedVec<T, N> for a list of at most N elsewhere",
-          );
-        fields.push({ name, type });
+        fields.push({ name, type, node: m });
       }
       checkSnakeDuplicates(
         decl.members.map((m) => ({ name: (m.name as ts.Identifier).text, node: m })),
@@ -869,9 +877,22 @@ function analyzeStructs(
       const layoutText = typeof layoutTag?.comment === "string" ? layoutTag.comment.trim() : undefined;
       if (layoutTag && layoutText !== "borsh" && layoutText !== "fixed")
         reporter.fail(layoutTag, "@layout is borsh (Anchor's account bytes) or fixed (the default)");
+      const growable = (f: StructField) => f.type.kind === "vec" && f.type.cap === undefined;
+      // Anchor's bytes keep the declared order, so there a growable Vec has to be last (the fields after it would move).
+      if (layoutText === "borsh")
+        for (const f of fields.slice(0, -1))
+          if (growable(f))
+            reporter.fail(
+              f.node ?? decl,
+              "in a @layout borsh struct a Vec<T> field must be the last field (Anchor's bytes keep the declared order); use FixedVec<T, N> for a list of at most N elsewhere",
+            );
+      // The fixed layout stores the growable Vecs after the fixed-size fields, in the order declared, so every other
+      // field keeps a fixed offset; the IDL lists the fields in this stored order.
+      const stored = layoutText === "borsh" ? fields : [...fields.filter((f) => !growable(f)), ...fields.filter(growable)];
+      for (const f of stored) delete f.node;
       structs.set(name, {
         name,
-        fields,
+        fields: stored,
         size: undefined,
         accountDiscriminator: discriminator(`account:${name}`),
         eventDiscriminator: discriminator(`event:${name}`),
@@ -1005,12 +1026,17 @@ function analyzeStructs(
     s.size = total;
     if (total !== undefined && total + 8 > MAX_ACCOUNT_SIZE)
       reporter.fail(s.node.name, `${s.name} is ${total + 8} bytes with its discriminator; Solana accounts are at most ${MAX_ACCOUNT_SIZE} bytes`);
-    const last = s.fields.at(-1);
-    if (last?.type.kind === "vec" && last.type.cap === undefined) {
-      const elemSize = sizeOf(last.type.elem, s.node);
-      if (elemSize === undefined) reporter.fail(s.node, "Vec elements must have a fixed size");
-      s.vec = { name: last.name, elem: last.type.elem, elemSize };
-    }
+    // Growable Vecs (stored last, see above): the first one's length and elements end the C struct; the others follow
+    // it in the account, each a u32 length and its elements.
+    for (const f of s.fields)
+      if (f.type.kind === "vec" && f.type.cap === undefined) {
+        const elemSize = sizeOf(f.type.elem, s.node);
+        if (elemSize === undefined) reporter.fail(s.node, "Vec elements must have a fixed size");
+        (s.vecs ??= []).push({ name: f.name, elem: f.type.elem, elemSize });
+      }
+    s.vec = s.vecs?.[0];
+    // The C struct holds the first Vec's length; each further one adds its own when the account is created.
+    if (s.vecs && s.size !== undefined) s.size -= 4 * (s.vecs.length - 1);
     state.set(s.name, "done");
   };
   for (const s of structs.values()) reporter.guard(() => visit(s));

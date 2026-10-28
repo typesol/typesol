@@ -7,6 +7,7 @@ import {
   type IntName,
   type ParamKind,
   type ScalarType,
+  type StructDef,
   type ValueType,
   fixedVecName,
   isWritable,
@@ -64,7 +65,17 @@ export interface Ref {
    * A Vec place: `len` the u32 length (an lvalue), `items` the element array. A trailing Vec grows the account
    * (`fixed` bytes before it); a FixedVec (`cap`) has room for `cap` elements and never resizes.
    */
-  vec?: { len: string; items: string; fixed: string; elemSize: number; resizable: boolean; cap?: number };
+  vec?: {
+    len: string;
+    items: string;
+    /** The account's size without this Vec's elements (so with `n` of them: 8 + fixed + n × elemSize). */
+    fixed: string;
+    elemSize: number;
+    resizable: boolean;
+    cap?: number;
+    /** Growable Vecs stored after this one move when it grows or shrinks: where its elements end, and their paths. */
+    tail?: { end: string; dataEnd: string; paths: string[] };
+  };
 }
 
 export interface Local {
@@ -85,7 +96,8 @@ export interface Local {
 
 /** A closure and the scopes it was declared in (its free names resolve there, wherever it is called). */
 export interface Closure {
-  node: ts.ArrowFunction | ts.FunctionExpression;
+  /** The function expanded: a closure, or a helper expanded where it is called because it was given one. */
+  node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration;
   name: string;
   scopes: Map<string, Local>[];
 }
@@ -281,6 +293,52 @@ export function helperSignature(h: Helper): string {
 export interface EmitOptions {
   /** Log a marker and the remaining compute units before every statement (`typesol build --profile`). */
   profile?: boolean;
+}
+
+/** C type of a growable Vec stored after the first one of struct `s`: `{ uint32_t len; T items[]; }`. */
+export function laterVecC(s: string, field: string): string {
+  return `TSW_${s}__${field}`;
+}
+
+/** The account size of struct `s` with every growable Vec empty, as C (8-byte discriminator not included). */
+export function emptySizeC(s: StructDef): string {
+  const n = s.vecs?.length ?? 0;
+  return n > 1 ? `(sizeof(TSS_${s.name}) + ${4 * (n - 1)})` : `sizeof(TSS_${s.name})`;
+}
+
+/**
+ * Where growable Vec `k` of a struct at `base` (a C lvalue of type TSS_<S>) starts, as C: its length and elements.
+ * The first is a member of the struct; each further one starts right after the previous one's elements.
+ */
+export function vecPlace(s: StructDef, base: string, k: number): { len: string; items: string; end: string } {
+  const vs = s.vecs!;
+  const first = vs[0]!;
+  let end = `((uint8_t *)${base}.${first.name} + (uint64_t)${base}.${first.name}__len * ${first.elemSize})`;
+  let place = { len: `${base}.${first.name}__len`, items: `${base}.${first.name}`, end };
+  for (let j = 1; j <= k; j++) {
+    const v = vs[j]!;
+    const h = `((${laterVecC(s.name, v.name)} *)${end})`;
+    end = `((uint8_t *)${h}->items + (uint64_t)${h}->len * ${v.elemSize})`;
+    place = { len: `${h}->len`, items: `${h}->items`, end };
+  }
+  return place;
+}
+
+/**
+ * C lines checking that an account's size matches its growable Vecs' lengths (`d`: its TSS_<S> pointer, `a`: its
+ * TsAccount). One Vec: ts_check_vec_len; more: each length read only once the bytes before it are known to exist.
+ */
+export function vecLenCheck(s: StructDef, a: string, d: string, pad = "  "): string[] {
+  const vs = s.vecs ?? [];
+  if (vs.length === 1) return [`${pad}TS_TRY(ts_check_vec_len(${a}, sizeof(TSS_${s.name}), ${d}->${vs[0]!.name}__len, TS_ELEM_${s.name}));`];
+  const o = `${d.replace(/\W/g, "")}__vo`;
+  const lines = [`${pad}{`, `${pad}  uint64_t ${o} = sizeof(TSS_${s.name}) + (uint64_t)${d}->${vs[0]!.name}__len * ${vs[0]!.elemSize};`];
+  for (const v of vs.slice(1)) {
+    lines.push(`${pad}  if (${a}->data_len < 8 + ${o} + 4) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec lengths");`);
+    lines.push(`${pad}  ${o} += 4 + (uint64_t)((${laterVecC(s.name, v.name)} *)(${a}->data + 8 + ${o}))->len * ${v.elemSize};`);
+  }
+  lines.push(`${pad}  if (${a}->data_len != 8 + ${o}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec lengths");`, `${pad}}`);
+  return lines;
 }
 
 /** C typedef name of a FixedVec<T, N>: `{ uint32_t len; T items[N]; }`. */

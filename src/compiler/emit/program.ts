@@ -1,6 +1,6 @@
 import type { Analysis } from "../analyze.js";
 import { type FieldType, type StructDef } from "../model.js";
-import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fixedVecC, type EmitOptions } from "./shared.js";
+import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
 import { emitBorshCodecs } from "./borsh.js";
 
@@ -89,8 +89,12 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     if (emitted.has(s.name) || s.size === undefined) return;
     emitted.add(s.name);
     s.fields.forEach((f) => deps(f.type));
+    // Growable Vecs after the first live past the C struct (see StructDef.vecs): a header type each.
+    const later = new Set((s.vecs ?? []).slice(1).map((v) => v.name));
+    for (const v of (s.vecs ?? []).slice(1))
+      out.push(`typedef struct __attribute__((packed)) {`, `  uint32_t len;`, `  ${storageDecl(v.elem, "items[]")};`, `} ${laterVecC(s.name, v.name)};`);
     out.push(`typedef struct __attribute__((packed)) {`);
-    for (const f of s.fields) out.push(`  ${storageDecl(f.type, f.name)};`);
+    for (const f of s.fields) if (!later.has(f.name)) out.push(`  ${storageDecl(f.type, f.name)};`);
     if (!s.fields.length) out.push(`  uint8_t __empty[0];`); // a marker account (Anchor `pub struct NftAuthority {}`): discriminator only
     out.push(`} TSS_${s.name};`);
     out.push(`_Static_assert(sizeof(TSS_${s.name}) == ${s.size}, "TSS_${s.name} layout");`);

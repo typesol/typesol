@@ -39,7 +39,8 @@ export type ValueType =
   /** `T | null`: C struct `TS_Opt_<T>` { uint8_t some; T v; } */
   | { kind: "option"; inner: ScalarType }
   /** `Vec<T>` instruction argument: a read-only view into instruction data. T is a scalar or a fixed-size struct. */
-  | { kind: "vecArg"; elem: FieldType }
+  /** A Vec argument (Borsh), read in place; `FixedVec<T, N>` arguments are the same with at most `cap` elements. */
+  | { kind: "vecArg"; elem: FieldType; cap?: number }
   /** `FixedArray<T, N>` instruction argument (Borsh [T; N]), parsed into a read-only copy. */
   | { kind: "arrayArg"; array: FieldType & { kind: "array" } }
   /** A Solana `SignerSeeds` helper parameter: the seeds of one PDA signature, built with signer([...]). */
@@ -75,6 +76,8 @@ export type FieldType =
 export interface StructField {
   name: string;
   type: FieldType;
+  /** The declaration, while the struct is being analyzed (for messages). */
+  node?: ts.Node;
 }
 
 /** Every exported interface. Used as account data, nested in other structs, or emitted as an event. */
@@ -86,8 +89,13 @@ export interface StructDef {
    * or undefined when a field is a variable-length string (event-only structs).
    */
   size: number | undefined;
-  /** The trailing Vec field, if any. Such structs can only be account data. */
+  /** The first growable Vec field, if any. Such structs can only be account data. */
   vec?: { name: string; elem: FieldType; elemSize: number };
+  /**
+   * Every growable Vec, in stored order (after the fixed-size fields). The first ends the C struct (its u32 length,
+   * then its elements); each further one follows the previous one's elements: a u32 length, then its elements.
+   */
+  vecs?: { name: string; elem: FieldType; elemSize: number }[];
   accountDiscriminator: number[];
   eventDiscriminator: number[];
   node: ts.InterfaceDeclaration;

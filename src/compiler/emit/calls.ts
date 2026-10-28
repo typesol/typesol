@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { calleeName, resolveScalarType } from "../analyze.js";
+import { calleeName, resolveScalarType, resolveValueType } from "../analyze.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
@@ -35,6 +35,9 @@ import {
   storageDecl,
   accountMismatch,
   vecCount,
+  emptySizeC,
+  vecLenCheck,
+  type Closure,
 } from "./shared.js";
 import { ExpressionEmitter } from "./expressions.js";
 
@@ -447,6 +450,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       const local = this.lookup(callee.text);
       if (local?.closure) return this.expandClosure(local.closure, node.arguments, node);
     }
+    const inlined = this.helperWithClosure(node);
+    if (inlined) return inlined.value;
     const helper = this.helperOf(node);
     if (helper) return this.callHelper(node, helper);
 
@@ -591,6 +596,20 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
+    /**
+     * The growable Vecs stored after this one move by `by` bytes (+ grows, - shrinks): where they start and how many
+     * bytes they take, read before the resize; references into them cannot outlive this call.
+     */
+    const tail = info.tail;
+    const tailStart = () => {
+      if (!tail) return undefined;
+      this.assertNotAliased(tail.paths, node);
+      const at = this.tmp("tail");
+      const n = this.tmp("tail_n");
+      this.line(`uint8_t *${at} = ${tail.end};`);
+      this.line(`uint64_t ${n} = (uint64_t)(${tail.dataEnd} - ${at});`);
+      return { at, n };
+    };
     switch (method) {
       case "set": {
         if (args.length !== 2) this.fail(node, "set(index, value) takes two arguments");
@@ -621,8 +640,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const write = stageElem(args[0]);
         const n = this.tmp("n");
         this.line(`uint64_t ${n} = (uint64_t)${info.len};`);
-        // Resizing does not move the data, so element pointers stay valid.
+        const t = tailStart();
+        // Resizing does not move the data, so element pointers stay valid; the Vecs after this one shift up.
         resize(`${n} + 1`, `a_${payer.name}`);
+        if (t) this.line(`ts_memmove(${t.at} + ${info.elemSize}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = (uint32_t)(${n} + 1);`);
         write(elemRef(n));
         return undefined;
@@ -648,6 +669,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
           } else this.line(`${valueC(st)} ${out} = ${val.c};`);
           result = st.kind === "pubkey" ? { c: `(&${out})`, type: st } : { c: out, type: st };
         }
+        const t = info.cap === undefined ? tailStart() : undefined;
+        if (t) this.line(`ts_memmove(${t.at} - ${info.elemSize}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = (uint32_t)(${n} - 1);`);
         resize(`${n} - 1`, "NULL");
         return result;
@@ -656,6 +679,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length !== 0) this.fail(node, "clear() takes no arguments");
         needWritable();
         this.assertNotAliased(elemPaths(), node);
+        const t = info.cap === undefined ? tailStart() : undefined;
+        if (t) this.line(`ts_memmove((uint8_t *)${info.items}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = 0;`);
         resize("0", "NULL");
         return undefined;
@@ -865,8 +890,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (this.model.events.has(s.name) && s.fields.some((f) => f.type.kind === "option" || f.type.kind === "dataEnum"))
       this.fail(node, `${s.name} is emitted as an event and has Option or enum fields; declare a separate event struct`);
     this.model.accountStructs.add(s.name);
-    this.line(`TS_TRY(ts_check_program_account(${h}, params->program_id, TS_DISC_${s.name}, sizeof(TSS_${s.name})));`);
-    if (s.vec) this.line(`TS_TRY(ts_check_vec_len(${h}, sizeof(TSS_${s.name}), ((TSS_${s.name} *)(${h}->data + 8))->${s.vec.name}__len, TS_ELEM_${s.name}));`);
+    this.line(`TS_TRY(ts_check_program_account(${h}, params->program_id, TS_DISC_${s.name}, ${emptySizeC(s)}));`);
+    if (s.vec) for (const l of vecLenCheck(s, h, `((TSS_${s.name} *)(${h}->data + 8))`, "")) this.line(l);
     if (mut) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
       this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
@@ -894,6 +919,38 @@ export abstract class CallEmitter extends ExpressionEmitter {
     };
     visit(body);
     return found;
+  }
+
+  /**
+   * A helper given a closure (a function that reads the caller's variables) for a function parameter: a closure only
+   * runs where it is declared, so the helper is expanded here, like a closure, with the closure bound to the
+   * parameter. Helpers expanded so take values (not accounts) and have no type parameters.
+   */
+  protected helperWithClosure(node: ts.CallExpression): { value: Value | undefined } | undefined {
+    const g = this.givenClosure(node);
+    if (!g) return undefined;
+    if (g.typeParams.length)
+      this.fail(node, `${g.display} has type parameters, so it takes only functions that read nothing around them; pass the values the function needs instead`);
+    for (const p of g.node.parameters)
+      if (p.type && !ts.isFunctionTypeNode(p.type) && !resolveValueType(p.type, this.scope))
+        this.fail(
+          node,
+          `${g.display} takes accounts or lists, so it cannot be expanded here for the function that reads the variables around it; pass the values it needs instead`,
+        );
+    return { value: this.expandClosure({ node: g.node, name: g.display, scopes: [] }, node.arguments, node) };
+  }
+
+  /** A function given for a function parameter of an expanded helper or closure, as something to expand. */
+  protected closureOf(arg: ts.Expression): Closure {
+    if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) return { node: arg, name: "the function passed", scopes: [...this.scopes] };
+    if (ts.isIdentifier(arg)) {
+      const l = this.lookup(arg.text);
+      if (l?.closure) return l.closure;
+      const name = calleeName(arg, this.model.helperDecls, this.checker) ?? arg.text;
+      const h = this.model.helpers.get(name) ?? this.model.generics.get(name);
+      if (h) return { node: h.node, name: h.display, scopes: [] };
+    }
+    this.fail(arg, "pass a function: its name, or an arrow written here");
   }
 
   protected callHelper(node: ts.CallExpression, h: Helper): Value | undefined {

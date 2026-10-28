@@ -93,13 +93,11 @@ describe("FixedVec", () => {
         throw e;
       }
     };
-    expect(errors(`export interface S { a: Vec<u64>; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/use FixedVec<T, N>/);
+    expect(errors(`/** @layout borsh */\nexport interface S { a: Vec<u64>; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/use FixedVec<T, N>/);
     expect(errors(`export interface S { a: FixedVec<u64, 0>; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/literal capacity/);
     expect(errors(`export interface S { a: FixedVec<string, 2> }\nexport function f(s: Account<S>): void {}`)).toMatch(/fixed size/);
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: S): void {}`)).toMatch(/only account data can/);
-    expect(errors(`export interface E { a: FixedVec<u64, 2> }\nexport function f(): void { emit<E>({ a: fixedVec([]) }); }`)).toMatch(
-      /not supported in events/,
-    );
+    expect(errors(`export interface E { a: FixedVec<u64, 2> }\nexport function f(): void { emit<E>({ a: fixedVec([]) }); }`)).toBe("");
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: Mut<S>): void { s.a = fixedVec([1n, 2n, 3n]); }`)).toMatch(/do not fit/);
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: Mut<S>): void { s.a.push(1n); s.a.set(0n, 2n); }`)).toBe("");
   });
