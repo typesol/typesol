@@ -35,6 +35,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   their Collection forms, for AppData, Oracle and LifecycleHook (and the Linked forms), checked against the Core program
   (Core itself answers lifecycle hooks with NotAvailable for now).
 
+### Changed
+- Compiler messages about accounts with a growable Vec say "has a growable Vec" instead of "ends in a Vec", and the
+  field-type list no longer says `Vec<T> (last)`, since a Vec can be any field (0.23.0).
+
 ## 0.23.0 — 2026-10-28
 
 Language limits lifted: `map` and `filter`, any number of growable Vecs per account, closures and arrow functions as

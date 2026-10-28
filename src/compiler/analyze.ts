@@ -921,7 +921,7 @@ function analyzeStructs(
       return { kind: "struct", name: node.typeName.text };
     reporter.fail(
       node,
-      "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T> (last), string (events only) or another struct",
+      "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T>, string (events only) or another struct",
     );
   };
 
@@ -1081,7 +1081,7 @@ function analyzeStructs(
         if (!s) return 0;
         visit(s);
         if (s.size === undefined) reporter.fail(at, `${t.name} has a string field and cannot be nested; use FixedString<N>`);
-        if (s.vec) reporter.fail(at, `${t.name} ends in a Vec and can only be account data, not nested`);
+        if (s.vec) reporter.fail(at, `${t.name} has a growable Vec and can only be account data, not nested`);
         return s.size;
       }
     }
@@ -1699,7 +1699,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     case "Zeroed": {
       const s = structOf(inner());
       if (!s) reporter.fail(node, "Zeroed<T> needs a struct declared in this program");
-      if (s.vec) reporter.fail(node, `${s.name} ends in a Vec; Zeroed<T> is for fixed-size (large) accounts`);
+      if (s.vec) reporter.fail(node, `${s.name} has a growable Vec; Zeroed<T> is for fixed-size (large) accounts`);
       if (s.layout === "borsh") reporter.fail(node, `${s.name} is @layout borsh; Zeroed<T> reads large accounts in place, so it takes fixed layouts only`);
       return { kind: "zeroed", struct: s };
     }

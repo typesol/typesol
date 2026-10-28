@@ -196,7 +196,9 @@ export function generatePort(idl: PortIdl): PortResult {
     if (t.vec) {
       const inner = tsType(t.vec, where, at);
       if (where === "variant" || where === "struct" || (where === "account" && !last)) {
-        notes.push(`${at}: a Vec here (TypeSOL keeps a Vec only as an account's last field or as an argument); replaced by FixedArray, so the layout differs.`);
+        notes.push(
+          `${at}: a Vec here (TypeSOL keeps Anchor's bytes for a growable Vec only as an account's last field or as an argument); replaced by FixedArray, so the layout differs.`,
+        );
         return `${use("FixedArray")}<${inner}, 8> /* TODO: Anchor has a Vec here */`;
       }
       return `${use("Vec")}<${inner}>`;

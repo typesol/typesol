@@ -2,7 +2,7 @@
 
 From an empty directory to a program on Solana mainnet-beta: create, test, deploy, publish the IDL, then check that
 the deployed binary is the one your source builds. The program here is the counter that `typesol init` creates
-(13.5 KB); any TypeSOL project works the same way.
+(13.2 KiB); any TypeSOL project works the same way.
 
 You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Requirements).
 
