@@ -35,6 +35,11 @@ export abstract class EmitterBase {
   protected readonly pendingInit = new Set<string>();
   /** Bump temporaries from create()/createIfNeeded(), for `acct.pdaBump`. */
   protected readonly bumps = new Map<string, string>();
+  /**
+   * Seed arrays already declared (no spare slot, every seed read in place): the C entries, and where the array is.
+   * An identical list in the same or an inner block reuses it (see seeds()).
+   */
+  protected readonly seedArrays = new Map<string, { name: string; scope: Map<string, Local>; at: number; text: string }>();
   /** Closures being expanded, innermost last: a `return` inside one assigns `result` and jumps to `label`. */
   protected inlineFrames: {
     label: string;
@@ -318,6 +323,7 @@ export abstract class EmitterBase {
       created: new Set(this.created),
       pendingInit: new Set(this.pendingInit),
       bumps: new Map(this.bumps),
+      seedArrays: new Map(this.seedArrays),
     };
     try {
       return this.reporter.guard(fn);
@@ -339,6 +345,8 @@ export abstract class EmitterBase {
       }
       this.bumps.clear();
       saved.bumps.forEach((v, k) => this.bumps.set(k, v));
+      this.seedArrays.clear();
+      saved.seedArrays.forEach((v, k) => this.seedArrays.set(k, v));
     }
   }
 
