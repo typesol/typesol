@@ -879,7 +879,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
       else if (p?.kind === "account") {
         const target = p.path!.includes(".") ? undefined : byPath(p.path!, a.group);
         program = target ? `key($${target.key})` : { why: `the PDA program ${p.path} is not an account of the instruction` };
-      } else if (p?.kind === "arg") program = { why: "the PDA program comes from an argument" };
+      } else if (p?.kind === "arg") {
+        const t = p.path!.includes(".") ? undefined : argType.get(p.path!);
+        program = t === "pubkey" || t === "publicKey" ? `args.${camel(p.path!)}` : { why: "the PDA program comes from an argument that is not a Pubkey" };
+      }
       const why = [...seeds, ...(program === undefined ? [] : [program])].find((x) => typeof x === "object");
       if (why) {
         notes.push(`instruction ${ix.name}: ${a.name} is not filled in (${(why as { why: string }).why}); pass it`);
@@ -985,8 +988,32 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         `\n  return {\n    programAddress: PROGRAM_ADDRESS,\n    accounts: [\n${metas.join("\n")}\n      ...remaining,\n    ],\n    data: ${data},\n  } as Instruction;\n}\n`,
     );
     ixKeys.push(`${prop(fn)}: build${P}`);
-    // has_one relations (Anchor's `relations`): a non-signing account another account of the instruction names in a
-    // Pubkey field can be read from that account on chain.
+    // `resolve.<instruction>`: what needs the chain or the caller's wallet, filled in on a copy of the accounts in this
+    // order: signers (a default signer), has_one accounts, then PDAs seeded from other accounts' fields.
+    const acc = (f: Flat) => `acc${NAME.test(f.key) && !JS_RESERVED.has(f.key) ? `.${f.key}` : `[${JSON.stringify(f.key)}]`}`;
+    // A field's value as seed bytes: scalars by their codec, strings as UTF-8, byte fields as they are.
+    const seedOfField = (t: IdlType, v: string): string | undefined => {
+      if (typeof t === "string") {
+        if (t in INTS || t === "bool" || t === "pubkey" || t === "publicKey") return `${codec(t)}.encode(${v})`;
+        if (t === "string") return (use("getUtf8Encoder"), `getUtf8Encoder().encode(${v})`);
+        if (t === "bytes") return `Uint8Array.from(${v})`;
+        return undefined;
+      }
+      if ((t.vec !== undefined && isU8(t.vec)) || (t.array && isU8(t.array[0]))) return `Uint8Array.from(${v})`;
+      const name = definedName(t);
+      if (name === undefined) return undefined;
+      if (special(name)?.kind === "fstring") return (use("getUtf8Encoder"), `getUtf8Encoder().encode(${v})`);
+      const d = defs.get(name);
+      return d?.type.kind === "enum" && (d.type.variants ?? []).every((x) => !x.fields?.length) ? `${codec(t)}.encode(${v})` : undefined;
+    };
+    // The builder's "pass it" note for an account, pointing at what fills it in instead.
+    const renote = (a: Flat, how: string) => {
+      const i = notes.findIndex((n) => n.startsWith(`instruction ${ix.name}: ${a.name} is not filled in (`));
+      if (i >= 0) notes[i] = `${notes[i]!.replace(/; pass it$/, "")}; ${how}`;
+    };
+    const fieldOf = (accountType: string | undefined, field: string): IdlField | undefined =>
+      ((defs.get(accountType ?? "")?.type.fields ?? []) as IdlField[]).find((f) => typeof f === "object" && f !== null && f.name === field);
+    const signers = flat.filter((a) => a.signer && !auto(a) && !a.optional);
     const rels: { a: Flat; source: Flat; readers: string[] }[] = [];
     for (const a of flat) {
       if (auto(a) || a.optional || a.signer || !a.relations?.length) continue;
@@ -1001,82 +1028,125 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         break;
       }
     }
-    // PDAs seeded from fields of another account of the instruction (Anchor `seeds = [b"vault", book.owner]`): the
-    // account is read on chain, then the PDA derived. Only scalar fields (integers, bool, Pubkey, unit enums).
-    const inputOf = (f: Flat) => `input${NAME.test(f.key) && !JS_RESERVED.has(f.key) ? `.${f.key}` : `[${JSON.stringify(f.key)}]`}`;
-    const scalarSeed = (t: IdlType | undefined): boolean => {
-      if (t === undefined) return false;
-      if (typeof t === "string") return t in INTS || t === "bool" || t === "pubkey" || t === "publicKey";
-      if (!t.defined) return false;
-      const d = defs.get(definedName(t) ?? "");
-      return d?.type.kind === "enum" && (d.type.variants ?? []).every((v) => !v.fields?.length);
-    };
     const fieldPdas: { a: Flat; lines: string[]; usesArgs: boolean }[] = [];
     for (const a of flat) {
       if (!a.pda || a.address || resolvable.has(a.key) || a.optional) continue;
       const p = a.pda.program;
-      if (p && p.kind !== "const") continue;
+      if (p && p.kind === "account") continue;
+      let program = "PROGRAM_ADDRESS";
+      if (p?.kind === "const") program = `programFromBytes(${bytes(p.value!)})`;
+      else if (p?.kind === "arg") {
+        const t = argType.get(p.path ?? "");
+        if (t !== "pubkey" && t !== "publicKey") continue;
+        program = `args.${camel(p.path!)}`;
+      }
       const bases = new Map<string, { base: Flat; A: string }>();
       const seeds: string[] = [];
+      const own: { field: string; type: IdlType }[] = [];
+      // Inputs of a `pdas` helper for a PDA seeded from its own fields: its own field values, accounts and arguments.
+      const params = new Map<string, string>();
+      let autoDep = false;
       let ok = true;
-      let usesArgs = false;
+      let usesArgs = p?.kind === "arg";
       for (const sd of a.pda.seeds) {
         if (sd.kind === "const") seeds.push(bytes(sd.value!));
         else if (sd.kind === "arg") {
           const e = seedExpr(sd, a.group);
           if (typeof e !== "string") ok = false;
-          else (seeds.push(e), (usesArgs = true));
+          else {
+            seeds.push(e);
+            usesArgs = true;
+            params.set(camel(sd.path!), `${camel(sd.path!)}: ${tsType(argType.get(sd.path!)!, "in")}`);
+          }
         } else if (!sd.path!.includes(".")) {
           const t = byPath(sd.path!, a.group);
-          if (!t || t === a || auto(t) || t.optional) ok = false;
-          else seeds.push(`getAddressEncoder().encode(key(${inputOf(t)}))`);
+          if (!t || t === a || t.optional) ok = false;
+          else {
+            use("getAddressEncoder");
+            seeds.push(`getAddressEncoder().encode(key(${acc(t)}!))`);
+            params.set(t.key, `${t.key}: Address | TransactionSigner`);
+            if (auto(t)) autoDep = true;
+          }
         } else {
           const parts = sd.path!.split(".");
           const base = parts.length === 2 ? byPath(parts[0]!, a.group) : undefined;
-          const acc = accountConsts.find((c) => c.name === sd.account);
-          const field = ((defs.get(sd.account ?? "")?.type.fields ?? []) as IdlField[]).find((f) => typeof f === "object" && f !== null && f.name === parts[1]);
-          if (!base || base === a || base.optional || auto(base) || !acc || !field || !scalarSeed(field.type)) ok = false;
+          const field = fieldOf(sd.account, parts[1]!);
+          const consts = accountConsts.find((c) => c.name === sd.account);
+          const enc =
+            field && seedOfField(field.type, base === a ? `seeds.${camel(parts[1]!)}` : `${"$$" + (base?.key ?? "")}[${JSON.stringify(camel(parts[1]!))}]`);
+          if (!base || !field || !enc || base.optional) ok = false;
+          else if (base === a) {
+            own.push({ field: parts[1]!, type: field.type });
+            params.set(camel(parts[1]!), `${camel(parts[1]!)}: ${tsType(field.type, "in")}`);
+            seeds.push(enc);
+          } else if (!consts || auto(base)) ok = false;
           else {
-            bases.set(base.key, { base, A: acc.A });
-            seeds.push(`${codec(field.type)}.encode(${"$$" + base.key}[${JSON.stringify(camel(parts[1]!))}])`);
+            bases.set(base.key, { base, A: consts.A });
+            seeds.push(enc);
           }
         }
         if (!ok) break;
       }
-      if (!ok || bases.size === 0) continue;
-      const program = p ? `programFromBytes(${bytes(p.value!)})` : "PROGRAM_ADDRESS";
+      if (!ok) continue;
+      if (own.length) {
+        // Seeded from its own fields: the address is needed to read them, so the caller gives the values instead.
+        if (bases.size) continue;
+        const json = JSON.stringify(a.pda);
+        let pn = camel(a.name);
+        if (pdaFns.has(pn) && pdaFns.get(pn)!.json !== json) {
+          pn = `${fn}${pascal(a.name)}`;
+          for (let i = 2; pdaFns.has(pn) && pdaFns.get(pn)!.json !== json; i++) pn = `${fn}${pascal(a.name)}${i}`;
+        }
+        renote(a, `pass it (pdas.${pn} derives it from the field values)`);
+        if (pdaFns.has(pn)) continue;
+        if (p?.kind === "arg") params.set(camel(p.path!), `${camel(p.path!)}: Address`);
+        const rewrite = (e: string) =>
+          e
+            .replace(/\bargs\.([A-Za-z0-9_$]+)/g, "seeds.$1")
+            .replace(/key\(acc\.([A-Za-z0-9_$]+)!\)/g, "key(seeds.$1)")
+            .replace(/key\(acc\["([^"]+)"\]!\)/g, 'key(seeds["$1"])');
+        use("type ProgramDerivedAddress", "getProgramDerivedAddress");
+        pdaFns.set(pn, {
+          json,
+          source: `    /** The ${a.name} PDA (as ${ix.name} derives it), from the values of its own fields it is seeded with (${own.map((o) => camel(o.field)).join(", ")}). */\n    ${prop(pn)}(seeds: { ${[...params.values()].join("; ")} }): Promise<ProgramDerivedAddress> {\n      return getProgramDerivedAddress({ programAddress: ${rewrite(program)}, seeds: [${seeds.map(rewrite).join(", ")}] });\n    },`,
+        });
+        continue;
+      }
+      if (bases.size === 0 || autoDep) continue;
+      renote(a, `resolve.${fn} fills it in`);
       fieldPdas.push({
         a,
         usesArgs,
         lines: [
-          `      const ${"$" + a.key} =`,
-          `        ${inputOf(a)} ??`,
-          `        (await (async () => {`,
-          ...[...bases.values()].map(({ base, A }) => `          const ${"$$" + base.key} = await ${A}.fetch(rpc, key(${inputOf(base)}));`),
-          `          return (await getProgramDerivedAddress({ programAddress: ${program}, seeds: [${seeds.join(", ")}] }))[0];`,
-          `        })());`,
+          `      if (${acc(a)} === undefined) {`,
+          ...[...bases.values()].map(({ base, A }) => `        const ${"$$" + base.key} = await ${A}.fetch(rpc, key(${acc(base)}!));`),
+          `        ${acc(a)} = (await getProgramDerivedAddress({ programAddress: ${program}, seeds: [${seeds.join(", ")}] }))[0];`,
+          `      }`,
         ],
       });
     }
-    if (rels.length || fieldPdas.length) {
-      const filled = [...rels.map((r) => r.a), ...fieldPdas.map((f) => f.a)];
-      const keysOf = filled.map((a) => JSON.stringify(a.key)).join(" | ");
+    if (rels.length || fieldPdas.length || signers.length) {
+      const filled = [...signers, ...rels.map((r) => r.a), ...fieldPdas.map((f) => f.a)];
+      const keysOf = [...new Set(filled.map((a) => JSON.stringify(a.key)))].join(" | ");
       const withArgs = fieldPdas.some((f) => f.usesArgs);
       const what = [
+        ...(signers.length ? [`${signers.map((a) => a.key).join(", ")} (options.signer when left out)`] : []),
         ...rels.map((r) => `${r.a.key} (from ${r.source.key}.${camel(r.a.name)})`),
         ...fieldPdas.map((f) => `${f.a.key} (a PDA seeded from account fields)`),
       ].join(", ");
       resolveKeys.push(
-        `    /** ${P}Accounts with ${what} read from the chain when left out. */\n` +
-          `    async ${prop(fn)}(rpc: Rpc<GetAccountInfoApi>, input: Omit<${P}Accounts, ${keysOf}> & Partial<Pick<${P}Accounts, ${keysOf}>>${withArgs ? `, args: ${P}Args` : ""}): Promise<${P}Accounts> {\n` +
+        `    /** ${P}Accounts with ${what} filled in. */\n` +
+          `    async ${prop(fn)}(rpc: Rpc<GetAccountInfoApi>, input: Omit<${P}Accounts, ${keysOf}> & Partial<Pick<${P}Accounts, ${keysOf}>>${withArgs ? `, args: ${P}Args` : ""}, options: { signer?: TransactionSigner } = {}): Promise<${P}Accounts> {\n` +
+          `      const acc: Partial<${P}Accounts> = { ...input };\n` +
           [
-            ...rels.map(
-              (r) =>
-                `      const ${"$" + r.a.key} = ${inputOf(r.a)} ?? (await readRelation(rpc, key(${inputOf(r.source)}), ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]));`,
+            ...signers.map(
+              (a) =>
+                `      if (${acc(a)} === undefined) {\n        if (!options.signer) throw new Error(${JSON.stringify(`${ix.name}: pass ${a.key}, or a default signer as options.signer`)});\n        ${acc(a)} = options.signer;\n      }`,
             ),
+            ...rels.map((r) => `      ${acc(r.a)} ??= await readRelation(rpc, key(${acc(r.source)}!), ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]);`),
             ...fieldPdas.flatMap((f) => f.lines),
           ].join("\n") +
-          `\n      return { ...input, ${filled.map((a) => `${prop(a.key)}: ${"$" + a.key}`).join(", ")} } as ${P}Accounts;\n    },`,
+          `\n      void rpc;\n      return acc as ${P}Accounts;\n    },`,
       );
     }
     if (ix.returns !== undefined) {

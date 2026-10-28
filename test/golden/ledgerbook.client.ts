@@ -656,6 +656,66 @@ export const ledgerbook = {
     },
   },
   resolve: {
+    /** CreateAccounts with admin (options.signer when left out) filled in. */
+    async create(rpc: Rpc<GetAccountInfoApi>, input: Omit<CreateAccounts, "admin"> & Partial<Pick<CreateAccounts, "admin">>, options: { signer?: TransactionSigner } = {}): Promise<CreateAccounts> {
+      const acc: Partial<CreateAccounts> = { ...input };
+      if (acc.admin === undefined) {
+        if (!options.signer) throw new Error("create: pass admin, or a default signer as options.signer");
+        acc.admin = options.signer;
+      }
+      void rpc;
+      return acc as CreateAccounts;
+    },
+    /** FileAccounts with who (options.signer when left out) filled in. */
+    async file(rpc: Rpc<GetAccountInfoApi>, input: Omit<FileAccounts, "who"> & Partial<Pick<FileAccounts, "who">>, options: { signer?: TransactionSigner } = {}): Promise<FileAccounts> {
+      const acc: Partial<FileAccounts> = { ...input };
+      if (acc.who === undefined) {
+        if (!options.signer) throw new Error("file: pass who, or a default signer as options.signer");
+        acc.who = options.signer;
+      }
+      void rpc;
+      return acc as FileAccounts;
+    },
+    /** DecideAccounts with approver (options.signer when left out) filled in. */
+    async decide(rpc: Rpc<GetAccountInfoApi>, input: Omit<DecideAccounts, "approver"> & Partial<Pick<DecideAccounts, "approver">>, options: { signer?: TransactionSigner } = {}): Promise<DecideAccounts> {
+      const acc: Partial<DecideAccounts> = { ...input };
+      if (acc.approver === undefined) {
+        if (!options.signer) throw new Error("decide: pass approver, or a default signer as options.signer");
+        acc.approver = options.signer;
+      }
+      void rpc;
+      return acc as DecideAccounts;
+    },
+    /** ApproveManyAccounts with approver (options.signer when left out) filled in. */
+    async approveMany(rpc: Rpc<GetAccountInfoApi>, input: Omit<ApproveManyAccounts, "approver"> & Partial<Pick<ApproveManyAccounts, "approver">>, options: { signer?: TransactionSigner } = {}): Promise<ApproveManyAccounts> {
+      const acc: Partial<ApproveManyAccounts> = { ...input };
+      if (acc.approver === undefined) {
+        if (!options.signer) throw new Error("approve_many: pass approver, or a default signer as options.signer");
+        acc.approver = options.signer;
+      }
+      void rpc;
+      return acc as ApproveManyAccounts;
+    },
+    /** SetApproverAccounts with admin (options.signer when left out) filled in. */
+    async setApprover(rpc: Rpc<GetAccountInfoApi>, input: Omit<SetApproverAccounts, "admin"> & Partial<Pick<SetApproverAccounts, "admin">>, options: { signer?: TransactionSigner } = {}): Promise<SetApproverAccounts> {
+      const acc: Partial<SetApproverAccounts> = { ...input };
+      if (acc.admin === undefined) {
+        if (!options.signer) throw new Error("set_approver: pass admin, or a default signer as options.signer");
+        acc.admin = options.signer;
+      }
+      void rpc;
+      return acc as SetApproverAccounts;
+    },
+    /** ResetAccounts with admin (options.signer when left out) filled in. */
+    async reset(rpc: Rpc<GetAccountInfoApi>, input: Omit<ResetAccounts, "admin"> & Partial<Pick<ResetAccounts, "admin">>, options: { signer?: TransactionSigner } = {}): Promise<ResetAccounts> {
+      const acc: Partial<ResetAccounts> = { ...input };
+      if (acc.admin === undefined) {
+        if (!options.signer) throw new Error("reset: pass admin, or a default signer as options.signer");
+        acc.admin = options.signer;
+      }
+      void rpc;
+      return acc as ResetAccounts;
+    },
   },
   errors: ERRORS,
   errorCode,
