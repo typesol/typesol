@@ -39,7 +39,10 @@ import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { type SvmConnection, svmConnection } from "./svmrpc.js";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
+
+export { type SvmConnection, svmConnection };
 
 // @anchor-lang/core is CommonJS: Node 22 cannot import its classes by name from an installed ES module.
 const { BN, BorshCoder } = anchor;
@@ -106,6 +109,8 @@ export interface TestProgram {
   returned<T = unknown>(instruction: string, res: Result): T;
   /** Lamports of any account (0 when it does not exist). */
   balance(address: Address): bigint;
+  /** A kit RPC and subscriptions pair over this LiteSVM, for the generated client (`svmConnection`). */
+  connection: SvmConnection;
 }
 
 /** Build `program` of the project around `from` (a file URL such as import.meta.url, or a directory) and load it. */
@@ -378,6 +383,7 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     balance(address) {
       return svm.getBalance(address) ?? 0n;
     },
+    connection: svmConnection(svm),
   };
   return harness;
 }

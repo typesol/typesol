@@ -472,9 +472,117 @@ class Names {
   }
 }
 
+/**
+ * Generic types (Anchor `struct Wrap<T, const N: usize>`) as concrete ones: each use with type and const arguments
+ * (`Wrap<u64, 4>`) becomes its own type definition (`WrapU64N4`), and the uses point at it. Generic definitions
+ * themselves are left as they are (and out of the client); uses whose arguments are still generic are kept.
+ */
+function monomorphize(idl: ClientIdl): ClientIdl {
+  const defs = new Map((idl.types ?? []).map((t) => [t.name, t]));
+  if (![...defs.values()].some((d) => d.generics?.length)) return idl;
+  const taken = new Set(defs.keys());
+  const made = new Map<string, string>(); // instantiation key → new type name
+  const extra: IdlTypeDef[] = [];
+  type Env = Map<string, IdlType | number>;
+  const label = (t: IdlType | number): string => {
+    if (typeof t === "number") return `N${t}`;
+    if (typeof t === "string") return pascal(t.replace(/[^A-Za-z0-9_]/g, ""));
+    if (t.vec !== undefined) return `Vec${label(t.vec)}`;
+    if (t.option !== undefined) return `Option${label(t.option)}`;
+    if (t.coption !== undefined) return `COption${label(t.coption)}`;
+    if (t.array) return `Array${label(t.array[0])}N${String(t.array[1]).replace(/[^0-9]/g, "")}`;
+    return pascal((definedName(t) ?? "T").replace(/[^A-Za-z0-9_]/g, ""));
+  };
+  const hasGeneric = (t: unknown): boolean => JSON.stringify(t ?? null).includes('"generic"');
+  const inst = (t: IdlType, env: Env): IdlType => {
+    if (typeof t === "string") return t;
+    if (t.generic !== undefined) {
+      const v = env.get(t.generic);
+      return v === undefined || typeof v === "number" ? t : v;
+    }
+    if (t.vec !== undefined) return { vec: inst(t.vec, env) };
+    if (t.option !== undefined) return { option: inst(t.option, env) };
+    if (t.coption !== undefined) return { coption: inst(t.coption, env) };
+    if (t.array) {
+      const len = t.array[1] as unknown;
+      const g = typeof len === "object" && len !== null ? (len as { generic?: string }).generic : undefined;
+      const n = g !== undefined ? env.get(g) : len;
+      return { array: [inst(t.array[0], env), typeof n === "number" ? n : len] };
+    }
+    const name = definedName(t);
+    const args = typeof t.defined === "object" ? (t.defined.generics ?? []) : [];
+    if (name === undefined || !args.length) return t;
+    const values = (args as { kind?: string; type?: IdlType; value?: unknown }[]).map((a) =>
+      a?.kind === "const"
+        ? Number.isSafeInteger(Number(a.value)) && /^\d+$/.test(String(a.value))
+          ? Number(a.value)
+          : undefined
+        : a?.type === undefined
+          ? undefined
+          : inst(a.type, env),
+    );
+    const def = defs.get(name);
+    const params = (def?.generics ?? []) as { kind?: string; name?: string }[];
+    if (
+      !def ||
+      values.some((v) => v === undefined || hasGeneric(v)) ||
+      params.length !== values.length ||
+      params.some((p) => typeof p?.name !== "string" || !NAME.test(p.name))
+    )
+      return { defined: { name, generics: args } };
+    const key = JSON.stringify([name, values]);
+    let made1 = made.get(key);
+    if (!made1) {
+      let base = `${name}${values.map((v) => label(v!)).join("")}`;
+      if (!NAME.test(base)) base = `${name}Instance`;
+      made1 = base;
+      for (let i = 2; taken.has(made1); i++) made1 = `${base}${i}`;
+      taken.add(made1);
+      made.set(key, made1);
+      const env2: Env = new Map(params.map((p, i) => [p.name!, values[i]!]));
+      const body = def.type;
+      const field = (f: IdlField | IdlType) => (isField(f) ? { ...f, type: inst(f.type, env2) } : inst(f, env2));
+      extra.push({
+        ...def,
+        name: made1,
+        generics: undefined,
+        type: {
+          ...body,
+          ...(body.fields ? { fields: body.fields.map(field) } : {}),
+          ...(body.variants ? { variants: body.variants.map((v) => ({ ...v, ...(v.fields ? { fields: v.fields.map(field) } : {}) })) } : {}),
+          ...(body.alias !== undefined ? { alias: inst(body.alias, env2) } : {}),
+        },
+      });
+    }
+    return { defined: made1 };
+  };
+  const none: Env = new Map();
+  const field = (f: IdlField | IdlType) => (isField(f) ? { ...f, type: inst(f.type, none) } : inst(f, none));
+  const types = (idl.types ?? []).map((d) =>
+    d.generics?.length
+      ? d
+      : {
+          ...d,
+          type: {
+            ...d.type,
+            ...(d.type.fields ? { fields: d.type.fields.map(field) } : {}),
+            ...(d.type.variants ? { variants: d.type.variants.map((v) => ({ ...v, ...(v.fields ? { fields: v.fields.map(field) } : {}) })) } : {}),
+            ...(d.type.alias !== undefined ? { alias: inst(d.type.alias, none) } : {}),
+          },
+        },
+  );
+  const instructions = idl.instructions.map((ix) => ({
+    ...ix,
+    args: ix.args.map((a) => ({ ...a, type: inst(a.type, none) })),
+    ...(ix.returns !== undefined ? { returns: inst(ix.returns, none) } : {}),
+  }));
+  return { ...idl, instructions, types: [...types, ...extra] };
+}
+
 export function generateClient(idl: ClientIdl, opts: { address?: string } = {}): ClientGenResult {
   const programAddress = opts.address ?? idl.address;
   validate(idl, programAddress);
+  idl = monomorphize(idl);
   if (!programAddress) throw new ClientIdlError("the IDL has no program address; pass one");
   const typesol = idl.metadata?.description === "Built with TypeSOL";
   const defs = new Map((idl.types ?? []).map((t) => [t.name, t]));
@@ -504,6 +612,62 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     return undefined;
   };
 
+  // ---- Zero-copy (bytemuck) layouts: #[repr(C)] in memory, as the program sees it on SBF ------------------------
+  const zeroCopy = (d: IdlTypeDef | undefined) => d?.serialization === "bytemuck" || d?.serialization === "bytemuckunsafe";
+  const layouts = new Map<string, { size: number; align: number; offsets: number[] } | string>();
+  /** Size and alignment of a type inside a zero-copy struct, or why it cannot be in one. */
+  function cLayout(t: IdlType): { size: number; align: number } | string {
+    if (typeof t === "string") {
+      if (t in INTS) return { size: INTS[t]! / 8, align: Math.min(INTS[t]! / 8, 8) }; // SBF aligns u128/i128 to 8, not 16
+      if (t in FLOATS) return { size: FLOATS[t]! / 8, align: FLOATS[t]! / 8 };
+      if (t === "bool") return { size: 1, align: 1 };
+      if (t === "pubkey" || t === "publicKey") return { size: 32, align: 1 };
+      return `"${t}" has no fixed size`;
+    }
+    if (t.array) {
+      const e = cLayout(t.array[0]);
+      const n = Number(t.array[1]);
+      return typeof e === "string" ? e : { size: e.size * n, align: e.align };
+    }
+    const n = definedName(t);
+    const d = defs.get(n ?? "");
+    if (!n || !d || !zeroCopy(d)) return `${n ?? "the type"} is not a zero-copy type`;
+    const l = structLayout(d);
+    return typeof l === "string" ? l : { size: l.size, align: l.align };
+  }
+  function structLayout(d: IdlTypeDef): { size: number; align: number; offsets: number[] } | string {
+    const known = layouts.get(d.name);
+    if (known) return known;
+    layouts.set(d.name, `type ${d.name} contains itself`);
+    const repr = (d.repr ?? {}) as { kind?: string; packed?: boolean; align?: number };
+    const fields = d.type.kind === "struct" ? (d.type.fields ?? []) : undefined;
+    let out: { size: number; align: number; offsets: number[] } | string;
+    if (!fields || !fields.every(isField)) out = `zero-copy type ${d.name} is not a struct with named fields`;
+    else if (repr.kind === "rust") out = `zero-copy type ${d.name} has Rust's unspecified layout`;
+    else {
+      let offset = 0;
+      let align = 1;
+      const offsets: number[] = [];
+      let why: string | undefined;
+      for (const f of fields as IdlField[]) {
+        const l = cLayout(f.type);
+        if (typeof l === "string") {
+          why = `${d.name}.${f.name}: ${l}`;
+          break;
+        }
+        const a = repr.packed ? 1 : l.align;
+        offset = Math.ceil(offset / a) * a;
+        offsets.push(offset);
+        offset += l.size;
+        align = Math.max(align, a);
+      }
+      if (Number.isInteger(repr.align) && repr.align! > 0) align = Math.max(align, repr.align!);
+      out = why ?? { size: Math.ceil(offset / align) * align, align, offsets };
+    }
+    layouts.set(d.name, out);
+    return out;
+  }
+
   // ---- What can be expressed --------------------------------------------------------------------------------
   const typeIssues = new Map<string, string | undefined>();
   /** Why a type cannot be generated, or undefined when it can. */
@@ -528,8 +692,11 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     const d = defs.get(n);
     let why: string | undefined;
     if (!d) why = `type ${n} is not defined in the IDL`;
-    else if (d.generics?.length) why = `type ${n} is generic`;
-    else if (d.serialization && d.serialization !== "borsh") why = `type ${n} uses ${d.serialization} serialization (zero-copy layouts are not supported)`;
+    else if (d.generics?.length) why = `type ${n} is generic (each use with concrete arguments is generated as its own type)`;
+    else if (zeroCopy(d)) {
+      const l = structLayout(d);
+      if (typeof l === "string") why = l;
+    } else if (d.serialization && d.serialization !== "borsh") why = `type ${n} uses ${d.serialization} serialization, which is not supported`;
     else if (special(n)?.kind === "foption") why = issue((special(n) as { inner: IdlType }).inner);
     else if (d.type.kind === "struct") why = (d.type.fields ?? []).map((f) => issue(isField(f) ? f.type : f)).find(Boolean);
     else if (d.type.kind === "enum") why = (d.type.variants ?? []).flatMap((v) => (v.fields ?? []).map((f) => issue(isField(f) ? f.type : f))).find(Boolean);
@@ -576,6 +743,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   let needsFixedOption = false;
   let needsFixedVec = false;
   let needsUnitEnum = false;
+  let needsCStruct = false;
   function codec(t: IdlType): string {
     if (typeof t === "string") {
       if (t in INTS || t in FLOATS) {
@@ -650,6 +818,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     }
     const d = defs.get(n);
     if (!d) return undefined;
+    if (zeroCopy(d)) {
+      const l = structLayout(d);
+      return typeof l === "string" ? undefined : l.size;
+    }
     if (isUnitEnum(d)) return 1;
     if (d.type.kind !== "struct") return undefined;
     let size = 0;
@@ -685,6 +857,18 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         continue;
       }
       const named = fields as IdlField[];
+      if (zeroCopy(d)) {
+        // Fields at their #[repr(C)] offsets (padding written as zeros), not one after another as Borsh would.
+        const l = structLayout(d) as { size: number; offsets: number[] };
+        needsCStruct = true;
+        typeOut.push(
+          `${doc(d.docs)}export interface ${T} {\n${named.map((f) => `${doc(f.docs, "  ")}  ${prop(camel(f.name))}: ${tsType(f.type, "out")};`).join("\n")}\n}\n` +
+            `export interface ${T}Args {\n${named.map((f) => `  ${prop(camel(f.name))}: ${tsType(f.type, "in")};`).join("\n")}\n}\n` +
+            `/** Zero-copy (#[repr(C)]) layout: ${l.size} bytes. */\n` +
+            `export function get${T}Codec(): Codec<${T}Args, ${T}> {\n  return cStruct([${named.map((f, i) => `[${JSON.stringify(camel(f.name))}, ${codec(f.type)}, ${l.offsets[i]}]`).join(", ")}], ${l.size}) ${cast};\n}\n`,
+        );
+        continue;
+      }
       use("getStructCodec");
       typeOut.push(
         `${doc(d.docs)}export interface ${T} {\n${named.map((f) => `${doc(f.docs, "  ")}  ${prop(camel(f.name))}: ${tsType(f.type, "out")};`).join("\n")}\n}\n` +
@@ -854,10 +1038,18 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     const seedExpr = (s: IdlSeed, group: string): string | { why: string } => {
       if (s.kind === "const") return bytes(s.value!);
       if (s.kind === "arg") {
-        if (s.path!.includes(".")) return { why: `the seed ${s.path} is a field of an argument` };
-        const t = argType.get(s.path!);
-        if (t === undefined) return { why: `the seed argument ${s.path} does not exist` };
-        const v = `args.${camel(s.path!)}`;
+        // `params.id`: a field (of a field…) of a struct argument.
+        const [head, ...rest] = s.path!.split(".");
+        let t = argType.get(head!);
+        if (t === undefined) return { why: `the seed argument ${head} does not exist` };
+        let v = `args.${camel(head!)}`;
+        for (const part of rest) {
+          const d = defs.get(definedName(t) ?? "");
+          const f = d?.type.kind === "struct" ? ((d.type.fields ?? []) as IdlField[]).find((x) => isField(x) && x.name === part) : undefined;
+          if (!f || !NAME.test(part)) return { why: `the seed ${s.path} is not a field of a struct argument` };
+          t = f.type;
+          v += `[${JSON.stringify(camel(part))}]`;
+        }
         if (t === "string") return (use("getUtf8Encoder"), `getUtf8Encoder().encode(${v})`);
         if (t === "bytes" || (typeof t === "object" && t.vec !== undefined && isU8(t.vec))) return v; // raw, like `blob.as_ref()`
         if (t === "pubkey" || t === "publicKey") return (use("getAddressEncoder"), `getAddressEncoder().encode(${v})`);
@@ -951,7 +1143,10 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
       const params = [
         ...new Map(
           inputs.map((s) => {
-            if (s.kind === "arg") return [camel(s.path!), `${camel(s.path!)}: ${tsType(argType.get(s.path!)!, "in")}`];
+            if (s.kind === "arg") {
+              const head = s.path!.split(".")[0]!;
+              return [camel(head), `${camel(head)}: ${tsType(argType.get(head)!, "in")}`];
+            }
             const k = byPath(s.path!, a.group)!.key;
             return [k, `${k}: Address | TransactionSigner`];
           }),
@@ -1056,7 +1251,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
           else {
             seeds.push(e);
             usesArgs = true;
-            params.set(camel(sd.path!), `${camel(sd.path!)}: ${tsType(argType.get(sd.path!)!, "in")}`);
+            const head = sd.path!.split(".")[0]!;
+            params.set(camel(head), `${camel(head)}: ${tsType(argType.get(head)!, "in")}`);
           }
         } else if (!sd.path!.includes(".")) {
           const t = byPath(sd.path!, a.group);
@@ -1300,6 +1496,23 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         `      const n = Math.min(getU32Codec().read(bytes, offset)[0], cap);`,
         `      return [Array.from({ length: n }, (_, i) => item.read(bytes, offset + 4 + i * size)[0]), offset + 4 + size * cap];`,
         `    },`,
+        `  });`,
+      ],
+    });
+  if (needsCStruct)
+    helperDefs.push({
+      name: "cStruct",
+      lines: [
+        `/** A zero-copy struct: each field at its #[repr(C)] offset in a block of \`size\` bytes (padding is zero). */`,
+        `const cStruct = (fields: [string, Codec<any, any>, number][], size: number): Codec<Record<string, unknown>, Record<string, unknown>> =>`,
+        `  createCodec<Record<string, unknown>, Record<string, unknown>>({`,
+        `    fixedSize: size,`,
+        `    write: (value, bytes, offset) => {`,
+        `      bytes.fill(0, offset, offset + size);`,
+        `      for (const [k, c, at] of fields) c.write(value[k], bytes, offset + at);`,
+        `      return offset + size;`,
+        `    },`,
+        `    read: (bytes, offset) => [Object.fromEntries(fields.map(([k, c, at]) => [k, c.read(bytes, offset + at)[0]])), offset + size],`,
         `  });`,
       ],
     });

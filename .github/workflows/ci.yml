@@ -87,8 +87,8 @@ jobs:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
     # pushes and pull requests.
     if: ${{ inputs.differential != 'no' }}
-    # The Anchor twins (bench/anchor) make test/differential.test.ts, the cpigen Anchor test and the @layout borsh
-    # comparison (test/borsh-layout.test.ts) run instead of skip.
+    # The Anchor programs (bench/anchor) make test/differential.test.ts, the cpigen Anchor test, the @layout borsh
+    # comparison (test/borsh-layout.test.ts) and the zero-copy client test (test/client-anchor.test.ts) run instead of skip.
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
@@ -113,4 +113,4 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
       - run: pnpm bench:anchor
-      - run: FUZZ_RUNS=500 FUZZ_STEPS=300 pnpm vitest run test/differential.test.ts test/cpigen.test.ts test/borsh-layout.test.ts
+      - run: FUZZ_RUNS=500 FUZZ_STEPS=300 pnpm vitest run test/differential.test.ts test/cpigen.test.ts test/borsh-layout.test.ts test/client-anchor.test.ts

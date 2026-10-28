@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { writeClient } from "../src/clientgen.js";
 import { build } from "../src/compiler/index.js";
+import { svmConnection } from "../src/svmrpc.js";
 import { fundedSigner } from "./harness.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -30,88 +31,11 @@ afterAll(() => rmSync(OUT, { recursive: true, force: true }));
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
-const b64 = (bytes: Uint8Array) => getBase64Decoder().decode(bytes);
-const wireTx = (wire: string) => getTransactionDecoder().decode(getBase64Encoder().encode(wire));
-const reply = <T>(value: T) => ({ send: async () => value });
-
-/** A kit-like RPC and subscriptions object answered by LiteSVM; `known` lists the addresses getProgramAccounts scans. */
+/** typesol/testing's LiteSVM connection; `known` are extra accounts for getProgramAccounts to scan. */
 function chain(svm: LiteSVM, known: Address[]) {
-  const results: { signature: string; meta: TransactionMetadata }[] = [];
-  const encoded = (a: Address) => {
-    const acct = svm.getAccount(a);
-    if (!acct.exists) return null;
-    return {
-      data: [b64(acct.data), "base64"],
-      executable: false,
-      lamports: acct.lamports,
-      owner: acct.programAddress,
-      space: BigInt(acct.data.length),
-      rentEpoch: 0n,
-    };
-  };
-  const rpc = {
-    getLatestBlockhash: () => reply({ value: { blockhash: svm.latestBlockhash(), lastValidBlockHeight: 1_000_000n } }),
-    getEpochInfo: () => reply({ absoluteSlot: 0n, blockHeight: 0n, epoch: 0n, slotIndex: 0n, slotsInEpoch: 432_000n, transactionCount: null }),
-    getSignatureStatuses: (sigs: string[]) =>
-      reply({ value: sigs.map(() => ({ confirmationStatus: "confirmed", confirmations: null, err: null, slot: 0n, status: { Ok: null } })) }),
-    sendTransaction: (wire: string) => ({
-      send: async () => {
-        const res = svm.sendTransaction(wireTx(wire) as never);
-        svm.expireBlockhash();
-        if (res instanceof FailedTransactionMetadata) throw new Error(`failed: ${String(res.err())}\n${res.meta().logs().join("\n")}`);
-        const signature = getBase58Decoder().decode(res.signature());
-        results.push({ signature, meta: res });
-        return signature;
-      },
-    }),
-    simulateTransaction: (wire: string) => ({
-      send: async () => {
-        const res = svm.simulateTransaction(wireTx(wire) as never);
-        if (res instanceof FailedTransactionMetadata)
-          return { value: { err: String(res.err()), logs: res.meta().logs(), unitsConsumed: res.meta().computeUnitsConsumed(), returnData: null } };
-        const meta = res.meta();
-        const ret = meta.returnData();
-        return {
-          value: {
-            err: null,
-            logs: meta.logs(),
-            unitsConsumed: meta.computeUnitsConsumed(),
-            returnData: ret.data().length ? { programId: getAddressDecoder().decode(ret.programId()), data: [b64(ret.data()), "base64"] } : null,
-          },
-        };
-      },
-    }),
-    getMultipleAccounts: (addresses: Address[]) => reply({ context: { slot: 0n }, value: addresses.map(encoded) }),
-    getAccountInfo: (a: Address) => reply({ context: { slot: 0n }, value: encoded(a) }),
-    getProgramAccounts: (program: Address, config: { filters: { memcmp: { offset: bigint; bytes: string } }[] }) =>
-      reply(
-        known
-          .map((a) => ({ pubkey: a, account: encoded(a) }))
-          .filter(({ account }) => account && account.owner === program)
-          .filter(({ account }) => {
-            const data = getBase64Encoder().encode(account!.data[0] as string);
-            return config.filters.every(({ memcmp }) => {
-              const want = getBase58Encoder().encode(memcmp.bytes);
-              return want.every((b, i) => data[Number(memcmp.offset) + i] === b);
-            });
-          }),
-      ),
-  };
-  /** Notifications that end when the subscriber aborts. */
-  const stream = <T>(items: () => T[]) => ({
-    subscribe: async ({ abortSignal }: { abortSignal: AbortSignal }) =>
-      (async function* () {
-        for (const item of items()) yield item;
-        await new Promise((resolve) => abortSignal.addEventListener("abort", resolve, { once: true }));
-      })(),
-  });
-  const rpcSubscriptions = {
-    signatureNotifications: () => stream(() => [{ context: { slot: 0n }, value: { err: null } }]),
-    slotNotifications: () => stream(() => []),
-    logsNotifications: () => stream(() => results.map((r) => ({ context: { slot: 0n }, value: { signature: r.signature, logs: r.meta.logs(), err: null } }))),
-    accountNotifications: (a: Address) => stream(() => [{ context: { slot: 0n }, value: encoded(a) ?? { data: ["", "base64"], lamports: 0n } }]),
-  };
-  return { rpc: rpc as Any, rpcSubscriptions: rpcSubscriptions as Any, results };
+  const conn = svmConnection(svm);
+  conn.track(...known);
+  return { rpc: conn.rpc as Any, rpcSubscriptions: conn.rpcSubscriptions as Any, results: conn.transactions };
 }
 
 async function take<T>(gen: AsyncGenerator<T>, n: number, abort: AbortController): Promise<T[]> {
@@ -219,9 +143,10 @@ describe("generated client: runtime helpers", () => {
     const events = await take(c.watchEvents(rpcSubscriptions, { abortSignal: abort.signal }), 1, abort);
     expect(events).toEqual([{ signature: results.at(-1)!.signature, event: { name: "Added", data: { by: 3n, count: 3n } } }]);
     // With an RPC, emitCpi events too: the transaction is fetched and its inner instructions read.
-    const withRpc = { ...rpc, getTransaction: () => reply(tx) };
+    // getTransaction from the connection gives the same shape.
+    expect(c.eventsOf(await rpc.getTransaction(results.at(-1)!.signature).send())).toEqual(c.eventsOf(tx));
     const abort2 = new AbortController();
-    const all = await take(c.watchEvents(rpcSubscriptions, { abortSignal: abort2.signal, rpc: withRpc }), 2, abort2);
+    const all = await take(c.watchEvents(rpcSubscriptions, { abortSignal: abort2.signal, rpc }), 2, abort2);
     expect(all.map((e: Any) => e.event.data.by)).toEqual([3n, 4n]);
   });
 

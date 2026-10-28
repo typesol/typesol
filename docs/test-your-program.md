@@ -44,9 +44,12 @@ it("counts", async () => {
 | `t.account(type, address)` | the account decoded by its IDL type (bigints, address strings), or `null` once closed. TypeSOL fixed layouts come back as their IDL structs: a `FixedString<N>` as `{ len, bytes }`, a `FixedVec<T, N>` as `{ len, items }` (the generated client gives strings and arrays) |
 | `t.returned(instruction, res)` | the instruction's return data: an integer, boolean, Pubkey or struct |
 | `t.balance(address)` | lamports |
+| `t.connection` | `{ rpc, rpcSubscriptions }` answered by this LiteSVM, for the generated client: `counter.sendInstructions(t.connection, alice, [ix])`, `counter.accounts.Counter.fetch(t.connection.rpc, address)`, views, `resolve`, `watch` and `watchEvents` |
 
 `t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else, e.g. writing a mint straight into the VM
 with `t.svm.setAccount` (see the escrow template). `programHarness(svm, programId, idl)` gives the same helpers for a
-program you loaded yourself.
+program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
+program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
+transactions named, plus any you `track(...)`.
 
 The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.
