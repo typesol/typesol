@@ -18,6 +18,32 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   their Collection forms, for AppData, Oracle and LifecycleHook (and the Linked forms), checked against the Core program
   (Core itself answers lifecycle hooks with NotAvailable for now).
 
+### Fixed (client SDK)
+- Generated clients read only this program's events: `parseEvents` follows the invoke stack and reads a `Program data:`
+  line only while the program is the innermost one running, and `eventsOf` reads only `emitCpi` inner instructions that
+  call the program. Another program can no longer forge them.
+- `watchEvents` skips failed transactions.
+- `typesol client` refuses malformed generic arguments, array lengths that are not whole numbers and `repr` alignments
+  that are not powers of two, and caps generic instantiation (256 types, 16 levels): a ClientIdlError instead of a crash
+  or a hang. Sizing deeply nested structs no longer takes exponential time.
+- Accounts named like `Object.prototype` properties (`constructor`, `toString`, …) are read as given, not inherited.
+- `resolve.<ix>` derives a has_one source that is a PDA (a `config` PDA) before reading it, and names the account to
+  pass when a source is missing.
+- Notes and errors escape control characters from the IDL.
+- Reading an IDL from the chain caps inflation at 16 MiB, checks Anchor's IdlAccount discriminator, and refuses a
+  Program Metadata IDL that links to a URL or another account instead of following it.
+- `typesol/testing`'s `returned()` decodes string, bytes, f32 and f64 return values, and throws for types it cannot
+  decode instead of misreading them.
+
+### Changed (client SDK)
+- `eventsOf` takes the transaction with its account keys (`transaction.message.accountKeys`, as getTransaction returns
+  it); without them it reads log events only. `errorCode` / `isError` also read the RPC's JSON error
+  (`{ InstructionError: [0, { Custom: 6000 }] }`).
+- `svmConnection`: `accountNotifications` yields after each later transaction that names the account (no snapshot of
+  it as it is), `logsNotifications` honors `{ mentions }` and includes failed transactions (with `err`), simulation
+  errors are in the RPC's JSON shape, and `getTransaction` returns the account keys and each inner instruction's
+  program index.
+
 ## 0.23.0 — 2026-10-28
 
 Language limits lifted: `map` and `filter`, any number of growable Vecs per account, closures and arrow functions as

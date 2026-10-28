@@ -1,13 +1,16 @@
 // The client generator against hostile and unusual IDLs (src/clientgen.ts): shapes it must refuse with a
 // ClientIdlError rather than crash or hang on, notes that are safe to print, account names that are also
-// Object.prototype properties, and resolve filling in has_one accounts read from a PDA the builder derives.
+// Object.prototype properties, and resolve filling in has_one accounts read from a PDA the builder derives. Also
+// typesol/testing's returned() on the return types it decodes by hand.
 import { type Address, generateKeyPairSigner, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
+import { LiteSVM } from "litesvm";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 import { ClientIdlError, generateClient, type ClientIdl } from "../src/clientgen.js";
+import { programHarness } from "../src/testing.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 mkdirSync(path.join(ROOT, "target"), { recursive: true });
@@ -315,5 +318,29 @@ describe("client generator: generated code", () => {
     expect(c.errorCode({ InstructionError: [2, { Custom: 6000n }] })).toBe(6000);
     expect(c.isError(new Error("failed", { cause: { InstructionError: [0, { Custom: 6000 }] } }), "Nope")).toBe(true);
     expect(c.errorCode({ InstructionError: [0, "InvalidArgument"] })).toBeNull();
+  });
+});
+
+describe("typesol/testing: returned()", () => {
+  it("decodes string, bytes and float return values, and refuses what it cannot decode", () => {
+    const returns = ["string", "bytes", "f32", "f64", "i16", "u128", { vec: "u8" }];
+    const t = programHarness(new LiteSVM(), PROGRAM, {
+      ...idl({}),
+      instructions: returns.map((r, i) => ({ name: `r${i}`, discriminator: [i], accounts: [], args: [], returns: r })),
+    } as never);
+    const result = (bytes: number[]) => ({ returnData: () => ({ data: () => new Uint8Array(bytes) }) }) as never;
+    const f32 = Buffer.alloc(4);
+    f32.writeFloatLE(1.5);
+    const f64 = Buffer.alloc(8);
+    f64.writeDoubleLE(-2.25);
+    expect(t.returned("r0", result([4, 0, 0, 0, ...Buffer.from("héy")]))).toBe("héy");
+    expect(t.returned("r1", result([2, 0, 0, 0, 9, 8]))).toEqual(new Uint8Array([9, 8]));
+    expect(t.returned("r2", result([...f32]))).toBe(1.5);
+    expect(t.returned("r3", result([...f64]))).toBe(-2.25);
+    expect(t.returned("r4", result([0xfe, 0xff]))).toBe(-2);
+    expect(t.returned("r5", result([1, ...new Array(15).fill(0)]))).toBe(1n);
+    expect(() => t.returned("r0", result([9, 0, 0, 0, 1]))).toThrow(/returned 5 bytes; a string needs 13/);
+    expect(() => t.returned("r3", result([1, 2]))).toThrow(/a f64 needs 8/);
+    expect(() => t.returned("r6", result([0]))).toThrow(/decode r6's return data yourself/);
   });
 });

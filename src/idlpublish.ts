@@ -5,8 +5,19 @@
  *
  * Works against an RPC (`rpcChain`) or anything else that can read accounts and send transactions (tests use LiteSVM).
  */
-import { inflateSync } from "node:zlib";
-import { Compression, Encoding, Format, fetchMetadataContent, findMetadataPda, packDirectData, writeMetadata } from "@solana-program/program-metadata";
+import { createHash } from "node:crypto";
+import { gunzipSync, inflateSync } from "node:zlib";
+import {
+  Compression,
+  DataSource,
+  Encoding,
+  Format,
+  decodeData,
+  fetchMaybeMetadata,
+  findMetadataPda,
+  packDirectData,
+  writeMetadata,
+} from "@solana-program/program-metadata";
 import {
   type Address,
   type Base64EncodedWireTransaction,
@@ -157,9 +168,45 @@ export async function metadataAddress(program: Address, authority: Address | nul
   return (await findMetadataPda({ program, authority, seed: "idl" }))[0];
 }
 
-/** Read an IDL back (canonical, or the one `authority` wrote). */
+/** The most an IDL read from the chain may inflate to: compressed data can expand far past the account's size. */
+export const MAX_IDL_BYTES = 16 * 1024 * 1024;
+
+/** Decompress `data` (zlib or gzip), refusing output past MAX_IDL_BYTES. */
+function inflateCapped(data: Uint8Array, gzip: boolean, what: string): Buffer {
+  try {
+    return (gzip ? gunzipSync : inflateSync)(data, { maxOutputLength: MAX_IDL_BYTES });
+  } catch (e) {
+    if ((e as { code?: string }).code === "ERR_BUFFER_TOO_LARGE" || e instanceof RangeError)
+      throw new Error(`${what} inflates to more than ${MAX_IDL_BYTES / 1024 / 1024} MiB; refusing it`);
+    throw new Error(`${what} is not valid compressed data: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Read an IDL back (canonical, or the one `authority` wrote). Only an IDL stored in the metadata account itself is
+ * read: one that links to a URL or points at another account is refused (nothing is fetched from where it points).
+ */
 export async function fetchIdl(rpc: Chain["rpc"], program: Address, authority: Address | null = null): Promise<object> {
-  return JSON.parse(await fetchMetadataContent(rpc as never, program, "idl", authority));
+  const at = await metadataAddress(program, authority);
+  const account = await fetchMaybeMetadata(rpc as never, at);
+  if (!account.exists) throw new Error(`no IDL metadata account at ${at}`);
+  const m = account.data;
+  if (m.dataLength > m.data.length) throw new Error(`the IDL metadata at ${at} is truncated`);
+  const content = (what: string) => {
+    const raw = new Uint8Array(m.data.subarray(0, m.dataLength));
+    const bytes = m.compression === Compression.None ? raw : inflateCapped(raw, m.compression === Compression.Gzip, what);
+    // Base58 decodes in quadratic time: only small contents.
+    if (m.encoding === Encoding.Base58 && bytes.length > 64 * 1024) throw new Error(`${what} is too large for base58`);
+    return decodeData(bytes, m.encoding);
+  };
+  if (m.dataSource === DataSource.Url) {
+    const url = content(`the IDL link at ${at}`);
+    throw new Error(
+      `the IDL at ${at} is not stored on chain but linked: ${JSON.stringify(url.slice(0, 200))}. Fetch it yourself and pass the file (typesol client <idl.json>)`,
+    );
+  }
+  if (m.dataSource !== DataSource.Direct) throw new Error(`the IDL at ${at} is stored in another account (external data), which is not read`);
+  return JSON.parse(content(`the IDL at ${at}`)) as object;
 }
 
 /** Where `anchor idl init` keeps a program's IDL: an account derived with seed "anchor:idl" from the program's base PDA. */
@@ -168,6 +215,9 @@ export async function anchorIdlAddress(program: Address): Promise<Address> {
   return createAddressWithSeed({ baseAddress: base, programAddress: program, seed: "anchor:idl" });
 }
 
+/** Anchor's account discriminator for IdlAccount: sha256("account:IdlAccount")[0..8]. */
+const IDL_ACCOUNT_DISCRIMINATOR = createHash("sha256").update("account:IdlAccount").digest().subarray(0, 8);
+
 /** The IDL in Anchor's IDL account (`anchor idl init`), or null when the program has none. */
 export async function fetchAnchorIdl(rpc: Chain["rpc"], program: Address): Promise<object | null> {
   const { value } = await rpc.getAccountInfo(await anchorIdlAddress(program), { encoding: "base64" }).send();
@@ -175,9 +225,10 @@ export async function fetchAnchorIdl(rpc: Chain["rpc"], program: Address): Promi
   const data = Buffer.from(value.data[0], "base64");
   // IdlAccount: 8-byte discriminator, authority (32 bytes), a u32 length, then the zlib-compressed JSON.
   if (data.length < 44) throw new Error("Anchor IDL account is too short");
+  if (!data.subarray(0, 8).equals(IDL_ACCOUNT_DISCRIMINATOR)) throw new Error("the account at Anchor's IDL address is not an IdlAccount");
   const len = data.readUInt32LE(40);
   if (44 + len > data.length) throw new Error("Anchor IDL account is truncated");
-  return JSON.parse(inflateSync(data.subarray(44, 44 + len)).toString("utf8")) as object;
+  return JSON.parse(inflateCapped(data.subarray(44, 44 + len), false, "the Anchor IDL").toString("utf8")) as object;
 }
 
 /**
