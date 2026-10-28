@@ -43,11 +43,14 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `realloc = n, realloc::payer = p` | `realloc(acct, n, p)` |
 | `Option<Account<'info, T>>` | `Mut<T> \| null` (the client passes the program id to leave it out) |
 | `UncheckedAccount` / `AccountInfo` | `AccountInfo` / `Mut<AccountInfo>`: check what you rely on yourself |
+| `SystemAccount<'info>` | `SystemAccount` / `Mut<SystemAccount>` |
 | `AccountLoader<T>` with `#[account(zero)]` | `Zeroed<T>` (TypeSOL reads every account in place: no copy to avoid) |
 | `Program<'info, System>` | `SystemProgram` |
 | `Program<'info, Token>` / `Token2022` / `Interface<'info, TokenInterface>` | `TokenProgram` / `Token2022Program` / `TokenInterface` |
 | `Account<'info, TokenAccount>` / `Account<'info, Mint>` (`InterfaceAccount`) | `TokenAccount` / `Mint` (`Mut<…>` when written) |
 | `token::mint = m, token::authority = a` | `HasOne<TokenAccount, "mint" \| "owner">` against parameters with those names |
+| `#[account(init, payer = p, seeds = […], bump, mint::decimals = 6, mint::authority = a, mint::freeze_authority = f)]` | `Init<Mint>`, then `const bump = mint.create(p, […], 6n, a.key, f.key)` (`null` seeds: a keypair mint; `InitIfNeeded<Mint>` + `createIfNeeded`) |
+| `#[account(init, payer = p, seeds = […], bump, token::mint = m, token::authority = a)]` | `Init<TokenAccount>`, then `vault.create(p, […], m, a.key)` (`InitIfNeeded<TokenAccount>` + `createIfNeeded`) |
 | `associated_token::mint = m, associated_token::authority = a` | `Ata<TokenAccount, "a", "m">`; `Ata<Init<TokenAccount>, "a", "m">` creates it |
 | `ctx.remaining_accounts` | `remainingAccounts()` |
 | `ctx.bumps.vault` | the value `create` returns, or `acct.pdaBump` |

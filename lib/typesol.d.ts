@@ -421,6 +421,11 @@ export interface Signer extends AccountMeta {
   readonly __signer: void;
 }
 
+/** An account owned by the System Program, e.g. a wallet (Anchor `SystemAccount`; 3011 otherwise). `Mut<SystemAccount>` to change lamports. */
+export interface SystemAccount extends AccountMeta {
+  readonly __systemAccount?: void;
+}
+
 /** Any account, no ownership or data checks. Wrap in `Mut<AccountInfo>` to change lamports. */
 export interface AccountInfo extends AccountMeta {
   readonly __info: void;
@@ -460,13 +465,25 @@ export type InitIfNeeded<T> = T extends TokenAccount
        * An existing account must be that ATA, of that mint and owner.
        */
       createIfNeeded(payer: Mut<Signer>): boolean;
+      /**
+       * Anchor `init_if_needed` + `token::…`: create it as `create(payer, seeds, mint, authority)` does unless it exists;
+       * an existing one must be that PDA, a token account of `mint` owned by `authority`. True when it created it now.
+       */
+      createIfNeeded(payer: Mut<Signer>, seeds: Seed[] | null, mint: AccountMeta, authority: Pubkey): boolean;
+      readonly pdaBump: u8;
     }
-  : T &
-      AccountMeta & {
-        createIfNeeded(payer: Mut<Signer>, seeds: Seed[]): boolean;
-        /** The PDA bump, after createIfNeeded(). */
+  : T extends Mint
+    ? T & {
+        /** Anchor `init_if_needed` + `mint::…`: an existing mint must have these decimals and authorities. */
+        createIfNeeded(payer: Mut<Signer>, seeds: Seed[] | null, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): boolean;
         readonly pdaBump: u8;
-      };
+      }
+    : T &
+        AccountMeta & {
+          createIfNeeded(payer: Mut<Signer>, seeds: Seed[]): boolean;
+          /** The PDA bump, after createIfNeeded(). */
+          readonly pdaBump: u8;
+        };
 
 /**
  * Declarative constraints, checked before your code runs (like Anchor's account attributes):
@@ -819,17 +836,35 @@ export type Init<T> = T extends TokenAccount
        * account of those parameters, with `payer` funding rent. Fails if it already exists.
        */
       create(payer: Mut<Signer>): void;
+      /**
+       * Anchor `init` + `token::mint` / `token::authority`: create a token account of `mint` owned by `authority`, at the
+       * PDA of `seeds` (or, with `null`, a new keypair account that signs), under the instruction's token program, with
+       * `payer` funding rent. Returns the bump (0 for a keypair).
+       */
+      create(payer: Mut<Signer>, seeds: Seed[] | null, mint: AccountMeta, authority: Pubkey): u8;
+      /** The PDA bump, after create(seeds, …). */
+      readonly pdaBump: u8;
     }
-  : T &
-      AccountMeta & {
+  : T extends Mint
+    ? T & {
         /**
-         * Derive the PDA from `seeds`, verify it matches this account, create it with
-         * `payer` funding rent, and write the discriminator. Returns the bump.
+         * Anchor `init` + `mint::decimals` / `mint::authority` / `mint::freeze_authority`: create a mint at the PDA of
+         * `seeds` (or, with `null`, a new keypair account that signs) under the instruction's token program, with `payer`
+         * funding rent. Returns the bump (0 for a keypair).
          */
-        create(payer: Mut<Signer>, seeds: Seed[]): u8;
-        /** The PDA bump, after create(). */
+        create(payer: Mut<Signer>, seeds: Seed[] | null, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): u8;
         readonly pdaBump: u8;
-      };
+      }
+    : T &
+        AccountMeta & {
+          /**
+           * Derive the PDA from `seeds`, verify it matches this account, create it with
+           * `payer` funding rent, and write the discriminator. Returns the bump.
+           */
+          create(payer: Mut<Signer>, seeds: Seed[]): u8;
+          /** The PDA bump, after create(). */
+          readonly pdaBump: u8;
+        };
 
 /**
  * A large account (over 10 KiB, up to 10 MiB) the client already allocated with System CreateAccount,

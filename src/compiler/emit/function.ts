@@ -57,7 +57,12 @@ export class FunctionEmitter extends StatementEmitter {
         );
       // A token account created by this instruction is checked where it is created (create/createIfNeeded).
       if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
-      if (k.kind === "mint") head.push(`  TS_TRY(ts_check_mint(${v}));`);
+      // A mint created by this instruction is checked where it is created.
+      if (k.kind === "mint" && !k.init) head.push(`  TS_TRY(ts_check_mint(${v}));`);
+      if (k.kind === "info" && k.systemOwned)
+        head.push(
+          `  if (!ts_key_eq(&${v}->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_SYSTEM_OWNED, "TypeSOL: ${a.name} must be owned by the System Program");`,
+        );
       if (k.kind === "system") head.push(`  TS_TRY(ts_check_address(${v}, &TS_SYSTEM_PROGRAM_ID));`);
       if (k.kind === "instructionsSysvar") head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
       if (k.kind === "eventAuthority") head.push(`  uint8_t eb_${a.name};`, `  TS_TRY(ts_check_event_authority(${v}, params->program_id, &eb_${a.name}));`);
@@ -268,7 +273,15 @@ export class FunctionEmitter extends StatementEmitter {
     for (const stmt of ix.node.body!.statements) this.reporter.guard(() => this.statement(stmt, true));
     for (const name of this.pendingInit) {
       const k = this.accounts.get(name)!.kind;
-      const how = k.kind === "token" ? `${name}.${k.init === "create" ? "create" : "createIfNeeded"}(payer)` : `${name}.create(payer, seeds)`;
+      const a = this.accounts.get(name)!;
+      const how =
+        k.kind === "token" && a.constraints.ata
+          ? `${name}.${k.init === "create" ? "create" : "createIfNeeded"}(payer)`
+          : k.kind === "token"
+            ? `${name}.${k.init === "create" ? "create" : "createIfNeeded"}(payer, seeds | null, mint, authority)`
+            : k.kind === "mint"
+              ? `${name}.${k.init === "create" ? "create" : "createIfNeeded"}(payer, seeds | null, decimals, authority, freezeAuthority | null)`
+              : `${name}.create(payer, seeds)`;
       this.reporter.error(this.accounts.get(name)!.node, `Init account "${name}" is never created; call ${how}`);
     }
 

@@ -5,6 +5,16 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `Init<Mint>` / `InitIfNeeded<Mint>` with `mint.create(payer, seeds | null, decimals, mintAuthority, freezeAuthority)`
+  and `Init<TokenAccount>` / `InitIfNeeded<TokenAccount>` (without `Ata<…>`) with `vault.create(payer, seeds | null,
+  mint, authority)`: Anchor's `init` with `mint::` / `token::` constraints, at a PDA of this program or (with `null`) a
+  new keypair account that signs, under SPL Token or Token-2022 (token accounts sized with GetAccountDataSize). The
+  `createIfNeeded` forms check an existing account like Anchor's `init_if_needed` (2014 / 2015 / 2016 / 2017 and the
+  new 2018 ConstraintMintDecimals). The IDL marks keypair-created accounts as signers.
+- `SystemAccount` / `Mut<SystemAccount>`: Anchor's `SystemAccount`, refused with 3011 (AccountNotSystemOwned) when
+  another program owns it.
+
 ## 0.17.0 — 2026-10-28
 
 Anchor's account bytes on request (`@layout borsh`, so a TypeSOL program can take over an Anchor program's accounts

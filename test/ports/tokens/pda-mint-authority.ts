@@ -19,9 +19,7 @@ import {
   type SystemProgram,
   type TokenMetadataProgram,
   type TokenProgram,
-  MINT_SIZE,
   log,
-  rentExempt,
   require,
   u64,
 } from "typesol";
@@ -36,7 +34,7 @@ export enum TokenMinterError {
 
 export function createToken(
   payer: Mut<Signer>,
-  mintAccount: Seeds<Mut<AccountInfo>, ["mint"]>,
+  mintAccount: Init<Mint>,
   metadataAccount: Seeds<Mut<AccountInfo>, ["metadata", "@tokenMetadataProgram", "@mintAccount"], never, "@tokenMetadataProgram">,
   mintConfig: Init<MintConfig>,
   tokenProgram: TokenProgram,
@@ -48,13 +46,12 @@ export function createToken(
   tokenUri: string,
 ): void {
   // `init, seeds = [b"mint"], mint::decimals = 9, mint::authority = mint_account, mint::freeze_authority = mint_account`
-  systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key, ["mint", mintAccount.pdaBump]);
-  tokenProgram.initializeMint2(mintAccount, 9n, mintAccount.key, mintAccount.key);
+  const mintBump = mintAccount.create(payer, ["mint"], 9n, mintAccount.key, mintAccount.key);
   mintConfig.create(payer, ["mint_config"]);
   log("Creating metadata account");
   tokenMetadataProgram.createV3(metadataAccount, mintAccount, mintAccount, payer, mintAccount, systemProgram, tokenName, tokenSymbol, tokenUri, 0n, false, [
     "mint",
-    mintAccount.pdaBump,
+    mintBump,
   ]);
   mintConfig.admin = payer.key;
   log("Token created successfully.");

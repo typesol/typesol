@@ -68,7 +68,8 @@ export abstract class EmitterBase {
       this.ix = target;
       for (const a of target.accounts) {
         this.accounts.set(a.name, a);
-        if (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || (a.kind.kind === "token" && a.kind.init)) this.pendingInit.add(a.name);
+        if (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || ((a.kind.kind === "token" || a.kind.kind === "mint") && a.kind.init))
+          this.pendingInit.add(a.name);
       }
       for (const a of target.args)
         this.args.set(
@@ -245,7 +246,7 @@ export abstract class EmitterBase {
         ? "create"
         : a.kind.kind === "initIfNeeded"
           ? "createIfNeeded"
-          : a.kind.kind === "token" && a.kind.init
+          : (a.kind.kind === "token" || a.kind.kind === "mint") && a.kind.init
             ? a.kind.init === "create"
               ? "create"
               : "createIfNeeded"
@@ -265,6 +266,7 @@ export abstract class EmitterBase {
   protected abstract recordPda(account: AccountParam, idl: IdlSeed[] | undefined): void;
   protected abstract create(node: ts.CallExpression, target: AccountParam, topLevel: boolean, ifNeeded?: boolean): Value;
   protected abstract createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined;
+  protected abstract createToken(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value;
   protected abstract systemTransfer(node: ts.CallExpression): undefined;
   protected abstract createAccount(node: ts.CallExpression, system: AccountParam): undefined;
   protected abstract tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;

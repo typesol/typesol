@@ -30,6 +30,7 @@
 #define TS_ERR_TOKEN_OWNER 2015            /* ConstraintTokenOwner */
 #define TS_ERR_MINT_AUTHORITY 2016         /* ConstraintMintMintAuthority */
 #define TS_ERR_FREEZE_AUTHORITY 2017       /* ConstraintMintFreezeAuthority */
+#define TS_ERR_MINT_DECIMALS 2018          /* ConstraintMintDecimals */
 #define TS_ERR_DUPLICATE_MUT 2040          /* ConstraintDuplicateMutableAccount */
 #define TS_ERR_ALREADY_INITIALIZED 3000    /* AccountDiscriminatorAlreadySet */
 #define TS_ERR_DISCRIMINATOR 3002          /* AccountDiscriminatorMismatch */
@@ -42,6 +43,7 @@
 #define TS_ERR_WRONG_PROGRAM 3008          /* InvalidProgramId */
 #define TS_ERR_NOT_EXECUTABLE 3009         /* InvalidProgramExecutable */
 #define TS_ERR_NOT_SIGNER 3010             /* AccountNotSigner */
+#define TS_ERR_NOT_SYSTEM_OWNED 3011       /* AccountNotSystemOwned */
 #define TS_ERR_NOT_INITIALIZED 3012        /* AccountNotInitialized */
 #define TS_ERR_REALLOC 3016                /* AccountReallocExceedsLimit */
 #define TS_ERR_CAST 4102                   /* InvalidNumericConversion */
@@ -631,6 +633,129 @@ static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccou
   acct->data_len = space;
   ts_memcpy(acct->data, disc, 8);
   *bump_out = bump;
+  return SUCCESS;
+}
+
+/*
+ * Create `acct` with `space` bytes owned by `owner` (a token program), funded by `payer`: a PDA of this program when
+ * `n` > 0 (seeds without the bump; a pre-funded address is topped up, allocated and assigned), otherwise a new keypair
+ * account that signed the transaction. Writes the bump (0 for a keypair).
+ */
+static inline uint64_t ts_create_owned(TsParams *params, TsAccount *payer, TsAccount *acct, SolSignerSeed *seeds, int n,
+                                       const SolPubkey *owner, uint64_t space, uint8_t *bump_out) {
+  uint8_t bump = 0;
+  if (n > 0) {
+    SolPubkey derived;
+    if (ts_find_pda(seeds, n, params->program_id, &derived, &bump) != SUCCESS || !ts_key_eq(&derived, &acct->key))
+      TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
+    seeds[n].addr = &bump;
+    seeds[n].len = 1;
+  } else if (!acct->is_signer) {
+    TS_FAIL(TS_ERR_NOT_SIGNER, "TypeSOL: a new keypair account must sign");
+  }
+  if (acct->data_len != 0 || !ts_key_eq(&acct->owner, &TS_SYSTEM_PROGRAM_ID))
+    TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already exists");
+  uint64_t lamports;
+  TS_TRY(ts_minimum_balance(space, &lamports));
+  SolSignerSeeds signer = {seeds, (uint64_t)(n + 1)};
+  SolSignerSeeds *signers = n > 0 ? &signer : NULL;
+  int nsigners = n > 0 ? 1 : 0;
+  if (acct->lamports == 0) {
+    uint8_t data[52];
+    uint32_t tag = 0; /* CreateAccount */
+    ts_memcpy(data, &tag, 4);
+    ts_memcpy(data + 4, &lamports, 8);
+    ts_memcpy(data + 12, &space, 8);
+    ts_memcpy(data + 20, owner, 32);
+    SolAccountMeta metas[2] = {{&payer->key, true, true}, {&acct->key, true, true}};
+    SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
+    TS_TRY(ts_invoke(params, &ix, signers, nsigners));
+  } else {
+    if (acct->lamports < lamports) TS_TRY(ts_system_transfer(params, payer, acct, lamports - acct->lamports));
+    uint8_t alloc[12];
+    uint32_t alloc_tag = 8; /* Allocate */
+    ts_memcpy(alloc, &alloc_tag, 4);
+    ts_memcpy(alloc + 4, &space, 8);
+    SolAccountMeta one[1] = {{&acct->key, true, true}};
+    SolInstruction alloc_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, alloc, sizeof(alloc)};
+    TS_TRY(ts_invoke(params, &alloc_ix, signers, nsigners));
+    uint8_t assign[36];
+    uint32_t assign_tag = 1; /* Assign */
+    ts_memcpy(assign, &assign_tag, 4);
+    ts_memcpy(assign + 4, owner, 32);
+    SolInstruction assign_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, assign, sizeof(assign)};
+    TS_TRY(ts_invoke(params, &assign_ix, signers, nsigners));
+  }
+  *bump_out = bump;
+  return SUCCESS;
+}
+
+/* InitializeMint2: decimals, mint authority, optional freeze authority. */
+static inline uint64_t ts_token_init_mint(TsParams *params, TsAccount *tp, TsAccount *mint, uint8_t decimals,
+                                          const SolPubkey *authority, const SolPubkey *freeze) {
+  uint8_t data[67];
+  data[0] = 20;
+  data[1] = decimals;
+  ts_memcpy(data + 2, authority, 32);
+  data[34] = freeze ? 1 : 0;
+  if (freeze) ts_memcpy(data + 35, freeze, 32);
+  SolAccountMeta metas[1] = {{&mint->key, true, false}};
+  SolInstruction ix = {(SolPubkey *)&tp->key, metas, 1, data, freeze ? 67 : 35};
+  return ts_invoke(params, &ix, NULL, 0);
+}
+
+/* Bytes a token account of `mint` needs: 165 under SPL Token, Token-2022's GetAccountDataSize answer otherwise
+   (a mint's extensions can add account extensions). */
+static inline uint64_t ts_token_account_space(TsParams *params, TsAccount *tp, TsAccount *mint, uint64_t *space) {
+  if (ts_key_eq(&tp->key, &TS_TOKEN_PROGRAM_ID)) {
+    *space = TS_TOKEN_ACCOUNT_LEN;
+    return SUCCESS;
+  }
+  uint8_t data[1] = {21}; /* GetAccountDataSize */
+  SolAccountMeta metas[1] = {{&mint->key, false, false}};
+  SolInstruction ix = {(SolPubkey *)&tp->key, metas, 1, data, 1};
+  TS_TRY(ts_invoke(params, &ix, NULL, 0));
+  SolPubkey from;
+  uint64_t size = 0;
+  if (sol_get_return_data((uint8_t *)&size, 8, &from) != 8 || !ts_key_eq(&from, &tp->key))
+    TS_FAIL(TS_ERR_TOKEN_ACCOUNT, "TypeSOL: the token program did not report an account size");
+  *space = size;
+  return SUCCESS;
+}
+
+/* InitializeAccount3: `acct` holds `mint` tokens for `owner`. */
+static inline uint64_t ts_token_init_account(TsParams *params, TsAccount *tp, TsAccount *acct, TsAccount *mint, const SolPubkey *owner) {
+  uint8_t data[33];
+  data[0] = 18;
+  ts_memcpy(data + 1, owner, 32);
+  SolAccountMeta metas[2] = {{&acct->key, true, false}, {&mint->key, false, false}};
+  SolInstruction ix = {(SolPubkey *)&tp->key, metas, 2, data, sizeof(data)};
+  return ts_invoke(params, &ix, NULL, 0);
+}
+
+/* An existing account `init_if_needed` found: the PDA it must be (when seeds are given) and owned by token program `tp`. */
+static inline uint64_t ts_token_existing(TsParams *params, TsAccount *acct, TsAccount *tp, SolSignerSeed *seeds, int n,
+                                         uint8_t *bump_out) {
+  *bump_out = 0;
+  if (n > 0) {
+    SolPubkey derived;
+    if (ts_find_pda(seeds, n, params->program_id, &derived, bump_out) != SUCCESS || !ts_key_eq(&derived, &acct->key))
+      TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
+  }
+  if (!ts_key_eq(&acct->owner, &tp->key)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by the token program");
+  return SUCCESS;
+}
+
+/* An existing mint must have these decimals and authorities (Anchor's mint:: constraints on init_if_needed). */
+static inline uint64_t ts_check_mint_is(const TsAccount *mint, uint8_t decimals, const SolPubkey *authority, const SolPubkey *freeze) {
+  const uint8_t *d = mint->data;
+  uint32_t tag;
+  ts_memcpy(&tag, d, 4);
+  if (tag != 1 || !ts_key_eq((const SolPubkey *)(d + 4), authority)) TS_FAIL(TS_ERR_MINT_AUTHORITY, "TypeSOL: mint authority does not match");
+  ts_memcpy(&tag, d + 46, 4);
+  if (freeze ? (tag != 1 || !ts_key_eq((const SolPubkey *)(d + 50), freeze)) : tag != 0)
+    TS_FAIL(TS_ERR_FREEZE_AUTHORITY, "TypeSOL: freeze authority does not match");
+  if (d[44] != decimals) TS_FAIL(TS_ERR_MINT_DECIMALS, "TypeSOL: mint decimals do not match");
   return SUCCESS;
 }
 
