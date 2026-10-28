@@ -708,7 +708,7 @@ export function analyze(entry: string): Analysis {
       dataEnums,
       options,
       constants,
-      events: new Set(),
+      events: collectEvents([...functions, ...helperNodes], structs),
       accountStructs,
       argStructs,
       fstrings,
@@ -1156,6 +1156,27 @@ function fnParamType(arrow: ts.Expression, checker: ts.TypeChecker): { type: ts.
     if (fn && t && ts.isFunctionTypeNode(t)) return { type: t, owner: fn };
   }
   return undefined;
+}
+
+/**
+ * The structs a program emits (`emit<T>(…)` / `emitCpi<T>(…)` anywhere in its functions and helpers), known before
+ * any code is emitted, so the IDL and the event checks do not depend on the order code is emitted in.
+ */
+function collectEvents(sources: { node: ts.Node; imports: Map<string, string> }[], structs: Map<string, StructDef>): Set<string> {
+  const events = new Set<string>();
+  for (const { node, imports } of sources) {
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+        const name = imports.get(n.expression.text);
+        const t = n.typeArguments?.[0];
+        if ((name === "emit" || name === "emitCpi") && t && ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) && structs.has(t.typeName.text))
+          events.add(t.typeName.text);
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(node);
+  }
+  return events;
 }
 
 /** Whether a function returns a function: typed so, or its body is (or only returns) an arrow. */

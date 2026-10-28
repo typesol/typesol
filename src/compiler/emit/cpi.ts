@@ -1765,188 +1765,193 @@ export abstract class CpiEmitter extends CallEmitter {
     return [{ bytes: [1, els.length & 0xff, 0, 0, 0] }, ...els.flatMap((e) => this.corePlugin(e, true))];
   }
 
-  /** Metaplex Core: assets and collections (with plugins), plugins added, updated and removed, transfer and burn. */
+  /**
+   * Metaplex Core: assets and collections (with plugins), plugins and external plugin adapters added, updated, written
+   * and removed, transfer and burn. Each method is a row of CORE_OPS below: its accounts in order, its data.
+   */
   protected coreOp(node: ts.CallExpression, core: AccountParam, method: string): undefined {
     const a = node.arguments;
     const p = `a_${core.name}`;
-    const seedsAt = (i: number) => (a[i] ? this.signingSeeds(a[i]) : { name: "NULL", count: 0 });
-    const str = (n: ts.Expression) => ({ value: n, type: STRING });
-    // An array literal of object literals after the uri is the plugin list; the signer seeds come after it.
+    const op = this.coreOps()[method];
+    if (!op)
+      this.fail(
+        node.expression,
+        `Metaplex Core supports createAsset, createCollection, addPlugin, updatePlugin, removePlugin, addExternalPlugin, removeExternalPlugin, writeExternalPluginData (and the Collection forms), transferAsset and burnAsset, not ${method}`,
+      );
+    // An array literal of object literals right after the fixed arguments is the plugin list; the signer seeds follow.
     const isPlugins = (n: ts.Expression | undefined) =>
       !!n && ts.isArrayLiteralExpression(n) && (n.elements.length === 0 || n.elements.every((e) => ts.isObjectLiteralExpression(e)));
-    const self: [string, boolean, boolean] = [p, false, false];
-    switch (method) {
-      case "createAsset": {
-        // CreateV1: asset, collection, authority, payer, owner, updateAuthority, systemProgram, logWrapper.
-        const plugins = isPlugins(a[8]) ? a[8] : undefined;
-        if (a.length < 8 || a.length > (plugins ? 10 : 9))
-          this.fail(node, "createAsset(asset, collection | null, authority | null, payer, owner | null, systemProgram, name, uri, plugins?, signerSeeds?)");
-        const metas = [
-          this.mplMeta(a[0], core, "the asset", true, true),
-          this.mplMeta(a[1], core, "the collection", true, false),
-          this.mplMeta(a[2], core, "the collection authority", false, true),
-          this.mplMeta(a[3], core, "the payer", true, true),
-          this.mplMeta(a[4], core, "the owner", false, false),
-          [p, false, false] as [string, boolean, boolean], // update authority: the collection's, or the payer by default
-          this.mplMeta(a[5], core, "the system program", false, false),
-          [p, false, false] as [string, boolean, boolean],
-        ];
-        const data = this.mplData(node, 2048, [{ bytes: [0, 0] }, str(a[6]), str(a[7]), ...this.corePluginList(plugins)]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(plugins ? 9 : 8));
-        return undefined;
-      }
-      case "createCollection": {
-        // CreateCollectionV1: collection, updateAuthority, payer, systemProgram.
-        const plugins = isPlugins(a[6]) ? a[6] : undefined;
-        if (a.length < 6 || a.length > (plugins ? 8 : 7))
-          this.fail(node, "createCollection(collection, updateAuthority | null, payer, systemProgram, name, uri, plugins?, signerSeeds?)");
-        const metas = [
-          this.mplMeta(a[0], core, "the collection", true, true),
-          this.mplMeta(a[1], core, "the update authority", false, false),
-          this.mplMeta(a[2], core, "the payer", true, true),
-          this.mplMeta(a[3], core, "the system program", false, false),
-        ];
-        const data = this.mplData(node, 2048, [{ bytes: [1] }, str(a[4]), str(a[5]), ...this.corePluginList(plugins)]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(plugins ? 7 : 6));
-        return undefined;
-      }
-      case "addPlugin":
-      case "updatePlugin":
-      case "removePlugin": {
-        // Add/Remove/UpdatePluginV1: asset, collection, payer, authority, systemProgram, logWrapper.
-        const last = method === "removePlugin" ? "kind" : "plugin";
-        if (a.length !== 6 && a.length !== 7)
-          this.fail(node, `${method}(asset, collection | null, payer, authority | null, systemProgram, ${last}, signerSeeds?)`);
-        const metas = [
-          this.mplMeta(a[0], core, "the asset", true, false),
-          this.mplMeta(a[1], core, "the collection", true, false),
-          this.mplMeta(a[2], core, "the payer", true, true),
-          this.mplMeta(a[3], core, "the authority", false, true),
-          this.mplMeta(a[4], core, "the system program", false, false),
-          self,
-        ];
-        const body = method === "removePlugin" ? [this.corePluginType(a[5])] : this.corePlugin(a[5], method === "addPlugin");
-        const data = this.mplData(node, 2048, [{ bytes: [{ addPlugin: 2, removePlugin: 4, updatePlugin: 6 }[method]] }, ...body]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(6));
-        return undefined;
-      }
-      case "addCollectionPlugin":
-      case "updateCollectionPlugin":
-      case "removeCollectionPlugin": {
-        // Add/Remove/UpdateCollectionPluginV1: collection, payer, authority, systemProgram, logWrapper.
-        const last = method === "removeCollectionPlugin" ? "kind" : "plugin";
-        if (a.length !== 5 && a.length !== 6) this.fail(node, `${method}(collection, payer, authority | null, systemProgram, ${last}, signerSeeds?)`);
-        const metas = [
-          this.mplMeta(a[0], core, "the collection", true, false),
-          this.mplMeta(a[1], core, "the payer", true, true),
-          this.mplMeta(a[2], core, "the authority", false, true),
-          this.mplMeta(a[3], core, "the system program", false, false),
-          self,
-        ];
-        const body = method === "removeCollectionPlugin" ? [this.corePluginType(a[4])] : this.corePlugin(a[4], method === "addCollectionPlugin");
-        const data = this.mplData(node, 2048, [{ bytes: [{ addCollectionPlugin: 3, removeCollectionPlugin: 5, updateCollectionPlugin: 7 }[method]] }, ...body]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(5));
-        return undefined;
-      }
-      case "transferAsset": {
-        // TransferV1: asset, collection, payer, authority, newOwner, systemProgram, logWrapper.
-        if (a.length !== 5 && a.length !== 6) this.fail(node, "transferAsset(asset, collection | null, payer, authority | null, newOwner, signerSeeds?)");
-        const metas = [
-          this.mplMeta(a[0], core, "the asset", true, false),
-          this.mplMeta(a[1], core, "the collection", false, false),
-          this.mplMeta(a[2], core, "the payer", true, true),
-          this.mplMeta(a[3], core, "the authority", false, true),
-          this.mplMeta(a[4], core, "the new owner", false, false),
-          [p, false, false] as [string, boolean, boolean],
-          [p, false, false] as [string, boolean, boolean],
-        ];
-        const data = this.mplData(node, 8, [{ bytes: [14, 0] }]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(5));
-        return undefined;
-      }
-      case "burnAsset": {
-        // BurnV1: asset, collection, payer, authority, systemProgram, logWrapper.
-        if (a.length !== 4 && a.length !== 5) this.fail(node, "burnAsset(asset, collection | null, payer, authority | null, signerSeeds?)");
-        const metas = [
-          this.mplMeta(a[0], core, "the asset", true, false),
-          this.mplMeta(a[1], core, "the collection", true, false),
-          this.mplMeta(a[2], core, "the payer", true, true),
-          this.mplMeta(a[3], core, "the authority", false, true),
-          [p, false, false] as [string, boolean, boolean],
-          [p, false, false] as [string, boolean, boolean],
-        ];
-        const data = this.mplData(node, 8, [{ bytes: [12, 0] }]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(4));
-        return undefined;
-      }
-      case "addExternalPlugin":
-      case "removeExternalPlugin":
-      case "writeExternalPluginData": {
-        // Add/RemoveExternalPluginAdapterV1: asset, collection, payer, authority, systemProgram, logWrapper;
-        // WriteExternalPluginAdapterDataV1 has a buffer account (left out: the data is in the instruction) before systemProgram.
-        const write = method === "writeExternalPluginData";
-        const n = write ? 7 : 6;
-        if (a.length !== n && a.length !== n + 1)
-          this.fail(
-            node,
-            `${method}(asset, collection | null, payer, authority | null, systemProgram, ${method === "addExternalPlugin" ? "plugin" : write ? "key, data" : "key"}, signerSeeds?)`,
-          );
-        const metas = [
-          this.mplMeta(a[0], core, "the asset", true, false),
-          this.mplMeta(a[1], core, "the collection", true, false),
-          this.mplMeta(a[2], core, "the payer", true, true),
-          this.mplMeta(a[3], core, "the authority", false, true),
-          ...(write ? [self] : []),
-          this.mplMeta(a[4], core, "the system program", false, false),
-          self,
-        ];
-        const body =
-          method === "addExternalPlugin"
-            ? this.coreExternalPlugin(a[5]!)
-            : write
-              ? [...this.coreExternalKey(a[5]!), ...this.coreExternalData(a[6]!)]
-              : this.coreExternalKey(a[5]!);
-        const data = this.mplData(node, 1024, [{ bytes: [{ addExternalPlugin: 22, removeExternalPlugin: 24, writeExternalPluginData: 28 }[method]] }, ...body]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(n));
-        return undefined;
-      }
-      case "addCollectionExternalPlugin":
-      case "removeCollectionExternalPlugin":
-      case "writeCollectionExternalPluginData": {
-        // The same on a collection: collection, payer, authority, (buffer,) systemProgram, logWrapper.
-        const write = method === "writeCollectionExternalPluginData";
-        const n = write ? 6 : 5;
-        if (a.length !== n && a.length !== n + 1)
-          this.fail(
-            node,
-            `${method}(collection, payer, authority | null, systemProgram, ${method === "addCollectionExternalPlugin" ? "plugin" : write ? "key, data" : "key"}, signerSeeds?)`,
-          );
-        const metas = [
-          this.mplMeta(a[0], core, "the collection", true, false),
-          this.mplMeta(a[1], core, "the payer", true, true),
-          this.mplMeta(a[2], core, "the authority", false, true),
-          ...(write ? [self] : []),
-          this.mplMeta(a[3], core, "the system program", false, false),
-          self,
-        ];
-        const body =
-          method === "addCollectionExternalPlugin"
-            ? this.coreExternalPlugin(a[4]!)
-            : write
-              ? [...this.coreExternalKey(a[4]!), ...this.coreExternalData(a[5]!)]
-              : this.coreExternalKey(a[4]!);
-        const data = this.mplData(node, 1024, [
-          { bytes: [{ addCollectionExternalPlugin: 23, removeCollectionExternalPlugin: 25, writeCollectionExternalPluginData: 29 }[method]] },
-          ...body,
-        ]);
-        this.cpi(p, metas, data.buf, data.len, seedsAt(n));
-        return undefined;
-      }
+    const list = op.plugins && isPlugins(a[op.args]) ? a[op.args] : undefined;
+    const seedsAt = op.args + (list ? 1 : 0);
+    if (op.plugins ? a.length < op.args || a.length > seedsAt + 1 : a.length !== op.args && a.length !== op.args + 1) this.fail(node, op.usage(method));
+    const metas = op.metas.map((m) => (m === "self" ? ([p, false, false] as [string, boolean, boolean]) : this.mplMeta(a[m[0]]!, core, m[1], m[2], m[3])));
+    const data = this.mplData(node, op.max, op.data(a, list));
+    this.cpi(p, metas, data.buf, data.len, a[seedsAt] ? this.signingSeeds(a[seedsAt]) : { name: "NULL", count: 0 });
+    return undefined;
+  }
+
+  /**
+   * Core instructions: `args` fixed arguments (then an optional plugin list when `plugins`, then optional signer
+   * seeds), accounts in order (`[argument, label, writable, signer]`, or "self": the Core program, Core's "none" for an
+   * optional account), at most `max` bytes of data.
+   */
+  private coreOps(): Record<
+    string,
+    {
+      usage: (method: string) => string;
+      args: number;
+      plugins?: boolean;
+      metas: ([number, string, boolean, boolean] | "self")[];
+      max: number;
+      data: (a: ts.NodeArray<ts.Expression>, plugins: ts.Expression | undefined) => MplField[];
     }
-    this.fail(
-      node.expression,
-      `Metaplex Core supports createAsset, createCollection, addPlugin, updatePlugin, removePlugin, addExternalPlugin, removeExternalPlugin, writeExternalPluginData (and the Collection forms), transferAsset and burnAsset, not ${method}`,
-    );
+  > {
+    const str = (n: ts.Expression) => ({ value: n, type: STRING });
+    const asset = [0, "the asset", true, false] as [number, string, boolean, boolean];
+    const assetPlugin = {
+      usage: (m: string) => `${m}(asset, collection | null, payer, authority | null, systemProgram, ${m === "removePlugin" ? "kind" : "plugin"}, signerSeeds?)`,
+      args: 6,
+      // Add/Remove/UpdatePluginV1: asset, collection, payer, authority, systemProgram, logWrapper.
+      metas: [
+        asset,
+        [1, "the collection", true, false],
+        [2, "the payer", true, true],
+        [3, "the authority", false, true],
+        [4, "the system program", false, false],
+        "self",
+      ] as ([number, string, boolean, boolean] | "self")[],
+      max: 2048,
+    };
+    const collectionPlugin = {
+      usage: (m: string) => `${m}(collection, payer, authority | null, systemProgram, ${m === "removeCollectionPlugin" ? "kind" : "plugin"}, signerSeeds?)`,
+      args: 5,
+      // Add/Remove/UpdateCollectionPluginV1: collection, payer, authority, systemProgram, logWrapper.
+      metas: [
+        [0, "the collection", true, false],
+        [1, "the payer", true, true],
+        [2, "the authority", false, true],
+        [3, "the system program", false, false],
+        "self",
+      ] as ([number, string, boolean, boolean] | "self")[],
+      max: 2048,
+    };
+    const assetPluginOp = (method: string, disc: number) => ({
+      ...assetPlugin,
+      data: (a: ts.NodeArray<ts.Expression>) => [
+        { bytes: [disc] },
+        ...(method === "removePlugin" ? [this.corePluginType(a[5]!)] : this.corePlugin(a[5]!, method === "addPlugin")),
+      ],
+    });
+    const collectionPluginOp = (method: string, disc: number) => ({
+      ...collectionPlugin,
+      data: (a: ts.NodeArray<ts.Expression>) => [
+        { bytes: [disc] },
+        ...(method === "removeCollectionPlugin" ? [this.corePluginType(a[4]!)] : this.corePlugin(a[4]!, method === "addCollectionPlugin")),
+      ],
+    });
+    // Add/RemoveExternalPluginAdapterV1: asset, collection, payer, authority, systemProgram, logWrapper; the write has a
+    // buffer account (left out: the data is in the instruction) before systemProgram. The Collection forms drop the asset.
+    const external = (method: string, disc: number, collection: boolean) => {
+      const write = method.startsWith("write");
+      const add = method.startsWith("add");
+      const n = (collection ? 5 : 6) + (write ? 1 : 0);
+      const at = collection ? 4 : 5;
+      const head = collection ? "collection, payer, authority | null, systemProgram" : "asset, collection | null, payer, authority | null, systemProgram";
+      const metas: ([number, string, boolean, boolean] | "self")[] = collection
+        ? [
+            [0, "the collection", true, false],
+            [1, "the payer", true, true],
+            [2, "the authority", false, true],
+          ]
+        : [asset, [1, "the collection", true, false], [2, "the payer", true, true], [3, "the authority", false, true]];
+      if (write) metas.push("self");
+      metas.push([collection ? 3 : 4, "the system program", false, false], "self");
+      return {
+        usage: (m: string) => `${m}(${head}, ${add ? "plugin" : write ? "key, data" : "key"}, signerSeeds?)`,
+        args: n,
+        metas,
+        max: 1024,
+        data: (a: ts.NodeArray<ts.Expression>) => [
+          { bytes: [disc] },
+          ...(add
+            ? this.coreExternalPlugin(a[at]!)
+            : write
+              ? [...this.coreExternalKey(a[at]!), ...this.coreExternalData(a[at + 1]!)]
+              : this.coreExternalKey(a[at]!)),
+        ],
+      };
+    };
+    return {
+      createAsset: {
+        usage: () => "createAsset(asset, collection | null, authority | null, payer, owner | null, systemProgram, name, uri, plugins?, signerSeeds?)",
+        args: 8,
+        plugins: true,
+        // CreateV1: asset, collection, authority, payer, owner, updateAuthority (the collection's, or the payer by
+        // default), systemProgram, logWrapper.
+        metas: [
+          [0, "the asset", true, true],
+          [1, "the collection", true, false],
+          [2, "the collection authority", false, true],
+          [3, "the payer", true, true],
+          [4, "the owner", false, false],
+          "self",
+          [5, "the system program", false, false],
+          "self",
+        ],
+        max: 2048,
+        data: (a, plugins) => [{ bytes: [0, 0] }, str(a[6]!), str(a[7]!), ...this.corePluginList(plugins)],
+      },
+      createCollection: {
+        usage: () => "createCollection(collection, updateAuthority | null, payer, systemProgram, name, uri, plugins?, signerSeeds?)",
+        args: 6,
+        plugins: true,
+        // CreateCollectionV1: collection, updateAuthority, payer, systemProgram.
+        metas: [
+          [0, "the collection", true, true],
+          [1, "the update authority", false, false],
+          [2, "the payer", true, true],
+          [3, "the system program", false, false],
+        ],
+        max: 2048,
+        data: (a, plugins) => [{ bytes: [1] }, str(a[4]!), str(a[5]!), ...this.corePluginList(plugins)],
+      },
+      addPlugin: assetPluginOp("addPlugin", 2),
+      removePlugin: assetPluginOp("removePlugin", 4),
+      updatePlugin: assetPluginOp("updatePlugin", 6),
+      addCollectionPlugin: collectionPluginOp("addCollectionPlugin", 3),
+      removeCollectionPlugin: collectionPluginOp("removeCollectionPlugin", 5),
+      updateCollectionPlugin: collectionPluginOp("updateCollectionPlugin", 7),
+      transferAsset: {
+        usage: () => "transferAsset(asset, collection | null, payer, authority | null, newOwner, signerSeeds?)",
+        args: 5,
+        // TransferV1: asset, collection, payer, authority, newOwner, systemProgram, logWrapper.
+        metas: [
+          asset,
+          [1, "the collection", false, false],
+          [2, "the payer", true, true],
+          [3, "the authority", false, true],
+          [4, "the new owner", false, false],
+          "self",
+          "self",
+        ],
+        max: 8,
+        data: () => [{ bytes: [14, 0] }],
+      },
+      burnAsset: {
+        usage: () => "burnAsset(asset, collection | null, payer, authority | null, signerSeeds?)",
+        args: 4,
+        // BurnV1: asset, collection, payer, authority, systemProgram, logWrapper.
+        metas: [asset, [1, "the collection", true, false], [2, "the payer", true, true], [3, "the authority", false, true], "self", "self"],
+        max: 8,
+        data: () => [{ bytes: [12, 0] }],
+      },
+      addExternalPlugin: external("addExternalPlugin", 22, false),
+      removeExternalPlugin: external("removeExternalPlugin", 24, false),
+      writeExternalPluginData: external("writeExternalPluginData", 28, false),
+      addCollectionExternalPlugin: external("addCollectionExternalPlugin", 23, true),
+      removeCollectionExternalPlugin: external("removeCollectionExternalPlugin", 25, true),
+      writeCollectionExternalPluginData: external("writeCollectionExternalPluginData", 29, true),
+    };
   }
 
   /** The fields of a Core object literal (`{ kind: "AppData", … }`) by name. */

@@ -1095,14 +1095,22 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
     const byPath = (p: string, group: string) => flat.find((f) => `${f.group}${f.name}` === `${group}${p}`) ?? flat.find((f) => f.group === "" && f.name === p);
     const argType = new Map(ix.args.map((a) => [a.name, a.type]));
 
-    const seedExpr = (s: IdlSeed, group: string): string | { why: string } => {
+    /**
+     * Where a seed's inputs come from in the code being written: the instruction builder (`args.x`, the local `$x`),
+     * a `pdas` helper (`seeds.x` for both) or `resolve` (`args.x`, the account in `acc`).
+     */
+    type Refs = { arg: (camelName: string) => string; account: (key: string) => string };
+    const seedsProp = (k: string) => `seeds${NAME.test(k) && !JS_RESERVED.has(k) ? `.${k}` : `[${JSON.stringify(k)}]`}`;
+    const BUILDER: Refs = { arg: (n) => `args.${n}`, account: (k) => `$${k}` };
+    const HELPER: Refs = { arg: (n) => seedsProp(n), account: (k) => seedsProp(k) };
+    const seedExpr = (s: IdlSeed, group: string, refs: Refs = BUILDER): string | { why: string } => {
       if (s.kind === "const") return bytes(s.value!);
       if (s.kind === "arg") {
         // `params.id`: a field (of a field…) of a struct argument.
         const [head, ...rest] = s.path!.split(".");
         let t = argType.get(head!);
         if (t === undefined) return { why: `the seed argument ${head} does not exist` };
-        let v = `args.${camel(head!)}`;
+        let v = refs.arg(camel(head!));
         for (const part of rest) {
           const d = defs.get(definedName(t) ?? "");
           const f = d?.type.kind === "struct" ? ((d.type.fields ?? []) as IdlField[]).find((x) => isField(x) && x.name === part) : undefined;
@@ -1119,22 +1127,28 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
       const target = byPath(s.path!, group);
       if (!target) return { why: `the seed account ${s.path} is not an account of the instruction` };
       use("getAddressEncoder");
-      return `getAddressEncoder().encode(key($${target.key}))`;
+      return `getAddressEncoder().encode(key(${refs.account(target.key)}))`;
+    };
+    /** A PDA's program as the code being written names it (undefined: this program). */
+    const pdaProgram = (a: Flat, refs: Refs): string | { why: string } | undefined => {
+      const p = a.pda!.program;
+      if (p?.kind === "const") return (use("getAddressDecoder"), `programFromBytes(${bytes(p.value!)})`);
+      if (p?.kind === "account") {
+        const target = p.path!.includes(".") ? undefined : byPath(p.path!, a.group);
+        return target ? `key(${refs.account(target.key)})` : { why: `the PDA program ${p.path} is not an account of the instruction` };
+      }
+      if (p?.kind === "arg") {
+        const t = p.path!.includes(".") ? undefined : argType.get(p.path!);
+        return t === "pubkey" || t === "publicKey" ? refs.arg(camel(p.path!)) : { why: "the PDA program comes from an argument that is not a Pubkey" };
+      }
+      return undefined;
     };
     const resolvable = new Map<string, { seeds: string[]; program?: string; deps: string[] }>();
     for (const a of flat) {
       if (!a.pda || a.address) continue;
       const seeds = a.pda.seeds.map((s) => seedExpr(s, a.group));
-      let program: string | { why: string } | undefined;
+      const program = pdaProgram(a, BUILDER);
       const p = a.pda.program;
-      if (p?.kind === "const") program = (use("getAddressDecoder"), `programFromBytes(${bytes(p.value!)})`);
-      else if (p?.kind === "account") {
-        const target = p.path!.includes(".") ? undefined : byPath(p.path!, a.group);
-        program = target ? `key($${target.key})` : { why: `the PDA program ${p.path} is not an account of the instruction` };
-      } else if (p?.kind === "arg") {
-        const t = p.path!.includes(".") ? undefined : argType.get(p.path!);
-        program = t === "pubkey" || t === "publicKey" ? `args.${camel(p.path!)}` : { why: "the PDA program comes from an argument that is not a Pubkey" };
-      }
       const why = [...seeds, ...(program === undefined ? [] : [program])].find((x) => typeof x === "object");
       if (why) {
         notes.push(`instruction ${ix.name}: ${a.name} is not filled in (${(why as { why: string }).why}); pass it`);
@@ -1213,11 +1227,13 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
           }),
         ).values(),
       ];
-      const rewrite = (e: string) => e.replace(/\bargs\.([A-Za-z0-9_$]+)/g, "seeds.$1").replace(/key\(\$([A-Za-z0-9_]+)\)/g, "key(seeds.$1)");
+      // The same derivation, its inputs named as the helper's `seeds` parameter.
+      const helperSeeds = a.pda!.seeds.map((s) => seedExpr(s, a.group, HELPER) as string);
+      const helperProgram = (pdaProgram(a, HELPER) as string | undefined) ?? "PROGRAM_ADDRESS";
       use("type ProgramDerivedAddress");
       pdaFns.set(pn, {
         json,
-        source: `    /** The ${a.name} PDA (as ${ix.name} derives it). */\n    ${prop(pn)}(seeds: { ${params.join("; ")} }): Promise<ProgramDerivedAddress> {\n      return getProgramDerivedAddress({ programAddress: ${rewrite(r.program ?? "PROGRAM_ADDRESS")}, seeds: [${r.seeds.map(rewrite).join(", ")}] });\n    },`,
+        source: `    /** The ${a.name} PDA (as ${ix.name} derives it). */\n    ${prop(pn)}(seeds: { ${params.join("; ")} }): Promise<ProgramDerivedAddress> {\n      return getProgramDerivedAddress({ programAddress: ${helperProgram}, seeds: [${helperSeeds.join(", ")}] });\n    },`,
       });
     }
 
@@ -1299,6 +1315,7 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
       }
       const bases = new Map<string, { base: Flat; A: string }>();
       const seeds: string[] = [];
+      const helperSeeds: string[] = []; // the same seeds, named as a `pdas` helper's `seeds` (for one seeded from its own fields)
       const own: { field: string; type: IdlType }[] = [];
       // Inputs of a `pdas` helper for a PDA seeded from its own fields: its own field values, accounts and arguments.
       const params = new Map<string, string>();
@@ -1306,12 +1323,13 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
       let ok = true;
       let usesArgs = p?.kind === "arg";
       for (const sd of a.pda.seeds) {
-        if (sd.kind === "const") seeds.push(bytes(sd.value!));
+        if (sd.kind === "const") (seeds.push(bytes(sd.value!)), helperSeeds.push(bytes(sd.value!)));
         else if (sd.kind === "arg") {
           const e = seedExpr(sd, a.group);
           if (typeof e !== "string") ok = false;
           else {
             seeds.push(e);
+            helperSeeds.push(seedExpr(sd, a.group, HELPER) as string);
             usesArgs = true;
             const head = sd.path!.split(".")[0]!;
             params.set(camel(head), `${camel(head)}: ${tsType(argType.get(head)!, "in")}`);
@@ -1322,6 +1340,7 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
           else {
             use("getAddressEncoder");
             seeds.push(`getAddressEncoder().encode(key(${acc(t)}!))`);
+            helperSeeds.push(`getAddressEncoder().encode(key(${seedsProp(t.key)}))`);
             params.set(t.key, `${t.key}: Address | TransactionSigner`);
             if (auto(t)) autoDep = true;
           }
@@ -1337,6 +1356,7 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
             own.push({ field: parts[1]!, type: field.type });
             params.set(camel(parts[1]!), `${camel(parts[1]!)}: ${tsType(field.type, "in")}`);
             seeds.push(enc);
+            helperSeeds.push(enc);
           } else if (!consts || auto(base)) ok = false;
           else {
             bases.set(base.key, { base, A: consts.A });
@@ -1358,17 +1378,11 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
         renote(a, `pass it (pdas.${pn} derives it from the field values)`);
         if (pdaFns.has(pn)) continue;
         if (p?.kind === "arg") params.set(camel(p.path!), `${camel(p.path!)}: Address`);
-        const rewrite = (e: string) =>
-          e
-            .replace(/\bargs\.([A-Za-z0-9_$]+)/g, "seeds.$1")
-            .replace(
-              /key\(ownProp\(acc, "([^"]+)"\)!\)/g,
-              (_, k: string) => `key(seeds${NAME.test(k) && !JS_RESERVED.has(k) ? `.${k}` : `[${JSON.stringify(k)}]`})`,
-            );
+        const helperProgram = p?.kind === "arg" ? seedsProp(camel(p.path!)) : program;
         use("type ProgramDerivedAddress", "getProgramDerivedAddress");
         pdaFns.set(pn, {
           json,
-          source: `    /** The ${a.name} PDA (as ${ix.name} derives it), from the values of its own fields it is seeded with (${own.map((o) => camel(o.field)).join(", ")}). */\n    ${prop(pn)}(seeds: { ${[...params.values()].join("; ")} }): Promise<ProgramDerivedAddress> {\n      return getProgramDerivedAddress({ programAddress: ${rewrite(program)}, seeds: [${seeds.map(rewrite).join(", ")}] });\n    },`,
+          source: `    /** The ${a.name} PDA (as ${ix.name} derives it), from the values of its own fields it is seeded with (${own.map((o) => camel(o.field)).join(", ")}). */\n    ${prop(pn)}(seeds: { ${[...params.values()].join("; ")} }): Promise<ProgramDerivedAddress> {\n      return getProgramDerivedAddress({ programAddress: ${helperProgram}, seeds: [${helperSeeds.join(", ")}] });\n    },`,
         });
         continue;
       }
