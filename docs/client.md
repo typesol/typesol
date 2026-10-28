@@ -87,8 +87,11 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
 
 ## Limits
 
-- **Errors and events are matched by code and discriminator, not by program.** A program this one calls can raise the
-  same error code, and `parseEvents` reads every `Program data:` line that decodes as one of this program's events.
+- **Errors are matched by code, not by program**: a program this one calls can raise the same error code. Events are
+  this program's own: `parseEvents` follows the `Program <id> invoke` / `success` / `failed` lines and reads a
+  `Program data:` line only while this program is the innermost one running, and `eventsOf` reads only the `emitCpi`
+  inner instructions that call this program (it needs `tx.transaction`'s account keys for that). `parseCpiEvents(data)`
+  on its own does not check the program: give it this program's inner instructions only.
 - **Not filled in automatically** (pass them): PDAs seeded from struct fields (Anchor cannot seed with them either),
   PDAs whose program is another account's field, and a PDA seeded from its own fields (derive it with its `pdas`
   helper from the values). `typesol client` prints a note for each.
@@ -98,5 +101,5 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
   Rust's own layout (`repr(Rust)`) or holding a non-zero-copy type, and the generic definitions themselves.
 - **In tests**: `svmConnection(svm)` from `typesol/testing` answers the client's RPC calls from LiteSVM, and
   `testProgram(...)` has it as `t.connection` ([test-your-program.md](test-your-program.md)).
-- `watchEvents` reads log events; with `rpc` it also fetches each transaction in which the program invoked itself and
+- `watchEvents` reads log events of transactions that succeeded (a failed one is skipped); with `rpc` it also fetches each transaction in which the program invoked itself and
   reads its `emitCpi` events (log subscriptions do not carry inner instructions).

@@ -67,8 +67,8 @@ const concat = (parts: ReadonlyUint8Array[]): Uint8Array => {
 };
 const hasPrefix = (data: ReadonlyUint8Array, prefix: ReadonlyUint8Array) => data.length >= prefix.length && prefix.every((b, i) => data[i] === b);
 const isSigner = (v: TransactionSigner | Address): v is TransactionSigner => typeof v === "object" && v !== null && "address" in v;
-const key = (v: TransactionSigner | Address | undefined | null): Address => {
-  if (v === undefined || v === null) throw new Error("a seed account is missing");
+const key = (v: TransactionSigner | Address | undefined | null, name?: string): Address => {
+  if (v === undefined || v === null) throw new Error(name === undefined ? "a seed account is missing" : "a seed account is missing: pass " + name);
   return isSigner(v) ? v.address : v;
 };
 const required = <T>(v: T | undefined, name: string): T => {
@@ -76,6 +76,8 @@ const required = <T>(v: T | undefined, name: string): T => {
   return v;
 };
 const meta = (v: TransactionSigner | Address, role: AccountRole) => (isSigner(v) ? { address: v.address, role, signer: v } : { address: v, role });
+/** An account given in `o` (an own property: never one inherited from Object.prototype, such as `constructor`). */
+const ownProp = <T extends object, K extends keyof T>(o: T, k: K): T[K] | undefined => (Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
 const memcmp = (filters: readonly { offset: number; bytes: ReadonlyUint8Array }[]) =>
   filters.map((f) => ({ memcmp: { offset: BigInt(f.offset), bytes: getBase58Decoder().decode(f.bytes) as Base58EncodedBytes, encoding: "base58" as const } }));
 
@@ -143,9 +145,9 @@ export interface InitializeAccounts {
 }
 /** Create the caller's counter at PDA ["counter", authority]. */
 async function buildInitialize(input: InitializeAccounts, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $authority = input.authority;
-  const $systemProgram = input.systemProgram ?? address("11111111111111111111111111111111");
-  const $counter = input.counter ?? (await getProgramDerivedAddress({ programAddress: PROGRAM_ADDRESS, seeds: [new Uint8Array([99, 111, 117, 110, 116, 101, 114]), getAddressEncoder().encode(key($authority))] }))[0];
+  const $authority = ownProp(input, "authority");
+  const $systemProgram = ownProp(input, "systemProgram") ?? address("11111111111111111111111111111111");
+  const $counter = ownProp(input, "counter") ?? (await getProgramDerivedAddress({ programAddress: PROGRAM_ADDRESS, seeds: [new Uint8Array([99, 111, 117, 110, 116, 101, 114]), getAddressEncoder().encode(key($authority))] }))[0];
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -166,8 +168,8 @@ export interface IncrementArgs {
   by: number | bigint;
 }
 async function buildIncrement(input: IncrementAccounts, args: IncrementArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $authority = input.authority;
-  const $counter = input.counter;
+  const $authority = ownProp(input, "authority");
+  const $counter = ownProp(input, "counter");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -187,7 +189,7 @@ export interface AssertAtLeastArgs {
 }
 /** Read-only check that callers can simulate. */
 async function buildAssertAtLeast(input: AssertAtLeastAccounts, args: AssertAtLeastArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $counter = input.counter;
+  const $counter = ownProp(input, "counter");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -305,6 +307,11 @@ export function errorCode(e: unknown): number | null {
   for (let cur: unknown = e, depth = 0; cur !== undefined && cur !== null && depth < 8; depth++) {
     if (typeof cur === "number") return cur;
     if (isSolanaError(cur, SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM)) return Number(cur.context.code);
+    // The JSON an RPC node returns (simulations, signature statuses): { InstructionError: [0, { Custom: 6000 }] }.
+    if (typeof cur === "object" && "InstructionError" in cur && Array.isArray(cur.InstructionError)) {
+      const inner: unknown = cur.InstructionError[1];
+      if (typeof inner === "object" && inner !== null && "Custom" in inner) return Number(inner.Custom);
+    }
     if (typeof cur === "object" && "err" in cur && typeof cur.err === "function") cur = String(cur.err());
     if (typeof cur === "string" || cur instanceof Error) {
       const m = /custom program error: (0x[0-9a-f]+)|Custom(?:\(|\s*\{\s*code:\s*)(\d+)/i.exec(String(cur instanceof Error ? cur.message : cur));
@@ -328,14 +335,25 @@ function decodeEvent(data: ReadonlyUint8Array): Event | null {
   return null;
 }
 /**
- * Events in a transaction's log messages (`Program data:` lines, as `emit` writes them). Lines are matched by
- * discriminator, whichever program wrote them; lines that do not decode are skipped. `emitCpi` events travel in inner
- * instructions: see parseCpiEvents and eventsOf.
+ * Events in a transaction's log messages (`Program data:` lines, as `emit` writes them). Only this program's lines
+ * count: the `Program <id> invoke` and `success` / `failed` lines are followed, and a data line is read only while
+ * this program is the innermost one running (as Anchor's EventParser does). Lines that do not decode are skipped.
+ * `emitCpi` events travel in inner instructions: see eventsOf.
  */
 export function parseEvents(logs: readonly string[]): Event[] {
   const found: Event[] = [];
+  const running: string[] = [];
   for (const line of logs) {
-    if (!line.startsWith("Program data: ")) continue;
+    const invoke = /^Program (\S+) invoke \[\d+\]$/.exec(line);
+    if (invoke) {
+      running.push(invoke[1]!);
+      continue;
+    }
+    if (/^Program \S+ (success$|failed)/.test(line)) {
+      running.pop();
+      continue;
+    }
+    if (running.at(-1) !== PROGRAM_ADDRESS || !line.startsWith("Program data: ")) continue;
     let data: ReadonlyUint8Array;
     try {
       data = getBase64Encoder().encode(line.slice("Program data: ".length));
@@ -347,7 +365,10 @@ export function parseEvents(logs: readonly string[]): Event[] {
   }
   return found;
 }
-/** `emitCpi` events: the data of inner instructions (bytes, or base58 as RPC returns them) that carry one. */
+/**
+ * `emitCpi` events in instruction data (bytes, or base58 as RPC returns them). This does not check which program the
+ * instructions called, so give it only this program's inner instructions; eventsOf picks them from a transaction.
+ */
 export function parseCpiEvents(instructionData: Iterable<ReadonlyUint8Array | string>): Event[] {
   const tag = new Uint8Array([228, 69, 165, 46, 81, 203, 154, 29]);
   const found: Event[] = [];
@@ -364,16 +385,38 @@ export function parseCpiEvents(instructionData: Iterable<ReadonlyUint8Array | st
   }
   return found;
 }
-/** Every event of a fetched transaction (getTransaction, json encoding): its logs, then its inner instructions. */
-export function eventsOf(tx: { meta: { logMessages?: readonly string[] | null; innerInstructions?: readonly { instructions: readonly { data: string }[] }[] | null } | null } | null): Event[] {
-  const meta = tx?.meta;
-  if (!meta) return [];
-  return [...parseEvents(meta.logMessages ?? []), ...parseCpiEvents((meta.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))];
+/** A transaction as getTransaction returns it (json encoding), as far as events need it. */
+export interface FetchedTransaction {
+  transaction?: { message: { accountKeys: readonly (string | { pubkey: string })[] } } | null;
+  meta: {
+    logMessages?: readonly string[] | null;
+    innerInstructions?: readonly { instructions: readonly { programIdIndex?: number; data: string }[] }[] | null;
+    loadedAddresses?: { writable: readonly string[]; readonly: readonly string[] } | null;
+  } | null;
+}
+/** The data of the inner instructions of `tx` that call this program (found by their program's account index). */
+function cpiData(tx: FetchedTransaction): string[] {
+  const keys = [
+    ...(tx.transaction?.message.accountKeys ?? []).map((k) => (typeof k === "string" ? k : k.pubkey)),
+    ...(tx.meta?.loadedAddresses?.writable ?? []),
+    ...(tx.meta?.loadedAddresses?.readonly ?? []),
+  ];
+  return (tx.meta?.innerInstructions ?? []).flatMap((g) =>
+    g.instructions.filter((i) => i.programIdIndex !== undefined && keys[i.programIdIndex] === PROGRAM_ADDRESS).map((i) => i.data),
+  );
 }
 /**
- * Events of every transaction that mentions the program, as their logs arrive, until `abortSignal` aborts. With
- * `rpc`, `emitCpi` events too: a transaction in which the program invoked itself is fetched (getTransaction) and its
- * inner instructions read, after its log events.
+ * Every event of a fetched transaction (getTransaction, json encoding): its log events, then the `emitCpi` events of
+ * its inner instructions that call this program (read only when `tx.transaction` gives the account keys).
+ */
+export function eventsOf(tx: FetchedTransaction | null): Event[] {
+  if (!tx?.meta) return [];
+  return [...parseEvents(tx.meta.logMessages ?? []), ...parseCpiEvents(cpiData(tx))];
+}
+/**
+ * Events of every transaction that mentions the program and succeeded, as their logs arrive, until `abortSignal`
+ * aborts (a failed transaction's events did not happen). With `rpc`, `emitCpi` events too: a transaction in which
+ * the program invoked itself is fetched (getTransaction) and its inner instructions read, after its log events.
  */
 export async function* watchEvents(
   rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>,
@@ -382,6 +425,7 @@ export async function* watchEvents(
   const logs = await rpcSubscriptions.logsNotifications({ mentions: [PROGRAM_ADDRESS] }, options.commitment ? { commitment: options.commitment } : {}).subscribe({ abortSignal: options.abortSignal });
   const selfInvoke = new RegExp("^Program " + PROGRAM_ADDRESS + " invoke \\[([2-9]|\\d{2,})\\]$");
   for await (const n of logs) {
+    if (n.value.err !== null) continue;
     for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };
     if (!options.rpc || !n.value.logs.some((l) => selfInvoke.test(l))) continue;
     // The transaction can trail its logs by a moment: a few tries.
@@ -390,7 +434,7 @@ export async function* watchEvents(
         .getTransaction(n.value.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: options.commitment === "finalized" ? "finalized" : "confirmed" })
         .send();
       if (tx) {
-        for (const event of parseCpiEvents((tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))) yield { signature: n.value.signature, event };
+        for (const event of parseCpiEvents(cpiData(tx))) yield { signature: n.value.signature, event };
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 400));
@@ -463,7 +507,7 @@ export const counter = {
     /** InitializeAccounts with authority (options.signer when left out) filled in. */
     async initialize(rpc: Rpc<GetAccountInfoApi>, input: Omit<InitializeAccounts, "authority"> & Partial<Pick<InitializeAccounts, "authority">>, options: { signer?: TransactionSigner } = {}): Promise<InitializeAccounts> {
       const acc: Partial<InitializeAccounts> = { ...input };
-      if (acc.authority === undefined) {
+      if (ownProp(acc, "authority") === undefined) {
         if (!options.signer) throw new Error("initialize: pass authority, or a default signer as options.signer");
         acc.authority = options.signer;
       }
@@ -473,7 +517,7 @@ export const counter = {
     /** IncrementAccounts with authority (options.signer when left out) filled in. */
     async increment(rpc: Rpc<GetAccountInfoApi>, input: Omit<IncrementAccounts, "authority"> & Partial<Pick<IncrementAccounts, "authority">>, options: { signer?: TransactionSigner } = {}): Promise<IncrementAccounts> {
       const acc: Partial<IncrementAccounts> = { ...input };
-      if (acc.authority === undefined) {
+      if (ownProp(acc, "authority") === undefined) {
         if (!options.signer) throw new Error("increment: pass authority, or a default signer as options.signer");
         acc.authority = options.signer;
       }

@@ -367,11 +367,27 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       if (!def?.returns) throw new Error(`${instruction} returns nothing`);
       const data = Buffer.from(harness.ok(res).returnData().data());
       const t = def.returns;
+      const short = (n: number) => {
+        if (data.length < n) throw new Error(`${instruction} returned ${data.length} bytes; a ${String(t)} needs ${n}`);
+      };
       if (typeof t === "string") {
-        if (t === "pubkey") return getAddressDecoder().decode(data) as T;
-        if (t === "bool") return (data[0] !== 0) as T;
+        if (t === "pubkey") return (short(32), getAddressDecoder().decode(data)) as T;
+        if (t === "bool") return (short(1), data[0] !== 0) as T;
+        if (t === "f32") return (short(4), data.readFloatLE(0)) as T;
+        if (t === "f64") return (short(8), data.readDoubleLE(0)) as T;
+        if (t === "string" || t === "bytes") {
+          // Borsh: a u32 length, then the bytes (UTF-8 for a string).
+          short(4);
+          const len = data.readUInt32LE(0);
+          short(4 + len);
+          const body = data.subarray(4, 4 + len);
+          return (t === "string" ? body.toString("utf8") : new Uint8Array(body)) as T;
+        }
+        const int = /^[ui](8|16|32|64|128)$/.exec(t);
+        if (!int) throw new Error(`decode ${instruction}'s return data yourself (${t})`);
         const signed = t.startsWith("i");
-        const bytes = Number(t.slice(1)) / 8;
+        const bytes = Number(int[1]) / 8;
+        short(bytes);
         let n = 0n;
         for (let i = bytes - 1; i >= 0; i--) n = (n << 8n) | BigInt(data[i]);
         if (signed && n >= 1n << BigInt(bytes * 8 - 1)) n -= 1n << BigInt(bytes * 8);

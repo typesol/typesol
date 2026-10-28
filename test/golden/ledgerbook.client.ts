@@ -79,8 +79,8 @@ const concat = (parts: ReadonlyUint8Array[]): Uint8Array => {
 };
 const hasPrefix = (data: ReadonlyUint8Array, prefix: ReadonlyUint8Array) => data.length >= prefix.length && prefix.every((b, i) => data[i] === b);
 const isSigner = (v: TransactionSigner | Address): v is TransactionSigner => typeof v === "object" && v !== null && "address" in v;
-const key = (v: TransactionSigner | Address | undefined | null): Address => {
-  if (v === undefined || v === null) throw new Error("a seed account is missing");
+const key = (v: TransactionSigner | Address | undefined | null, name?: string): Address => {
+  if (v === undefined || v === null) throw new Error(name === undefined ? "a seed account is missing" : "a seed account is missing: pass " + name);
   return isSigner(v) ? v.address : v;
 };
 const required = <T>(v: T | undefined, name: string): T => {
@@ -88,6 +88,8 @@ const required = <T>(v: T | undefined, name: string): T => {
   return v;
 };
 const meta = (v: TransactionSigner | Address, role: AccountRole) => (isSigner(v) ? { address: v.address, role, signer: v } : { address: v, role });
+/** An account given in `o` (an own property: never one inherited from Object.prototype, such as `constructor`). */
+const ownProp = <T extends object, K extends keyof T>(o: T, k: K): T[K] | undefined => (Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
 const memcmp = (filters: readonly { offset: number; bytes: ReadonlyUint8Array }[]) =>
   filters.map((f) => ({ memcmp: { offset: BigInt(f.offset), bytes: getBase58Decoder().decode(f.bytes) as Base58EncodedBytes, encoding: "base58" as const } }));
 /** TypeSOL FixedString<N> in account data: u32 length, then N bytes (UTF-8, zero-padded). */
@@ -233,9 +235,9 @@ export interface CreateArgs {
   approver: Address | null;
 }
 async function buildCreate(input: CreateAccounts, args: CreateArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $admin = input.admin;
-  const $systemProgram = input.systemProgram ?? address("11111111111111111111111111111111");
-  const $book = input.book ?? (await getProgramDerivedAddress({ programAddress: PROGRAM_ADDRESS, seeds: [new Uint8Array([98, 111, 111, 107]), getAddressEncoder().encode(key($admin)), getUtf8Encoder().encode(args.title)] }))[0];
+  const $admin = ownProp(input, "admin");
+  const $systemProgram = ownProp(input, "systemProgram") ?? address("11111111111111111111111111111111");
+  const $book = ownProp(input, "book") ?? (await getProgramDerivedAddress({ programAddress: PROGRAM_ADDRESS, seeds: [new Uint8Array([98, 111, 111, 107]), getAddressEncoder().encode(key($admin)), getUtf8Encoder().encode(args.title)] }))[0];
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -259,9 +261,9 @@ export interface FileArgs {
   memo: number | bigint | null;
 }
 async function buildFile(input: FileAccounts, args: FileArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $who = input.who;
-  const $book = input.book;
-  const $systemProgram = input.systemProgram ?? address("11111111111111111111111111111111");
+  const $who = ownProp(input, "who");
+  const $book = ownProp(input, "book");
+  const $systemProgram = ownProp(input, "systemProgram") ?? address("11111111111111111111111111111111");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -283,8 +285,8 @@ export interface DecideArgs {
   approve: boolean;
 }
 async function buildDecide(input: DecideAccounts, args: DecideArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $approver = input.approver;
-  const $book = input.book;
+  const $approver = ownProp(input, "approver");
+  const $book = ownProp(input, "book");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -305,8 +307,8 @@ export interface ApproveManyArgs {
 }
 /** Approve many entries at once from a Vec<u64> argument. */
 async function buildApproveMany(input: ApproveManyAccounts, args: ApproveManyArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $approver = input.approver;
-  const $book = input.book;
+  const $approver = ownProp(input, "approver");
+  const $book = ownProp(input, "book");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -326,8 +328,8 @@ export interface SetApproverArgs {
   approver: Address | null;
 }
 async function buildSetApprover(input: SetApproverAccounts, args: SetApproverArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $admin = input.admin;
-  const $book = input.book;
+  const $admin = ownProp(input, "admin");
+  const $book = ownProp(input, "book");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -345,8 +347,8 @@ export interface ResetAccounts {
 }
 /** Shrinks the account back to its fixed part. */
 async function buildReset(input: ResetAccounts, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $admin = input.admin;
-  const $book = input.book;
+  const $admin = ownProp(input, "admin");
+  const $book = ownProp(input, "book");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -365,7 +367,7 @@ export interface TotalArgs {
   status: Status;
 }
 async function buildTotal(input: TotalAccounts, args: TotalArgs, remaining: readonly AccountMeta[] = []): Promise<Instruction> {
-  const $book = input.book;
+  const $book = ownProp(input, "book");
   return {
     programAddress: PROGRAM_ADDRESS,
     accounts: [
@@ -485,6 +487,11 @@ export function errorCode(e: unknown): number | null {
   for (let cur: unknown = e, depth = 0; cur !== undefined && cur !== null && depth < 8; depth++) {
     if (typeof cur === "number") return cur;
     if (isSolanaError(cur, SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM)) return Number(cur.context.code);
+    // The JSON an RPC node returns (simulations, signature statuses): { InstructionError: [0, { Custom: 6000 }] }.
+    if (typeof cur === "object" && "InstructionError" in cur && Array.isArray(cur.InstructionError)) {
+      const inner: unknown = cur.InstructionError[1];
+      if (typeof inner === "object" && inner !== null && "Custom" in inner) return Number(inner.Custom);
+    }
     if (typeof cur === "object" && "err" in cur && typeof cur.err === "function") cur = String(cur.err());
     if (typeof cur === "string" || cur instanceof Error) {
       const m = /custom program error: (0x[0-9a-f]+)|Custom(?:\(|\s*\{\s*code:\s*)(\d+)/i.exec(String(cur instanceof Error ? cur.message : cur));
@@ -512,14 +519,25 @@ function decodeEvent(data: ReadonlyUint8Array): Event | null {
   return null;
 }
 /**
- * Events in a transaction's log messages (`Program data:` lines, as `emit` writes them). Lines are matched by
- * discriminator, whichever program wrote them; lines that do not decode are skipped. `emitCpi` events travel in inner
- * instructions: see parseCpiEvents and eventsOf.
+ * Events in a transaction's log messages (`Program data:` lines, as `emit` writes them). Only this program's lines
+ * count: the `Program <id> invoke` and `success` / `failed` lines are followed, and a data line is read only while
+ * this program is the innermost one running (as Anchor's EventParser does). Lines that do not decode are skipped.
+ * `emitCpi` events travel in inner instructions: see eventsOf.
  */
 export function parseEvents(logs: readonly string[]): Event[] {
   const found: Event[] = [];
+  const running: string[] = [];
   for (const line of logs) {
-    if (!line.startsWith("Program data: ")) continue;
+    const invoke = /^Program (\S+) invoke \[\d+\]$/.exec(line);
+    if (invoke) {
+      running.push(invoke[1]!);
+      continue;
+    }
+    if (/^Program \S+ (success$|failed)/.test(line)) {
+      running.pop();
+      continue;
+    }
+    if (running.at(-1) !== PROGRAM_ADDRESS || !line.startsWith("Program data: ")) continue;
     let data: ReadonlyUint8Array;
     try {
       data = getBase64Encoder().encode(line.slice("Program data: ".length));
@@ -531,7 +549,10 @@ export function parseEvents(logs: readonly string[]): Event[] {
   }
   return found;
 }
-/** `emitCpi` events: the data of inner instructions (bytes, or base58 as RPC returns them) that carry one. */
+/**
+ * `emitCpi` events in instruction data (bytes, or base58 as RPC returns them). This does not check which program the
+ * instructions called, so give it only this program's inner instructions; eventsOf picks them from a transaction.
+ */
 export function parseCpiEvents(instructionData: Iterable<ReadonlyUint8Array | string>): Event[] {
   const tag = new Uint8Array([228, 69, 165, 46, 81, 203, 154, 29]);
   const found: Event[] = [];
@@ -548,16 +569,38 @@ export function parseCpiEvents(instructionData: Iterable<ReadonlyUint8Array | st
   }
   return found;
 }
-/** Every event of a fetched transaction (getTransaction, json encoding): its logs, then its inner instructions. */
-export function eventsOf(tx: { meta: { logMessages?: readonly string[] | null; innerInstructions?: readonly { instructions: readonly { data: string }[] }[] | null } | null } | null): Event[] {
-  const meta = tx?.meta;
-  if (!meta) return [];
-  return [...parseEvents(meta.logMessages ?? []), ...parseCpiEvents((meta.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))];
+/** A transaction as getTransaction returns it (json encoding), as far as events need it. */
+export interface FetchedTransaction {
+  transaction?: { message: { accountKeys: readonly (string | { pubkey: string })[] } } | null;
+  meta: {
+    logMessages?: readonly string[] | null;
+    innerInstructions?: readonly { instructions: readonly { programIdIndex?: number; data: string }[] }[] | null;
+    loadedAddresses?: { writable: readonly string[]; readonly: readonly string[] } | null;
+  } | null;
+}
+/** The data of the inner instructions of `tx` that call this program (found by their program's account index). */
+function cpiData(tx: FetchedTransaction): string[] {
+  const keys = [
+    ...(tx.transaction?.message.accountKeys ?? []).map((k) => (typeof k === "string" ? k : k.pubkey)),
+    ...(tx.meta?.loadedAddresses?.writable ?? []),
+    ...(tx.meta?.loadedAddresses?.readonly ?? []),
+  ];
+  return (tx.meta?.innerInstructions ?? []).flatMap((g) =>
+    g.instructions.filter((i) => i.programIdIndex !== undefined && keys[i.programIdIndex] === PROGRAM_ADDRESS).map((i) => i.data),
+  );
 }
 /**
- * Events of every transaction that mentions the program, as their logs arrive, until `abortSignal` aborts. With
- * `rpc`, `emitCpi` events too: a transaction in which the program invoked itself is fetched (getTransaction) and its
- * inner instructions read, after its log events.
+ * Every event of a fetched transaction (getTransaction, json encoding): its log events, then the `emitCpi` events of
+ * its inner instructions that call this program (read only when `tx.transaction` gives the account keys).
+ */
+export function eventsOf(tx: FetchedTransaction | null): Event[] {
+  if (!tx?.meta) return [];
+  return [...parseEvents(tx.meta.logMessages ?? []), ...parseCpiEvents(cpiData(tx))];
+}
+/**
+ * Events of every transaction that mentions the program and succeeded, as their logs arrive, until `abortSignal`
+ * aborts (a failed transaction's events did not happen). With `rpc`, `emitCpi` events too: a transaction in which
+ * the program invoked itself is fetched (getTransaction) and its inner instructions read, after its log events.
  */
 export async function* watchEvents(
   rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>,
@@ -566,6 +609,7 @@ export async function* watchEvents(
   const logs = await rpcSubscriptions.logsNotifications({ mentions: [PROGRAM_ADDRESS] }, options.commitment ? { commitment: options.commitment } : {}).subscribe({ abortSignal: options.abortSignal });
   const selfInvoke = new RegExp("^Program " + PROGRAM_ADDRESS + " invoke \\[([2-9]|\\d{2,})\\]$");
   for await (const n of logs) {
+    if (n.value.err !== null) continue;
     for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };
     if (!options.rpc || !n.value.logs.some((l) => selfInvoke.test(l))) continue;
     // The transaction can trail its logs by a moment: a few tries.
@@ -574,7 +618,7 @@ export async function* watchEvents(
         .getTransaction(n.value.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: options.commitment === "finalized" ? "finalized" : "confirmed" })
         .send();
       if (tx) {
-        for (const event of parseCpiEvents((tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))) yield { signature: n.value.signature, event };
+        for (const event of parseCpiEvents(cpiData(tx))) yield { signature: n.value.signature, event };
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 400));
@@ -659,7 +703,7 @@ export const ledgerbook = {
     /** CreateAccounts with admin (options.signer when left out) filled in. */
     async create(rpc: Rpc<GetAccountInfoApi>, input: Omit<CreateAccounts, "admin"> & Partial<Pick<CreateAccounts, "admin">>, options: { signer?: TransactionSigner } = {}): Promise<CreateAccounts> {
       const acc: Partial<CreateAccounts> = { ...input };
-      if (acc.admin === undefined) {
+      if (ownProp(acc, "admin") === undefined) {
         if (!options.signer) throw new Error("create: pass admin, or a default signer as options.signer");
         acc.admin = options.signer;
       }
@@ -669,7 +713,7 @@ export const ledgerbook = {
     /** FileAccounts with who (options.signer when left out) filled in. */
     async file(rpc: Rpc<GetAccountInfoApi>, input: Omit<FileAccounts, "who"> & Partial<Pick<FileAccounts, "who">>, options: { signer?: TransactionSigner } = {}): Promise<FileAccounts> {
       const acc: Partial<FileAccounts> = { ...input };
-      if (acc.who === undefined) {
+      if (ownProp(acc, "who") === undefined) {
         if (!options.signer) throw new Error("file: pass who, or a default signer as options.signer");
         acc.who = options.signer;
       }
@@ -679,7 +723,7 @@ export const ledgerbook = {
     /** DecideAccounts with approver (options.signer when left out) filled in. */
     async decide(rpc: Rpc<GetAccountInfoApi>, input: Omit<DecideAccounts, "approver"> & Partial<Pick<DecideAccounts, "approver">>, options: { signer?: TransactionSigner } = {}): Promise<DecideAccounts> {
       const acc: Partial<DecideAccounts> = { ...input };
-      if (acc.approver === undefined) {
+      if (ownProp(acc, "approver") === undefined) {
         if (!options.signer) throw new Error("decide: pass approver, or a default signer as options.signer");
         acc.approver = options.signer;
       }
@@ -689,7 +733,7 @@ export const ledgerbook = {
     /** ApproveManyAccounts with approver (options.signer when left out) filled in. */
     async approveMany(rpc: Rpc<GetAccountInfoApi>, input: Omit<ApproveManyAccounts, "approver"> & Partial<Pick<ApproveManyAccounts, "approver">>, options: { signer?: TransactionSigner } = {}): Promise<ApproveManyAccounts> {
       const acc: Partial<ApproveManyAccounts> = { ...input };
-      if (acc.approver === undefined) {
+      if (ownProp(acc, "approver") === undefined) {
         if (!options.signer) throw new Error("approve_many: pass approver, or a default signer as options.signer");
         acc.approver = options.signer;
       }
@@ -699,7 +743,7 @@ export const ledgerbook = {
     /** SetApproverAccounts with admin (options.signer when left out) filled in. */
     async setApprover(rpc: Rpc<GetAccountInfoApi>, input: Omit<SetApproverAccounts, "admin"> & Partial<Pick<SetApproverAccounts, "admin">>, options: { signer?: TransactionSigner } = {}): Promise<SetApproverAccounts> {
       const acc: Partial<SetApproverAccounts> = { ...input };
-      if (acc.admin === undefined) {
+      if (ownProp(acc, "admin") === undefined) {
         if (!options.signer) throw new Error("set_approver: pass admin, or a default signer as options.signer");
         acc.admin = options.signer;
       }
@@ -709,7 +753,7 @@ export const ledgerbook = {
     /** ResetAccounts with admin (options.signer when left out) filled in. */
     async reset(rpc: Rpc<GetAccountInfoApi>, input: Omit<ResetAccounts, "admin"> & Partial<Pick<ResetAccounts, "admin">>, options: { signer?: TransactionSigner } = {}): Promise<ResetAccounts> {
       const acc: Partial<ResetAccounts> = { ...input };
-      if (acc.admin === undefined) {
+      if (ownProp(acc, "admin") === undefined) {
         if (!options.signer) throw new Error("reset: pass admin, or a default signer as options.signer");
         acc.admin = options.signer;
       }
