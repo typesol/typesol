@@ -229,7 +229,8 @@ export abstract class CpiEmitter extends CallEmitter {
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0]!, "the payer must be a Mut<Signer>");
     const programs = this.ix!.accounts.filter((p) => p.kind.kind === "tokenProgram");
     if (programs.length !== 1) this.fail(node, `${call}(...) needs exactly one token program parameter (TokenProgram, Token2022Program or TokenInterface)`);
-    if (!this.ix!.accounts.some((p) => p.kind.kind === "system")) this.fail(node, `${call}(...) needs a SystemProgram parameter`);
+    if (programs[0]!.optional) this.fail(programs[0]!.node, `${call}(...) needs "${programs[0]!.name}": it cannot be optional`);
+    if (!this.ix!.accounts.some((p) => p.kind.kind === "system" && !p.optional)) this.fail(node, `${call}(...) needs a SystemProgram parameter`);
     const tp = `a_${programs[0]!.name}`;
     const acct = `a_${target.name}`;
     // Seeds, then the values, in source order.
