@@ -86,8 +86,8 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "initIfNeeded" && k.struct.vec) this.reporter.fail(a.node, "InitIfNeeded accounts cannot end in a Vec yet");
       if ((k.kind === "account" || k.kind === "init" || k.kind === "initIfNeeded") && k.struct.layout === "borsh") {
         // Worked on as its fixed-layout struct on the heap, packed back when the instruction returns. The heap is zero at
-        // entry and this is each account's first allocation, so a string's padding and a list's unused slots start as
-        // zero: ts_unpack_* only writes what the Borsh bytes hold.
+        // entry and these are its first allocations (before the body uses it), so a string's padding and a list's
+        // unused slots start as zero: ts_unpack_* only writes what the Borsh bytes hold.
         const S = k.struct.name;
         head.push(`  TSS_${S} *d_${a.name} = NULL;`, `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&d_${a.name}));`);
         if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}));`);
