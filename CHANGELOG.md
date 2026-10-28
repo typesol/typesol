@@ -5,6 +5,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.19.0 — 2026-10-28
+
+Anchor's error codes where TypeSOL raised its own: `TokenOf` / `MintOf` constraints that name the parameters as
+`token::mint = …` does, every Anchor `ErrorCode` for `require`, and `init_if_needed` mints with extensions checked as
+Anchor checks them. Strings and logs cost up to a third fewer compute units. 30 of the 46 official examples are now
+full ports. Existing programs keep their layouts and error codes. Not externally audited (see SECURITY.md).
+
 ### Added
 - `TokenOf<TokenAccount, "mintParam", "authorityParam">` and `MintOf<Mint, "authorityParam", "freezeParam">`: Anchor's
   `token::mint = …` / `mint::authority = …` naming the parameters (2014 / 2015 / 2016 / 2017).
