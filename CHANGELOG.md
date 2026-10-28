@@ -6,6 +6,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- `do … while` loops (`continue` goes to the test).
+- `x **= n` (the target must not call a function: it is read and written).
+- `switch` on 128-bit integers (the case is picked with comparisons, then switched on as usual, fallthrough included).
+- `?.` on optional accounts (`acct?.field`) and on `Option<struct>` fields (`x.home?.field`): an Option, empty when the
+  account was left out or the option is empty; use it with `??`.
+- `mint.create(…, tokenProgram)` / `vault.create(…, tokenProgram)`: an explicit token program, for instructions that
+  take more than one.
 - `Init<Mint>` / `InitIfNeeded<Mint>` with `mint.create(payer, seeds | null, decimals, mintAuthority, freezeAuthority)`
   and `Init<TokenAccount>` / `InitIfNeeded<TokenAccount>` (without `Ata<…>`) with `vault.create(payer, seeds | null,
   mint, authority)`: Anchor's `init` with `mint::` / `token::` constraints, at a PDA of this program or (with `null`) a

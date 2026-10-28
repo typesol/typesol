@@ -469,13 +469,26 @@ export type InitIfNeeded<T> = T extends TokenAccount
        * Anchor `init_if_needed` + `token::…`: create it as `create(payer, seeds, mint, authority)` does unless it exists;
        * an existing one must be that PDA, a token account of `mint` owned by `authority`. True when it created it now.
        */
-      createIfNeeded(payer: Mut<Signer>, seeds: Seed[] | null, mint: AccountMeta, authority: Pubkey): boolean;
+      createIfNeeded(
+        payer: Mut<Signer>,
+        seeds: Seed[] | null,
+        mint: AccountMeta,
+        authority: Pubkey,
+        tokenProgram?: TokenProgram | Token2022Program | TokenInterface,
+      ): boolean;
       readonly pdaBump: u8;
     }
   : T extends Mint
     ? T & {
         /** Anchor `init_if_needed` + `mint::…`: an existing mint must have these decimals and authorities. */
-        createIfNeeded(payer: Mut<Signer>, seeds: Seed[] | null, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): boolean;
+        createIfNeeded(
+          payer: Mut<Signer>,
+          seeds: Seed[] | null,
+          decimals: u8,
+          mintAuthority: Pubkey,
+          freezeAuthority: Pubkey | null,
+          tokenProgram?: TokenProgram | Token2022Program | TokenInterface,
+        ): boolean;
         readonly pdaBump: u8;
       }
     : T &
@@ -841,7 +854,13 @@ export type Init<T> = T extends TokenAccount
        * PDA of `seeds` (or, with `null`, a new keypair account that signs), under the instruction's token program, with
        * `payer` funding rent. Returns the bump (0 for a keypair).
        */
-      create(payer: Mut<Signer>, seeds: Seed[] | null, mint: AccountMeta, authority: Pubkey): u8;
+      create(
+        payer: Mut<Signer>,
+        seeds: Seed[] | null,
+        mint: AccountMeta,
+        authority: Pubkey,
+        tokenProgram?: TokenProgram | Token2022Program | TokenInterface,
+      ): u8;
       /** The PDA bump, after create(seeds, …). */
       readonly pdaBump: u8;
     }
@@ -852,7 +871,14 @@ export type Init<T> = T extends TokenAccount
          * `seeds` (or, with `null`, a new keypair account that signs) under the instruction's token program, with `payer`
          * funding rent. Returns the bump (0 for a keypair).
          */
-        create(payer: Mut<Signer>, seeds: Seed[] | null, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): u8;
+        create(
+          payer: Mut<Signer>,
+          seeds: Seed[] | null,
+          decimals: u8,
+          mintAuthority: Pubkey,
+          freezeAuthority: Pubkey | null,
+          tokenProgram?: TokenProgram | Token2022Program | TokenInterface,
+        ): u8;
         readonly pdaBump: u8;
       }
     : T &

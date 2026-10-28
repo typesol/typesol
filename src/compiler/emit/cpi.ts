@@ -218,17 +218,27 @@ export abstract class CpiEmitter extends CallEmitter {
     const isMint = target.kind.kind === "mint";
     const ifNeeded = (target.kind as { init?: string }).init === "ifNeeded";
     const call = `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}`;
-    const usage = isMint ? `${call}(payer, seeds | null, decimals, mintAuthority, freezeAuthority | null)` : `${call}(payer, seeds | null, mint, authority)`;
+    const usage = isMint
+      ? `${call}(payer, seeds | null, decimals, mintAuthority, freezeAuthority | null, tokenProgram?)`
+      : `${call}(payer, seeds | null, mint, authority, tokenProgram?)`;
     if (!topLevel) this.fail(node, `${call}(...) must be a top-level statement of the instruction`);
     if (this.created.has(target.name)) this.fail(node, `${target.name} is already created`);
     const a = node.arguments;
     if (!isMint && a.length === 1)
       this.fail(node, `${call}(payer) creates an associated token account: wrap it in Ata<…, "owner", "mint">; or call ${usage.slice(call.length)}`);
-    if (a.length !== (isMint ? 5 : 4)) this.fail(node, usage);
+    const fixedArgs = isMint ? 5 : 4;
+    if (a.length !== fixedArgs && a.length !== fixedArgs + 1) this.fail(node, usage);
     const payer = this.accountParam(a[0]!, "the payer");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0]!, "the payer must be a Mut<Signer>");
-    const programs = this.ix!.accounts.filter((p) => p.kind.kind === "tokenProgram");
-    if (programs.length !== 1) this.fail(node, `${call}(...) needs exactly one token program parameter (TokenProgram, Token2022Program or TokenInterface)`);
+    // The token program: named as the last argument, or the instruction's only token program parameter.
+    let programs = this.ix!.accounts.filter((p) => p.kind.kind === "tokenProgram");
+    if (a[fixedArgs]) {
+      const named = this.accountParam(a[fixedArgs]!, "the token program");
+      if (named.kind.kind !== "tokenProgram") this.fail(a[fixedArgs]!, "pass a TokenProgram, Token2022Program or TokenInterface parameter");
+      programs = [named];
+    }
+    if (programs.length !== 1)
+      this.fail(node, `${call}(...) needs one token program: pass it as the last argument, or have exactly one token program parameter`);
     if (programs[0]!.optional) this.fail(programs[0]!.node, `${call}(...) needs "${programs[0]!.name}": it cannot be optional`);
     if (!this.ix!.accounts.some((p) => p.kind.kind === "system" && !p.optional)) this.fail(node, `${call}(...) needs a SystemProgram parameter`);
     const tp = `a_${programs[0]!.name}`;

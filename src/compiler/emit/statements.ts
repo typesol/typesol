@@ -56,8 +56,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(ts.isBreakStatement(stmt) ? `break;` : `goto ${this.loops.at(-1)};`);
       return;
     }
-    if (ts.isDoStatement(stmt) || ts.isForInStatement(stmt))
-      this.fail(stmt, "only for (init; cond; step), for (const x of list) and while loops are supported");
+    if (ts.isDoStatement(stmt)) return this.doLoop(stmt);
+    if (ts.isForInStatement(stmt)) this.fail(stmt, "for … in is not supported: use for (init; cond; step), for (const x of list), while or do … while");
     this.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported in TypeSOL`);
   }
 
@@ -129,11 +129,15 @@ export abstract class StatementEmitter extends CpiEmitter {
     const subject = this.expr(stmt.expression);
     const typed = subject.literal !== undefined ? this.literal(subject.literal, U64, stmt.expression) : subject;
     if (typed.type.kind !== "int" && typed.type.kind !== "enum") this.fail(stmt.expression, "switch works on integers and enums");
-    if (typed.type.kind === "int" && INT_INFO[typed.type.name].bytes === 16)
-      this.fail(stmt.expression, "switch on 128-bit integers is not supported; use if/else");
+    // C cannot switch on 128-bit values: pick the case's index with comparisons, then switch on that.
+    const wide = typed.type.kind === "int" && INT_INFO[typed.type.name].bytes === 16;
     const t = this.tmp("sw");
     this.line(`${scalarC(typed.type as ScalarType)} ${t} = ${typed.c};`);
-    this.line(`switch (${t}) {`);
+    const pick = wide ? this.tmp("swi") : undefined;
+    const pickAt = this.lines.length;
+    const cases: string[] = [];
+    if (pick) this.line(`int ${pick} = -1;`);
+    this.line(`switch (${pick ?? t}) {`);
     const seen = new Set<string>();
     for (const clause of stmt.caseBlock.clauses) {
       if (ts.isCaseClause(clause)) {
@@ -148,7 +152,10 @@ export abstract class StatementEmitter extends CpiEmitter {
         const label = this.expect(this.expr(e, typed.type), typed.type, e);
         if (seen.has(label.c)) this.fail(clause.expression, "duplicate case");
         seen.add(label.c);
-        this.line(`case ${label.c}: {`);
+        if (pick) {
+          cases.push(label.c);
+          this.line(`case ${cases.length - 1}: {`);
+        } else this.line(`case ${label.c}: {`);
       } else this.line(`default: {`);
       this.loops.push(this.loops.at(-1) ?? "");
       this.block(() => clause.statements.forEach((s) => this.reporter.guard(() => this.statement(s))));
@@ -156,6 +163,10 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`}`);
     }
     this.line(`}`);
+    if (pick && cases.length) {
+      const pad = "  ".repeat(this.indent);
+      this.lines.splice(pickAt + 1, 0, ...cases.map((c, i) => `${pad}${i ? "else " : ""}if (${t} == ${c}) ${pick} = ${i};`));
+    }
   }
 
   protected forLoop(stmt: ts.ForStatement) {
@@ -249,6 +260,23 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.loops.pop();
       this.line(`${label}:;`);
       if (step) this.expressionStatement(step, false);
+    });
+    this.line(`}`);
+  }
+
+  /** `do { … } while (cond)`: the body once, then the test; `continue` goes to the test. */
+  protected doLoop(stmt: ts.DoStatement) {
+    const label = this.tmp("ts_continue_");
+    this.line(`while (1) {`);
+    this.block(() => {
+      this.loops.push(label);
+      this.line(`{`);
+      this.block(() => this.body(stmt.statement));
+      this.line(`}`);
+      this.loops.pop();
+      this.line(`${label}:;`);
+      const c = this.expect(this.expr(stmt.expression, BOOL), BOOL, stmt.expression);
+      this.line(`if (!${c.c}) break;`);
     });
     this.line(`}`);
   }
@@ -416,7 +444,21 @@ export abstract class StatementEmitter extends CpiEmitter {
       };
       const base = compound[op];
       if (base !== undefined) return this.assign(e.left, e.right, base);
-      if (op === ts.SyntaxKind.AsteriskAsteriskEqualsToken) this.fail(e.operatorToken, "write x = x ** n instead of **=");
+      if (op === ts.SyntaxKind.AsteriskAsteriskEqualsToken) {
+        // x **= n is x = x ** n; the target is read twice, so it must not run anything (no calls in it).
+        let hasCall = false;
+        const visit = (n: ts.Node): void => {
+          if (ts.isCallExpression(n) && !this.isStorageCall(n)) hasCall = true;
+          ts.forEachChild(n, visit);
+        };
+        visit(e.left);
+        if (hasCall) this.fail(e.left, "**= on a target that calls a function: write x = x ** n with the target in a local");
+        const f = ts.factory;
+        const pow = f.createBinaryExpression(e.left, ts.SyntaxKind.AsteriskAsteriskToken, e.right);
+        ts.setTextRange(pow, e);
+        (pow as { parent?: ts.Node }).parent = e;
+        return this.assign(e.left, pow);
+      }
     }
     if (
       (ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) &&
