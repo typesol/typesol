@@ -233,7 +233,17 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_t22_transfer_fee(${m}, ${amt.c}, &${t}));`);
         return { c: t, type: U64 };
       }
+      case "isTransferring": {
+        // TransferHookAccount (15) on a Token-2022 token account: set only while Token-2022 runs a transfer of it.
+        if (args.length !== 1) this.fail(node, "isTransferring(tokenAccount) takes the source token account");
+        const m = this.anyAccount(args[0], "the token account");
+        this.line(`TS_TRY(ts_t22_layout(${m}, 2));`);
+        const off = this.tmp("eo");
+        this.line(`uint64_t ${off}, ${off}l;`);
+        return { c: `(ts_t22_ext(${m}, 15, &${off}, &${off}l) && ${off}l >= 1 && ${m}->data[${off}] != 0)`, type: BOOL };
+      }
       case "transferHookProgram":
+      case "transferHookAuthority":
       case "permanentDelegate":
       case "mintCloseAuthority": {
         // Token-2022 mint extensions holding an optional Pubkey: TransferHook (14, program at +32),
@@ -241,7 +251,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length !== 1) this.fail(node, `${builtin}(mint) takes the mint`);
         const m = this.anyAccount(args[0], "the mint");
         this.line(`TS_TRY(ts_t22_layout(${m}, 1));`);
-        const [type, field] = builtin === "transferHookProgram" ? [14, 32] : builtin === "permanentDelegate" ? [12, 0] : [3, 0];
+        const [type, field] =
+          builtin === "transferHookProgram" ? [14, 32] : builtin === "transferHookAuthority" ? [14, 0] : builtin === "permanentDelegate" ? [12, 0] : [3, 0];
         this.model.options.set("pubkey", PUBKEY);
         const t = this.tmp("ext");
         this.line(`${optC(PUBKEY)} ${t};`);
@@ -918,6 +929,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
       this.hoisted.push(`  TSS_${h.returns.name} ${t};`);
       this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);
       return { c: `(&${t})`, type: { kind: "structRef", struct: h.returns.name, writable: true } };
+    }
+    if (h.returns.kind === "string") {
+      this.line(`TS_Str ${t};`);
+      this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);
+      return { c: t, type: STRING };
     }
     this.line(`${scalarC(h.returns)} ${t};`);
     this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);

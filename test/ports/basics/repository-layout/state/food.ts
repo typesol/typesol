@@ -1,4 +1,4 @@
-import { type u32, log } from "typesol";
+import { type u32 } from "typesol";
 
 // get_food_stands(): the carnival's food stands — Larry's Pizza, Taco Shack, Dough Boy's — looked up by name.
 
@@ -12,9 +12,8 @@ export function foodTickets(name: string): u32 {
   return 1n;
 }
 
-/** Logs `before + food type + after` (the food type is a string, which helpers cannot return). */
-export function logWithFood(name: string, before: string, after: string): void {
-  if (name === "Larry's Pizza") log(before + "pizza" + after);
-  else if (name === "Taco Shack") log(before + "taco" + after);
-  else log(before + "fried dough" + after);
+export function foodType(name: string): string {
+  if (name === "Larry's Pizza") return "pizza";
+  if (name === "Taco Shack") return "taco";
+  return "fried dough";
 }

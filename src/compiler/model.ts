@@ -182,7 +182,7 @@ export interface Instruction {
   /** Fixed bytes of the arguments; strings add their length on top. */
   minArgsSize: number;
   /** Sent as return data: a scalar in Borsh, or a fixed-size struct in its fixed layout (as the IDL describes it). */
-  returns: ScalarType | { kind: "struct"; name: string } | undefined;
+  returns: ScalarType | { kind: "string" } | { kind: "struct"; name: string } | undefined;
   /** account name -> seeds, recorded when the body creates or verifies a PDA with describable seeds. */
   pdas: Map<string, IdlSeed[]>;
   /** account name -> the program its PDA is derived under, when not this program (e.g. associated token accounts). */
@@ -225,7 +225,7 @@ export interface Helper {
   display: string;
   params: HelperParam[];
   /** A struct result is written through an out pointer (`TSS_<name> *ret`) that the caller provides. */
-  returns: ScalarType | { kind: "struct"; name: string } | undefined;
+  returns: ScalarType | { kind: "string" } | { kind: "struct"; name: string } | undefined;
   node: HelperNode;
   /** The body; an arrow's expression body is one return (or expression) statement. */
   statements: readonly ts.Statement[];

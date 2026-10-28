@@ -5,11 +5,9 @@
 // Mixed threshold live in the mint's Token Metadata; per-wallet entries are ["ab_wallet", wallet] PDAs, which the
 // ExtraAccountMetaList derives from the source's and destination's owners (account data bytes 32..64).
 // PARTIAL:
-//  - interface: init_mint takes InitMintArgs' fields as separate arguments (same instruction bytes, different IDL),
-//    since struct arguments need a fixed layout and this one holds strings.
-//  - builtin gaps: the mint's extensions (permanent delegate, transfer hook, metadata pointer) and the Token Metadata
-//    calls are hand-encoded (`invoke`); tx_hook reads the mint's TokenMetadata (its additional "AB" / "threshold"
-//    fields) by walking the TLV list and the Borsh strings byte by byte.
+//  - InitMintArgs is a `@layout borsh` struct (Anchor's bytes and IDL); its strings hold up to 200 bytes.
+//  - tx_hook reads the mint's TokenMetadata (its additional "AB" / "threshold" fields) by walking the TLV list and the
+//    Borsh strings byte by byte.
 //  - tx_hook decodes an ab_wallet with loadForeign (owner, discriminator and size checked), where the original's
 //    try_deserialize checks the discriminator only; the ab_wallet addresses are this program's PDAs (Token-2022 checks
 //    them against the list), so only this program could have written them either way. A mint that is not a mint with
@@ -19,6 +17,7 @@ import {
   type AccountInfo,
   type AccountMeta,
   type CloseTo,
+  type FixedString,
   type HasOne,
   type Init,
   type Mint,
@@ -31,14 +30,10 @@ import {
   type Token2022Program,
   type u16,
   type u32,
-  hex,
   initExtraAccountMetas,
-  invoke,
   loadForeign,
   pubkey,
   readData,
-  readonly,
-  readonlySigner,
   rentExempt,
   require,
   seedAccountData,
@@ -46,7 +41,6 @@ import {
   u64,
   u8,
   updateExtraAccountMetas,
-  writable,
 } from "typesol";
 
 const PROGRAM_ID = pubkey("3ku1ZEGvBEEfhaYsAzBZuecTPEa58ZRhoVqHVGpGxVGi");
@@ -202,37 +196,46 @@ function hasThreshold(mint: AccountMeta): boolean {
   return false;
 }
 
+/** @layout borsh */
+export interface InitMintArgs {
+  decimals: u8;
+  mintAuthority: Pubkey;
+  freezeAuthority: Pubkey;
+  permanentDelegate: Pubkey;
+  transferHookAuthority: Pubkey;
+  mode: Mode;
+  threshold: u64;
+  name: FixedString<200>;
+  symbol: FixedString<200>;
+  uri: FixedString<200>;
+}
+
+/** The "AB" metadata value for a mode. */
+function modeName(mode: Mode): string {
+  if (mode === Mode.Allow) return "Allow";
+  if (mode === Mode.Block) return "Block";
+  return "Mixed";
+}
+
 export function initMint(
   payer: Mut<Signer>,
   mint: Mut<Signer>,
   extraMetasAccount: Mut<AccountInfo>,
   systemProgram: SystemProgram,
   tokenProgram: Token2022Program,
-  decimals: u8,
-  mintAuthority: Pubkey,
-  freezeAuthority: Pubkey,
-  permanentDelegate: Pubkey,
-  transferHookAuthority: Pubkey,
-  mode: Mode,
-  threshold: u64,
-  name: string,
-  symbol: string,
-  uri: string,
+  args: InitMintArgs,
 ): void {
   // `init` with mint::* and extensions::*.
   systemProgram.createAccount(payer, mint, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key);
-  invoke(tokenProgram, [writable(mint)], [u8(35n), permanentDelegate]); // InitializePermanentDelegate
-  invoke(tokenProgram, [writable(mint)], [u8(36n), u8(0n), transferHookAuthority, PROGRAM_ID]); // TransferHook Initialize
-  invoke(tokenProgram, [writable(mint)], [u8(39n), u8(0n), payer.key, mint.key]); // MetadataPointer Initialize
-  // InitializeMint2: decimals, the payer as mint authority, a freeze authority.
-  invoke(tokenProgram, [writable(mint)], [u8(20n), decimals, payer.key, u8(1n), freezeAuthority]);
-  // Token Metadata Initialize (metadata = the mint), then the AB mode and, in Mixed mode, the threshold.
-  invoke(tokenProgram, [writable(mint), readonly(payer), readonly(mint), readonlySigner(payer)], [hex("d2e11ea258b84d8d"), name, symbol, uri]);
-  // Token Metadata UpdateField Key("AB") = the mode's name.
-  if (mode === Mode.Allow) invoke(tokenProgram, [writable(mint), readonlySigner(payer)], [hex("dde9312db5cadcc8"), u8(3n), "AB", "Allow"]);
-  else if (mode === Mode.Block) invoke(tokenProgram, [writable(mint), readonlySigner(payer)], [hex("dde9312db5cadcc8"), u8(3n), "AB", "Block"]);
-  else invoke(tokenProgram, [writable(mint), readonlySigner(payer)], [hex("dde9312db5cadcc8"), u8(3n), "AB", "Mixed"]);
-  if (mode === Mode.Mixed) invoke(tokenProgram, [writable(mint), readonlySigner(payer)], [hex("dde9312db5cadcc8"), u8(3n), "threshold", `${threshold}`]);
+  tokenProgram.initializePermanentDelegate(mint, args.permanentDelegate);
+  tokenProgram.initializeTransferHook(mint, args.transferHookAuthority, PROGRAM_ID);
+  tokenProgram.initializeMetadataPointer(mint, payer.key, mint.key);
+  // The payer as mint authority, a freeze authority.
+  tokenProgram.initializeMint2(mint, args.decimals, payer.key, args.freezeAuthority);
+  // Token Metadata (metadata = the mint), then the AB mode and, in Mixed mode, the threshold.
+  tokenProgram.initializeMetadata(mint, payer, payer, args.name, args.symbol, args.uri);
+  tokenProgram.updateMetadataField(mint, payer, "AB", modeName(args.mode));
+  if (args.mode === Mode.Mixed) tokenProgram.updateMetadataField(mint, payer, "threshold", `${args.threshold}`);
   const minBalance = rentExempt(mint.dataLen);
   if (minBalance > mint.lamports) systemProgram.transfer(payer, mint, minBalance - mint.lamports);
   initExtraAccountMetas(payer, extraMetasAccount, mint, systemProgram, [
@@ -253,8 +256,7 @@ export function attachToMint(
   systemProgram: SystemProgram,
   tokenProgram: Token2022Program,
 ): void {
-  // TransferHook Update (36 / 1): this program.
-  invoke(tokenProgram, [writable(mint), readonlySigner(payer)], [u8(36n), u8(1n), PROGRAM_ID]);
+  tokenProgram.updateTransferHook(mint, payer, PROGRAM_ID);
   initExtraAccountMetas(payer, extraMetasAccount, mint, systemProgram, [
     { seeds: ["ab_wallet", seedAccountData(0n, 32n, 32n)], isSigner: false, isWritable: false },
     { seeds: ["ab_wallet", seedAccountData(2n, 32n, 32n)], isSigner: false, isWritable: false },
@@ -313,13 +315,10 @@ export function removeWallet(
 ): void {}
 
 export function changeMode(authority: Mut<Signer>, mint: Mut<Mint>, tokenProgram: Token2022Program, systemProgram: SystemProgram, args: ChangeModeArgs): void {
-  // Token Metadata UpdateField Key("AB") = the mode's name.
-  if (args.mode === Mode.Allow) invoke(tokenProgram, [writable(mint), readonlySigner(authority)], [hex("dde9312db5cadcc8"), u8(3n), "AB", "Allow"]);
-  else if (args.mode === Mode.Block) invoke(tokenProgram, [writable(mint), readonlySigner(authority)], [hex("dde9312db5cadcc8"), u8(3n), "AB", "Block"]);
-  else invoke(tokenProgram, [writable(mint), readonlySigner(authority)], [hex("dde9312db5cadcc8"), u8(3n), "AB", "Mixed"]);
+  tokenProgram.updateMetadataField(mint, authority, "AB", modeName(args.mode));
   if (args.mode === Mode.Mixed || hasThreshold(mint)) {
     const threshold = args.mode === Mode.Mixed ? args.threshold : 0n;
-    invoke(tokenProgram, [writable(mint), readonlySigner(authority)], [hex("dde9312db5cadcc8"), u8(3n), "threshold", `${threshold}`]);
+    tokenProgram.updateMetadataField(mint, authority, "threshold", `${threshold}`);
   }
   const minBalance = rentExempt(mint.dataLen);
   if (minBalance > mint.lamports) systemProgram.transfer(authority, mint, minBalance - mint.lamports);

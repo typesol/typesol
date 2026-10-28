@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { resolveValueType, structNameOf } from "../analyze.js";
+import { MAX_RETURN_DATA, resolveValueType, structNameOf } from "../analyze.js";
 import { INT_INFO, type ScalarType, type ValueType, isWritable, optionKey, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, type Value, type Local, type Closure, cString, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
@@ -99,8 +99,24 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     if (!stmt.expression) this.fail(stmt, `return a ${typeName(returns)}`);
     const v = this.expect(this.expr(stmt.expression, returns), returns, stmt.expression);
-    if (this.helper) this.line(returns.kind === "pubkey" ? `*ret = *(${v.c});` : `*ret = ${v.c};`);
-    else if (returns.kind === "pubkey") this.line(`sol_set_return_data((const uint8_t *)(${v.c}), 32);`);
+    if (this.helper && returns.kind === "string") {
+      // The caller gets its own copy: the text may be account data the caller then changes.
+      this.line(`TS_TRY(ts_str_copy(${v.c}, ret));`);
+    } else if (this.helper) this.line(returns.kind === "pubkey" ? `*ret = *(${v.c});` : `*ret = ${v.c};`);
+    else if (returns.kind === "string") {
+      // Return data is the Borsh String: u32 length, then the bytes (at most 1024 in all).
+      const s = this.tmp("rets");
+      const b = this.tmp("retb");
+      this.line(`TS_Str ${s} = ${v.c};`);
+      this.line(
+        `if (${s}.len > ${MAX_RETURN_DATA - 4}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: returned string longer than ${MAX_RETURN_DATA - 4} bytes");`,
+      );
+      this.line(`uint8_t *${b};`);
+      this.line(`TS_TRY(ts_alloc(4 + ${s}.len, &${b}));`);
+      this.line(`ts_write_le(${b}, ${s}.len, 4);`);
+      this.line(`ts_memcpy(${b} + 4, ${s}.ptr, ${s}.len);`);
+      this.line(`sol_set_return_data(${b}, 4 + ${s}.len);`);
+    } else if (returns.kind === "pubkey") this.line(`sol_set_return_data((const uint8_t *)(${v.c}), 32);`);
     else {
       // Return data is the Borsh encoding: little-endian at the declared width, bool as one byte.
       const t = this.tmp("ret");

@@ -1075,13 +1075,18 @@ function analyzeHelper(
   if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
   if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async");
   if (!fn.type) reporter.fail(fn.name ?? fn, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
-  let returns: Helper["returns"] = fn.type.kind === ts.SyntaxKind.VoidKeyword ? undefined : resolveScalarType(fn.type, scope);
+  let returns: Helper["returns"] =
+    fn.type.kind === ts.SyntaxKind.VoidKeyword
+      ? undefined
+      : fn.type.kind === ts.SyntaxKind.StringKeyword
+        ? { kind: "string" }
+        : resolveScalarType(fn.type, scope);
   if (fn.type.kind !== ts.SyntaxKind.VoidKeyword && !returns) {
     const sn = structNameOf(fn.type, scope);
     const s = sn ? structs.get(sn) : undefined;
     if (s && (s.size === undefined || s.vec))
       reporter.fail(fn.type, `${s.name} has variable-size fields and cannot be returned; return a struct of fixed size`);
-    if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey, a struct or a type parameter");
+    if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey, string, a struct or a type parameter");
     returns = { kind: "struct", name: s.name };
   }
   const params = fn.parameters
@@ -1165,7 +1170,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
     reporter.fail(fn, "instructions cannot be async or generators");
   let returns: Instruction["returns"];
   if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword) {
-    returns = resolveScalarType(fn.type, scope);
+    returns = fn.type.kind === ts.SyntaxKind.StringKeyword ? { kind: "string" } : resolveScalarType(fn.type, scope);
     const s =
       !returns && ts.isTypeReferenceNode(fn.type) && ts.isIdentifier(fn.type.typeName) && !fn.type.typeArguments
         ? structs.get(fn.type.typeName.text)
@@ -1176,7 +1181,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
       if (s.size > MAX_RETURN_DATA) reporter.fail(fn.type, `${s.name} is ${s.size} bytes; return data holds at most ${MAX_RETURN_DATA}`);
       returns = { kind: "struct", name: s.name };
     }
-    if (!returns) reporter.fail(fn.type, "instructions return void, one integer, boolean or Pubkey, or a fixed-size struct (sent as return data)");
+    if (!returns) reporter.fail(fn.type, "instructions return void, one integer, boolean, Pubkey or string, or a fixed-size struct (sent as return data)");
   }
 
   const accounts: AccountParam[] = [];

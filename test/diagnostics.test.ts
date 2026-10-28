@@ -167,7 +167,11 @@ describe("subset enforcement", () => {
     ["mixed integer widths", `export function f(b: Mut<Box>, x: u8): void { b.value = b.value + x; }`, /different types: u64 and u8/],
     ["literals out of range", `export function f(x: u8): void { const y: u8 = 256n; }`, /256 does not fit in u8/],
     ["non-typesol imports", `import fs from "node:fs";\nexport function f(): void {}`, /only imports from "typesol"/],
-    ["instructions returning strings", `export function f(): string { return "x"; }`, /return void, one integer, boolean or Pubkey, or a fixed-size struct/],
+    [
+      "instructions returning arrays",
+      `export function f(): FixedArray<u64, 2> { return fixedArray<u64, 2>(0n); }`,
+      /return void, one integer, boolean, Pubkey or string, or a fixed-size struct/,
+    ],
     ["Init without SystemProgram", `export function f(p: Mut<Signer>, b: Init<Box>): void { b.create(p, ["b"]); }`, /need a SystemProgram/],
     ["Init never created", `export function f(p: Mut<Signer>, b: Init<Box>, s: SystemProgram): void { }`, /never created/],
     [

@@ -19,7 +19,7 @@ Status:
 | `basics/counter` | `basics/counter.ts` | PORTED | |
 | `basics/create-account` | `basics/create-account.ts` | PORTED | |
 | `basics/cross-program-invocation` | `basics/cross-program-invocation/{hand,lever}.ts` | PORTED | |
-| `basics/favorites` | `basics/favorites.ts` | PARTIAL | the `Vec<String>` argument is a list of `FixedString<50>` structs (no `Vec<string>` arguments yet); the hobbies log line skips Debug escaping |
+| `basics/favorites` | `basics/favorites.ts` | PORTED | |
 | `basics/hello-solana` | `basics/hello-solana.ts` | PORTED | |
 | `basics/pda-rent-payer` | `basics/pda-rent-payer.ts` | PORTED | |
 | `basics/processing-instructions` | `basics/processing-instructions.ts` | PORTED | |
@@ -34,27 +34,27 @@ Status:
 | `tokens/create-token` | `tokens/create-token.ts` | PORTED | |
 | `tokens/escrow` | `tokens/escrow.ts` | PORTED | |
 | `tokens/external-delegate-token-master` | `tokens/external-delegate-token-master.ts` | PARTIAL | the Ethereum address is a left-padded `Hash`, the signature `r, s, recovery_id`; high-s signatures refused |
-| `tokens/merkle-tree-token-claimer` | `tokens/merkle-tree-token-claimer.ts` | PARTIAL | proof siblings are hashed as four u64 words each (same bytes); the mint is created in the instruction, so the vault ATA is created with `createIdempotent` and `MintTo` into it is hand-encoded |
-| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | `MintTo` is hand-encoded (the mint is created in the instruction); a wrong metadata account fails with 6000, not 3003 |
+| `tokens/merkle-tree-token-claimer` | `tokens/merkle-tree-token-claimer.ts` | PARTIAL | proof siblings are hashed as four u64 words each (same bytes) |
+| `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | a wrong metadata account fails with 6000, not 3003 |
 | `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PORTED | |
 | `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PORTED | |
 | `tokens/token-2022/cpi-guard` | `tokens/token-2022/cpi-guard.ts` | PARTIAL | `token::mint` on the sender fails with 6000, not 2014 (the mint parameter keeps its Anchor name) |
-| `tokens/token-2022/default-account-state` | `tokens/token-2022/default-account-state.ts` | PARTIAL | DefaultAccountState instructions are hand-encoded (no Token-2022 extension builtins) |
-| `tokens/token-2022/group` | `tokens/token-2022/group.ts` | PARTIAL | the PDA mint with GroupPointer is created in the body (GroupPointer Initialize hand-encoded); the extension is read by walking the TLV list and not logged with `{:?}` |
-| `tokens/token-2022/immutable-owner` | `tokens/token-2022/immutable-owner.ts` | PARTIAL | InitializeImmutableOwner is hand-encoded |
-| `tokens/token-2022/interest-bearing` | `tokens/token-2022/interest-bearing.ts` | PARTIAL | InterestBearingMint Initialize / UpdateRate are hand-encoded; a wrong rate authority fails with 6000 where the original panics |
-| `tokens/token-2022/memo-transfer` | `tokens/token-2022/memo-transfer.ts` | PARTIAL | MemoTransfer enable / disable are hand-encoded |
-| `tokens/token-2022/metadata` | `tokens/token-2022/metadata.ts` | PARTIAL | Token Metadata interface calls and MetadataPointer are hand-encoded; `initialize` takes three string arguments (same bytes) and `update_field` a unit enum plus a key (different bytes: no data enums carrying strings); a new Key entry is funded even when the key exists |
-| `tokens/token-2022/mint-close-authority` | `tokens/token-2022/mint-close-authority.ts` | PARTIAL | InitializeMintCloseAuthority and closing a mint are hand-encoded |
-| `tokens/token-2022/nft-meta-data-pointer` | `tokens/token-2022/nft-meta-data-pointer.ts` | PARTIAL | Token Metadata / MetadataPointer / MintTo hand-encoded; session tokens checked by their fields instead of re-deriving their PDA; `player` / `game_data` sized to their fields (Anchor reserves 1000 bytes) |
-| `tokens/token-2022/non-transferable` | `tokens/token-2022/non-transferable.ts` | PARTIAL | InitializeNonTransferableMint is hand-encoded |
-| `tokens/token-2022/permanent-delegate` | `tokens/token-2022/permanent-delegate.ts` | PARTIAL | InitializePermanentDelegate is hand-encoded |
-| `tokens/token-2022/transfer-fee` | `tokens/token-2022/transfer-fee.ts` | PARTIAL | TransferFee instructions hand-encoded; `harvest` passes every remaining account (Token-2022 skips the ones the original filters out) |
-| `tokens/token-2022/transfer-hook/account-data-as-seed` | `tokens/token-2022/transfer-hook/account-data-as-seed.ts` | PARTIAL | the `transferring` flag is read by walking the TLV list |
-| `tokens/token-2022/transfer-hook/allow-block-list-token` | `tokens/token-2022/transfer-hook/allow-block-list-token.ts` | PARTIAL | `init_mint` takes InitMintArgs' fields as arguments (same bytes); extensions and Token Metadata hand-encoded; metadata strings read byte by byte; ab_wallet entries decoded with an owner check too |
-| `tokens/token-2022/transfer-hook/counter` | `tokens/token-2022/transfer-hook/counter.ts` | PARTIAL | the `transferring` flag is read by walking the TLV list |
-| `tokens/token-2022/transfer-hook/hello-world` | `tokens/token-2022/transfer-hook/hello-world.ts` | PARTIAL | InitializeTransferHook is hand-encoded; extension fields are read by walking the TLV list |
-| `tokens/token-2022/transfer-hook/transfer-cost` | `tokens/token-2022/transfer-hook/transfer-cost.ts` | PARTIAL | `token::mint` / `token::authority` on the WSOL accounts checked in the body (6002 / 6003, not 2014 / 2015); `transferring` read from the TLV list |
+| `tokens/token-2022/default-account-state` | `tokens/token-2022/default-account-state.ts` | PARTIAL | an Uninitialized state is refused with 6000 before Token-2022's InvalidState |
+| `tokens/token-2022/group` | `tokens/token-2022/group.ts` | PARTIAL | the PDA mint with GroupPointer is created in the body, as Anchor's `init` does; the extension is read by walking the TLV list and not logged with `{:?}` |
+| `tokens/token-2022/immutable-owner` | `tokens/token-2022/immutable-owner.ts` | PORTED | |
+| `tokens/token-2022/interest-bearing` | `tokens/token-2022/interest-bearing.ts` | PARTIAL | a wrong rate authority fails with 6000 where the original panics |
+| `tokens/token-2022/memo-transfer` | `tokens/token-2022/memo-transfer.ts` | PORTED | |
+| `tokens/token-2022/metadata` | `tokens/token-2022/metadata.ts` | PARTIAL | `update_field` takes the field and value as two arguments (same bytes, different IDL: argument structs cannot hold a data enum yet); a new Key entry is funded even when the key exists; `{:?}` logs left out |
+| `tokens/token-2022/mint-close-authority` | `tokens/token-2022/mint-close-authority.ts` | PORTED | |
+| `tokens/token-2022/nft-meta-data-pointer` | `tokens/token-2022/nft-meta-data-pointer.ts` | PARTIAL | session tokens checked by their fields instead of re-deriving their PDA |
+| `tokens/token-2022/non-transferable` | `tokens/token-2022/non-transferable.ts` | PORTED | |
+| `tokens/token-2022/permanent-delegate` | `tokens/token-2022/permanent-delegate.ts` | PORTED | |
+| `tokens/token-2022/transfer-fee` | `tokens/token-2022/transfer-fee.ts` | PARTIAL | `harvest` passes every remaining account (Token-2022 skips the ones the original filters out); a wrong authority fails with 6000 where the original panics |
+| `tokens/token-2022/transfer-hook/account-data-as-seed` | `tokens/token-2022/transfer-hook/account-data-as-seed.ts` | PORTED | |
+| `tokens/token-2022/transfer-hook/allow-block-list-token` | `tokens/token-2022/transfer-hook/allow-block-list-token.ts` | PARTIAL | metadata strings read byte by byte; ab_wallet entries decoded with an owner check too |
+| `tokens/token-2022/transfer-hook/counter` | `tokens/token-2022/transfer-hook/counter.ts` | PORTED | |
+| `tokens/token-2022/transfer-hook/hello-world` | `tokens/token-2022/transfer-hook/hello-world.ts` | PORTED | |
+| `tokens/token-2022/transfer-hook/transfer-cost` | `tokens/token-2022/transfer-hook/transfer-cost.ts` | PARTIAL | `token::mint` / `token::authority` on the WSOL accounts checked in the body (6002 / 6003, not 2014 / 2015) |
 | `tokens/token-2022/transfer-hook/transfer-switch` | `tokens/token-2022/transfer-hook/transfer-switch.ts` | PARTIAL | `switch` is `switch_` in the IDL (same discriminator); `admin == new_admin` is refused (2040, TypeSOL's aliasing check); NotAdmin is 6002, not 2502 |
 | `tokens/token-fundraiser` | `tokens/token-fundraiser.ts` | PORTED | elapsed days use a checked `u16()` where Rust wraps (`as u16`); they differ only after ~179 years |
 | `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PORTED | |

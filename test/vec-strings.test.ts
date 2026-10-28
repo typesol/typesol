@@ -66,4 +66,26 @@ describe("Vec<string> arguments", () => {
     // Longer than FixedString<16>: does not fit (5105).
     expect(customError(await send(d.svm, payer, [ix(d, "shelve", { xs: ["x".repeat(17)] }, [{ address: shelf, writable: true }])]))).toBe(5105);
   });
+
+  it("returns strings from helpers and as Borsh String return data", async () => {
+    const payer = await fundedSigner(d.svm);
+    const shelf = (await generateKeyPairSigner()).address;
+    const disc = createHash("sha256").update("account:Shelf").digest().subarray(0, 8);
+    const data = Buffer.alloc(8 + 4 + 4 * 20);
+    disc.copy(data);
+    d.svm.setAccount({
+      address: shelf,
+      data: new Uint8Array(data),
+      executable: false,
+      lamports: 10n ** 9n,
+      programAddress: d.programId,
+      space: BigInt(data.length),
+    } as never);
+    expectOk(await send(d.svm, payer, [ix(d, "shelve", { xs: ["dune", "emma"] }, [{ address: shelf, writable: true }])]));
+    const r = expectOk(await send(d.svm, payer, [ix(d, "describe", { i: new BN(1) }, [{ address: shelf, writable: true }])]));
+    const ret = Buffer.from(r.returnData().data());
+    expect(ret.readUInt32LE(0)).toBe(ret.length - 4);
+    expect(ret.subarray(4).toString()).toBe("#1 emma / none");
+    expect((d.idl.instructions.find((i) => i.name === "describe") as { returns?: unknown }).returns).toBe("string");
+  });
 });

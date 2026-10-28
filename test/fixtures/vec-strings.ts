@@ -23,3 +23,16 @@ export function relay(self: UncheckedProgram, xs: Vec<string>): void {
 export function shelve(shelf: Mut<Shelf>, xs: Vec<string>): void {
   for (const x of xs) shelf.titles.push(x);
 }
+
+/** A helper returning a string: a copy the caller owns. */
+function label(shelf: Mut<Shelf>, i: u64): string {
+  if (i >= shelf.titles.length) return "none";
+  return `#${i} ${shelf.titles.get(i)}`;
+}
+
+/** Returns a string (Borsh String return data); the helper's copy survives the shelf changing. */
+export function describe(shelf: Mut<Shelf>, i: u64): string {
+  const before = label(shelf, i);
+  shelf.titles.clear();
+  return `${before} / ${label(shelf, i)}`;
+}

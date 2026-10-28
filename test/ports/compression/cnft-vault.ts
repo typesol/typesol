@@ -8,6 +8,7 @@
 //  - IDL: the proof lengths are named `proof1_length` / `proof2_length` (snake case of proof1Length), where the original
 //    says `proof_1_length` / `proof_2_length`; the instruction bytes are the same.
 import {
+  type BubblegumProgram,
   type AccountInfo,
   type Hash,
   type Mut,
@@ -16,14 +17,9 @@ import {
   type SystemProgram,
   type u32,
   type u8,
-  hex,
-  invoke,
   log,
-  readonly,
-  readonlySigner,
   remainingAccounts,
   u64,
-  writable,
 } from "typesol";
 
 export function withdrawCnft(
@@ -33,7 +29,7 @@ export function withdrawCnft(
   merkleTree: Mut<AccountInfo>,
   logWrapper: AccountInfo,
   compressionProgram: Program<"cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK">,
-  bubblegumProgram: Program<"BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY">,
+  bubblegumProgram: BubblegumProgram,
   systemProgram: SystemProgram,
   root: Hash,
   dataHash: Hash,
@@ -42,22 +38,17 @@ export function withdrawCnft(
   index: u32,
 ): void {
   log(`attempting to send nft ${index} from tree ${merkleTree.key}`);
-  // Bubblegum Transfer: tree config, leaf owner (the vault, signing), leaf delegate, new owner, merkle tree, log
-  // wrapper, compression program, system program, then the proof.
-  invoke(
-    bubblegumProgram,
-    [
-      readonly(treeAuthority),
-      readonlySigner(leafOwner),
-      readonly(leafOwner),
-      readonly(newLeafOwner),
-      writable(merkleTree),
-      readonly(logWrapper),
-      readonly(compressionProgram),
-      readonly(systemProgram),
-      ...readonly(remainingAccounts()),
-    ],
-    [hex("a334c8e78c0345ba"), root, dataHash, creatorHash, nonce, index],
+  bubblegumProgram.transfer(
+    treeAuthority,
+    leafOwner,
+    leafOwner,
+    newLeafOwner,
+    merkleTree,
+    logWrapper,
+    compressionProgram,
+    systemProgram,
+    { root, dataHash, creatorHash, nonce, index },
+    remainingAccounts(),
     ["cNFT-vault", leafOwner.pdaBump],
   );
 }
@@ -72,7 +63,7 @@ export function withdrawTwoCnfts(
   merkleTree2: Mut<AccountInfo>,
   logWrapper: AccountInfo,
   compressionProgram: Program<"cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK">,
-  bubblegumProgram: Program<"BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY">,
+  bubblegumProgram: BubblegumProgram,
   systemProgram: SystemProgram,
   root1: Hash,
   dataHash1: Hash,
@@ -90,37 +81,31 @@ export function withdrawTwoCnfts(
   log(`attempting to send nfts from trees ${merkleTree1.key} and ${merkleTree2.key}`);
   const rest = remainingAccounts();
   log("withdrawing cNFT#1");
-  invoke(
-    bubblegumProgram,
-    [
-      readonly(treeAuthority1),
-      readonlySigner(leafOwner),
-      readonly(leafOwner),
-      readonly(newLeafOwner1),
-      writable(merkleTree1),
-      readonly(logWrapper),
-      readonly(compressionProgram),
-      readonly(systemProgram),
-      ...readonly(rest.slice(0n, u64(proof1Length))),
-    ],
-    [hex("a334c8e78c0345ba"), root1, dataHash1, creatorHash1, nonce1, index1],
+  bubblegumProgram.transfer(
+    treeAuthority1,
+    leafOwner,
+    leafOwner,
+    newLeafOwner1,
+    merkleTree1,
+    logWrapper,
+    compressionProgram,
+    systemProgram,
+    { root: root1, dataHash: dataHash1, creatorHash: creatorHash1, nonce: nonce1, index: index1 },
+    rest.slice(0n, u64(proof1Length)),
     ["cNFT-vault", leafOwner.pdaBump],
   );
   log("withdrawing cNFT#2");
-  invoke(
-    bubblegumProgram,
-    [
-      readonly(treeAuthority2),
-      readonlySigner(leafOwner),
-      readonly(leafOwner),
-      readonly(newLeafOwner2),
-      writable(merkleTree2),
-      readonly(logWrapper),
-      readonly(compressionProgram),
-      readonly(systemProgram),
-      ...readonly(rest.slice(u64(proof1Length))),
-    ],
-    [hex("a334c8e78c0345ba"), root2, dataHash2, creatorHash2, nonce2, index2],
+  bubblegumProgram.transfer(
+    treeAuthority2,
+    leafOwner,
+    leafOwner,
+    newLeafOwner2,
+    merkleTree2,
+    logWrapper,
+    compressionProgram,
+    systemProgram,
+    { root: root2, dataHash: dataHash2, creatorHash: creatorHash2, nonce: nonce2, index: index2 },
+    rest.slice(u64(proof1Length)),
     ["cNFT-vault", leafOwner.pdaBump],
   );
   log("successfully sent cNFTs");

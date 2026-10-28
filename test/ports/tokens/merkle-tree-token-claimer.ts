@@ -1,15 +1,11 @@
 // Port of tokens/merkle-tree-token-claimer @ de09019; see test/ports/README.md.
 //
-// PARTIAL (builtin gaps, same interface and account layout):
+// PARTIAL (same interface and account layout):
 //  - the proof is a flat `hashes: Vec<u8>`. TypeSOL cannot slice bytes into a Hash (and sha256 takes at most 16
 //    parts), so each 32-byte sibling is packed into four little-endian u64 words, which sha256 hashes as the same
 //    32 bytes.
-//  - the mint (a keypair `init`) is created in the body, where it is an AccountInfo to TypeSOL, so the vault ATA is
-//    created with createIdempotent and MintTo into it is hand-encoded (`invoke`). The claimer's ATA is
-//    Ata<InitIfNeeded<TokenAccount>, …>; SetAuthority and the rest are typed.
 // The `[u8; 32]` root is a Hash (the same 32 bytes in the account and in instruction data).
 import {
-  type AccountMeta,
   type AssociatedTokenProgram,
   type Ata,
   type Hash,
@@ -26,17 +22,11 @@ import {
   type TokenProgram,
   type Vec,
   AuthorityType,
-  MINT_SIZE,
-  invoke,
   pubkey,
-  readonly,
-  readonlySigner,
-  rentExempt,
   require,
   sha256,
   u64,
   u8,
-  writable,
 } from "typesol";
 
 const DEFAULT_PUBKEY = pubkey("11111111111111111111111111111111");
@@ -100,8 +90,8 @@ function computeRoot(claimer: Pubkey, amount: u64, proof: Vec<u8>, index: u64): 
 
 export function initializeAirdropData(
   airdropState: Init<AirdropState>,
-  mint: Mut<Signer>,
-  vault: Ata<Mut<AccountMeta>, "airdropState", "mint">,
+  mint: Init<Mint>,
+  vault: Ata<InitIfNeeded<TokenAccount>, "airdropState", "mint">,
   authority: Mut<Signer>,
   systemProgram: SystemProgram,
   tokenProgram: TokenProgram,
@@ -110,17 +100,16 @@ export function initializeAirdropData(
   amount: u64,
 ): void {
   airdropState.bump = airdropState.create(authority, ["merkle_tree", mint.key]);
-  systemProgram.createAccount(authority, mint, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key);
-  tokenProgram.initializeMint2(mint, 6n, authority.key, null);
-  associatedTokenProgram.createIdempotent(authority, vault, airdropState, mint, systemProgram, tokenProgram);
+  mint.create(authority, null, 6n, authority.key, null);
+  vault.createIfNeeded(authority);
   require(amount > 0n, ClaimError.InvalidAmount);
   airdropState.merkleRoot = merkleRoot;
   airdropState.authority = authority.key;
   airdropState.mint = mint.key;
   airdropState.airdropAmount = amount;
   airdropState.amountClaimed = 0n;
-  // SPL Token MintTo (instruction 7) into the new vault, then drop the mint authority for good.
-  invoke(tokenProgram, [writable(mint), writable(vault), readonlySigner(authority)], [u8(7n), amount]);
+  // Mint into the new vault, then drop the mint authority for good.
+  tokenProgram.mintTo(mint, vault, authority, amount);
   tokenProgram.setAuthority(mint, authority, AuthorityType.MintTokens, null);
 }
 

@@ -424,6 +424,13 @@ export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<S
 export declare function transferFee(mint: AccountMeta | RemainingAccount, amount: u64): u64;
 /** The TransferHook extension's program, if any. */
 export declare function transferHookProgram(mint: AccountMeta | RemainingAccount): Option<Pubkey>;
+/** The TransferHook extension's authority (who may change the hook program), if any. */
+export declare function transferHookAuthority(mint: AccountMeta | RemainingAccount): Option<Pubkey>;
+/**
+ * Whether Token-2022 is transferring from this token account right now (its TransferHookAccount `transferring` flag):
+ * true inside a transfer hook called by Token-2022, false when the hook is invoked directly.
+ */
+export declare function isTransferring(tokenAccount: AccountMeta | RemainingAccount): boolean;
 /** The PermanentDelegate extension's delegate, if any (it can move or burn anyone's tokens). */
 export declare function permanentDelegate(mint: AccountMeta | RemainingAccount): Option<Pubkey>;
 /** The MintCloseAuthority extension's authority, if any. */
@@ -1183,9 +1190,11 @@ export interface SystemProgram extends AccountMeta {
 interface TokenOps {
   transfer(from: TokenAccount, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   transferChecked(from: TokenAccount, mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  mintTo(mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** `mint`: a Mut<Mint>, or a mint this instruction created and initialized (Mut<Signer> / Mut<AccountInfo>). */
+  mintTo(mint: Mint | AccountMeta, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   burn(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  closeAccount(account: TokenAccount, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** Close a token account (empty), or under Token-2022 a mint with no supply left (its MintCloseAuthority signs). */
+  closeAccount(account: TokenAccount | Mint, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Let `delegate` move up to `amount` from `source`. */
   approve(source: TokenAccount, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   revoke(source: TokenAccount, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
@@ -1205,7 +1214,7 @@ interface TokenOps {
 interface Token2022Ops {
   /** Token-2022 only: write name/symbol/uri into a mint whose MetadataPointer points at itself (the mint needs lamports for the larger size). */
   initializeMetadata(
-    mint: Mint,
+    mint: AccountMeta,
     updateAuthority: AccountMeta,
     mintAuthority: AccountMeta,
     name: string,
@@ -1238,6 +1247,44 @@ interface Token2022Ops {
   initializeInterestBearingMint(mint: AccountMeta, rateAuthority: Pubkey | null, rate: i16): void;
   /** ImmutableOwner on a token account (before initializeAccount3): its owner can never change. */
   initializeImmutableOwner(account: AccountMeta): void;
+
+  // Token-2022 extension instructions on mints and accounts that have the extension.
+  /** DefaultAccountState Update: new token accounts start frozen (true) or initialized (false). */
+  updateDefaultAccountState(mint: AccountMeta, freezeAuthority: AccountMeta, frozen: boolean, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** TransferHook Update: the program invoked on every transfer (null: none). */
+  updateTransferHook(mint: AccountMeta, authority: AccountMeta, programId: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** MemoTransfer Enable: incoming transfers to `account` need a memo instruction before them. */
+  enableRequiredMemoTransfers(account: AccountMeta, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** MemoTransfer Disable. */
+  disableRequiredMemoTransfers(account: AccountMeta, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** InterestBearingMint UpdateRate (basis points per year). */
+  updateInterestRate(mint: AccountMeta, rateAuthority: AccountMeta, rate: i16, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** TransferFee TransferCheckedWithFee: `fee` must be the fee Token-2022 computes for `amount`; decimals are the mint's. */
+  transferCheckedWithFee(
+    from: TokenAccount,
+    mint: Mint,
+    to: TokenAccount,
+    authority: AccountMeta,
+    amount: u64,
+    fee: u64,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** TransferFee HarvestWithheldTokensToMint: move withheld fees from the given token accounts (passed on writable as they were passed) to the mint. */
+  harvestWithheldTokensToMint(mint: AccountMeta, sources: RemainingAccounts | RemainingSlice): void;
+  /** TransferFee WithdrawWithheldTokensFromMint: the fees held by the mint to `destination`. */
+  withdrawWithheldTokensFromMint(mint: AccountMeta, destination: TokenAccount, withdrawAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** TransferFee SetTransferFee: takes effect two epochs later. */
+  setTransferFee(mint: AccountMeta, configAuthority: AccountMeta, basisPoints: u16, maximumFee: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+
+  // The Token Metadata interface, for metadata stored in the mint (after initializeMetadata).
+  /** Set "name", "symbol" or "uri", or any other key as an additional field. */
+  updateMetadataField(mint: AccountMeta, updateAuthority: AccountMeta, field: string, value: string, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** Remove an additional field; with `idempotent` false a missing key fails. */
+  removeMetadataKey(mint: AccountMeta, updateAuthority: AccountMeta, key: string, idempotent: boolean, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** Hand the update authority to `newAuthority`, or make the metadata immutable with null. */
+  updateMetadataAuthority(mint: AccountMeta, updateAuthority: AccountMeta, newAuthority: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** Emit: the whole TokenMetadata as Token-2022's return data. */
+  emitMetadata(mint: AccountMeta): void;
 }
 
 /** The SPL Token program (Tokenkeg). Its address is checked. */

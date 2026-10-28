@@ -611,7 +611,7 @@ export abstract class CpiEmitter extends CallEmitter {
     buf: string,
     len: string,
     seeds: { name: string; count: number | string },
-    tail?: { from: string; to: string },
+    tail?: { from: string; to: string; asPassed?: boolean },
   ) {
     const m = this.tmp("metas");
     const fixed = metas.map(([acc, w, sg]) => `{&${acc}->key, ${w}, ${sg}}`).join(", ");
@@ -628,7 +628,9 @@ export abstract class CpiEmitter extends CallEmitter {
     );
     this.line(`SolAccountMeta ${m}[TS_MAX_ACCOUNTS] = {${fixed}};`);
     this.line(`uint64_t ${cnt} = ${metas.length};`);
-    this.line(`for (uint64_t ${i} = ${n} + ${tail.from}; ${i} < ${n} + ${tail.to}; ${i}++) ${m}[${cnt}++] = (SolAccountMeta){&params->ka[${i}]->key, 0, 0};`);
+    this.line(
+      `for (uint64_t ${i} = ${n} + ${tail.from}; ${i} < ${n} + ${tail.to}; ${i}++) ${m}[${cnt}++] = (SolAccountMeta){&params->ka[${i}]->key, ${tail.asPassed ? `params->ka[${i}]->is_writable` : 0}, 0};`,
+    );
     this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${cnt}, ${seeds.name}, ${seeds.count}));`);
   }
 
@@ -688,7 +690,10 @@ export abstract class CpiEmitter extends CallEmitter {
       }
       case "mintTo": {
         arity(4);
-        const mint = want(a[0], "mint", true, "the mint");
+        // A Mut<Mint>, or a mint created and initialized earlier in this instruction (Mut<Signer> / Mut<AccountInfo>).
+        const mint = this.accountParam(a[0], "the mint");
+        if (!isWritable(mint.kind) || (mint.kind.kind !== "mint" && mint.kind.kind !== "signer" && mint.kind.kind !== "info"))
+          this.fail(a[0], "the mint must be a Mut<Mint>, or a Mut<Signer> / Mut<AccountInfo> mint this instruction created");
         const to = want(a[1], "token", true, "the destination");
         const auth = this.accountParam(a[2], "the mint authority");
         const amt = amount(a[3]);
@@ -710,7 +715,9 @@ export abstract class CpiEmitter extends CallEmitter {
         if (program.kind.kind === "tokenProgram" && program.kind.flavor === "token")
           this.fail(node, "metadata lives in Token-2022 mints; use Token2022Program or TokenInterface");
         if (a.length !== 6 && a.length !== 7) this.fail(node, "initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri, signerSeeds?)");
-        const mint = want(a[0], "mint", true, "the mint");
+        // The mint may have been created and initialized earlier in this instruction (a Mut<Signer> or Mut<AccountInfo>).
+        const mint = this.accountParam(a[0], "the mint");
+        if (!isWritable(mint.kind)) this.fail(a[0], "the mint must be writable (Mut<...>)");
         const ua = this.accountParam(a[1], "the update authority");
         const ma = this.accountParam(a[2], "the mint authority");
         const [nm, sym, uri] = [a[3], a[4], a[5]].map((n) => this.expect(this.expr(n, STRING), STRING, n).c);
@@ -720,7 +727,10 @@ export abstract class CpiEmitter extends CallEmitter {
       }
       case "closeAccount": {
         arity(3);
-        const acct = want(a[0], "token", true, "the closed account");
+        // A token account, or (Token-2022, with a MintCloseAuthority and no supply left) a mint.
+        const acct = this.accountParam(a[0], "the closed account");
+        if (!((acct.kind.kind === "token" || acct.kind.kind === "mint") && (acct.kind as { mut: boolean }).mut))
+          this.fail(a[0], "the closed account must be a Mut<TokenAccount> or a Mut<Mint>");
         const dest = this.accountParam(a[1], "the destination");
         if (!isWritable(dest.kind)) this.fail(a[1], "the destination must be writable (Mut<...>)");
         const auth = this.accountParam(a[2], "the authority");
@@ -848,6 +858,224 @@ export abstract class CpiEmitter extends CallEmitter {
         simple(22, [], [[acct, true, false]], none);
         return undefined;
       }
+      case "updateDefaultAccountState": {
+        token2022Only();
+        if (a.length !== 3 && a.length !== 4) this.fail(node, "updateDefaultAccountState(mint, freezeAuthority, frozen, signerSeeds?)");
+        const mint = anyAcct(a[0], "the mint", true);
+        const auth = this.accountParam(a[1], "the freeze authority");
+        const frozen = this.expect(this.expr(a[2], BOOL), BOOL, a[2]);
+        const st = this.tmp("st");
+        this.line(`uint8_t ${st} = (${frozen.c}) ? 2 : 1;`);
+        simple(
+          28,
+          [byte(1), (put) => put(`&${st}`, "1", 1)],
+          [
+            [mint, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[3], auth, a[1]),
+        );
+        return undefined;
+      }
+      case "enableRequiredMemoTransfers":
+      case "disableRequiredMemoTransfers": {
+        token2022Only();
+        if (a.length !== 2 && a.length !== 3) this.fail(node, `${method}(account, owner, signerSeeds?)`);
+        const acct = anyAcct(a[0], "the token account", true);
+        const owner = this.accountParam(a[1], "the owner");
+        simple(
+          30,
+          [byte(method === "enableRequiredMemoTransfers" ? 0 : 1)],
+          [
+            [acct, true, false],
+            [owner, false, true],
+          ],
+          this.signerSeeds(a[2], owner, a[1]),
+        );
+        return undefined;
+      }
+      case "updateTransferHook": {
+        token2022Only();
+        if (a.length !== 3 && a.length !== 4) this.fail(node, "updateTransferHook(mint, authority, programId | null, signerSeeds?)");
+        const mint = anyAcct(a[0], "the mint", true);
+        const auth = this.accountParam(a[1], "the transfer hook authority");
+        simple(
+          36,
+          [byte(1), nonZeroKey(a[2])],
+          [
+            [mint, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[3], auth, a[1]),
+        );
+        return undefined;
+      }
+      case "updateInterestRate": {
+        token2022Only();
+        if (a.length !== 3 && a.length !== 4) this.fail(node, "updateInterestRate(mint, rateAuthority, rate, signerSeeds?)");
+        const mint = anyAcct(a[0], "the mint", true);
+        const auth = this.accountParam(a[1], "the rate authority");
+        simple(
+          33,
+          [byte(1), value(a[2], I16)],
+          [
+            [mint, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[3], auth, a[1]),
+        );
+        return undefined;
+      }
+      case "transferCheckedWithFee": {
+        token2022Only();
+        if (a.length !== 6 && a.length !== 7) this.fail(node, "transferCheckedWithFee(from, mint, to, authority, amount, fee, signerSeeds?)");
+        const from = want(a[0], "token", true, "the source");
+        const mint = want(a[1], "mint", false, "the mint");
+        const to = want(a[2], "token", true, "the destination");
+        const auth = this.accountParam(a[3], "the authority");
+        // The decimals are the mint's own (checked when the mint was), as transferChecked does.
+        const dec = (put: Put) => {
+          const t = this.tmp("dec");
+          this.line(`uint8_t ${t} = a_${mint.name}->data[44];`);
+          put(`&${t}`, "1", 1);
+        };
+        simple(
+          26,
+          [byte(1), value(a[4], U64), dec, value(a[5], U64)],
+          [
+            [from, true, false],
+            [mint, false, false],
+            [to, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[6], auth, a[3]),
+        );
+        return undefined;
+      }
+      case "harvestWithheldTokensToMint": {
+        token2022Only();
+        if (a.length !== 2) this.fail(node, "harvestWithheldTokensToMint(mint, sources): sources is remainingAccounts() or rest.slice(a, b)");
+        if (!this.ix) this.fail(node, "harvestWithheldTokensToMint takes remaining accounts, so only instructions can call it");
+        const mint = anyAcct(a[0], "the mint", true);
+        const range = this.remainingRange(a[1]) ?? this.fail(a[1], "pass the source token accounts as remainingAccounts() or rest.slice(a, b)");
+        const { buf, len, put, finish } = this.byteBuffer("tok", 2, "TS_ERR_INSTRUCTION_DATA", "token instruction");
+        byte(26)(put);
+        byte(4)(put);
+        finish(node);
+        // The sources go as they were passed (Token-2022 skips any it cannot harvest from).
+        this.cpi(p, [[`a_${mint.name}`, true, false]], buf, len, none, { ...range, asPassed: true });
+        return undefined;
+      }
+      case "withdrawWithheldTokensFromMint": {
+        token2022Only();
+        if (a.length !== 3 && a.length !== 4) this.fail(node, "withdrawWithheldTokensFromMint(mint, destination, authority, signerSeeds?)");
+        const mint = anyAcct(a[0], "the mint", true);
+        const dest = want(a[1], "token", true, "the destination");
+        const auth = this.accountParam(a[2], "the withdraw authority");
+        simple(
+          26,
+          [byte(2)],
+          [
+            [mint, true, false],
+            [dest, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[3], auth, a[2]),
+        );
+        return undefined;
+      }
+      case "setTransferFee": {
+        token2022Only();
+        if (a.length !== 4 && a.length !== 5) this.fail(node, "setTransferFee(mint, configAuthority, basisPoints, maximumFee, signerSeeds?)");
+        const mint = anyAcct(a[0], "the mint", true);
+        const auth = this.accountParam(a[1], "the config authority");
+        const bps = (put: Put) => {
+          const v = this.expect(this.expr(a[2], U16), U16, a[2]);
+          this.line(`if (${v.c} > 10000) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: transfer fee above 10000 basis points");`);
+          this.serialize(v, a[2], put);
+        };
+        simple(
+          26,
+          [byte(5), bps, value(a[3], U64)],
+          [
+            [mint, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[4], auth, a[1]),
+        );
+        return undefined;
+      }
+      case "updateMetadataField":
+      case "removeMetadataKey":
+      case "updateMetadataAuthority":
+      case "emitMetadata": {
+        token2022Only();
+        // The Token Metadata interface (spl-token-metadata-interface), served by Token-2022 for metadata in the mint.
+        const usage = {
+          updateMetadataField: "updateMetadataField(mint, updateAuthority, field, value, signerSeeds?)",
+          removeMetadataKey: "removeMetadataKey(mint, updateAuthority, key, idempotent, signerSeeds?)",
+          updateMetadataAuthority: "updateMetadataAuthority(mint, updateAuthority, newAuthority | null, signerSeeds?)",
+          emitMetadata: "emitMetadata(mint)",
+        }[method];
+        const fixedArgs = { updateMetadataField: 4, removeMetadataKey: 4, updateMetadataAuthority: 3, emitMetadata: 1 }[method];
+        if (a.length !== fixedArgs && (method === "emitMetadata" || a.length !== fixedArgs + 1)) this.fail(node, usage);
+        const disc = {
+          updateMetadataField: "dde9312db5cadcc8",
+          removeMetadataKey: "ea122038598d25b5",
+          updateMetadataAuthority: "d7e4a6e45464567b",
+          emitMetadata: "faa6b4fa0d0cb846",
+        }[method];
+        const mint = anyAcct(a[0], "the mint", method !== "emitMetadata");
+        const auth = method === "emitMetadata" ? undefined : this.accountParam(a[1], "the update authority");
+        const { buf, len, put, finish } = this.byteBuffer("tmd", 1232, "TS_ERR_INSTRUCTION_DATA", "token metadata instruction");
+        const d = this.tmp("disc");
+        this.line(`static const uint8_t ${d}[8] = ${cBytes([...Buffer.from(disc, "hex")])};`);
+        put(d, "8", 8);
+        if (method === "updateMetadataField") {
+          // Field: Name / Symbol / Uri for those names, otherwise Key(field), as the Token-2022 CLI reads them.
+          const f = this.expect(this.expr(a[2], STRING), STRING, a[2]);
+          const ft = this.tmp("field");
+          const tag = this.tmp("ftag");
+          this.line(`TS_Str ${ft} = ${f.c};`);
+          this.line(
+            `uint8_t ${tag} = ts_str_eq(${ft}, ts_str((const uint8_t *)"name", 4)) ? 0 : ts_str_eq(${ft}, ts_str((const uint8_t *)"symbol", 6)) ? 1 : ts_str_eq(${ft}, ts_str((const uint8_t *)"uri", 3)) ? 2 : 3;`,
+          );
+          put(`&${tag}`, "1", 1);
+          const kl = this.tmp("klen");
+          this.line(`uint32_t ${kl} = (uint32_t)${ft}.len;`);
+          put(`&${kl}`, `(${tag} == 3 ? 4 : 0)`);
+          put(`${ft}.ptr`, `(${tag} == 3 ? ${ft}.len : 0)`);
+          this.serialize(this.expect(this.expr(a[3], STRING), STRING, a[3]), a[3], put);
+        } else if (method === "removeMetadataKey") {
+          const key = this.expect(this.expr(a[2], STRING), STRING, a[2]);
+          const idem = this.expect(this.expr(a[3], BOOL), BOOL, a[3]);
+          const t = this.tmp("idem");
+          this.line(`uint8_t ${t} = (${idem.c}) ? 1 : 0;`);
+          put(`&${t}`, "1", 1);
+          this.serialize(key, a[2], put);
+        } else if (method === "updateMetadataAuthority") {
+          nonZeroKey(a[2])(put);
+        } else {
+          // start: None, end: None (the whole TokenMetadata as return data).
+          byte(0)(put);
+          byte(0)(put);
+        }
+        finish(node);
+        const seeds = auth ? this.signerSeeds(a[fixedArgs], auth, a[1]) : none;
+        this.cpi(
+          p,
+          auth
+            ? [
+                [`a_${mint.name}`, true, false],
+                [`a_${auth.name}`, false, true],
+              ]
+            : [[`a_${mint.name}`, false, false]],
+          buf,
+          len,
+          seeds,
+        );
+        return undefined;
+      }
       case "approve": {
         arity(4);
         const src = want(a[0], "token", true, "the source");
@@ -948,7 +1176,7 @@ export abstract class CpiEmitter extends CallEmitter {
     }
     this.fail(
       node.expression,
-      `token programs support transfer, transferChecked, mintTo, burn, closeAccount, approve, revoke, setAuthority, freezeAccount, thawAccount, syncNative, initializeMint2, initializeAccount3, initializeMetadata and the Token-2022 extension initializers (initializeTransferFeeConfig, initializeMintCloseAuthority, initializeNonTransferableMint, initializePermanentDelegate, initializeDefaultAccountState, initializeMetadataPointer, initializeGroupPointer, initializeGroupMemberPointer, initializeTransferHook, initializeInterestBearingMint, initializeImmutableOwner), not ${method}`,
+      `token programs support transfer, transferChecked, mintTo, burn, closeAccount, approve, revoke, setAuthority, freezeAccount, thawAccount, syncNative, initializeMint2, initializeAccount3, initializeMetadata, updateMetadataField, removeMetadataKey, updateMetadataAuthority, emitMetadata, the Token-2022 extension instructions (updateDefaultAccountState, updateTransferHook, enableRequiredMemoTransfers, disableRequiredMemoTransfers, updateInterestRate, transferCheckedWithFee, harvestWithheldTokensToMint, withdrawWithheldTokensFromMint, setTransferFee) and initializers (initializeTransferFeeConfig, initializeMintCloseAuthority, initializeNonTransferableMint, initializePermanentDelegate, initializeDefaultAccountState, initializeMetadataPointer, initializeGroupPointer, initializeGroupMemberPointer, initializeTransferHook, initializeInterestBearingMint, initializeImmutableOwner), not ${method}`,
     );
   }
 

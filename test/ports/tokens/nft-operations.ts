@@ -1,7 +1,6 @@
 // Port of tokens/nft-operations @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - The new mint and its ATA are created in the body, so MintTo is hand-encoded (`invoke`).
 //  - `Account<MetadataAccount>` / `Account<MasterEditionAccount>` are checked as Token Metadata-owned accounts whose
 //    first byte is the Metadata (4) / MasterEditionV2 (6) key. A wrong key fails with this program's NotMetadata /
 //    NotMasterEdition (6000 / 6001), where Anchor fails deserializing with AccountDidNotDeserialize (3003).
@@ -10,6 +9,7 @@ import {
   type Address,
   type AssociatedTokenProgram,
   type Ata,
+  type Init,
   type Mint,
   type Mut,
   type Owner,
@@ -17,16 +17,12 @@ import {
   type Signer,
   type SystemProgram,
   type TokenMetadataProgram,
+  type TokenAccount,
   type TokenProgram,
-  MINT_SIZE,
-  invoke,
   log,
   readData,
-  readonlySigner,
-  rentExempt,
   require,
   u8,
-  writable,
 } from "typesol";
 
 export enum NftError {
@@ -36,22 +32,20 @@ export enum NftError {
 
 export function createCollection(
   user: Mut<Signer>,
-  mint: Mut<Signer>,
+  mint: Init<Mint>,
   mintAuthority: Seeds<AccountInfo, ["authority"]>,
   metadata: Mut<AccountInfo>,
   masterEdition: Mut<AccountInfo>,
-  destination: Ata<Mut<AccountInfo>, "user", "mint">,
+  destination: Ata<Init<TokenAccount>, "user", "mint">,
   systemProgram: SystemProgram,
   tokenProgram: TokenProgram,
   associatedTokenProgram: AssociatedTokenProgram,
   tokenMetadataProgram: TokenMetadataProgram,
 ): void {
   // `init, mint::decimals = 0, mint::authority = mint_authority, mint::freeze_authority = mint_authority`
-  systemProgram.createAccount(user, mint, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key);
-  tokenProgram.initializeMint2(mint, 0n, mintAuthority.key, mintAuthority.key);
-  associatedTokenProgram.create(user, destination, user, mint, systemProgram, tokenProgram);
-  // SPL Token MintTo (7): one collection NFT.
-  invoke(tokenProgram, [writable(mint), writable(destination), readonlySigner(mintAuthority)], [u8(7n), 1n], ["authority", mintAuthority.pdaBump]);
+  mint.create(user, null, 0n, mintAuthority.key, mintAuthority.key);
+  destination.create(user);
+  tokenProgram.mintTo(mint, destination, mintAuthority, 1n, ["authority", mintAuthority.pdaBump]);
   log("Collection NFT minted!");
   tokenMetadataProgram.createV3(
     metadata,
@@ -81,8 +75,8 @@ export function createCollection(
 
 export function mintNft(
   owner: Mut<Signer>,
-  mint: Mut<Signer>,
-  destination: Ata<Mut<AccountInfo>, "owner", "mint">,
+  mint: Init<Mint>,
+  destination: Ata<Init<TokenAccount>, "owner", "mint">,
   metadata: Mut<AccountInfo>,
   masterEdition: Mut<AccountInfo>,
   mintAuthority: Seeds<AccountInfo, ["authority"]>,
@@ -92,10 +86,9 @@ export function mintNft(
   associatedTokenProgram: AssociatedTokenProgram,
   tokenMetadataProgram: TokenMetadataProgram,
 ): void {
-  systemProgram.createAccount(owner, mint, rentExempt(MINT_SIZE), MINT_SIZE, tokenProgram.key);
-  tokenProgram.initializeMint2(mint, 0n, mintAuthority.key, mintAuthority.key);
-  associatedTokenProgram.create(owner, destination, owner, mint, systemProgram, tokenProgram);
-  invoke(tokenProgram, [writable(mint), writable(destination), readonlySigner(mintAuthority)], [u8(7n), 1n], ["authority", mintAuthority.pdaBump]);
+  mint.create(owner, null, 0n, mintAuthority.key, mintAuthority.key);
+  destination.create(owner);
+  tokenProgram.mintTo(mint, destination, mintAuthority, 1n, ["authority", mintAuthority.pdaBump]);
   log("Collection NFT minted!");
   tokenMetadataProgram.createV3(
     metadata,

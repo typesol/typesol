@@ -5,7 +5,7 @@ import { type Address, address, generateKeyPairSigner, getAddressEncoder, lampor
 import { createHash } from "node:crypto";
 import { FailedTransactionMetadata } from "litesvm";
 import { describe, expect, it } from "vitest";
-import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
+import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_2022, acct, customError, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
 import { ataOf, createMint, deployPort, fundAta, tokenBalance } from "./ports-helpers.js";
 
 const MEMO_PROGRAM = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
@@ -203,7 +203,7 @@ describe("port: tokens/token-2022/metadata", () => {
     const mint = await generateKeyPairSigner();
     expectOk(
       await send(svm, payer, [
-        ix(d, "initialize", { name: "TypeSOL", symbol: "TS", uri: "https://typesol.com/meta.json" }, [
+        ix(d, "initialize", { args: { name: "TypeSOL", symbol: "TS", uri: "https://typesol.com/meta.json" } }, [
           { address: payer.address, signer: payer, writable: true },
           { address: mint.address, signer: mint, writable: true },
           { address: TOKEN_2022 },
@@ -223,18 +223,18 @@ describe("port: tokens/token-2022/metadata", () => {
       };
     };
     expect(metadata()).toMatchObject({ updateAuthority: some(payer.address), name: "TypeSOL", symbol: "TS", uri: "https://typesol.com/meta.json" });
-    const update = (field: object, key: string, value: string) =>
+    const update = (field: object, value: string) =>
       send(svm, payer, [
-        ix(d, "update_field", { field, key, value }, [
+        ix(d, "update_field", { field, value }, [
           { address: payer.address, signer: payer, writable: true },
           { address: mint.address, writable: true },
           { address: TOKEN_2022 },
           { address: SYSTEM_PROGRAM },
         ]),
       ]);
-    expectOk(await update({ Name: {} }, "", "TypeSOL Token, renamed"));
+    expectOk(await update({ Name: {} }, "TypeSOL Token, renamed"));
     expect(metadata().name).toBe("TypeSOL Token, renamed");
-    expectOk(await update({ Key: {} }, "color", "red"));
+    expectOk(await update({ Key: { key: "color" } }, "red"));
     expect(metadata().additionalMetadata.get("color")).toBe("red");
     const lamports = svm.getBalance(mint.address)!;
     expect(lamports).toBeGreaterThanOrEqual(
@@ -267,7 +267,7 @@ describe("port: tokens/token-2022/metadata", () => {
       ]),
     );
     expect(metadata().updateAuthority).toEqual({ __option: "None" });
-    expect(await update({ Symbol: {} }, "", "NOPE")).toBeInstanceOf(FailedTransactionMetadata);
+    expect(await update({ Symbol: {} }, "NOPE")).toBeInstanceOf(FailedTransactionMetadata);
   });
 });
 
@@ -291,6 +291,8 @@ describe("port: tokens/token-2022/nft-meta-data-pointer", () => {
         ]),
       ]),
     );
+    // Anchor's space = 1000 for both accounts.
+    expect([acct(svm, player).data.length, acct(svm, gameData).data.length]).toEqual([1000, 1000]);
     // mint_nft
     const mint = await generateKeyPairSigner();
     const ata = await ataOf(payer.address, mint.address, TOKEN_2022);
