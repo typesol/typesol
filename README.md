@@ -306,7 +306,7 @@ Details are in [docs/testing.md](docs/testing.md).
 
 ## Status
 
-**TypeSOL is pre-1.0 (0.20).** Releases follow the organization's
+**TypeSOL is pre-1.0 (0.21).** Releases follow the organization's
 [versioning policy](https://github.com/typesol/.github/blob/main/VERSIONING.md); [CHANGELOG.md](CHANGELOG.md) lists every
 change.
 - The compiler, runtime and tooling have been through internal security reviews and are covered by the tests above.

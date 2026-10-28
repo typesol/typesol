@@ -5,6 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.21.0 — 2026-10-28
+
+Clients from a program's address alone, and the last pieces Anchor's client resolves for you: `has_one` accounts,
+PDAs seeded from another account's fields, and `emitCpi` events as they happen. Programs and their bytes are
+unchanged. Not externally audited (see SECURITY.md).
+
 ### Added
 - `typesol client --address <program id> --url <rpc>`: a client from the IDL on chain, the canonical Program Metadata
   IDL (`typesol idl publish`, Codama) or else Anchor's IDL account (`anchor idl init`).
