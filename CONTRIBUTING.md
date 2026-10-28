@@ -19,9 +19,13 @@ a constraint or an error code.
   or a diagnostic case in `test/diagnostics.test.ts`).
 - Changes to generated C: review `UPDATE_GOLDEN=1 pnpm test test/diagnostics.test.ts` output before committing it.
 - Changes touching funds-related checks: add a negative test (the attack fails, with the expected error code).
-- A language change that lets a BLOCKED or PARTIAL port of program-examples get closer to the original: update the port
+- A language change that lets a PARTIAL port of program-examples get closer to the original: update the port
   and its row in [test/ports/README.md](test/ports/README.md).
 - `pnpm smoke` against a local validator (`scripts/localnet.sh`) for changes to CPIs, deploy or IDL tooling.
+- Changes to generated code or the runtime: measure them with [typesol/benchmarks](https://github.com/typesol/benchmarks)
+  pointed at your checkout (`TYPESOL_REPO=<checkout> node run.ts` and `node official.ts`, after `pnpm build`), before
+  and after, and put the difference in the pull request. When numbers move, refresh the README chart and table in the
+  same change: `node scripts/readme-bench.ts <benchmarks>/results.json`.
 
 ## Versioning
 
