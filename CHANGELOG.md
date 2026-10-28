@@ -9,7 +9,10 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `typesol client --address <program id> --url <rpc>`: a client from the IDL on chain, the canonical Program Metadata
   IDL (`typesol idl publish`, Codama) or else Anchor's IDL account (`anchor idl init`).
 - Generated clients: `resolve.<instruction>(rpc, accounts)` fills in `has_one` accounts that do not sign from the
-  account that names them, as Anchor's client resolves `relations`.
+  account that names them, as Anchor's client resolves `relations`, and PDAs seeded from another account's fields
+  (`seeds = [b"vault", book.owner]`: the account is read, then the PDA derived).
+- `watchEvents(rpcSubscriptions, { abortSignal, rpc })`: with an RPC, `emitCpi` events arrive live too (the transaction
+  is fetched when the program invoked itself).
 
 ## 0.20.0 — 2026-10-28
 

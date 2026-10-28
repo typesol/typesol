@@ -5,6 +5,8 @@ import {
   type Address,
   generateKeyPairSigner,
   getAddressDecoder,
+  getAddressEncoder,
+  getProgramDerivedAddress,
   getBase58Decoder,
   getBase58Encoder,
   getBase64Decoder,
@@ -216,6 +218,11 @@ describe("generated client: runtime helpers", () => {
     const abort = new AbortController();
     const events = await take(c.watchEvents(rpcSubscriptions, { abortSignal: abort.signal }), 1, abort);
     expect(events).toEqual([{ signature: results.at(-1)!.signature, event: { name: "Added", data: { by: 3n, count: 3n } } }]);
+    // With an RPC, emitCpi events too: the transaction is fetched and its inner instructions read.
+    const withRpc = { ...rpc, getTransaction: () => reply(tx) };
+    const abort2 = new AbortController();
+    const all = await take(c.watchEvents(rpcSubscriptions, { abortSignal: abort2.signal, rpc: withRpc }), 2, abort2);
+    expect(all.map((e: Any) => e.event.data.by)).toEqual([3n, 4n]);
   });
 
   it("fills in has_one accounts from the chain (resolve)", async () => {
@@ -233,6 +240,23 @@ describe("generated client: runtime helpers", () => {
     await expect(c.resolve.poke(rpc, { tally: other })).rejects.toThrow(/cannot fill in owner: account .* does not exist/);
     // A signer named by has_one is never filled in: it has to sign.
     expect(c.resolve.add).toBeUndefined();
+  });
+
+  it("derives a PDA seeded from another account's fields (resolve)", async () => {
+    const alice = await fundedSigner(svm);
+    const [tally] = await c.pdas.tally({ owner: alice });
+    const { rpc, rpcSubscriptions } = chain(svm, [tally]);
+    await c.sendInstructions({ rpc, rpcSubscriptions }, alice, [await c.open({ owner: alice }), await c.add({ owner: alice, tally }, { by: 9n })]);
+    const accounts = await c.resolve.stash(rpc, { tally });
+    const count = new Uint8Array(8);
+    count[0] = 9;
+    const [expected] = await getProgramDerivedAddress({
+      programAddress: programId,
+      seeds: [new TextEncoder().encode("stash"), getAddressEncoder().encode(alice.address), count],
+    });
+    expect(accounts).toEqual({ tally, stash: expected });
+    // The program agrees: its Seeds<…> check passes with the resolved address.
+    expect(await c.views.stash(rpc, alice, accounts)).toBe(9n);
   });
 
   it("names every Anchor error code a program can raise", async () => {
