@@ -6,6 +6,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Closures: a local function that reads or writes the enclosing function's variables is expanded where it is called,
+  with the names it was declared with (a block at the call that declares the same name does not change it), struct
+  parameters by reference and `return` leaving the closure. Recursion and storing / returning closures are refused.
+- List callbacks on Vec, FixedArray, FixedVec and Vec arguments: `forEach`, `some`, `every`, `find`, `findIndex`,
+  `reduce`, `includes`, `indexOf`, expanded into loops with the arrow written at the call.
+- Helpers can take function parameters (`f: (x: u64) => u64`): compiled once per named function passed.
 - `do … while` loops (`continue` goes to the test).
 - `x **= n` (the target must not call a function: it is read and written).
 - `switch` on 128-bit integers (the case is picked with comparisons, then switched on as usual, fallthrough included).

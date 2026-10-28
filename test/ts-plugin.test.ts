@@ -56,14 +56,14 @@ describe("typesol/ts-plugin", () => {
 
   it("shows the compiler's refusal at its position, for the unsaved text", () => {
     const p = project();
-    const bad = p.text().replace("counter.count += by;", "const scaled = (v: u64): u64 => v * by;\n  counter.count += scaled(2n);");
+    const bad = p.text().replace("counter.count += by;", "const rate = 1.5;\n  counter.count += by;");
     p.edit(p.file, bad);
     writeFileSync(path.join(p.dir, "unused.txt"), ""); // the file on disk is untouched: the plugin checks the editor text
     const diags = p.ls.getSemanticDiagnostics(p.file);
-    // A local function reading the enclosing function's argument (a closure), at the name it reads.
-    expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/scaled reads "by" of the function around it/)]);
+    // A floating-point literal, at the literal.
+    expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/no floating-point numbers/)]);
     expect(diags[0]).toMatchObject({ source: "typesol", code: 9900, category: ts.DiagnosticCategory.Error });
-    expect(bad.slice(diags[0].start!, diags[0].start! + 2)).toBe("by");
+    expect(bad.slice(diags[0].start!, diags[0].start! + 3)).toBe("1.5");
   });
 
   it("leaves TypeScript's own errors alone and skips files that are not program entries", () => {

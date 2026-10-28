@@ -163,6 +163,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       if (l) {
+        if (l.closure) this.fail(node, `"${node.text}" is a function: TypeSOL functions are called (${node.text}(…)), not passed around or stored`);
         if (l.type.kind === "array") this.fail(node, `"${node.text}" is an array; use .get(i)`);
         if (l.type.kind === "remaining") return { c: "", type: l.type };
         return l.type.kind === "pubkey" && !l.ptr ? { c: `(&${l.c})`, type: l.type } : { c: l.c, type: l.type };

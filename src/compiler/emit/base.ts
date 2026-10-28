@@ -12,7 +12,7 @@ import {
   type ValueType,
   isScalar,
 } from "../model.js";
-import { type Value, type Local, isStable, cString, valueC, type EmitOptions } from "./shared.js";
+import { type Value, type Local, type Closure, isStable, cString, valueC, type EmitOptions } from "./shared.js";
 
 /**
  * State of one function being lowered, and the primitives every layer uses: emitting lines, temporaries,
@@ -35,6 +35,10 @@ export abstract class EmitterBase {
   protected readonly pendingInit = new Set<string>();
   /** Bump temporaries from create()/createIfNeeded(), for `acct.pdaBump`. */
   protected readonly bumps = new Map<string, string>();
+  /** Closures being expanded, innermost last: a `return` inside one assigns `result` and jumps to `label`. */
+  protected inlineFrames: { label: string; result: string; type?: ValueType; declAt: number; pad: string; node: ts.Node }[] = [];
+  /** Closures being expanded (a closure calling itself cannot be expanded). */
+  protected readonly inlining = new Set<ts.Node>();
   /** Enclosing loops, innermost last; each has a `continue` label. */
   protected readonly loops: string[] = [];
   protected readonly ix: Instruction | undefined;
@@ -98,13 +102,35 @@ export abstract class EmitterBase {
     const cached = this.calleeCache.get(node);
     if (cached !== undefined) return cached ?? undefined;
     const callee = node.expression;
-    const name = calleeName(callee, this.model.helperDecls, this.checker) ?? (this.lookup(callee.text) ? undefined : callee.text);
+    // A function parameter of this helper instance: the function it was given.
+    const passed = this.helper?.fnArgs?.get(callee.text);
+    const name = passed ?? calleeName(callee, this.model.helperDecls, this.checker) ?? (this.lookup(callee.text) ? undefined : callee.text);
     const g = name ? this.model.generics.get(name) : undefined;
     let h = name ? this.model.helpers.get(name) : undefined;
-    if (g) h = this.analysis.instantiate(g, this.typeArgsOf(node, g));
+    if (g) h = this.analysis.instantiate(g, g.typeParams.length ? this.typeArgsOf(node, g) : [], this.fnArgsOf(node, g));
     else if (h && node.typeArguments) this.fail(node, `${h.display} takes no type arguments`);
     this.calleeCache.set(node, h ?? null);
     return h;
+  }
+
+  /**
+   * The functions passed for a helper's function parameters: named functions only (a helper, or a local function that
+   * captures nothing). A closure can only run where it is declared, so it cannot be passed.
+   */
+  private fnArgsOf(node: ts.CallExpression, g: GenericHelper): string[] {
+    return g.fnParams.map((i) => {
+      const arg = node.arguments[i];
+      const pname = (g.node.parameters[i]!.name as ts.Identifier).text;
+      if (!arg || !ts.isIdentifier(arg)) this.fail(arg ?? node, `pass ${g.display}'s ${pname} a named function (declare it: const f = (…) => …)`);
+      const passed = this.helper?.fnArgs?.get(arg.text);
+      if (passed) return passed;
+      if (this.lookup(arg.text)?.closure)
+        this.fail(arg, `${arg.text} reads the variables of the function around it, so it can only be called there, not passed to ${g.display}`);
+      const name = calleeName(arg, this.model.helperDecls, this.checker) ?? arg.text;
+      if (this.model.generics.has(name)) this.fail(arg, `${arg.text} is generic or takes functions itself: pass a plain function`);
+      if (!this.model.helpers.has(name)) this.fail(arg, `${arg.text} is not a function of this program`);
+      return name;
+    });
   }
 
   /** A generic call's type arguments: written out (`max<u64>(a, b)`), or the types of the arguments in `T` positions. */
@@ -277,4 +303,6 @@ export abstract class EmitterBase {
   protected abstract invoke(node: ts.CallExpression): undefined;
   protected abstract emitEvent(node: ts.CallExpression, cpi?: { authority: string; program: string }): undefined;
   protected abstract epilogue(): string[];
+  protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
+  protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
 }

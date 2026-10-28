@@ -40,6 +40,9 @@ import { ExpressionEmitter } from "./expressions.js";
 /**
  * Calls: built-in functions, Vec methods, helpers, remaining accounts, foreign account reads and return data.
  */
+/** List methods taking a callback (or a value) that expand into a loop. */
+const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "reduce", "includes", "indexOf"]);
+
 export abstract class CallEmitter extends ExpressionEmitter {
   protected call(node: ts.CallExpression, topLevel: boolean): Value | undefined {
     const callee = node.expression;
@@ -417,11 +420,20 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     if (builtin) this.fail(callee, `${builtin} cannot be called here`);
 
+    if (ts.isIdentifier(callee)) {
+      const local = this.lookup(callee.text);
+      if (local?.closure) return this.expandClosure(local.closure, node.arguments, node);
+    }
     const helper = this.helperOf(node);
     if (helper) return this.callHelper(node, helper);
 
     if (ts.isPropertyAccessExpression(callee)) {
       const method = callee.name.text;
+      // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
+      if (LIST_METHODS.has(method)) {
+        const l = ts.isIdentifier(callee.expression) ? this.lookup(callee.expression.text) : undefined;
+        if (l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(callee.expression)) return this.listMethod(node, method);
+      }
       // Vec<T> instruction arguments are read-only views.
       if (ts.isIdentifier(callee.expression)) {
         const l = this.lookup(callee.expression.text);
@@ -832,14 +844,16 @@ export abstract class CallEmitter extends ExpressionEmitter {
   }
 
   protected callHelper(node: ts.CallExpression, h: Helper): Value | undefined {
-    if (node.arguments.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);
+    // Function arguments were bound when the helper was instantiated: they have no C parameter.
+    const argNodes = h.fnArgIndexes ? node.arguments.filter((_, i) => !h.fnArgIndexes!.includes(i)) : node.arguments;
+    if (argNodes.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);
     // Arguments are evaluated left to right: settle earlier ones when a later one runs statements.
     // A helper that takes accounts may change account data, so account text it gets is copied first.
     const takesAccounts = h.params.some((p) => p.account);
     const values: Value[] = [];
     const pieces: (number | string)[] = [];
     h.params.forEach((p, i) => {
-      const n = node.arguments[i];
+      const n = argNodes[i];
       const mark = this.lines.length;
       const raw = this.helperArg(h, p, n);
       for (let j = 0; j < values.length; j++) values[j] = this.settle(values[j], mark);
@@ -851,8 +865,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     });
     // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased).
     for (const [i, p] of h.params.entries())
-      if (p.account && p.account.kind === "account" && p.account.mut && ts.isIdentifier(node.arguments[i]))
-        this.assertNotAliased([node.arguments[i].text], node, h.display);
+      if (p.account && p.account.kind === "account" && p.account.mut && ts.isIdentifier(argNodes[i]))
+        this.assertNotAliased([argNodes[i].text], node, h.display);
     const args = ["params", ...pieces.map((x) => (typeof x === "number" ? (values[x].type.kind === "pubkey" ? `*(${values[x].c})` : values[x].c) : x))];
     if (!h.returns) {
       this.line(`TS_TRY(fn_${h.name}(${args.join(", ")}));`);
