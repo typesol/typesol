@@ -5,6 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.23.0 — 2026-10-28
+
+Language limits lifted: `map` and `filter`, any number of growable Vecs per account, closures and arrow functions as
+helper arguments, FixedVec arguments and list fields in events. Existing programs compile to the same bytes. Not
+externally audited (see SECURITY.md).
+
 ### Added
 - `map` and `filter` on Vecs, FixedArrays, FixedVecs and Vec arguments. A chain used right away
   (`xs.filter(f).map(g).reduce(h, 0n)`, `.length`, `for … of`, any list method) is one loop that builds no list;
