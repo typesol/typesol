@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { calleeName, resolveValueType } from "../analyze.js";
-import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, sameType, typeName } from "../model.js";
+import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, optionKey, sameType, typeName } from "../model.js";
 import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
 import { StorageEmitter } from "./storage.js";
 
@@ -46,6 +46,52 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     return { c: `${t}.v`, type: inner };
   }
 
+  /**
+   * `acct?.field` on an optional account, `x.home?.field` on an Option<struct> place: the field as an Option, empty
+   * when the account was left out / the option is empty. (A method call through `?.` is not supported.)
+   */
+  protected optionalChain(node: ts.PropertyAccessExpression): Value {
+    const base = node.expression;
+    const optAccount = ts.isIdentifier(base) ? this.accounts.get(base.text) : undefined;
+    let present: string;
+    if (optAccount?.optional) present = `a_${optAccount.name} != NULL`;
+    else {
+      const r = this.ref(base);
+      if (!r || r.type.kind !== "option" || r.type.inner.kind !== "struct")
+        this.fail(node, "?. works on optional accounts and Option<struct> values (other values are never null)");
+      present = `${r.lv}.some`;
+    }
+    // The same access without `?.`, lowered where the base is known to be there.
+    const f = ts.factory;
+    const plain = f.createPropertyAccessExpression(base, node.name);
+    ts.setTextRange(plain, node);
+    (plain as { parent?: ts.Node }).parent = node.parent;
+    const t = this.tmp("oc");
+    const declAt = this.lines.length;
+    this.line(`/* ${t} */`);
+    let inner: ValueType | undefined;
+    this.line(`if (${present}) {`);
+    this.block(() => {
+      const v = this.expr(plain);
+      const typed = v.literal !== undefined ? this.literal(v.literal, U64, node) : v;
+      if (typed.type.kind === "option") {
+        inner = typed.type.inner as ValueType;
+        this.line(`ts_memcpy(&${t}, &${typed.c}, sizeof(${t}));`);
+        return;
+      }
+      if (typed.type.kind !== "int" && typed.type.kind !== "bool" && typed.type.kind !== "pubkey" && typed.type.kind !== "enum")
+        this.fail(node, `?. gives an Option, so the field must be an integer, boolean, Pubkey or enum, not ${typeName(typed.type)}`);
+      inner = typed.type;
+      this.line(`${t}.some = 1;`);
+      this.line(inner.kind === "pubkey" ? `${t}.v = *(${typed.c});` : `${t}.v = ${typed.c};`);
+    });
+    this.line(`}`);
+    const scalar = inner as ScalarType;
+    this.model.options.set(optionKey(scalar), scalar);
+    this.lines[declAt] = `${"  ".repeat(this.indent)}${optC(scalar)} ${t};\n${"  ".repeat(this.indent)}ts_memzero(&${t}, sizeof(${t}));`;
+    return { c: t, type: { kind: "option", inner: scalar } as ValueType };
+  }
+
   protected literal(value: bigint, type: ValueType, node: ts.Node): Value {
     if (type.kind !== "int") this.fail(node, `expected ${typeName(type)}, got an integer literal`);
     const info = INT_INFO[type.name];
@@ -75,6 +121,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (v.type.kind !== "option") this.fail(node, "! works on Option values; check optional accounts with `x !== null`");
       return this.unwrap(v, node);
     }
+    if (ts.isPropertyAccessExpression(node) && node.questionDotToken) return this.optionalChain(node);
     this.noOptionalChain(node);
     if (ts.isBigIntLiteral(node)) {
       const value = BigInt(node.text.slice(0, -1).replace(/_/g, ""));

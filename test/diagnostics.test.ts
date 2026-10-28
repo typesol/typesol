@@ -25,11 +25,7 @@ function errorsFor(body: string, name = "prog"): string[] {
 describe("subset enforcement", () => {
   const cases: [string, string, RegExp][] = [
     ["floating-point numbers", `export function f(b: Mut<Box>): void { b.value = 1; }`, /Type 'number' is not assignable|bigint literal/],
-    [
-      "do-while loops",
-      `export function f(b: Mut<Box>): void { do { b.value += 1n; } while (b.value < 3n); }`,
-      /only for \(init; cond; step\), for \(const x of list\) and while/,
-    ],
+    ["for … in loops", `export function f(b: Mut<Box>): void { for (const k in b) b.value += 1n; }`, /for … in is not supported/],
     ["break outside a loop", `export function f(b: Mut<Box>): void { if (b.value > 0n) { break; } }`, /Jump target|outside a loop/],
     [
       "recursive helpers",
@@ -221,9 +217,9 @@ describe("subset enforcement", () => {
       /case labels must be literals, constants or enum members/,
     ],
     [
-      "optional chaining",
-      `export interface Q { home: Option<Box>; v: u64; }\nexport function f(q: Mut<Q>): void { if (q.home?.value === 5n) q.v = 1n; }`,
-      /optional chaining/,
+      "optional chaining on a value that is never null",
+      `export function f(b: Mut<Box>): void { if (b?.value === 5n) b.value = 1n; }`,
+      /\?\. works on optional accounts and Option<struct> values/,
     ],
     [
       "account structs with enum fields used as events",
@@ -357,7 +353,7 @@ describe("subset enforcement", () => {
 
   it("reports file:line:column for every diagnostic", () => {
     const file = path.join(dir, "located.ts");
-    writeFileSync(file, HEADER + `export function f(b: Mut<Box>): void {\n  do {} while (true);\n}`);
+    writeFileSync(file, HEADER + `export function f(b: Mut<Box>): void {\n  for (const k in b) {}\n}`);
     try {
       generate(file);
       expect.unreachable();
