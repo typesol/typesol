@@ -18,6 +18,7 @@
  * sanitized comments.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { ANCHOR_ERRORS } from "./compiler/anchor-errors.js";
 import path from "node:path";
 
 type IdlType =
@@ -87,8 +88,12 @@ export interface ClientGenResult {
 /** An IDL the generator refuses: malformed, unsafe to embed, or older than the 0.30 IDL format. */
 export class ClientIdlError extends Error {}
 
-/** TypeSOL runtime and Anchor framework errors a TypeSOL program can return, by code (runtime/typesol_rt.h). */
+/**
+ * Errors a TypeSOL program can return, by code: every Anchor framework error (`AnchorError` raises any of them, and
+ * the constraints raise their Anchor codes), then TypeSOL's own runtime errors (runtime/typesol_rt.h).
+ */
 export const TYPESOL_ERRORS: Record<number, string> = {
+  ...Object.fromEntries(Object.entries(ANCHOR_ERRORS).map(([name, code]) => [code, name])),
   100: "InstructionMissing",
   101: "InstructionFallbackNotFound",
   102: "InstructionDidNotDeserialize",
@@ -234,7 +239,24 @@ const TAKEN = [
   "globalThis",
 ];
 const KIT_TYPES = [
+  "AccountMeta",
+  "AccountNotificationsApi",
   "Address",
+  "Base58EncodedBytes",
+  "Commitment",
+  "FetchAccountsConfig",
+  "GetEpochInfoApi",
+  "GetLatestBlockhashApi",
+  "GetMultipleAccountsApi",
+  "GetProgramAccountsApi",
+  "GetSignatureStatusesApi",
+  "LogsNotificationsApi",
+  "RpcSubscriptions",
+  "SendTransactionApi",
+  "Signature",
+  "SignatureNotificationsApi",
+  "SimulateTransactionApi",
+  "SlotNotificationsApi",
   "Codec",
   "FetchAccountConfig",
   "GetAccountInfoApi",
@@ -246,6 +268,21 @@ const KIT_TYPES = [
 ];
 const KIT_VALUES = [
   "AccountRole",
+  "appendTransactionMessageInstructions",
+  "assertIsTransactionWithBlockhashLifetime",
+  "compileTransaction",
+  "createTransactionMessage",
+  "fetchEncodedAccounts",
+  "getBase58Decoder",
+  "getBase58Encoder",
+  "getBase64EncodedWireTransaction",
+  "getSignatureFromTransaction",
+  "pipe",
+  "sendAndConfirmTransactionFactory",
+  "setTransactionMessageFeePayer",
+  "setTransactionMessageFeePayerSigner",
+  "setTransactionMessageLifetimeUsingBlockhash",
+  "signTransactionMessageWithSigners",
   "SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM",
   "addCodecSizePrefix",
   "address",
@@ -284,7 +321,22 @@ const KIT_VALUES = [
   "transformCodec",
 ];
 // Keys of the program object that instructions must not take.
-const PROGRAM_KEYS = new Set(["address", "accounts", "pdas", "returns", "errors", "errorCode", "isError", "parseEvents"]);
+const PROGRAM_KEYS = new Set([
+  "address",
+  "accounts",
+  "pdas",
+  "returns",
+  "views",
+  "errors",
+  "errorCode",
+  "isError",
+  "parseEvents",
+  "parseCpiEvents",
+  "eventsOf",
+  "watchEvents",
+  "sendInstructions",
+  "simulate",
+]);
 
 // snake_case → camelCase by splitting (linear time, whatever the input): "taker_token_a" → "takerTokenA".
 const camel = (s: string) =>
@@ -712,6 +764,24 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         `    const found = await fetchEncodedAccount(rpc, at, config);\n` +
         `    return found.exists ? ${A}.decode(found.data) : null;\n` +
         `  },\n` +
+        `  /** Several accounts in one request, in order; null where one does not exist. */\n` +
+        `  async fetchMultiple(rpc: Rpc<GetMultipleAccountsApi>, at: readonly Address[], config?: FetchAccountsConfig): Promise<(${T} | null)[]> {\n` +
+        `    const found = await fetchEncodedAccounts(rpc, [...at], config);\n` +
+        `    return found.map((a) => (a.exists ? ${A}.decode(a.data) : null));\n` +
+        `  },\n` +
+        `  /** Every ${commentText(a.name)} account of the program (getProgramAccounts by discriminator), optionally where \`bytes\` are at \`offset\` of the data. */\n` +
+        `  async fetchAll(rpc: Rpc<GetProgramAccountsApi>, filters: readonly { offset: number; bytes: ReadonlyUint8Array }[] = []): Promise<{ address: Address; data: ${T} }[]> {\n` +
+        `    const found = await rpc.getProgramAccounts(PROGRAM_ADDRESS, { encoding: "base64", filters: memcmp([{ offset: 0, bytes: ${A}_DISCRIMINATOR }, ...filters]) }).send();\n` +
+        `    return found.map((a) => ({ address: a.pubkey, data: ${A}.decode(getBase64Encoder().encode(a.account.data[0])) }));\n` +
+        `  },\n` +
+        `  /** Each change of the account, decoded (null once it is closed), until \`abortSignal\` aborts. */\n` +
+        `  async *watch(rpcSubscriptions: RpcSubscriptions<AccountNotificationsApi>, at: Address, options: { abortSignal: AbortSignal; commitment?: Commitment }): AsyncGenerator<${T} | null> {\n` +
+        `    const updates = await rpcSubscriptions.accountNotifications(at, { encoding: "base64", ...(options.commitment ? { commitment: options.commitment } : {}) }).subscribe({ abortSignal: options.abortSignal });\n` +
+        `    for await (const u of updates) {\n` +
+        `      const data = getBase64Encoder().encode(u.value.data[0]);\n` +
+        `      yield data.length === 0 ? null : ${A}.decode(data);\n` +
+        `    }\n` +
+        `  },\n` +
         `};\n`,
     );
     accountKeys.push(`${prop(a.name)}: ${A}`);
@@ -736,6 +806,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   const ixKeys: string[] = [];
   const pdaFns = new Map<string, { json: string; source: string }>();
   const returnKeys: string[] = [];
+  const viewKeys: string[] = [];
   const usedKeys = new Set<string>();
   for (const ix of idl.instructions) {
     const argIssue = ix.args.map((a) => issue(a.type)).find(Boolean);
@@ -830,7 +901,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     }
     const auto = (a: Flat) => Boolean(a.address) || resolvable.has(a.key);
 
-    use("type Address", "type TransactionSigner", "type Instruction", "AccountRole");
+    use("type Address", "type TransactionSigner", "type Instruction", "type AccountMeta", "AccountRole");
     const accType = (a: Flat) => `${a.signer ? "TransactionSigner | Address" : "Address"}${a.optional ? " | null" : ""}`;
     const accountsIface =
       `export interface ${P}Accounts {\n` +
@@ -902,15 +973,27 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     ixOut.push(
       accountsIface +
         argsIface +
-        `${doc(ix.docs)}async function build${P}(input: ${P}Accounts${argsField.length ? `, args: ${P}Args` : ""}): Promise<Instruction> {\n` +
+        `${doc(ix.docs)}async function build${P}(input: ${P}Accounts${argsField.length ? `, args: ${P}Args` : ""}, remaining: readonly AccountMeta[] = []): Promise<Instruction> {\n` +
         lines.join("\n") +
-        `\n  return {\n    programAddress: PROGRAM_ADDRESS,\n    accounts: [\n${metas.join("\n")}\n    ],\n    data: ${data},\n  } as Instruction;\n}\n`,
+        `\n  return {\n    programAddress: PROGRAM_ADDRESS,\n    accounts: [\n${metas.join("\n")}\n      ...remaining,\n    ],\n    data: ${data},\n  } as Instruction;\n}\n`,
     );
     ixKeys.push(`${prop(fn)}: build${P}`);
     if (ix.returns !== undefined) {
       const why = issue(ix.returns);
       if (why) notes.push(`instruction ${ix.name}: the return value is not decoded (${why})`);
-      else returnKeys.push(`    ${prop(fn)}: (data: ReadonlyUint8Array): ${tsType(ix.returns, "out")} => ${codec(ix.returns)}.decode(data),`);
+      else {
+        returnKeys.push(`    ${prop(fn)}: (data: ReadonlyUint8Array): ${tsType(ix.returns, "out")} => ${codec(ix.returns)}.decode(data),`);
+        // Read-only call: simulate the instruction and decode what it returns (Anchor's `.view()`).
+        viewKeys.push(
+          `    /** ${ix.name}'s return value, by simulation (nothing is sent). */\n` +
+            `    async ${prop(fn)}(rpc: Rpc<SimulateTransactionApi & GetLatestBlockhashApi>, feePayer: Address | TransactionSigner, input: ${P}Accounts${argsField.length ? `, args: ${P}Args` : ""}): Promise<${tsType(ix.returns, "out")}> {\n` +
+            `      const res = await simulate(rpc, feePayer, [await build${P}(input${argsField.length ? ", args" : ""})]);\n` +
+            `      if (res.err !== null) throw new Error(${JSON.stringify(`${ix.name} failed in simulation: `)} + JSON.stringify(res.err, (_, v) => (typeof v === "bigint" ? v.toString() : v)) + "\\n" + res.logs.join("\\n"));\n` +
+            `      if (res.returnData === null) throw new Error(${JSON.stringify(`${ix.name} returned nothing`)});\n` +
+            `      return ${codec(ix.returns)}.decode(res.returnData);\n` +
+            `    },`,
+        );
+      }
     }
   }
 
@@ -967,6 +1050,13 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
       ],
     },
     { name: "programFromBytes", lines: [`const programFromBytes = (b: Uint8Array): Address => getAddressDecoder().decode(b);`] },
+    {
+      name: "memcmp",
+      lines: [
+        `const memcmp = (filters: readonly { offset: number; bytes: ReadonlyUint8Array }[]) =>`,
+        `  filters.map((f) => ({ memcmp: { offset: BigInt(f.offset), bytes: getBase58Decoder().decode(f.bytes) as Base58EncodedBytes, encoding: "base58" as const } }));`,
+      ],
+    },
   ];
   if (needsFixedString)
     helperDefs.push({
@@ -1084,33 +1174,116 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     "",
     `// ---- Events ----`,
     `export type Event = ${events.length ? events.map((e) => `{ name: ${JSON.stringify(e.name)}; data: ${tsName(e.name)} }`).join(" | ") : "never"};`,
+    `/** One event's bytes (discriminator, then the fields), or null when they are not one of this program's events. */`,
+    `function decodeEvent(data: ReadonlyUint8Array): Event | null {`,
+    events.length
+      ? [
+          `  try {`,
+          ...events.map(
+            (e) =>
+              `    if (hasPrefix(data, ${bytes(e.discriminator)})) return { name: ${JSON.stringify(e.name)}, data: get${tsName(e.name)}Codec().decode(data, ${e.discriminator.length}) };`,
+          ),
+          `  } catch {`,
+          `    // not one of this program's events`,
+          `  }`,
+          `  return null;`,
+        ].join("\n")
+      : `  void data;\n  return null;`,
+    `}`,
     `/**`,
     ` * Events in a transaction's log messages (\`Program data:\` lines, as \`emit\` writes them). Lines are matched by`,
     ` * discriminator, whichever program wrote them; lines that do not decode are skipped. \`emitCpi\` events travel in inner`,
-    ` * instructions, not logs.`,
+    ` * instructions: see parseCpiEvents and eventsOf.`,
     ` */`,
     `export function parseEvents(logs: readonly string[]): Event[] {`,
-    events.length
-      ? [
-          `  const found: Event[] = [];`,
-          `  for (const line of logs) {`,
-          `    if (!line.startsWith("Program data: ")) continue;`,
-          `    try {`,
-          `      const data = getBase64Encoder().encode(line.slice("Program data: ".length));`,
-          ...events.map(
-            (e) =>
-              `      if (hasPrefix(data, ${bytes(e.discriminator)})) found.push({ name: ${JSON.stringify(e.name)}, data: get${tsName(e.name)}Codec().decode(data, ${e.discriminator.length}) });`,
-          ),
-          `    } catch {`,
-          `      // not one of this program's events`,
-          `    }`,
-          `  }`,
-          `  return found;`,
-        ].join("\n")
-      : `  void logs;\n  return [];`,
+    `  const found: Event[] = [];`,
+    `  for (const line of logs) {`,
+    `    if (!line.startsWith("Program data: ")) continue;`,
+    `    let data: ReadonlyUint8Array;`,
+    `    try {`,
+    `      data = getBase64Encoder().encode(line.slice("Program data: ".length));`,
+    `    } catch {`,
+    `      continue;`,
+    `    }`,
+    `    const e = decodeEvent(data);`,
+    `    if (e) found.push(e);`,
+    `  }`,
+    `  return found;`,
+    `}`,
+    `/** \`emitCpi\` events: the data of inner instructions (bytes, or base58 as RPC returns them) that carry one. */`,
+    `export function parseCpiEvents(instructionData: Iterable<ReadonlyUint8Array | string>): Event[] {`,
+    `  const tag = new Uint8Array([228, 69, 165, 46, 81, 203, 154, 29]);`,
+    `  const found: Event[] = [];`,
+    `  for (const item of instructionData) {`,
+    `    let data: ReadonlyUint8Array;`,
+    `    try {`,
+    `      data = typeof item === "string" ? getBase58Encoder().encode(item) : item;`,
+    `    } catch {`,
+    `      continue;`,
+    `    }`,
+    `    if (!hasPrefix(data, tag)) continue;`,
+    `    const e = decodeEvent(data.slice(tag.length));`,
+    `    if (e) found.push(e);`,
+    `  }`,
+    `  return found;`,
+    `}`,
+    `/** Every event of a fetched transaction (getTransaction, json encoding): its logs, then its inner instructions. */`,
+    `export function eventsOf(tx: { meta: { logMessages?: readonly string[] | null; innerInstructions?: readonly { instructions: readonly { data: string }[] }[] | null } | null } | null): Event[] {`,
+    `  const meta = tx?.meta;`,
+    `  if (!meta) return [];`,
+    `  return [...parseEvents(meta.logMessages ?? []), ...parseCpiEvents((meta.innerInstructions ?? []).flatMap((g) => g.instructions.map((i) => i.data)))];`,
+    `}`,
+    `/** Events of every transaction that mentions the program, as their logs arrive, until \`abortSignal\` aborts. */`,
+    `export async function* watchEvents(rpcSubscriptions: RpcSubscriptions<LogsNotificationsApi>, options: { abortSignal: AbortSignal; commitment?: Commitment }): AsyncGenerator<{ signature: Signature; event: Event }> {`,
+    `  const logs = await rpcSubscriptions.logsNotifications({ mentions: [PROGRAM_ADDRESS] }, options.commitment ? { commitment: options.commitment } : {}).subscribe({ abortSignal: options.abortSignal });`,
+    `  for await (const n of logs) for (const event of parseEvents(n.value.logs)) yield { signature: n.value.signature, event };`,
     `}`,
     "",
-    `/** The ${displayName} program: instructions, accounts, PDAs, errors, events and return values. */`,
+    `// ---- Transactions ----`,
+    `/** Send instructions in one transaction paid by \`feePayer\` (signers in the accounts sign too) and wait for confirmation. */`,
+    `export async function sendInstructions(`,
+    `  connection: { rpc: Rpc<GetEpochInfoApi & GetLatestBlockhashApi & GetSignatureStatusesApi & SendTransactionApi>; rpcSubscriptions: RpcSubscriptions<SignatureNotificationsApi & SlotNotificationsApi> },`,
+    `  feePayer: TransactionSigner,`,
+    `  instructions: readonly Instruction[],`,
+    `  options: { commitment?: Commitment; abortSignal?: AbortSignal } = {},`,
+    `): Promise<Signature> {`,
+    `  const { value: latestBlockhash } = await connection.rpc.getLatestBlockhash().send();`,
+    `  const message = pipe(`,
+    `    createTransactionMessage({ version: 0 }),`,
+    `    (m) => setTransactionMessageFeePayerSigner(feePayer, m),`,
+    `    (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),`,
+    `    (m) => appendTransactionMessageInstructions(instructions, m),`,
+    `  );`,
+    `  const signed = await signTransactionMessageWithSigners(message);`,
+    `  assertIsTransactionWithBlockhashLifetime(signed);`,
+    `  await sendAndConfirmTransactionFactory(connection)(signed, { commitment: options.commitment ?? "confirmed", ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}) });`,
+    `  return getSignatureFromTransaction(signed);`,
+    `}`,
+    `/** Simulate instructions (nothing is sent, signatures are not checked): the error if any, logs, units and the program's return data. */`,
+    `export async function simulate(`,
+    `  rpc: Rpc<SimulateTransactionApi & GetLatestBlockhashApi>,`,
+    `  feePayer: Address | TransactionSigner,`,
+    `  instructions: readonly Instruction[],`,
+    `): Promise<{ err: unknown; logs: readonly string[]; unitsConsumed: bigint | null; returnData: ReadonlyUint8Array | null }> {`,
+    `  const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();`,
+    `  const message = pipe(`,
+    `    createTransactionMessage({ version: 0 }),`,
+    `    (m) => setTransactionMessageFeePayer(key(feePayer), m),`,
+    `    (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),`,
+    `    (m) => appendTransactionMessageInstructions(instructions, m),`,
+    `  );`,
+    `  const wire = getBase64EncodedWireTransaction(compileTransaction(message));`,
+    `  const { value } = await rpc.simulateTransaction(wire, { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true }).send();`,
+    `  const ret = value.returnData;`,
+    `  return {`,
+    `    err: value.err,`,
+    `    logs: value.logs ?? [],`,
+    `    unitsConsumed: value.unitsConsumed ?? null,`,
+    `    returnData: ret && ret.programId === PROGRAM_ADDRESS ? getBase64Encoder().encode(ret.data[0]) : null,`,
+    `  };`,
+    `}`,
+    "",
+    `/** The ${displayName} program: instructions, accounts, PDAs, errors, events, return values and transactions. */`,
     `export const ${programName} = {`,
     `  address: PROGRAM_ADDRESS,`,
     ...ixKeys.map((k) => `  ${k},`),
@@ -1121,10 +1294,18 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  returns: {`,
     ...returnKeys,
     `  },`,
+    `  views: {`,
+    ...viewKeys,
+    `  },`,
     `  errors: ERRORS,`,
     `  errorCode,`,
     `  isError,`,
     `  parseEvents,`,
+    `  parseCpiEvents,`,
+    `  eventsOf,`,
+    `  watchEvents,`,
+    `  sendInstructions,`,
+    `  simulate,`,
     `};`,
     "",
   ];
