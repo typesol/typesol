@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Docs: [Case study: porting Anchor's escrow](docs/case-study-escrow.md), one Anchor program ported end to end, with the
+  differences, the checks run against the original and the cost.
+- Releases: the release workflow checks that CHANGELOG.md has the version, and after publishing installs the package
+  from npm, scaffolds a project from each template and runs its typecheck, build and test.
+
 ## 0.24.1 — 2026-10-28
 
 Smaller programs and fewer compute units, with the same results; no change to the language, IDLs or error codes. Also

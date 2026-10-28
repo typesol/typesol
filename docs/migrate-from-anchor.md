@@ -2,7 +2,8 @@
 
 TypeSOL programs speak Anchor's wire format: the same instruction and account discriminators, Borsh arguments, an
 Anchor-format IDL, the same error numbering and event logs. A ported program can keep its clients. This page maps
-Anchor's constructs to TypeSOL's and shows the porting workflow.
+Anchor's constructs to TypeSOL's and shows the porting workflow. For one complete program ported this way, with the
+original side by side, the checks run against it and its cost, see [Case study: porting Anchor's escrow](case-study-escrow.md).
 
 ## Start from the IDL
 

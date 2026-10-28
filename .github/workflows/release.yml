@@ -49,9 +49,54 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: test "$(node -p 'require("./package.json").version')" = "$VERSION"
+      - name: CHANGELOG has this version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: grep -qE "^## ${VERSION//./\\.} — [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || { echo "CHANGELOG.md has no '## $VERSION — <date>' section"; exit 1; }
       - run: pnpm build
       - run: pnpm lint
       - name: Fetch program binaries (public devnet, with retries)
         run: for i in 1 2 3; do bash scripts/fetch-programs.sh devnet && break; sleep 20; done
       - run: pnpm test
       - run: npm publish --provenance --access public --ignore-scripts
+
+  # What a user gets: the published package from the registry, a project from each template, its own test.
+  installed:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        template: [counter, vault, escrow]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Agave CLI and platform-tools
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          for i in 1 2 3 4; do cargo-build-sbf --install-only --tools-version v1.52 && break; sleep $((i * 15)); done
+      - name: Wait for the registry
+        env:
+          VERSION: ${{ inputs.version }}
+        run: for i in $(seq 1 20); do [ "$(npm view "@typesol/cli@$VERSION" version 2>/dev/null)" = "$VERSION" ] && exit 0; sleep 15; done; exit 1
+      - name: latest points at this version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: test "$(npm view @typesol/cli dist-tags.latest)" = "$VERSION"
+      - name: init, install, test
+        env:
+          VERSION: ${{ inputs.version }}
+          TEMPLATE: ${{ matrix.template }}
+        run: |
+          cd "$RUNNER_TEMP"
+          npx -y "@typesol/cli@$VERSION" init app --template "$TEMPLATE"
+          cd app
+          npm install --no-audit --no-fund
+          test "$(node -p 'require("typesol/package.json").version')" = "$VERSION"
+          npm run typecheck
+          npm run build
+          npm test
