@@ -1157,7 +1157,9 @@ static uint64_t ts_base58_32(const uint8_t *in, TS_Str *out) {
 /*
  * `s += …` on a local string: the pieces are copied right after `s` when it ends where the heap's free space starts
  * (it was the last thing allocated), and `s` grows in place; otherwise `s` and the pieces are joined into a new string.
- * Other views of the old `s` keep their length, so they still read the same bytes.
+ * Other views of the old `s` keep their length, so they still read the same bytes. The bytes written are past the
+ * heap's top, where no view can point (ts_alloc is the only source of heap pointers and never hands out memory past
+ * the top), so no piece is overwritten while it is copied.
  */
 static uint64_t ts_str_append_parts(TS_Str *s, const TS_Str *parts, uint64_t n) {
   uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;

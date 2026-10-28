@@ -28,6 +28,12 @@ describe("string building", () => {
     s += "y";
     expect(logs).toContain(`Program log: ${before}|${mid}|${s}|${other}`);
     expect(logs).toContain(`Program log: ww9C83noARSQVBnqmCUmaVdbJjmiwcV9j2LkXYMoUCV|${key}|true|7`);
+    expect(logs).toContain("Program log: 1116ZscCbozHuFu1T1AEoBhJiua74AgrgCM158fmTUZ|false");
+    // The same key at run time prints the same text as the folded constant.
+    const low = "1116ZscCbozHuFu1T1AEoBhJiua74AgrgCM158fmTUZ";
+    const again = expectOk(await send(d.svm, payer, [ix(d, "build", { n: new BN(1), word: "x", key: new web3.PublicKey(low) }, [])])).logs();
+    expect(again).toContain(`Program log: ${low}|true`);
+    expect(again).toContain(`Program log: ${low}`);
   });
 
   it("reads account text in each piece's turn", async () => {

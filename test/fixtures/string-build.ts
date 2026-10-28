@@ -3,6 +3,8 @@
 import { type FixedString, type Mut, type Pubkey, type u64, log, pubkey } from "typesol";
 
 const KEY = pubkey("ww9C83noARSQVBnqmCUmaVdbJjmiwcV9j2LkXYMoUCV");
+/** Leading zero bytes: folded at compile time, it must read as the runtime prints it. */
+const LOW = pubkey("1116ZscCbozHuFu1T1AEoBhJiua74AgrgCM158fmTUZ");
 
 export interface Note {
   name: FixedString<16>;
@@ -25,6 +27,8 @@ export function build(n: u64, word: string, key: Pubkey): void {
   s += "y";
   log(`${before}|${mid}|${s}|${other}`);
   log(`${KEY}|${key}|${true}|${7n}`);
+  log(`${LOW}|${LOW === key}`);
+  log(`${key}`);
 }
 
 /** Account text read by an earlier piece keeps its old value when a later piece changes it. */
