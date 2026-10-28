@@ -7,10 +7,12 @@ import {
   type FieldType,
   type IdlSeed,
   type IntName,
+  type ScalarType,
   type StructDef,
   type ValueType,
   isScalar,
   isWritable,
+  optionKey,
   sameType,
   scalarSize,
   typeName,
@@ -38,6 +40,158 @@ import { CallEmitter } from "./calls.js";
 /** One piece of a Metaplex instruction's Borsh data: fixed bytes, or a value lowered and serialized in source order. */
 type MplField = { bytes: number[] } | { value: ts.Expression; type: ValueType };
 
+/**
+ * Bubblegum instructions that replace a leaf: discriminator, accounts in order ([label, writable, signer, optional,
+ * either-signs]) and the leaf's shape. Optional accounts take `null` (the program id). The Merkle proof follows the
+ * leaf (and metadata) as remaining accounts.
+ */
+const BUBBLEGUM_OPS: Record<
+  string,
+  { disc: number[]; leaf: "v2" | "delegate" | "meta" | "v1"; accounts: [string, boolean, boolean, boolean?, ("owner" | "delegate")?][] }
+> = {
+  delegateV2: {
+    disc: [95, 87, 125, 140, 181, 131, 128, 227],
+    leaf: "delegate",
+    accounts: [
+      ["treeConfig", true, false],
+      ["payer", true, true],
+      ["leafOwner", false, true, true],
+      ["previousLeafDelegate", false, false, true],
+      ["newLeafDelegate", false, false],
+      ["merkleTree", true, false],
+      ["logWrapper", false, false],
+      ["compressionProgram", false, false],
+      ["systemProgram", false, false],
+    ],
+  },
+  ...Object.fromEntries(
+    [
+      ["freezeV2", [200, 151, 244, 102, 16, 195, 255, 3], false],
+      ["thawV2", [96, 133, 101, 93, 82, 220, 146, 191], false],
+      ["setNonTransferableV2", [181, 141, 206, 58, 242, 199, 152, 168], true],
+    ].map(([name, disc, needsCollection]) => [
+      name as string,
+      {
+        disc: disc as number[],
+        leaf: "v2" as const,
+        accounts: [
+          ["treeConfig", true, false],
+          ["payer", true, true],
+          ["authority", false, true, true],
+          ["leafOwner", false, false],
+          ["leafDelegate", false, false, name === "setNonTransferableV2"],
+          ["merkleTree", true, false],
+          ["coreCollection", false, false, !needsCollection],
+          ["logWrapper", false, false],
+          ["compressionProgram", false, false],
+          ["systemProgram", false, false],
+        ] as [string, boolean, boolean, boolean?][],
+      },
+    ]),
+  ),
+  updateMetadataV2: {
+    disc: [43, 103, 89, 42, 121, 242, 62, 72],
+    leaf: "meta",
+    accounts: [
+      ["treeConfig", true, false],
+      ["payer", true, true],
+      ["authority", false, true, true],
+      ["leafOwner", false, false],
+      ["leafDelegate", false, false, true],
+      ["merkleTree", true, false],
+      ["coreCollection", false, false, true],
+      ["logWrapper", false, false],
+      ["compressionProgram", false, false],
+      ["systemProgram", false, false],
+    ],
+  },
+  ...Object.fromEntries(
+    [
+      ["verifyCreatorV2", [85, 138, 140, 42, 22, 241, 118, 102]],
+      ["unverifyCreatorV2", [174, 112, 29, 142, 230, 100, 239, 7]],
+    ].map(([name, disc]) => [
+      name as string,
+      {
+        disc: disc as number[],
+        leaf: "meta" as const,
+        accounts: [
+          ["treeConfig", true, false],
+          ["payer", true, true],
+          ["creator", false, true, true],
+          ["leafOwner", false, false],
+          ["leafDelegate", false, false, true],
+          ["merkleTree", true, false],
+          ["logWrapper", false, false],
+          ["compressionProgram", false, false],
+          ["systemProgram", false, false],
+        ] as [string, boolean, boolean, boolean?][],
+      },
+    ]),
+  ),
+  setCollectionV2: {
+    disc: [229, 35, 61, 91, 15, 14, 99, 160],
+    leaf: "meta",
+    accounts: [
+      ["treeConfig", true, false],
+      ["payer", true, true],
+      ["authority", false, true, true],
+      ["newCollectionAuthority", false, true, true],
+      ["leafOwner", false, false],
+      ["leafDelegate", false, false, true],
+      ["merkleTree", true, false],
+      ["coreCollection", true, false, true],
+      ["newCoreCollection", true, false, true],
+      ["mplCoreCpiSigner", false, false, true],
+      ["logWrapper", false, false],
+      ["compressionProgram", false, false],
+      ["mplCoreProgram", false, false],
+      ["systemProgram", false, false],
+    ],
+  },
+  // V1 trees (SPL Account Compression, SPL Noop).
+  transfer: {
+    disc: [163, 52, 200, 231, 140, 3, 69, 186],
+    leaf: "v1",
+    accounts: [
+      ["treeConfig", false, false],
+      ["leafOwner", false, false, false, "owner"],
+      ["leafDelegate", false, false, false, "delegate"],
+      ["newLeafOwner", false, false],
+      ["merkleTree", true, false],
+      ["logWrapper", false, false],
+      ["compressionProgram", false, false],
+      ["systemProgram", false, false],
+    ],
+  },
+  burn: {
+    disc: [116, 110, 29, 56, 107, 219, 42, 93],
+    leaf: "v1",
+    accounts: [
+      ["treeConfig", false, false],
+      ["leafOwner", false, false, false, "owner"],
+      ["leafDelegate", false, false, false, "delegate"],
+      ["merkleTree", true, false],
+      ["logWrapper", false, false],
+      ["compressionProgram", false, false],
+      ["systemProgram", false, false],
+    ],
+  },
+  delegate: {
+    disc: [90, 147, 75, 178, 85, 88, 4, 137],
+    leaf: "v1",
+    accounts: [
+      ["treeConfig", false, false],
+      ["leafOwner", false, false, false, "owner"],
+      ["previousLeafDelegate", false, false],
+      ["newLeafDelegate", false, false],
+      ["merkleTree", true, false],
+      ["logWrapper", false, false],
+      ["compressionProgram", false, false],
+      ["systemProgram", false, false],
+    ],
+  },
+};
+
 /** Metaplex Core's Plugin / PluginType enums, in order (MasterEdition, VerifiedCreators and Autograph values are refused). */
 const CORE_PLUGINS = [
   "Royalties",
@@ -56,9 +210,17 @@ const CORE_PLUGINS = [
   "VerifiedCreators",
   "Autograph",
   "BubblegumV2",
+  "FreezeExecute",
+  "PermanentFreezeExecute",
+  "Groups",
 ] as const;
 const CORE_PLUGIN_FIELDS: Record<string, string[]> = {
-  Royalties: ["basisPoints", "creators"],
+  Royalties: ["basisPoints", "creators", "ruleSet"],
+  MasterEdition: ["maxSupply", "name", "uri"],
+  VerifiedCreators: ["signatures"],
+  Autograph: ["signatures"],
+  FreezeExecute: ["frozen"],
+  PermanentFreezeExecute: ["frozen"],
   FreezeDelegate: ["frozen"],
   PermanentFreezeDelegate: ["frozen"],
   UpdateDelegate: ["additionalDelegates"],
@@ -969,8 +1131,7 @@ export abstract class CpiEmitter extends CallEmitter {
     const kind = kindNode.text;
     const index = CORE_PLUGINS.indexOf(kind as never);
     if (index < 0) this.fail(kindNode, `Core plugins are ${CORE_PLUGINS.join(", ")}`);
-    if (kind === "MasterEdition" || kind === "VerifiedCreators" || kind === "Autograph")
-      this.fail(kindNode, `the ${kind} plugin is not supported yet (removePlugin can remove one)`);
+    if (kind === "Groups") this.fail(kindNode, "Groups is kept by Core's group instructions (AddCollectionsToGroupV1 …), not set as a plugin");
     const known = new Set(["kind", "authority", ...(CORE_PLUGIN_FIELDS[kind] ?? [])]);
     for (const [k, v] of props) if (!known.has(k)) this.fail(v, `${kind} has no field ${k}`);
     const need = (k: string) => props.get(k) ?? this.fail(n, `${kind} needs ${k}`);
@@ -1006,9 +1167,56 @@ export abstract class CpiEmitter extends CallEmitter {
           fields.push({ value: get("address"), type: PUBKEY }, { value: pct, type: U8 });
         }
         if (constant && creators.length && sum !== 100n) this.fail(need("creators"), `creator percentages add up to ${sum}; Core requires 100`);
-        fields.push({ bytes: [0] }); // rule_set: RuleSet::None
+        // rule_set: None, or { programAllowList: [...] } / { programDenyList: [...] }
+        const rs = props.get("ruleSet");
+        if (!rs) fields.push({ bytes: [0] });
+        else {
+          const pick = ts.isObjectLiteralExpression(rs) && rs.properties.length === 1 ? rs.properties[0] : undefined;
+          const which = pick && ts.isPropertyAssignment(pick) && ts.isIdentifier(pick.name) ? pick.name.text : undefined;
+          if (
+            !pick ||
+            (which !== "programAllowList" && which !== "programDenyList") ||
+            !ts.isArrayLiteralExpression((pick as ts.PropertyAssignment).initializer)
+          )
+            this.fail(rs, "ruleSet is { programAllowList: [programs] } or { programDenyList: [programs] }");
+          const progs = ((pick as ts.PropertyAssignment).initializer as ts.ArrayLiteralExpression).elements;
+          if (progs.length > 16) this.fail(rs, "at most 16 programs in a rule set");
+          fields.push({ bytes: [which === "programAllowList" ? 1 : 2, ...u32(progs.length)] }, ...progs.map((k) => ({ value: k, type: PUBKEY })));
+        }
         break;
       }
+      case "MasterEdition": {
+        // Option<u32>, Option<String>, Option<String>: left out or null is None.
+        const opt = (k: string, t: ValueType): MplField[] => {
+          const v = props.get(k);
+          return !v || v.kind === ts.SyntaxKind.NullKeyword ? [{ bytes: [0] }] : [{ bytes: [1] }, { value: v, type: t }];
+        };
+        fields.push(...opt("maxSupply", { kind: "int", name: "u32" }), ...opt("name", STRING), ...opt("uri", STRING));
+        break;
+      }
+      case "VerifiedCreators":
+      case "Autograph": {
+        const sigs = list("signatures", 16);
+        fields.push({ bytes: u32(sigs.length) });
+        const second = kind === "VerifiedCreators" ? "verified" : "message";
+        for (const sg of sigs) {
+          if (!ts.isObjectLiteralExpression(sg)) this.fail(sg, `a signature is { address, ${second} }`);
+          const get = (k: string) => {
+            const q = sg.properties.find(
+              (x) => (ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === k,
+            );
+            if (!q) this.fail(sg, `a signature needs ${k}`);
+            return ts.isPropertyAssignment(q) ? q.initializer : (q as ts.ShorthandPropertyAssignment).name;
+          };
+          fields.push({ value: get("address"), type: PUBKEY }, { value: get(second), type: kind === "VerifiedCreators" ? BOOL : STRING });
+        }
+        break;
+      }
+      case "FreezeExecute":
+      case "PermanentFreezeExecute":
+        fields.push({ value: need("frozen"), type: BOOL });
+        break;
+
       case "FreezeDelegate":
       case "PermanentFreezeDelegate":
         fields.push({ value: need("frozen"), type: BOOL });
@@ -1277,32 +1485,80 @@ export abstract class CpiEmitter extends CallEmitter {
     const U32: ValueType = { kind: "int", name: "u32" };
     const U64v: ValueType = { kind: "int", name: "u64" };
     const HASH: ValueType = { kind: "pubkey", hash: true };
-    // The leaf a transfer or burn replaces: { root, dataHash, creatorHash, assetDataHash?, flags?, nonce, index }.
-    const leafFields = (n: ts.Expression): MplField[] => {
-      if (!ts.isObjectLiteralExpression(n)) this.fail(n, "the leaf is { root, dataHash, creatorHash, assetDataHash?, flags?, nonce, index }");
+    // The leaf an instruction replaces. "v2": { root, dataHash, creatorHash, assetDataHash?, flags?, nonce, index };
+    // "delegate": the same with collectionHash? before assetDataHash; "meta": { root, assetDataHash?, flags?, nonce,
+    // index } (the hashes come from the metadata passed); "v1": { root, dataHash, creatorHash, nonce, index }.
+    const leafFields = (n: ts.Expression, shape: "v2" | "delegate" | "meta" | "v1" = "v2"): MplField[] => {
+      const known =
+        shape === "v1"
+          ? ["root", "dataHash", "creatorHash", "nonce", "index"]
+          : shape === "meta"
+            ? ["root", "assetDataHash", "flags", "nonce", "index"]
+            : ["root", "dataHash", "creatorHash", ...(shape === "delegate" ? ["collectionHash"] : []), "assetDataHash", "flags", "nonce", "index"];
+      if (!ts.isObjectLiteralExpression(n)) this.fail(n, `the leaf is { ${known.join(", ")} }`);
       const props = new Map<string, ts.Expression>();
       for (const q of n.properties) {
         if (ts.isPropertyAssignment(q) && ts.isIdentifier(q.name)) props.set(q.name.text, q.initializer);
         else if (ts.isShorthandPropertyAssignment(q)) props.set(q.name.text, q.name);
         else this.fail(q, "write leaf fields as name: value");
       }
-      const known = ["root", "dataHash", "creatorHash", "assetDataHash", "flags", "nonce", "index"];
       for (const [k, v] of props) if (!known.includes(k)) this.fail(v, `the leaf has no field ${k}`);
       const need = (k: string) => props.get(k) ?? this.fail(n, `the leaf needs ${k}`);
-      const opt = (k: string, t: ValueType): MplField[] => {
+      // Left out or null: None. A value that may be null at run time (`Hash | null`) goes as a Borsh Option.
+      const opt = (k: string, t: ScalarType): MplField[] => {
         const v = props.get(k);
         if (!v || v.kind === ts.SyntaxKind.NullKeyword) return [{ bytes: [0] }];
-        return [{ bytes: [1] }, { value: v, type: t }];
+        this.model.options.set(optionKey(t), t);
+        return [{ value: v, type: { kind: "option", inner: t } as ValueType }];
       };
-      return [
-        { value: need("root"), type: HASH },
-        { value: need("dataHash"), type: HASH },
-        { value: need("creatorHash"), type: HASH },
-        ...opt("assetDataHash", HASH),
-        ...opt("flags", U8),
+      const hashes: MplField[] =
+        shape === "meta"
+          ? []
+          : [
+              { value: need("dataHash"), type: HASH },
+              { value: need("creatorHash"), type: HASH },
+            ];
+      const tail: MplField[] = [
         { value: need("nonce"), type: U64v },
         { value: need("index"), type: U32 },
       ];
+      if (shape === "v1") return [{ value: need("root"), type: HASH }, ...hashes, ...tail];
+      return [
+        { value: need("root"), type: HASH },
+        ...hashes,
+        ...(shape === "delegate" ? opt("collectionHash", HASH as ScalarType) : []),
+        ...opt("assetDataHash", HASH as ScalarType),
+        ...opt("flags", U8 as ScalarType),
+        ...tail,
+      ];
+    };
+    // MetadataArgsV2 from { name, symbol, uri, sellerFeeBasisPoints, primarySaleHappened?, isMutable?, creators?,
+    // collection? } (a leaf's current metadata: the program hashes it to check the leaf).
+    const metadataV2 = (md: ts.Expression): MplField[] => {
+      if (!ts.isObjectLiteralExpression(md))
+        this.fail(md, "the metadata is { name, symbol, uri, sellerFeeBasisPoints, primarySaleHappened?, isMutable?, creators?, collection? }");
+      const props = this.literalProps(
+        md,
+        ["name", "symbol", "uri", "sellerFeeBasisPoints", "primarySaleHappened", "isMutable", "creators", "collection"],
+        "the metadata",
+      );
+      const need = (k: string) => props.get(k) ?? this.fail(md, `the metadata needs ${k}`);
+      const fields: MplField[] = [
+        { value: need("name"), type: STRING },
+        { value: need("symbol"), type: STRING },
+        { value: need("uri"), type: STRING },
+        { value: need("sellerFeeBasisPoints"), type: { kind: "int", name: "u16" } },
+      ];
+      const flag = (k: string, dflt: number): MplField => (props.get(k) ? { value: props.get(k)!, type: BOOL } : { bytes: [dflt] });
+      fields.push(flag("primarySaleHappened", 0), flag("isMutable", 1), { bytes: [1, 0] }); // token_standard: Some(NonFungible)
+      fields.push(...this.bubblegumCreators(props.get("creators")));
+      const coll = props.get("collection");
+      if (!coll || coll.kind === ts.SyntaxKind.NullKeyword) fields.push({ bytes: [0] });
+      else {
+        this.model.options.set("pubkey", PUBKEY);
+        fields.push({ value: coll, type: { kind: "option", inner: PUBKEY } as ValueType });
+      }
+      return fields;
     };
     const proofRange = (n: ts.Expression) => {
       if (!this.ix) this.fail(n, "a Merkle proof comes from remainingAccounts(), so only instructions can pass one");
@@ -1463,7 +1719,97 @@ export abstract class CpiEmitter extends CallEmitter {
         return undefined;
       }
     }
-    this.fail(node.expression, `Bubblegum supports createTree, mint, createTreeV2, mintV2, transferV2 and burnV2, not ${method}`);
+    const op = BUBBLEGUM_OPS[method];
+    if (op) {
+      // accounts…, [leaf, metadata?, update?], proof, signerSeeds?
+      const nAccounts = op.accounts.length;
+      const extra = op.leaf === "meta" ? (method === "updateMetadataV2" ? 2 : 1) : 0;
+      const proofAt = nAccounts + 1 + extra;
+      if (a.length !== proofAt + 1 && a.length !== proofAt + 2)
+        this.fail(
+          node,
+          `${method}(${op.accounts.map(([l, , , o]) => (o ? `${l} | null` : l)).join(", ")}, leaf${extra ? (extra === 2 ? ", currentMetadata, update" : ", metadata") : ""}, proof, signerSeeds?)`,
+        );
+      const hasSeeds = !!a[proofAt + 1];
+      const metas = op.accounts.map(([label, w, s, optional, either], i): [string, boolean, boolean | string] => {
+        if (!optional && a[i]!.kind === ts.SyntaxKind.NullKeyword) this.fail(a[i]!, `pass ${label}`);
+        const m = this.mplMeta(a[i]!, bg, label, w, s);
+        // V1 leaf owner / delegate: either may sign (a PDA owner signs with the seeds).
+        if (either)
+          return [
+            m[0],
+            w,
+            either === "owner"
+              ? `(${m[0]}->is_signer || ${hasSeeds})`
+              : `(${m[0]}->is_signer || (${hasSeeds} && ${m[0]} == ${`a_${(this.accountParam(a[i - 1]!, "the leaf owner") as AccountParam).name}`}))`,
+          ];
+        return m;
+      });
+      const fields: MplField[] = [{ bytes: op.disc }, ...leafFields(a[nAccounts]!, op.leaf)];
+      if (op.leaf === "meta") fields.push(...metadataV2(a[nAccounts + 1]!));
+      if (method === "updateMetadataV2") fields.push(...this.bubblegumUpdateArgs(a[nAccounts + 2]!));
+      const data = this.mplData(node, 2048, fields);
+      this.cpi(p, metas as [string, boolean, boolean][], data.buf, data.len, seedsAt(proofAt + 1), proofRange(a[proofAt]!));
+      return undefined;
+    }
+    this.fail(
+      node.expression,
+      `Bubblegum supports createTree, mint, createTreeV2, mintV2, transferV2, burnV2, ${Object.keys(BUBBLEGUM_OPS).join(", ")}, not ${method}`,
+    );
+  }
+
+  /** Object literal properties by name, refusing others. */
+  protected literalProps(o: ts.ObjectLiteralExpression, allowed: string[], what: string): Map<string, ts.Expression> {
+    const props = new Map<string, ts.Expression>();
+    for (const q of o.properties) {
+      if (ts.isPropertyAssignment(q) && ts.isIdentifier(q.name)) props.set(q.name.text, q.initializer);
+      else if (ts.isShorthandPropertyAssignment(q)) props.set(q.name.text, q.name);
+      else this.fail(q, `write ${what}'s fields as name: value`);
+    }
+    for (const [k, v] of props) if (!allowed.includes(k)) this.fail(v, `${what} has no field ${k} (${allowed.join(", ")})`);
+    return props;
+  }
+
+  /** Vec<Creator> (address, verified, share) from a literal list; shares add up to 100 when literal. */
+  protected bubblegumCreators(creators: ts.Expression | undefined): MplField[] {
+    if (creators && !ts.isArrayLiteralExpression(creators)) this.fail(creators, "creators: [{ address, verified, share }, …] (an array literal)");
+    const list = creators ? (creators as ts.ArrayLiteralExpression).elements : [];
+    if (list.length > 5) this.fail(creators!, "Bubblegum takes at most 5 creators");
+    const fields: MplField[] = [{ bytes: [list.length, 0, 0, 0] }];
+    let shares = 0n;
+    let constant = true;
+    for (const el of list) {
+      if (!ts.isObjectLiteralExpression(el)) this.fail(el, "a creator is { address, verified, share }");
+      const props = this.literalProps(el, ["address", "verified", "share"], "a creator");
+      const f = (k: string) => props.get(k) ?? this.fail(el, `a creator needs ${k}`);
+      const share = f("share");
+      if (ts.isBigIntLiteral(share)) shares += BigInt(share.text.slice(0, -1));
+      else constant = false;
+      fields.push({ value: f("address"), type: PUBKEY }, { value: f("verified"), type: BOOL }, { value: share, type: U8 });
+    }
+    if (list.length && constant && shares !== 100n) this.fail(creators!, `creator shares add up to ${shares}; Bubblegum requires 100`);
+    return fields;
+  }
+
+  /** UpdateArgs: every field optional (left out or null: unchanged). */
+  protected bubblegumUpdateArgs(n: ts.Expression): MplField[] {
+    if (!ts.isObjectLiteralExpression(n))
+      this.fail(n, "the update is { name?, symbol?, uri?, creators?, sellerFeeBasisPoints?, primarySaleHappened?, isMutable? }");
+    const props = this.literalProps(n, ["name", "symbol", "uri", "creators", "sellerFeeBasisPoints", "primarySaleHappened", "isMutable"], "the update");
+    const opt = (k: string, t: ValueType): MplField[] => {
+      const v = props.get(k);
+      return !v || v.kind === ts.SyntaxKind.NullKeyword ? [{ bytes: [0] }] : [{ bytes: [1] }, { value: v, type: t }];
+    };
+    const creators = props.get("creators");
+    return [
+      ...opt("name", STRING),
+      ...opt("symbol", STRING),
+      ...opt("uri", STRING),
+      ...(creators && creators.kind !== ts.SyntaxKind.NullKeyword ? [{ bytes: [1] }, ...this.bubblegumCreators(creators)] : [{ bytes: [0] }]),
+      ...opt("sellerFeeBasisPoints", { kind: "int", name: "u16" }),
+      ...opt("primarySaleHappened", BOOL),
+      ...opt("isMutable", BOOL),
+    ];
   }
 
   /** `acct.key` of an account parameter, as an expression to serialize. */
