@@ -111,7 +111,8 @@ export function svmConnection(svm: LiteSVM): SvmConnection {
   const record = (n: Sent) => {
     sent.push(n);
     for (const l of [...logListeners]) l(n);
-    for (const k of new Set(n.keys)) for (const l of [...(accountListeners.get(k) ?? [])]) l();
+    // A failed transaction changed no account.
+    if (n.err === null) for (const k of new Set(n.keys)) for (const l of [...(accountListeners.get(k) ?? [])]) l();
   };
   const decode = (wire: string) => {
     const tx = getTransactionDecoder().decode(getBase64Encoder().encode(wire));
