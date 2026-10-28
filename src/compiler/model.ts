@@ -102,7 +102,8 @@ export type TokenProgramKind = "token" | "token2022" | "tokenInterface";
 
 export type ParamKind =
   | { kind: "signer"; mut: boolean }
-  | { kind: "info"; mut: boolean }
+  /** `systemOwned`: a SystemAccount (Anchor's): owned by the System Program (3011). */
+  | { kind: "info"; mut: boolean; systemOwned?: boolean }
   | { kind: "account"; struct: StructDef; mut: boolean }
   | { kind: "init"; struct: StructDef }
   /** Created on first use, otherwise verified like Mut<T>: `acct.createIfNeeded(payer, seeds)`. */
@@ -112,7 +113,8 @@ export type ParamKind =
   /** `init`: an associated token account this instruction creates (`Ata<Init<TokenAccount>, …>`, create) or creates when
    * missing (`Ata<InitIfNeeded<TokenAccount>, …>`, createIfNeeded); it is a TokenAccount once that call has run. */
   | { kind: "token"; mut: boolean; init?: "create" | "ifNeeded" }
-  | { kind: "mint"; mut: boolean }
+  /** `init`: created in the body (`mint.create(payer, seeds | null, decimals, authority, freeze)`). */
+  | { kind: "mint"; mut: boolean; init?: "create" | "ifNeeded" }
   | { kind: "system" }
   | { kind: "instructionsSysvar" }
   | { kind: "pyth" }
@@ -159,6 +161,8 @@ export interface AccountParam {
   optional?: boolean;
   node: ts.ParameterDeclaration;
   constraints: Constraints;
+  /** Created in the body as a new keypair account (`create(payer, null, …)`), so it signs: the IDL says so. */
+  signsInit?: boolean;
 }
 
 export interface ArgParam {

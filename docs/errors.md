@@ -11,7 +11,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 2009 | not the associated token account (ConstraintAssociated) |
 | 2012 | not the expected address (ConstraintAddress) |
 | 2014 / 2015 | token account mint / owner mismatch (ConstraintTokenMint / ConstraintTokenOwner) |
-| 2016 / 2017 | mint authority / freeze authority mismatch |
+| 2016 / 2017 / 2018 | mint authority / freeze authority / decimals mismatch (2018: an existing mint `createIfNeeded` found) |
 | 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount) |
 | 3000 | account already exists / initialized (AccountDiscriminatorAlreadySet) |
 | 3002 | discriminator mismatch (AccountDiscriminatorMismatch) |
@@ -21,7 +21,8 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 3006 | account must be writable (AccountNotMutable) |
 | 3007 | wrong owner program (AccountOwnedByWrongProgram) |
 | 3008 / 3009 | wrong program address / not executable (InvalidProgramId / InvalidProgramExecutable) |
-| 3010 | account must sign (AccountNotSigner) |
+| 3010 | account must sign (AccountNotSigner; also a new keypair account a `create(payer, null, …)` makes) |
+| 3011 | a `SystemAccount` owned by another program (AccountNotSystemOwned) |
 | 3012 | account not initialized: empty system account where a program account was expected (AccountNotInitialized) |
 | 3016 | account would grow more than 10 KiB in one instruction, or grow without a payer (AccountReallocExceedsLimit) |
 | 4102 | cast overflow (InvalidNumericConversion) |

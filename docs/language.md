@@ -75,6 +75,8 @@ The full reference. For a tour, start with the [README](../README.md).
 | `ProgramData` | this program's ProgramData (address derived from the program id, upgradeable-loader owner and state checked); `upgradeAuthority`, `deploySlot` — gate admin setup on `programData.upgradeAuthority === admin.key` |
 | `EventAuthority`, `SelfProgram` | Anchor's `["__event_authority"]` PDA, and this program's own address, for `emitCpi` |
 | `Zeroed<T>` | large accounts (up to 10 MiB) the client allocated with System `CreateAccount`: owned by this program, big enough, rent-exempt, discriminator still zero — then initialized; like Anchor's zero-copy `zero` |
+| `Init<Mint>`, `InitIfNeeded<Mint>` | Anchor `init` / `init_if_needed` with `mint::decimals` / `mint::authority` / `mint::freeze_authority`: `const bump = mint.create(payer, ["mint", payer.key], 6n, authority, freezeAuthority \| null)` creates the mint at that PDA of this program, or with `null` seeds as a new keypair account that signs (3010 if it did not), under the instruction's token program (exactly one token program parameter, plus `SystemProgram`). `createIfNeeded(…)` returns whether it created it; an existing one must be that PDA and have those decimals and authorities (2018 / 2016 / 2017) |
+| `Init<TokenAccount>`, `InitIfNeeded<TokenAccount>` (no `Ata<…>`) | Anchor `init` / `init_if_needed` with `token::mint` / `token::authority`: `vault.create(payer, ["vault", mint.key], mint, authority)` (the authority may be `vault.key` itself) creates a token account at that PDA (or a keypair account with `null`), sized for the mint's extensions under Token-2022. `createIfNeeded` checks an existing one has that mint and owner (2014 / 2015) |
 | `TokenAccount` / `Mut<TokenAccount>` | owned by SPL Token or Token-2022 (extensions allowed, multisig accounts refused), initialized; `mint`, `owner`, `amount`, `delegate`, `delegatedAmount`, `isFrozen`, `isNative`, `closeAuthority`, `tokenProgram` |
 | `Mint` / `Mut<Mint>` | owned by SPL Token or Token-2022, initialized; `decimals`, `supply`, `mintAuthority`, `freezeAuthority`, `tokenProgram` |
 | `SystemProgram`, `TokenProgram`, `Token2022Program` | exact program address |
@@ -85,6 +87,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `Program<"Address…">` | exact program address + executable |
 | `UncheckedProgram` | executable only — check `.key` yourself |
 | `AccountInfo` / `Mut<AccountInfo>` | nothing (writable for `Mut`); `owner`, `executable` |
+| `SystemAccount` / `Mut<SystemAccount>` | owned by the System Program, e.g. a wallet (Anchor `SystemAccount`, 3011) |
 
 Every account exposes `key`, `lamports`, `dataLen`, `isSigner`, `isWritable`. At most 32 accounts per instruction (more is refused, 5113).
 

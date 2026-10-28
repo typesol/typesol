@@ -38,7 +38,7 @@ Status:
 | `tokens/nft-operations` | `tokens/nft-operations.ts` | PARTIAL | `MintTo` is hand-encoded (the mint is created in the instruction); a wrong metadata account fails with 6000, not 3003 |
 | `tokens/pda-mint-authority` | `tokens/pda-mint-authority.ts` | PARTIAL | address log lines are two lines |
 | `tokens/token-2022/basics` | `tokens/token-2022/basics.ts` | PORTED | |
-| `tokens/token-2022/cpi-guard` | `tokens/token-2022/cpi-guard.ts` | PARTIAL | the `init_if_needed` PDA token account is created in the body and `TransferChecked` into it is hand-encoded; `token::mint` fails with 6000, not 2014 |
+| `tokens/token-2022/cpi-guard` | `tokens/token-2022/cpi-guard.ts` | PARTIAL | `token::mint` on the sender fails with 6000, not 2014 (the mint parameter keeps its Anchor name) |
 | `tokens/token-2022/default-account-state` | `tokens/token-2022/default-account-state.ts` | PARTIAL | DefaultAccountState instructions are hand-encoded (no Token-2022 extension builtins) |
 | `tokens/token-2022/group` | `tokens/token-2022/group.ts` | PARTIAL | the PDA mint with GroupPointer is created in the body (GroupPointer Initialize hand-encoded); the extension is read by walking the TLV list and not logged with `{:?}` |
 | `tokens/token-2022/immutable-owner` | `tokens/token-2022/immutable-owner.ts` | PARTIAL | InitializeImmutableOwner is hand-encoded |

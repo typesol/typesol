@@ -124,6 +124,7 @@ const TYPE_EXPORTS = new Set([
   "SelfProgram",
   "ProgramData",
   "SignerSeeds",
+  "SystemAccount",
 ]);
 
 /** Largest fixed array a struct may declare, and largest FixedString. */
@@ -1149,7 +1150,8 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
       const kind = resolveAccountKind(inner, reporter, imports, structs);
       if (
         optional &&
-        (["init", "initIfNeeded", "zeroed", "pyth", "eventAuthority", "selfProgram", "programData"].includes(kind.kind) || (kind.kind === "token" && kind.init))
+        (["init", "initIfNeeded", "zeroed", "pyth", "eventAuthority", "selfProgram", "programData"].includes(kind.kind) ||
+          ((kind.kind === "token" || kind.kind === "mint") && kind.init))
       )
         reporter.fail(p, "Init, InitIfNeeded, Zeroed, PythPriceUpdate, EventAuthority, SelfProgram and ProgramData accounts cannot be optional");
       accounts.push({ name: p.name.text, index: accounts.length, kind, node: p, constraints, ...(optional ? { optional } : {}) });
@@ -1171,10 +1173,11 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   // Constraints refer to other parameters by name: check them now that all are known.
   for (const a of accounts) {
     const c = a.constraints;
-    if (a.kind.kind === "token" && a.kind.init && !c.ata)
-      reporter.fail(a.node, 'Init<TokenAccount> / InitIfNeeded<TokenAccount> create associated token accounts: wrap them in Ata<…, "owner", "mint">');
-    if (a.kind.kind === "token" && a.kind.init && (c.hasOne.length || c.seeds || c.address || c.owner || c.executable))
+    if (a.kind.kind === "token" && a.kind.init && c.ata && (c.hasOne.length || c.seeds || c.address || c.owner || c.executable))
       reporter.fail(a.node, "an associated token account created here is checked against Ata<…>'s owner and mint; drop HasOne/Seeds/Address/Owner/Executable");
+    // Token accounts and mints created in the body are checked there (seeds, mint, authorities).
+    if ((a.kind.kind === "token" || a.kind.kind === "mint") && a.kind.init && !c.ata && (c.hasOne.length || c.seeds || c.address || c.owner || c.executable))
+      reporter.fail(a.node, `${a.name}.create(...) takes the seeds, mint and authorities; drop HasOne/Seeds/Address/Owner/Executable`);
     if (!c.hasOne.length && !c.seeds && !c.closeTo && !c.ata) continue;
     const struct =
       a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || a.kind.kind === "zeroed" ? a.kind.struct : undefined;
@@ -1340,6 +1343,8 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     // Any account (helpers that accept every kind, e.g. generated CPI helpers).
     case "AccountMeta":
       return { kind: "info", mut: false };
+    case "SystemAccount":
+      return { kind: "info", mut: false, systemOwned: true };
     case "TokenAccount":
       return { kind: "token", mut: false };
     case "Mint":
@@ -1393,8 +1398,9 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     }
     case "Init": {
       if (typesolName(inner(), imports) === "TokenAccount") return { kind: "token", mut: true, init: "create" };
+      if (typesolName(inner(), imports) === "Mint") return { kind: "mint", mut: true, init: "create" };
       const s = structOf(inner());
-      if (!s) reporter.fail(node, "Init<T> needs a struct declared in this program");
+      if (!s) reporter.fail(node, "Init<T> needs a struct declared in this program, TokenAccount or Mint");
       if (s.size! + 8 > MAX_CPI_ALLOCATION)
         reporter.fail(
           node,
@@ -1404,6 +1410,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     }
     case "InitIfNeeded": {
       if (typesolName(inner(), imports) === "TokenAccount") return { kind: "token", mut: true, init: "ifNeeded" };
+      if (typesolName(inner(), imports) === "Mint") return { kind: "mint", mut: true, init: "ifNeeded" };
       const s = structOf(inner());
       if (!s) reporter.fail(node, "InitIfNeeded<T> needs a struct declared in this program");
       if (s.size! + 8 > MAX_CPI_ALLOCATION) reporter.fail(node, `${s.name} is too large to create in a program; use Zeroed<${s.name}>`);
@@ -1423,6 +1430,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       const innerName = typesolName(t, imports);
       if (innerName === "Signer") return { kind: "signer", mut: true };
       if (innerName === "AccountInfo" || innerName === "AccountMeta") return { kind: "info", mut: true };
+      if (innerName === "SystemAccount") return { kind: "info", mut: true, systemOwned: true };
       if (innerName === "TokenAccount") return { kind: "token", mut: true };
       if (innerName === "Mint") return { kind: "mint", mut: true };
       reporter.fail(t, "Mut<T> takes a struct, Signer, AccountInfo, TokenAccount or Mint");

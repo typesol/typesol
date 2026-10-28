@@ -484,8 +484,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const target = this.accounts.get(callee.expression.text);
         // Program accounts used through their methods (systemProgram.transfer, tokenProgram.*…) may be optional.
         if (target?.optional) this.assertUsable(target, callee.expression);
-        if (target?.kind.kind === "token" && target.kind.init && method === (target.kind.init === "create" ? "create" : "createIfNeeded"))
-          return this.createAta(node, target, topLevel);
+        if (
+          (target?.kind.kind === "token" || target?.kind.kind === "mint") &&
+          target.kind.init &&
+          method === (target.kind.init === "create" ? "create" : "createIfNeeded")
+        )
+          return target.kind.kind === "token" && target.constraints.ata ? this.createAta(node, target, topLevel)! : this.createToken(node, target, topLevel);
         if (target?.kind.kind === "init" && method === "create") return this.create(node, target, topLevel);
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);

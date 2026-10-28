@@ -206,6 +206,109 @@ export abstract class CpiEmitter extends CallEmitter {
   }
 
   /**
+   * `vault.create(payer, seeds | null, mint, authority)` on `Init<TokenAccount>` and `mint.create(payer, seeds | null,
+   * decimals, authority, freezeAuthority | null)` on `Init<Mint>` (Anchor's `init` with `token::` / `mint::`
+   * constraints): a PDA of this program (or, with `null`, a new keypair account that signs), created owned by the
+   * instruction's token program and initialized. `createIfNeeded` on `InitIfNeeded<…>` does that unless the account
+   * exists, and then checks it is that PDA, owned by the token program, and has that mint and owner / those
+   * authorities and decimals (Anchor's init_if_needed checks). create returns the bump (0 for a keypair),
+   * createIfNeeded whether it created the account.
+   */
+  protected createToken(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value {
+    const isMint = target.kind.kind === "mint";
+    const ifNeeded = (target.kind as { init?: string }).init === "ifNeeded";
+    const call = `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}`;
+    const usage = isMint ? `${call}(payer, seeds | null, decimals, mintAuthority, freezeAuthority | null)` : `${call}(payer, seeds | null, mint, authority)`;
+    if (!topLevel) this.fail(node, `${call}(...) must be a top-level statement of the instruction`);
+    if (this.created.has(target.name)) this.fail(node, `${target.name} is already created`);
+    const a = node.arguments;
+    if (!isMint && a.length === 1)
+      this.fail(node, `${call}(payer) creates an associated token account: wrap it in Ata<…, "owner", "mint">; or call ${usage.slice(call.length)}`);
+    if (a.length !== (isMint ? 5 : 4)) this.fail(node, usage);
+    const payer = this.accountParam(a[0]!, "the payer");
+    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0]!, "the payer must be a Mut<Signer>");
+    const programs = this.ix!.accounts.filter((p) => p.kind.kind === "tokenProgram");
+    if (programs.length !== 1) this.fail(node, `${call}(...) needs exactly one token program parameter (TokenProgram, Token2022Program or TokenInterface)`);
+    if (programs[0]!.optional) this.fail(programs[0]!.node, `${call}(...) needs "${programs[0]!.name}": it cannot be optional`);
+    if (!this.ix!.accounts.some((p) => p.kind.kind === "system" && !p.optional)) this.fail(node, `${call}(...) needs a SystemProgram parameter`);
+    const tp = `a_${programs[0]!.name}`;
+    const acct = `a_${target.name}`;
+    // Seeds, then the values, in source order.
+    let seeds = { name: "NULL", count: 0 as number | string };
+    if (a[1]!.kind !== ts.SyntaxKind.NullKeyword) {
+      const s = this.seeds(a[1]!, 1);
+      this.recordPda(target, s.idl);
+      seeds = s;
+    } else target.signsInit = true;
+    const vals: Value[] = [];
+    const take = (n: ts.Expression, t: ValueType) => {
+      const mark = this.lines.length;
+      // The account's own address is known before it exists (`vault.create(payer, seeds, mint, vault.key)`).
+      const own = ts.isPropertyAccessExpression(n) && n.name.text === "key" && ts.isIdentifier(n.expression) && n.expression.text === target.name;
+      const v = own ? { c: `(&${acct}->key)`, type: PUBKEY } : this.expect(this.expr(n, t), t, n);
+      for (let j = 0; j < vals.length; j++) vals[j] = this.settle(vals[j]!, mark);
+      vals.push(v);
+    };
+    let mint: AccountParam | undefined;
+    if (isMint) {
+      take(a[2]!, U8);
+      take(a[3]!, PUBKEY);
+      if (a[4]!.kind !== ts.SyntaxKind.NullKeyword) take(a[4]!, PUBKEY);
+    } else {
+      mint = this.accountParam(a[2]!, "the mint");
+      if (mint.kind.kind !== "mint") this.fail(a[2]!, "pass the Mint parameter the account will hold");
+      take(a[3]!, PUBKEY);
+    }
+    const b = this.tmp("bump");
+    this.line(`uint8_t ${b};`);
+    const created = this.tmp("created");
+    const createLines: string[] = [];
+    if (isMint) {
+      const [decimals, authority, freeze] = vals;
+      createLines.push(
+        `TS_TRY(ts_create_owned(params, a_${payer.name}, ${acct}, ${seeds.name}, ${seeds.count}, &${tp}->key, TS_MINT_LEN, &${b}));`,
+        `TS_TRY(ts_token_init_mint(params, ${tp}, ${acct}, (uint8_t)(${decimals!.c}), ${authority!.c}, ${freeze ? freeze.c : "NULL"}));`,
+      );
+      if (ifNeeded) {
+        this.line(`bool ${created} = ts_key_eq(&${acct}->owner, &TS_SYSTEM_PROGRAM_ID);`);
+        this.line(`if (${created}) {`);
+        for (const l of createLines) this.line(`  ${l}`);
+        this.line(`} else {`);
+        this.line(`  TS_TRY(ts_token_existing(params, ${acct}, ${tp}, ${seeds.name}, ${seeds.count}, &${b}));`);
+        this.line(`  TS_TRY(ts_check_mint(${acct}));`);
+        this.line(`  TS_TRY(ts_check_mint_is(${acct}, (uint8_t)(${decimals!.c}), ${authority!.c}, ${freeze ? freeze.c : "NULL"}));`);
+        this.line(`}`);
+      } else for (const l of createLines) this.line(l);
+    } else {
+      const [authority] = vals;
+      const space = this.tmp("space");
+      createLines.push(
+        `uint64_t ${space};`,
+        `TS_TRY(ts_token_account_space(params, ${tp}, a_${mint!.name}, &${space}));`,
+        `TS_TRY(ts_create_owned(params, a_${payer.name}, ${acct}, ${seeds.name}, ${seeds.count}, &${tp}->key, ${space}, &${b}));`,
+        `TS_TRY(ts_token_init_account(params, ${tp}, ${acct}, a_${mint!.name}, ${authority!.c}));`,
+      );
+      if (ifNeeded) {
+        this.line(`bool ${created} = ts_key_eq(&${acct}->owner, &TS_SYSTEM_PROGRAM_ID);`);
+        this.line(`if (${created}) {`);
+        for (const l of createLines) this.line(`  ${l}`);
+        this.line(`} else {`);
+        this.line(`  TS_TRY(ts_token_existing(params, ${acct}, ${tp}, ${seeds.name}, ${seeds.count}, &${b}));`);
+        this.line(`  TS_TRY(ts_check_token_account(${acct}));`);
+        this.line(
+          `  if (!ts_key_eq(ts_token_mint(${acct}), &a_${mint!.name}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${target.name} is not a token account of ${mint!.name}");`,
+        );
+        this.line(`  if (!ts_key_eq(ts_token_owner(${acct}), ${authority!.c})) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${target.name} has another owner");`);
+        this.line(`}`);
+      } else for (const l of createLines) this.line(l);
+    }
+    this.created.add(target.name);
+    this.pendingInit.delete(target.name);
+    this.bumps.set(target.name, b);
+    return ifNeeded ? { c: created, type: BOOL } : { c: b, type: U8 };
+  }
+
+  /**
    * `ata.create(payer)` / `ata.createIfNeeded(payer)` on `Ata<Init|InitIfNeeded<TokenAccount>, "owner", "mint">`
    * (Anchor's `init` / `init_if_needed` with `associated_token::…`). create always calls the ATA program's Create, which
    * fails if the account exists. createIfNeeded calls it only when the account is still a System account (Anchor's

@@ -103,7 +103,7 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
   const entry: Record<string, unknown> = { name: snakeCase(name), ...(param ? paramDocs(param.node) : {}) };
   if (isWritable(k)) entry.writable = true;
   if (param?.optional) entry.optional = true;
-  if (k.kind === "signer") entry.signer = true;
+  if (k.kind === "signer" || param?.signsInit) entry.signer = true;
   if (k.kind === "system") entry.address = SYSTEM_PROGRAM;
   if (k.kind === "instructionsSysvar") entry.address = "Sysvar1nstructions1111111111111111111111111";
   if (k.kind === "ataProgram") entry.address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";

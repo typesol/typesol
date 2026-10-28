@@ -162,7 +162,7 @@ describe("Ata<Init|InitIfNeeded<TokenAccount>> diagnostics", () => {
   };
   const params = `payer: Mut<Signer>, owner: AccountInfo, mint: Mint, tokenProgram: TokenProgram, associatedTokenProgram: AssociatedTokenProgram, systemProgram: SystemProgram`;
   it("needs Ata<…>, must be created before use and exactly once, and needs the programs", () => {
-    expect(errorsFor(`export function f(${params}, a: Init<TokenAccount>): void { a.create(payer); }`)).toMatch(/wrap them in Ata/);
+    expect(errorsFor(`export function f(${params}, a: Init<TokenAccount>): void { a.create(payer); }`)).toMatch(/wrap it in Ata/);
     expect(errorsFor(`export function f(${params}, a: Ata<InitIfNeeded<TokenAccount>, "owner", "mint">): u64 { return a.amount; }`)).toMatch(
       /used before a\.createIfNeeded/,
     );
