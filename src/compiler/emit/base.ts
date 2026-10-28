@@ -194,20 +194,11 @@ export abstract class EmitterBase {
         if (!arg || !p.type || !ts.isTypeReferenceNode(p.type) || !ts.isIdentifier(p.type.typeName) || p.type.typeName.text !== tp || p.type.typeArguments)
           continue;
         // Type the argument without emitting it: it is lowered again, once, by the call.
-        const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-        const probe = this.reporter.guard(() => this.expr(arg));
-        this.lines.length = saved.lines;
-        this.hoisted.length = saved.hoisted;
-        this.temp = saved.temp;
-        this.reporter.diagnostics.length = saved.diagnostics;
+        const probe = this.probe(() => this.expr(arg));
         if (probe?.type.kind === "structRef") return this.fixedStruct(probe.type.struct, arg);
         if (!probe) {
           // A struct place (`p.a`) is not a value: type it as a reference, again without emitting anything.
-          const r = this.reporter.guard(() => this.ref(arg));
-          this.lines.length = saved.lines;
-          this.hoisted.length = saved.hoisted;
-          this.temp = saved.temp;
-          this.reporter.diagnostics.length = saved.diagnostics;
+          const r = this.probe(() => this.ref(arg));
           if (r?.type.kind === "struct") return this.fixedStruct(r.type.name, arg);
         }
         if (!probe || probe.literal !== undefined || probe.isNull) continue;
@@ -302,9 +293,53 @@ export abstract class EmitterBase {
   protected block(fn: () => void) {
     this.scopes.push(new Map());
     this.indent++;
-    fn();
-    this.indent--;
-    this.scopes.pop();
+    try {
+      fn();
+    } finally {
+      this.indent--;
+      this.scopes.pop();
+    }
+  }
+
+  /**
+   * Run `fn` to learn something (a type, a storage kind) without keeping anything it did: the emitted and hoisted
+   * lines, temporaries, diagnostics and emitter state are put back. Undefined when `fn` fails.
+   */
+  protected probe<T>(fn: () => T): T | undefined {
+    const saved = {
+      lines: this.lines.length,
+      hoisted: this.hoisted.length, // a probed helper call may hoist declarations
+      temp: this.temp,
+      diagnostics: this.reporter.diagnostics.length,
+      scopes: this.scopes.length,
+      indent: this.indent,
+      loops: this.loops.length,
+      frames: this.inlineFrames.length,
+      created: new Set(this.created),
+      pendingInit: new Set(this.pendingInit),
+      bumps: new Map(this.bumps),
+    };
+    try {
+      return this.reporter.guard(fn);
+    } finally {
+      this.lines.length = saved.lines;
+      this.hoisted.length = saved.hoisted;
+      this.temp = saved.temp;
+      this.reporter.diagnostics.length = saved.diagnostics;
+      this.scopes.length = saved.scopes;
+      this.indent = saved.indent;
+      this.loops.length = saved.loops;
+      this.inlineFrames.length = saved.frames;
+      for (const [set, from] of [
+        [this.created, saved.created],
+        [this.pendingInit, saved.pendingInit],
+      ] as const) {
+        set.clear();
+        from.forEach((x) => set.add(x));
+      }
+      this.bumps.clear();
+      saved.bumps.forEach((v, k) => this.bumps.set(k, v));
+    }
   }
 
   protected fail(node: ts.Node, message: string): never {
@@ -317,7 +352,7 @@ export abstract class EmitterBase {
 
   /**
    * `acct!.field` on an optional account: the same access without `!` (using the account checks that it was passed,
-   * failing with 3020 otherwise). Returns undefined for anything else.
+   * failing with 5115 otherwise). Returns undefined for anything else.
    */
   protected withoutBang(node: ts.Expression): ts.PropertyAccessExpression | undefined {
     if (!ts.isPropertyAccessExpression(node) || !ts.isNonNullExpression(node.expression)) return undefined;
@@ -384,6 +419,16 @@ export abstract class EmitterBase {
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
   protected abstract closureOf(arg: ts.Expression): Closure;
+
+  /** The arguments and accounts code written here can name (what a closure written here keeps). */
+  protected envNow(): Closure["env"] {
+    return { args: new Map(this.args), accounts: new Map(this.accounts) };
+  }
+
+  /** None: a helper's or factory's body sees its own parameters and the module only. */
+  protected noEnv(): Closure["env"] {
+    return { args: new Map(), accounts: new Map() };
+  }
   protected abstract madeFunction(call: ts.CallExpression): Closure | undefined;
   protected abstract eachElement(
     list: ts.Expression,

@@ -1,11 +1,7 @@
 // Callback methods on lists, expanded into loops: forEach / some / every / find / findIndex / reduce / includes / indexOf.
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { CompileError, generate } from "../src/compiler/index.js";
-import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "./harness.js";
 import { pk } from "./ports-helpers.js";
 
 describe("list methods", () => {
@@ -70,18 +66,7 @@ describe("list methods", () => {
     ).toBe(1n);
     expect(customError(await call([4, 5]))).toBe(5104);
 
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-mapfilter-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type u64, type Vec, type FixedVec, type Pubkey, fixedArray } from "typesol";\n${body}\n`);
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
+    const errors = (body: string) => compileErrors(`import { type u64, type Vec, type FixedVec, type Pubkey, fixedArray } from "typesol";\n${body}\n`);
     expect(errors(`export function f(xs: Vec<u64>): u64 { xs.map((x) => x + 1n); return 0n; }`)).toMatch(/builds a new list: store it/);
     expect(errors(`export function f(xs: Vec<u64>): u64 { const ys = xs.filter((x) => x > 1n); return ys.length; }`)).toMatch(/no fixed size: annotate/);
     expect(errors(`export function f(xs: Vec<Pubkey>): u64 { const ys: FixedVec<Pubkey, 100> = xs.filter((x) => true); return ys.length; }`)).toMatch(

@@ -1,13 +1,9 @@
 // FixedVec<T, N>: lists with a fixed capacity anywhere in account data (several per struct, nested), next to a
 // trailing Vec; their IDL types decode with Anchor's coder and the generated client.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateKeyPairSigner } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CompileError, generate } from "../src/compiler/index.js";
-import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "./harness.js";
 import { pk } from "./ports-helpers.js";
 
 type Board = {
@@ -81,18 +77,8 @@ describe("FixedVec", () => {
   });
 
   it("refuses FixedVec where it has no fixed layout", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-fixedvec-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type Account, type FixedVec, type Mut, type Vec, type u64, emit, fixedVec } from "typesol";\n${body}\n`);
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
+    const errors = (body: string) =>
+      compileErrors(`import { type Account, type FixedVec, type Mut, type Vec, type u64, emit, fixedVec } from "typesol";\n${body}\n`);
     expect(errors(`/** @layout borsh */\nexport interface S { a: Vec<u64>; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/use FixedVec<T, N>/);
     expect(errors(`export interface S { a: FixedVec<u64, 0>; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/literal capacity/);
     expect(errors(`export interface S { a: FixedVec<string, 2> }\nexport function f(s: Account<S>): void {}`)).toMatch(/fixed size/);

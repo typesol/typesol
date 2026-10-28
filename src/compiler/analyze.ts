@@ -448,20 +448,61 @@ export function analyze(entry: string): Analysis {
       }
       // An arrow written as a helper's function argument (`apply((x: u64): u64 => x + 1n, v)`): a local function of
       // its own, passed like a named one. Missing parameter and return types come from the helper's parameter type.
-      const target = (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && ts.isCallExpression(n.parent) ? fnParamType(n, checker) : undefined;
-      if (target) {
+      const found = (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && ts.isCallExpression(n.parent) ? fnParamType(n, checker) : undefined;
+      if (found) {
         reporter.guard(() => {
+          const { type: target, owner } = found;
           if (generic) reporter.fail(n, "arrow functions passed inside a generic helper are not supported; declare the function at the top level");
           const lit = n as ts.ArrowFunction | ts.FunctionExpression;
+          // Types left out are taken from the helper's parameter type, as written in the helper's file: its names are
+          // resolved with that file's imports (added to this function's), and its type parameters cannot be.
+          const typeParams = new Set((owner.typeParameters ?? []).map((t) => t.name.text));
+          const usesTypeParam = (t: ts.Node): boolean =>
+            (ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) && typeParams.has(t.typeName.text)) ||
+            !!ts.forEachChild(t, (c) => usesTypeParam(c) || undefined);
+          const ownerImports = importsOf.get(owner.getSourceFile()) ?? imports;
+          let lifted = imports;
+          const graft = (from: ts.TypeNode | undefined, at: ts.Node): ts.TypeNode | undefined => {
+            if (!from) return undefined;
+            // `T` itself, given at the call (`applyT<u64>((v) => …)`): the type written there.
+            const call = n.parent as ts.CallExpression;
+            if (ts.isTypeReferenceNode(from) && ts.isIdentifier(from.typeName) && typeParams.has(from.typeName.text) && call.typeArguments) {
+              const i = (owner.typeParameters ?? []).findIndex((t) => t.name.text === (from.typeName as ts.Identifier).text);
+              const given = call.typeArguments[i];
+              if (given) return given;
+            }
+            if (usesTypeParam(from))
+              reporter.fail(at, `write the types here: the parameter's type uses the helper's type parameter (${[...typeParams].join(", ")})`);
+            if (ownerImports !== imports) {
+              const names = new Set<string>();
+              const collect = (t: ts.Node): void => {
+                if (ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName)) names.add(t.typeName.text);
+                ts.forEachChild(t, collect);
+              };
+              collect(from);
+              for (const nm of names) {
+                const theirs = ownerImports.get(nm);
+                if (theirs === undefined) continue;
+                const ours = lifted.get(nm);
+                if (ours !== undefined && ours !== theirs)
+                  reporter.fail(at, `write the types here: "${nm}" means ${theirs} in the helper's file and ${ours} here`);
+                if (ours === undefined) {
+                  if (lifted === imports) lifted = new Map(imports);
+                  lifted.set(nm, theirs);
+                }
+              }
+            }
+            return from;
+          };
           lit.parameters.forEach((p, i) => {
-            const from = target.parameters[i]?.type;
-            if (!p.type && from) (p as { type?: ts.TypeNode }).type = from;
+            const from = graft(p.type ? undefined : target.parameters[i]?.type, p);
+            if (from) (p as { type?: ts.TypeNode }).type = from;
           });
-          if (!lit.type) (lit as { type?: ts.TypeNode }).type = target.type;
+          if (!lit.type) (lit as { type?: ts.TypeNode }).type = graft(target.type, lit);
           let name = `${outer}__fn`;
           for (let i = 2; taken.has(name); i++) name = `${outer}__fn${i}`;
           taken.add(name);
-          const src: HelperSource = { node: lit as ts.ArrowFunction, name, display: "the function passed here", decl: lit, imports, outer: fn };
+          const src: HelperSource = { node: lit as ts.ArrowFunction, name, display: "the function passed here", decl: lit, imports: lifted, outer: fn };
           locals.push(src);
           if (lit.body) collectLocals(lit.body, name, imports, lit as ts.ArrowFunction);
         });
@@ -471,6 +512,8 @@ export function analyze(entry: string): Analysis {
     };
     visit(body);
   };
+  const importsOf = new Map<ts.SourceFile, Map<string, string>>();
+  for (const f of [...functions, ...helperNodes]) importsOf.set(f.node.getSourceFile(), f.imports);
   for (const f of functions) if (f.node.body && f.node.name) collectLocals(f.node.body, f.node.name.text, f.imports, f.node);
   for (const h of [...helperNodes]) if (h.node.body) collectLocals(h.node.body, h.name, h.imports, h.node);
   const localDecls = new Set(locals.map((l) => l.decl));
@@ -490,11 +533,11 @@ export function analyze(entry: string): Analysis {
   const helpers = new Map<string, Helper>();
   const generics = new Map<string, GenericHelper>();
   const helperDecls = new Map<ts.Node, string>();
-  const factories = new Map<string, HelperNode>();
+  const factories = new Map<string, { node: HelperNode; imports: Map<string, string> }>();
   for (const fn of [...helperNodes, ...locals.filter((l) => !inline.has(l.decl))]) {
     helperDecls.set(fn.decl, fn.name);
     if (returnsFunction(fn.node)) {
-      factories.set(fn.name, fn.node);
+      factories.set(fn.name, { node: fn.node, imports: fn.imports });
       continue;
     }
     const fnParams = fn.node.parameters.map((p, i) => (p.type && ts.isFunctionTypeNode(p.type) ? i : -1)).filter((i) => i >= 0);
@@ -583,13 +626,14 @@ export function analyze(entry: string): Analysis {
   // nowhere else (not account data, not nested, not returned) is read as Anchor sends it: @layout borsh, implied.
   // Anywhere else its FixedVec keeps the padded layout of account data, which an argument cannot have.
   const hasFixedVec = (n: string) => structs.get(n)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined);
+  const holds = (f: StructField, n: string) => {
+    const inner = f.type.kind === "array" || f.type.kind === "vec" ? f.type.elem : f.type.kind === "option" ? (f.type.inner as FieldType) : f.type;
+    return inner.kind === "struct" && inner.name === n;
+  };
+  // In another struct, or in a data enum's variant (stored in its fixed layout in account data).
   const nestedSomewhere = (n: string) =>
-    [...structs.values()].some((o) =>
-      o.fields.some((f) => {
-        const inner = f.type.kind === "array" || f.type.kind === "vec" ? f.type.elem : f.type.kind === "option" ? (f.type.inner as FieldType) : f.type;
-        return inner.kind === "struct" && inner.name === n;
-      }),
-    );
+    [...structs.values()].some((o) => o.fields.some((f) => holds(f, n))) ||
+    [...dataEnums.values()].some((e) => e.variants.some((v) => v.fields.some((f) => holds(f, n))));
   for (const ix of instructions)
     for (const a of ix.args) {
       const seen = new Set<string>();
@@ -877,7 +921,7 @@ function analyzeStructs(
       return { kind: "struct", name: node.typeName.text };
     reporter.fail(
       node,
-      "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T> (last), string (events only) or another struct",
+      "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T>, string (events only) or another struct",
     );
   };
 
@@ -1037,7 +1081,7 @@ function analyzeStructs(
         if (!s) return 0;
         visit(s);
         if (s.size === undefined) reporter.fail(at, `${t.name} has a string field and cannot be nested; use FixedString<N>`);
-        if (s.vec) reporter.fail(at, `${t.name} ends in a Vec and can only be account data, not nested`);
+        if (s.vec) reporter.fail(at, `${t.name} has a growable Vec and can only be account data, not nested`);
         return s.size;
       }
     }
@@ -1096,7 +1140,7 @@ const isFunctionNode = (n: ts.Node) => ts.isFunctionDeclaration(n) || ts.isArrow
  * The function type of the helper parameter an arrow is passed for (`f` in `function apply(f: (x: u64) => u64, …)`),
  * when the arrow is an argument of a call to a declared function or const arrow; undefined otherwise.
  */
-function fnParamType(arrow: ts.Expression, checker: ts.TypeChecker): ts.FunctionTypeNode | undefined {
+function fnParamType(arrow: ts.Expression, checker: ts.TypeChecker): { type: ts.FunctionTypeNode; owner: HelperNode } | undefined {
   const call = arrow.parent as ts.CallExpression;
   const i = call.arguments.indexOf(arrow);
   if (i < 0 || !ts.isIdentifier(call.expression)) return undefined;
@@ -1109,7 +1153,7 @@ function fnParamType(arrow: ts.Expression, checker: ts.TypeChecker): ts.Function
         ? d.initializer
         : undefined;
     const t = fn?.parameters[i]?.type;
-    if (t && ts.isFunctionTypeNode(t)) return t;
+    if (fn && t && ts.isFunctionTypeNode(t)) return { type: t, owner: fn };
   }
   return undefined;
 }
@@ -1655,7 +1699,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     case "Zeroed": {
       const s = structOf(inner());
       if (!s) reporter.fail(node, "Zeroed<T> needs a struct declared in this program");
-      if (s.vec) reporter.fail(node, `${s.name} ends in a Vec; Zeroed<T> is for fixed-size (large) accounts`);
+      if (s.vec) reporter.fail(node, `${s.name} has a growable Vec; Zeroed<T> is for fixed-size (large) accounts`);
       if (s.layout === "borsh") reporter.fail(node, `${s.name} is @layout borsh; Zeroed<T> reads large accounts in place, so it takes fixed layouts only`);
       return { kind: "zeroed", struct: s };
     }

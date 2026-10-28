@@ -89,7 +89,7 @@ export interface Local {
   readonly?: boolean;
   /** For struct / data-enum references: the storage paths they alias (e.g. "book.asks[]"), and the declaration. */
   paths?: string[];
-  decl?: ts.VariableDeclaration;
+  decl?: ts.VariableDeclaration | ts.ParameterDeclaration;
   /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
   closure?: Closure;
 }
@@ -100,6 +100,13 @@ export interface Closure {
   node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration;
   name: string;
   scopes: Map<string, Local>[];
+  /**
+   * The instruction arguments and accounts its body may name: those where it was written for a closure, none for a
+   * helper or a function a helper made (they see only their parameters and the module).
+   */
+  env: { args: Map<string, Local>; accounts: Map<string, AccountParam> };
+  /** The `typesol` imports of the file it is written in: its type names mean what they mean there. */
+  imports: Map<string, string>;
 }
 
 export const cBytes = (bytes: number[]) => `{${bytes.join(", ")}}`;

@@ -73,15 +73,7 @@ export abstract class StorageEmitter extends EmitterBase {
   }
 
   protected looksLikeDataEnum(node: ts.Expression): boolean {
-    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-    try {
-      return this.reporter.guard(() => this.ref(node))?.type.kind === "dataEnum";
-    } finally {
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
-    }
+    return this.probe(() => this.ref(node))?.type.kind === "dataEnum";
   }
 
   protected variantIndex(enumName: string, lit: ts.Expression): number {
@@ -135,10 +127,33 @@ export abstract class StorageEmitter extends EmitterBase {
       }
   }
 
-  /** Whether the variable declared by `decl` is read after `at` (later in its block, or anywhere in a loop around `at`). */
-  protected usedAfter(decl: ts.VariableDeclaration, at: ts.Node): boolean {
+  /**
+   * Whether the variable declared by `decl` is read after `at` (later in its block, or anywhere in a loop around `at`).
+   * A parameter (of a closure or helper expanded here) is read after `at` when its function reads it after `at`; when
+   * `at` is in another function (a closure or helper it calls), any read of it in its own function counts.
+   */
+  protected usedAfter(decl: ts.VariableDeclaration | ts.ParameterDeclaration, at: ts.Node): boolean {
     const symbol = this.checker.getSymbolAtLocation(decl.name);
     if (!symbol) return true;
+    if (ts.isParameter(decl)) {
+      const fn = decl.parent;
+      const inside = at.getSourceFile() === fn.getSourceFile() && at.pos >= fn.pos && at.end <= fn.end;
+      let read = false;
+      const visitParam = (n: ts.Node) => {
+        if (read) return;
+        if (ts.isIdentifier(n) && n !== decl.name && this.checker.getSymbolAtLocation(n) === symbol) {
+          if (!inside || n.pos >= at.end) read = true;
+          // A loop inside the function, around `at`, reads it again on its next turn.
+          for (let p: ts.Node | undefined = at.parent; inside && p && p !== fn; p = p.parent)
+            if ((ts.isForStatement(p) || ts.isForOfStatement(p) || ts.isWhileStatement(p) || ts.isDoStatement(p)) && n.pos >= p.pos && n.end <= p.end)
+              read = true;
+        }
+        ts.forEachChild(n, visitParam);
+      };
+      const body = (fn as { body?: ts.Node }).body;
+      if (body) visitParam(body);
+      return read;
+    }
     // Loops around `at` that do not also contain the declaration run their earlier statements again later.
     let loop: ts.Node | undefined;
     for (let n: ts.Node | undefined = at.parent; n && n !== decl.parent; n = n.parent)
@@ -196,16 +211,8 @@ export abstract class StorageEmitter extends EmitterBase {
   protected looksLikeStructPlace(node: ts.Expression): boolean {
     if (ts.isParenthesizedExpression(node)) return this.looksLikeStructPlace(node.expression);
     if (ts.isConditionalExpression(node)) return this.looksLikeStructPlace(node.whenTrue) && this.looksLikeStructPlace(node.whenFalse);
-    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-    try {
-      const r = this.reporter.guard(() => this.ref(node));
-      return r?.type.kind === "struct";
-    } finally {
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
-    }
+    const r = this.probe(() => this.ref(node));
+    return r?.type.kind === "struct";
   }
 
   /** `fixedArray<T, N>(fill)` as a local declaration. */
@@ -550,6 +557,11 @@ export abstract class StorageEmitter extends EmitterBase {
       const t = target.type as FieldType & { kind: "vec"; cap: number };
       const els = valueNode.elements;
       if (els.length > t.cap) this.fail(valueNode, `${els.length} elements do not fit in ${typeName(t)}`);
+      // Empty: nothing reads the old list, so it is cleared in place (length 0, every slot zero).
+      if (els.length === 0) {
+        this.line(`ts_memzero(&${target.lv}, sizeof(${target.lv}));`);
+        return;
+      }
       const tmp = this.tmp("fv");
       this.line(`${fixedVecC(t)} ${tmp};`);
       this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
@@ -631,15 +643,7 @@ export abstract class StorageEmitter extends EmitterBase {
 
   /** The kind of storage an expression names (struct, array, dataEnum…), without emitting code or failing. */
   protected peekKind(node: ts.Expression): FieldType["kind"] | undefined {
-    const saved = { lines: this.lines.length, hoisted: this.hoisted.length, temp: this.temp, diagnostics: this.reporter.diagnostics.length };
-    try {
-      return this.reporter.guard(() => this.ref(node))?.type.kind;
-    } finally {
-      this.lines.length = saved.lines;
-      this.hoisted.length = saved.hoisted; // a probed helper call may hoist declarations
-      this.temp = saved.temp;
-      this.reporter.diagnostics.length = saved.diagnostics;
-    }
+    return this.probe(() => this.ref(node))?.type.kind;
   }
 
   protected place(node: ts.Expression): { type: ValueType; read: string; write: (c: string) => string } {

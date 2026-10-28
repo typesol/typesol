@@ -143,16 +143,18 @@ export class FunctionEmitter extends StatementEmitter {
     // The loader passes each account once and marks repeats as duplicates, which share its record (ts_deserialize),
     // so two parameters name the same account exactly when their pointers are equal.
     const writable = ix.accounts.filter((a) => isWritable(a.kind));
+    const pairs: string[] = [];
     for (let i = 0; i < writable.length; i++)
       for (let j = i + 1; j < writable.length; j++) {
         const present = [writable[i], writable[j]]
           .filter((a) => a.optional)
           .map((a) => `a_${a.name} && `)
           .join("");
-        head.push(
-          `  if (${present}a_${writable[i].name} == a_${writable[j].name}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
+        pairs.push(
+          `if (${present}a_${writable[i].name} == a_${writable[j].name}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: ${writable[i].name} and ${writable[j].name} must be different accounts");`,
         );
       }
+    head.push(...pairs.map((p) => `  ${p}`));
 
     // Arguments: Borsh, read sequentially (strings make later offsets dynamic).
     if (ix.args.length) head.push(`  uint64_t off = ${ix.discriminator.length};`);

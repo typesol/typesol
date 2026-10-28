@@ -27,8 +27,9 @@ or declare `const HEAP_SIZE_KIB = 64n` and add a ComputeBudget `requestHeapFrame
 `solana-test-validator` (Agave 3.1 included) rejects a System instruction that the current Program Metadata program
 uses. Publishing works on mainnet-beta. The error shows the failing transaction's last log lines.
 
-**"instruction X needs N bytes of stack; SBF gives each function 4096"** — every function on Solana gets a 4 KiB
-stack frame, and going past it corrupts memory, so the build refuses it. Large structs and arrays copied into typed
+**"instruction X (with the helpers inlined into it) needs N bytes of stack; SBPF v0 gives each function 4096"** — under
+SBPF v0 (the default) every function gets a fixed 4 KiB stack frame, and going past it corrupts memory, so the build
+refuses it. SBPF v1 and v2 (`--sbpf v1` / `v2`) grow frames dynamically, so this limit does not apply there. Large structs and arrays copied into typed
 locals (`const q: Big = acct.big`) are the usual cause: bind them without a type (`const q = acct.big`, a reference
 into the account data) or move the work into helpers. Helpers are often inlined into their instruction, so their
 locals count toward its frame.

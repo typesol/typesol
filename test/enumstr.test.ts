@@ -1,13 +1,9 @@
 // Data enums whose variants hold strings: Borsh in arguments and events (as Anchor encodes them), values in code,
 // never account data.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CompileError, generate } from "../src/compiler/index.js";
 import { programHarness, type TestProgram } from "../src/testing.js";
-import { deployFile, type Deployed } from "./harness.js";
+import { deployFile, type Deployed, compileErrors } from "./harness.js";
 
 describe("data enums with strings", () => {
   let d: Deployed;
@@ -68,18 +64,8 @@ describe("data enums with strings", () => {
   });
 
   it("refuses them in account data and refuses Vec variants", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-enumstr-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(file, `import { type Account, type Vec, type u64 } from "typesol";\nexport type C = { kind: "A"; s: string } | { kind: "B" };\n${body}\n`);
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
+    const errors = (body: string) =>
+      compileErrors(`import { type Account, type Vec, type u64 } from "typesol";\nexport type C = { kind: "A"; s: string } | { kind: "B" };\n${body}\n`);
     expect(errors(`export interface S { c: C; n: u64 }\nexport function f(s: Account<S>): void {}`)).toMatch(/string field|cannot be account data/);
     expect(errors(`export type V = { kind: "A"; xs: Vec<u64> };\nexport function f(v: V): void {}`)).toMatch(/a Vec cannot be one/);
   });

@@ -1,7 +1,7 @@
 // `@layout borsh`: accounts stored as Anchor stores them. The account is unpacked into the fixed-layout struct when an
 // instruction starts and packed back when it returns. Checked against Anchor's own coder, against bad bytes, and (when
 // bench/anchor is built) against the Anchor twin byte for byte, including taking over accounts the twin created.
-import { mkdtempSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,8 @@ import { type Address, type KeyPairSigner, address, generateKeyPairSigner } from
 import { BorshCoder } from "@anchor-lang/core";
 import { LiteSVM } from "litesvm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CompileError, build, generate } from "../src/compiler/index.js";
-import { BN, SYSTEM_PROGRAM, acct, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "./harness.js";
+import { build } from "../src/compiler/index.js";
+import { BN, SYSTEM_PROGRAM, acct, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "./harness.js";
 
 const fixture = (f: string) => fileURLToPath(new URL(`./fixtures/${f}`, import.meta.url));
 
@@ -122,21 +122,10 @@ describe("@layout borsh", () => {
   });
 
   it("refuses what has no Borsh account layout", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-borsh-"));
-    const errors = (body: string) => {
-      const file = path.join(dir, `p${Math.random().toString(36).slice(2)}.ts`);
-      writeFileSync(
-        file,
+    const errors = (body: string) =>
+      compileErrors(
         `import { type Account, type FixedArray, type FixedString, type FixedVec, type Mut, type Vec, type Zeroed, type u64, emit, loadAccount, remainingAccounts } from "typesol";\n${body}\n`,
       );
-      try {
-        generate(file);
-        return "";
-      } catch (e) {
-        if (e instanceof CompileError) return e.diagnostics.map((x) => x.message).join(" | ");
-        throw e;
-      }
-    };
     const S = "/** @layout borsh */\nexport interface S { n: u64; name: FixedString<8> }\n";
     expect(errors(`${S}export function f(s: Mut<S>): void { s.n += 1n; }`)).toBe("");
     expect(errors(`/** @layout borsh */\nexport interface S { n: u64; xs: Vec<u64> }\nexport function f(s: Mut<S>): void {}`)).toMatch(/growable Vec/);

@@ -8,6 +8,10 @@
  * Integer types are all `bigint` to TypeScript. The compiler tracks the declared
  * width itself, rejects `number`, and checks every arithmetic operation for
  * overflow at runtime.
+ *
+ * Integer operators: + - * / % are checked (overflow and division by zero abort). & | ^ work on equal types;
+ * << aborts when bits would be lost or the amount is not below the width; >> is arithmetic on signed types;
+ * ~ flips the bits within the type's width.
  */
 
 export type u8 = bigint;
@@ -27,10 +31,6 @@ export interface Pubkey {
   equals(other: Pubkey): boolean;
 }
 
-/**
- * A fixed-length array stored inline in account data, e.g. `scores: FixedArray<u64, 8>`.
- * Indexes are bounds-checked; out of range aborts the instruction.
- */
 /**
  * Callback methods of Vec, FixedArray and FixedVec. Each expands into a loop over the elements (as `list.get(i)` gives
  * them: structs by reference) with the arrow written at the call; it may read and write the function's variables.
@@ -53,13 +53,19 @@ export interface ListMethods<T> {
   /**
    * The elements `fn` maps them to (integers, booleans, Pubkeys or enums). Use it right away (another list method,
    * `.length`, `for … of`: one loop, nothing stored) or store it (`const ys = xs.map(…)`: a FixedVec on the stack, as
-   * big as `xs`; from a `Vec`, annotate it: `const ys: FixedVec<u64, 16> = …`).
+   * big as `xs`; from a `Vec`, annotate it: `const ys: FixedVec<u64, 16> = …`). Stored with a `FixedVec<Struct, N>` or
+   * `FixedVec<FixedString<N>, M>` annotation it gives structs (`(o) => ({ qty: o.qty })`) or text. A stored list holds
+   * at most 2 KiB; one element more than it holds aborts (5104).
    */
   map<U>(fn: (x: T, index: u64) => U): FixedVec<U, never>;
   /** The elements `fn` holds for, used or stored like `map`'s; callbacks after it get the index among those. */
   filter(fn: (x: T, index: u64) => boolean): FixedVec<T, never>;
 }
 
+/**
+ * A fixed-length array stored inline in account data, e.g. `scores: FixedArray<u64, 8>`.
+ * Indexes are bounds-checked; out of range aborts the instruction.
+ */
 export interface FixedArray<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
@@ -82,15 +88,17 @@ export type FixedString<N extends number> = string & { readonly __capacity?: N }
 export declare function byteLength(value: string): u64;
 
 /**
- * An optional scalar: `best: Option<u64>` (same as `u64 | null`). Compare with `=== null` / `!== null`;
+ * An optional value: `best: Option<u64>` (same as `u64 | null`), also of a struct (`home: Option<Point>`). Compare with `=== null` / `!== null`;
  * TypeScript narrows it, and using an empty option where a value is needed aborts (5108).
  * In account data it takes a fixed 1 + size(T) bytes.
  */
 export type Option<T> = T | null;
 
 /**
- * A growable list. As the last field of an account struct it is stored Borsh-style (u32 length + elements)
- * and the account is resized as it grows. As an instruction argument it is a read-only view.
+ * A growable list. As an account struct field it is stored Borsh-style (u32 length + elements) and the account is
+ * resized as it grows. An account may have any number of them, declared anywhere: they are stored after the
+ * fixed-size fields, in the order declared (in a `@layout borsh` struct, a Vec must be the last field). As an
+ * instruction argument it is a read-only view.
  */
 export interface Vec<T> extends ListMethods<T> {
   readonly length: u64;
@@ -108,8 +116,8 @@ export interface Vec<T> extends ListMethods<T> {
 
 /**
  * A list stored inline with room for N elements: a u32 length, then N slots (Anchor `Vec<T>` with `#[max_len(N)]`, but
- * always 4 + N × size(T) bytes). Unlike `Vec<T>` it can be any field, any number of times, and in nested structs;
- * `push` fails (5104) when it is full. Write a whole one with `fixedVec([a, b])`.
+ * always 4 + N × size(T) bytes). Unlike `Vec<T>` its size is fixed: it keeps its place among the fields, can be in
+ * nested structs, and `push` takes no payer; `push` fails (5104) when it is full. Write a whole one with `fixedVec([a, b])`.
  */
 export interface FixedVec<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
@@ -612,11 +620,6 @@ export interface SelfProgram extends AccountMeta {
 export declare function emitCpi<T>(event: T, eventAuthority: EventAuthority, self: SelfProgram): void;
 
 /**
- * Metaplex Core (CoREEN…), address checked. Assets and collections without plugins; `null` leaves an optional
- * account out. Accounts that sign (the new asset/collection, authorities) are keypair Signers, or PDAs of this
- * program covered by `signerSeeds`.
- */
-/**
  * Who manages a Metaplex Core plugin: `"owner"`, `"updateAuthority"`, `"none"` (nobody: fixed), or an address. Left out,
  * the plugin type's default (the owner for owner-managed plugins, the update authority for the others).
  */
@@ -688,6 +691,11 @@ export type CoreExternalPlugin = (
 export type CoreExternalPluginKey =
   { kind: "AppData" | "LinkedAppData"; dataAuthority: CorePluginAuthority } | { kind: "Oracle" | "LifecycleHook" | "LinkedLifecycleHook"; address: Pubkey };
 
+/**
+ * Metaplex Core (CoREEN…), address checked. Assets and collections, with plugins and external plugin adapters; `null`
+ * leaves an optional account out. Accounts that sign (the new asset/collection, authorities) are keypair Signers, or
+ * PDAs of this program covered by `signerSeeds`.
+ */
 export interface MplCoreProgram extends AccountMeta {
   readonly __mpl_core: void;
   /**
@@ -1529,7 +1537,6 @@ export declare function invoke(
   signerSeeds?: Seed[] | SignerSeeds,
 ): void;
 
-/** Abort with the given error unless `condition` holds. Use a string enum member or a string literal. */
 /**
  * Anchor's own error codes (anchor-lang `ErrorCode`): `require(condition, AnchorError.AccountDidNotDeserialize)` fails
  * with that code, as `require!(condition, ErrorCode::AccountDidNotDeserialize)` does. Not listed in the IDL's errors.
@@ -1613,6 +1620,11 @@ export declare enum AnchorError {
   InvalidNumericConversion = 4102,
   Deprecated = 5000,
 }
+/**
+ * Abort with the given error unless `condition` holds. The error is a member of an exported string enum, any
+ * `AnchorError` member, or a string literal: each distinct literal becomes an error named `RequireFailed<N>` with code
+ * 6000 + N, numbered after the program's error enums and listed in the IDL.
+ */
 export declare function require(condition: boolean, error: string | AnchorError): asserts condition;
 
 /** Write a string, integer or pubkey to the program log. */
@@ -1654,11 +1666,6 @@ export declare function i16(value: bigint): i16;
 export declare function i32(value: bigint): i32;
 export declare function i128(value: bigint): i128;
 
-/**
- * Integer operators: + - * / % are checked (overflow and division by zero abort). & | ^ work on equal types;
- * << aborts when bits would be lost or the amount is not below the width; >> is arithmetic on signed types;
- * ~ flips the bits within the type's width.
- */
 /** floor(a * b / c) with a double-width intermediate (all u64, or all u128); aborts if c is 0 or the result does not fit. */
 export declare function mulDiv(a: u64, b: u64, c: u64): u64;
 /** ceil(a * b / c), like mulDiv. */

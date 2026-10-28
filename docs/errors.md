@@ -6,12 +6,16 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | --- | --- |
 | 100 / 101 / 102 | instruction data missing / unknown instruction / malformed arguments (InstructionMissing / FallbackNotFound / DidNotDeserialize) |
 | 2001 | HasOne constraint failed (ConstraintHasOne) |
+| 2002 | event authority did not sign (ConstraintSigner) |
+| 2004 | Owner constraint failed (ConstraintOwner) |
 | 2005 | Zeroed account is not rent-exempt (ConstraintRentExempt) |
 | 2006 | PDA seeds mismatch (ConstraintSeeds) |
+| 2007 | Executable constraint failed (ConstraintExecutable) |
 | 2009 | not the associated token account (ConstraintAssociated) |
 | 2012 | not the expected address (ConstraintAddress) |
 | 2014 / 2015 | token account mint / owner mismatch (ConstraintTokenMint / ConstraintTokenOwner) |
 | 2016 / 2017 / 2018 | mint authority / freeze authority / decimals mismatch (2018: an existing mint `createIfNeeded` found) |
+| 2024–2039 | an existing mint `createIfNeeded` found lacks a Token-2022 extension it was given, or holds other keys in it: group pointer 2024–2026, group member pointer 2027–2029, metadata pointer 2030–2032, close authority 2033–2034, permanent delegate 2035–2036, transfer hook 2037–2039 (the first code of each: the extension is missing; the next: the authority / address differs) (ConstraintMint…Extension…) |
 | 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount) |
 | 3000 | account already exists / initialized (AccountDiscriminatorAlreadySet) |
 | 3002 | discriminator mismatch (AccountDiscriminatorMismatch) |
@@ -28,7 +32,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 4102 | cast overflow (InvalidNumericConversion) |
 | 5100 / 5101 | arithmetic overflow (including shifts) / division by zero |
 | 5103 | sysvar unavailable |
-| 5104 | index out of bounds (arrays, Vecs, remaining accounts, `pop()` on an empty Vec, `push` on a full FixedVec) |
+| 5104 | index out of bounds (arrays, Vecs, remaining accounts, `pop()` on an empty Vec, `push` on a full FixedVec, a stored `map` / `filter` result one element too small) |
 | 5105 | string longer than the FixedString capacity |
 | 5106 | missing or mismatched return data |
 | 5107 | event larger than 1024 bytes |
@@ -39,5 +43,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 5113 | more than 32 accounts in one instruction |
 | 5114 | a function with a result ended without returning one |
 | 5115 | an optional account that was left out was used |
-| 2002 / 2004 / 2007 | event authority did not sign / Owner constraint / Executable constraint |
-| 6000+ | your `require` errors, in declaration order |
+| 6000+ | your error enums' members, in declaration order (imported files first), then one `RequireFailed<N>` error (code 6000 + N) per distinct `require(cond, "message")` string |
+
+Any of Anchor's own codes can be raised directly: `require(cond, AnchorError.RequireKeysEqViolated)` fails with 2502,
+as `require_keys_eq!` does.
