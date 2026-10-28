@@ -34,6 +34,9 @@ import {
   scalarStorageC,
   optC,
   valueC,
+  emptySizeC,
+  fixedVecC,
+  vecCount,
 } from "./shared.js";
 import { CallEmitter } from "./calls.js";
 
@@ -347,7 +350,7 @@ export abstract class CpiEmitter extends CallEmitter {
     const b = this.tmp("bump");
     // The account's size: the struct's (8 + its fixed size, Anchor's InitSpace for @layout borsh), or Anchor's
     // `space = …` when given, which must hold the struct.
-    const need = `8 + sizeof(TSS_${s.name})`;
+    const need = s.layout === "borsh" ? `8 + sizeof(TSS_${s.name})` : `8 + ${emptySizeC(s)}`;
     let space = need;
     const spaceArg = node.arguments[2];
     if (spaceArg) {
@@ -2673,7 +2676,42 @@ export abstract class CpiEmitter extends CallEmitter {
     for (const f of s.fields) if (!given.has(f.name)) this.fail(obj, `missing field "${f.name}" of ${s.name}`);
     for (const [name, e] of given) {
       const f = s.fields.find((x) => x.name === name)!;
-      if (f.type.kind === "vec") this.fail(obj, "Vec fields are not supported in events yet");
+      if (f.type.kind === "vec" && f.type.cap !== undefined) {
+        // A FixedVec keeps its fixed layout, as in account data: u32 length, then room for N elements.
+        const ft = f.type;
+        const t = this.tmp("evv");
+        this.line(`${fixedVecC(ft)} ${t};`);
+        this.line(`ts_memzero(&${t}, sizeof(${t}));`);
+        this.writeAggregate({ lv: t, type: ft, writable: true }, e);
+        const n = this.fieldBytes(ft);
+        staged.set(name, (put) => put(`&${t}`, String(n), n));
+        continue;
+      }
+      if (f.type.kind === "vec") {
+        // A Vec is Borsh: u32 length, then the elements, read from a Vec argument or account data when emitted.
+        const l = ts.isIdentifier(e) ? this.lookup(e.text) : undefined;
+        const r = l?.type.kind === "vecArg" ? undefined : this.ref(e);
+        const elemSize = this.fieldBytes(f.type.elem);
+        if (l?.type.kind === "vecArg") {
+          if (!sameType(l.type.elem, f.type.elem)) this.fail(e, `expected a ${typeName(f.type)}`);
+          const c = l.c;
+          staged.set(name, (put) => {
+            const n = this.tmp("vl");
+            this.line(`uint32_t ${n} = (uint32_t)${c}.len;`);
+            put(`&${n}`, "4");
+            put(`(const uint8_t *)${c}.ptr`, `(uint64_t)${n} * ${elemSize}`);
+          });
+        } else if (r?.vec && r.type.kind === "vec" && sameType(r.type.elem, f.type.elem)) {
+          const info = r.vec;
+          staged.set(name, (put) => {
+            const n = this.tmp("vl");
+            this.line(`uint32_t ${n} = (uint32_t)${vecCount(info)};`);
+            put(`&${n}`, "4");
+            put(`(const uint8_t *)${info.items}`, `(uint64_t)${n} * ${elemSize}`);
+          });
+        } else this.fail(e, `expected a ${typeName(f.type)}: a Vec argument or a list in account data`);
+        continue;
+      }
       if (f.type.kind === "option" && f.type.inner.kind === "struct") this.fail(obj, "Option<struct> fields are not supported in events yet");
       const vt = f.type.kind === "string" ? STRING : f.type.kind === "option" || isScalar(f.type) ? (f.type as ValueType) : undefined;
       const t = this.tmp("evf");

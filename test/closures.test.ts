@@ -55,6 +55,11 @@ describe("closures", () => {
     expect(await run("lambdas", { x: new BN(5) })).toBe(45024n);
   });
 
+  it("pass closures to helpers: the helper is expanded where it is called", async () => {
+    // applyTwice(addX, 1) = 11; compose(v => 5v, addX, 2) = applyTwice(v => 5v, 7) = 175; addX ran 3 times.
+    expect(await run("capturing", { x: new BN(5) })).toBe(11_000n + 1_750n + 3n);
+  });
+
   it("refuses recursion and functions used as values", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-closures-"));
     const errors = (body: string) => {
@@ -71,8 +76,9 @@ describe("closures", () => {
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => (v === 0n ? x : g(v - 1n)); return g(3n); }`)).toMatch(/calls itself/);
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; const h = g; return h(1n); }`)).toMatch(/is a function/);
     const apply = "function apply(f: (x: u64) => u64, v: u64): u64 { return f(v); }\n";
-    expect(errors(`${apply}export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return apply(g, 1n); }`)).toMatch(/can only be called there/);
-    expect(errors(`${apply}export function f(x: u64): u64 { return apply((v) => v + x, 1n); }`)).toMatch(/can only run there/);
+    expect(errors(`${apply}export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return apply(g, 1n); }`)).toBe("");
+    const pick = "function pick<T>(f: (x: T) => T, v: T): T { return f(v); }\n";
+    expect(errors(`${pick}export function f(x: u64): u64 { return pick((v: u64): u64 => v + x, 1n); }`)).toMatch(/has type parameters/);
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n, 2n); }`)).toMatch(/Expected 1 arguments/);
   });
 });

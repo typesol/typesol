@@ -100,6 +100,8 @@ export abstract class EmitterBase {
   /** The helper a call runs: a function, a const arrow function (top-level or local), or a generic one's instance. */
   protected helperOf(node: ts.CallExpression): Helper | undefined {
     if (!ts.isIdentifier(node.expression)) return undefined;
+    // Given a closure, the helper is expanded where it is called (helperWithClosure), not called.
+    if (this.givenClosure(node)) return undefined;
     const cached = this.calleeCache.get(node);
     if (cached !== undefined) return cached ?? undefined;
     const callee = node.expression;
@@ -112,6 +114,17 @@ export abstract class EmitterBase {
     else if (h && node.typeArguments) this.fail(node, `${h.display} takes no type arguments`);
     this.calleeCache.set(node, h ?? null);
     return h;
+  }
+
+  /** The helper a call runs, when it is given a closure for a function parameter (so it is expanded there). */
+  protected givenClosure(node: ts.CallExpression): GenericHelper | undefined {
+    if (!ts.isIdentifier(node.expression)) return undefined;
+    const name = calleeName(node.expression, this.model.helperDecls, this.checker) ?? (this.lookup(node.expression.text) ? undefined : node.expression.text);
+    const g = name ? this.model.generics.get(name) : undefined;
+    if (!g?.fnParams.length) return undefined;
+    const closureArg = (a: ts.Expression | undefined) =>
+      !!a && (ts.isArrowFunction(a) || ts.isFunctionExpression(a) ? !this.model.helperDecls.has(a) : ts.isIdentifier(a) && !!this.lookup(a.text)?.closure);
+    return g.fnParams.some((i) => closureArg(node.arguments[i])) ? g : undefined;
   }
 
   /**
@@ -360,6 +373,7 @@ export abstract class EmitterBase {
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
+  protected abstract closureOf(arg: ts.Expression): Closure;
   protected abstract eachElement(
     list: ts.Expression,
     at: ts.Node,

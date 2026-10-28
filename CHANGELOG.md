@@ -12,7 +12,13 @@ until 1.0, a minor version may change the language, the IDL layout or error code
   it is a FixedVec on the stack as big as the list it starts from, or as annotated (`const ys: FixedVec<u64, 16> = …`,
   needed for a `Vec`); a list one element too small aborts with 5104.
 - Arrow functions written as helper arguments (`applyTwice((x) => x * 3n, v)`), typed from the helper's parameter when
-  left unannotated, when they read none of the enclosing function's variables.
+  left unannotated. Given a closure (one that reads the caller's variables), the helper is expanded where it is called,
+  so the closure runs where it can.
+- Any number of growable `Vec<T>` fields in an account, declared anywhere. They are stored after the fixed-size fields,
+  in the order declared (every other field keeps a fixed offset; the IDL lists the stored order), and a push, pop or
+  clear moves the Vecs after it. An account with one Vec is laid out as before.
+- `FixedVec<T, N>` arguments (a Borsh Vec of at most N elements; more fail with 102), and `FixedVec` and `Vec` fields
+  in events.
 
 ## 0.22.0 — 2026-10-28
 

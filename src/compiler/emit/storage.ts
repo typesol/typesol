@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { resolveScalarType } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount } from "./shared.js";
+import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
 import { EmitterBase } from "./base.js";
 
 /**
@@ -258,15 +258,36 @@ export abstract class StorageEmitter extends EmitterBase {
           this.assertUsable(a, node);
           const r: Ref = { lv: `d_${a.name}->${f.name}`, type: f.type, writable: isWritable(a.kind), account: a, path: [f.name] };
           if (f.type.kind === "vec" && f.type.cap !== undefined) r.vec = this.fixedVec(r.lv, f.type.elem, f.type.cap);
-          else if (f.type.kind === "vec")
+          else if (f.type.kind === "vec") {
             // Growing needs the account's length at instruction entry: instructions have it, helpers get it passed.
-            r.vec = {
-              len: `d_${a.name}->${f.name}__len`,
-              items: r.lv,
-              fixed: `sizeof(TSS_${a.kind.struct.name})`,
-              elemSize: a.kind.struct.vec!.elemSize,
-              resizable: isWritable(a.kind),
-            };
+            const s = a.kind.struct;
+            const k = s.vecs!.findIndex((v) => v.name === f.name);
+            if (s.vecs!.length === 1)
+              r.vec = {
+                len: `d_${a.name}->${f.name}__len`,
+                items: r.lv,
+                fixed: `sizeof(TSS_${s.name})`,
+                elemSize: s.vec!.elemSize,
+                resizable: isWritable(a.kind),
+              };
+            else {
+              const base = `(*d_${a.name})`;
+              const at = vecPlace(s, base, k);
+              const others = s.vecs!.map((v, j) => (j === k ? "" : ` + (uint64_t)${vecPlace(s, base, j).len} * ${v.elemSize}`)).join("");
+              r.lv = at.items;
+              r.vec = {
+                len: at.len,
+                items: at.items,
+                fixed: `(${emptySizeC(s)}${others})`,
+                elemSize: s.vecs![k]!.elemSize,
+                resizable: isWritable(a.kind),
+                tail:
+                  k < s.vecs!.length - 1
+                    ? { end: at.end, dataEnd: `(a_${a.name}->data + a_${a.name}->data_len)`, paths: s.vecs!.slice(k + 1).map((v) => `${a.name}.${v.name}[]`) }
+                    : undefined,
+              };
+            }
+          }
           return r;
         }
       }
@@ -307,8 +328,12 @@ export abstract class StorageEmitter extends EmitterBase {
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
         const r: Ref = { ...base, lv: `${base.lv}.${f.name}`, type: f.type, path: base.path && [...base.path, f.name], vec: undefined };
         // Vecs of loaded accounts can be read and updated in place but not resized (no entry length known).
-        if (f.type.kind === "vec" && f.type.cap === undefined)
-          r.vec = { len: `${base.lv}.${f.name}__len`, items: r.lv, fixed: `sizeof(TSS_${s.name})`, elemSize: s.vec!.elemSize, resizable: false };
+        if (f.type.kind === "vec" && f.type.cap === undefined) {
+          const k = s.vecs!.findIndex((v) => v.name === f.name);
+          const at = s.vecs!.length === 1 ? { len: `${base.lv}.${f.name}__len`, items: r.lv } : vecPlace(s, base.lv, k);
+          r.lv = at.items;
+          r.vec = { len: at.len, items: at.items, fixed: emptySizeC(s), elemSize: s.vecs![k]!.elemSize, resizable: false };
+        }
         return this.withFixedVec(r);
       }
       return undefined;

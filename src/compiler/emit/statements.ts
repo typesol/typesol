@@ -459,6 +459,11 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (!ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken) this.fail(p, "closure parameters are plain names");
       const arg = args[i]!;
       const name = p.name.text;
+      // A function parameter (of a helper expanded here): the function given, expanded where the body calls it.
+      if (p.type && ts.isFunctionTypeNode(p.type)) {
+        params.set(name, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
+        return;
+      }
       const c2 = `l_${name}_${this.temp++}`;
       const annotated = p.type ? resolveValueType(p.type, this.scope) : undefined;
       if (!annotated && this.looksLikeStructPlace(arg)) {
@@ -496,6 +501,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`{`);
       this.block(() => {
         const body = fn.body;
+        if (!body) this.fail(fn, `${c.name} has no body`);
         if (ts.isBlock(body)) body.statements.forEach((s) => this.reporter.guard(() => this.statement(s)));
         else {
           // An expression body: its value is the result (a call may have none).
