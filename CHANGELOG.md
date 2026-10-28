@@ -5,33 +5,44 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.18.0 — 2026-10-28
+
+The remaining Anchor differences, closed: Anchor's argument structs (Strings, Vecs, Options and enums in Borsh),
+keypair `init` with `space`, `init` of mints with Token-2022 extensions and of token accounts, `Vec<String>`
+arguments, `SystemAccount`, string return values, and the Token-2022 and Token Metadata instructions programs call.
+Closures, list callbacks and more everyday TypeScript; the rest of Bubblegum and Core. 26 of the 46 official
+examples are now full ports. Existing programs keep their layouts and error codes (2018 and 3011 are new, raised only
+by the new `Init<Mint>` and `SystemAccount` checks). Not externally audited (see SECURITY.md).
+
 ### Added
+Anchor accounts and arguments:
+- `@layout borsh` structs as whole instruction arguments, return values and events, in Anchor's Borsh bytes (a
+  FixedString is a String, a FixedVec a Vec, an Option one byte when empty). Arguments are checked as Borsh
+  deserialization does, UTF-8 included (102 otherwise). `return vault` returns a whole struct account.
 - `@layout borsh` structs used as arguments, return values or events may hold `string` fields and data enums (with or
   without strings), as Anchor argument structs do; Borsh accounts may hold data enums without strings.
+- `acct.create(payer, null)` on `Init<T>`: Anchor's `init` of a keypair account (it must sign; 3010 otherwise), and an
+  optional third argument for Anchor's `space = …` on `create` / `createIfNeeded`.
 - Mint extensions on `Init<Mint>`: `mint.create(payer, seeds | null, decimals, authority, freeze, { … })` with
   transferFee, closeAuthority, defaultAccountState, nonTransferable, interestBearing, permanentDelegate, transferHook,
   metadataPointer, groupPointer and groupMemberPointer (Anchor's `extensions::…`).
-- Token-2022 extension instructions: `updateDefaultAccountState`, `updateTransferHook`, `enableRequiredMemoTransfers` /
-  `disableRequiredMemoTransfers`, `updateInterestRate`, `transferCheckedWithFee`, `harvestWithheldTokensToMint`,
-  `withdrawWithheldTokensFromMint`, `setTransferFee`; the Token Metadata interface: `updateMetadataField`,
-  `removeMetadataKey`, `updateMetadataAuthority`, `emitMetadata`; `closeAccount` of a mint; `mintTo` /
-  `initializeMetadata` on a mint created earlier in the instruction; `isTransferring(tokenAccount)` and
-  `transferHookAuthority(mint)`.
-- Helpers and instructions can return `string` (an instruction's is Borsh String return data).
-- `acct.key` of an `Init<…>` account before it is created (the address is known; Anchor seeds use it that way).
+- `Init<Mint>` / `InitIfNeeded<Mint>` with `mint.create(payer, seeds | null, decimals, mintAuthority, freezeAuthority)`
+  and `Init<TokenAccount>` / `InitIfNeeded<TokenAccount>` (without `Ata<…>`) with `vault.create(payer, seeds | null,
+  mint, authority)`: Anchor's `init` with `mint::` / `token::` constraints, at a PDA of this program or (with `null`) a
+  new keypair account that signs, under SPL Token or Token-2022 (token accounts sized with GetAccountDataSize). The
+  `createIfNeeded` forms check an existing account like Anchor's `init_if_needed` (2014 / 2015 / 2016 / 2017 and the
+  new 2018 ConstraintMintDecimals). The IDL marks keypair-created accounts as signers.
+- `SystemAccount` / `Mut<SystemAccount>`: Anchor's `SystemAccount`, refused with 3011 (AccountNotSystemOwned) when
+  another program owns it.
 - `Vec<string>` instruction arguments (Anchor's `Vec<String>`): `.get(i)`, `.length`, `for … of`, list callbacks,
   helper parameters, storing into `FixedVec<FixedString<N>, M>`, and re-encoding through `invoke`; each string is
   checked as UTF-8 on entry (102).
-- Metaplex Core plugin values: MasterEdition, VerifiedCreators, Autograph, FreezeExecute, PermanentFreezeExecute, and
-  royalty rule sets (`ruleSet: { programAllowList | programDenyList }`).
-- Bubblegum: `delegateV2`, `freezeV2`, `thawV2`, `setNonTransferableV2`, `updateMetadataV2`, `verifyCreatorV2`,
-  `unverifyCreatorV2`, `setCollectionV2`, and the V1 `transfer`, `burn`, `delegate`. Checked on the real programs with
-  every leaf recomputed: verify → delegate → freeze (a frozen leaf is refused) → thaw → rename, unverify, moving a leaf
-  into a collection, soulbinding a collection's leaf, and a V1 transfer signed by a PDA owner, delegate and burn.
+- Helpers and instructions can return `string` (an instruction's is Borsh String return data).
+- `acct.key` of an `Init<…>` account before it is created (the address is known; Anchor seeds use it that way).
+- `mint.create(…, tokenProgram)` / `vault.create(…, tokenProgram)`: an explicit token program, for instructions that
+  take more than one.
 
-### Fixed
-- Bubblegum leaf fields that may be null at run time (`assetDataHash: Hash | null`, `flags`) are sent as Borsh Options;
-  a null aborted the instruction before.
+Language:
 - Closures: a local function that reads or writes the enclosing function's variables is expanded where it is called,
   with the names it was declared with (a block at the call that declares the same name does not change it), struct
   parameters by reference and `return` leaving the closure. Recursion and storing / returning closures are refused.
@@ -43,28 +54,31 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 - `switch` on 128-bit integers (the case is picked with comparisons, then switched on as usual, fallthrough included).
 - `?.` on optional accounts (`acct?.field`) and on `Option<struct>` fields (`x.home?.field`): an Option, empty when the
   account was left out or the option is empty; use it with `??`.
-- `mint.create(…, tokenProgram)` / `vault.create(…, tokenProgram)`: an explicit token program, for instructions that
-  take more than one.
-- `Init<Mint>` / `InitIfNeeded<Mint>` with `mint.create(payer, seeds | null, decimals, mintAuthority, freezeAuthority)`
-  and `Init<TokenAccount>` / `InitIfNeeded<TokenAccount>` (without `Ata<…>`) with `vault.create(payer, seeds | null,
-  mint, authority)`: Anchor's `init` with `mint::` / `token::` constraints, at a PDA of this program or (with `null`) a
-  new keypair account that signs, under SPL Token or Token-2022 (token accounts sized with GetAccountDataSize). The
-  `createIfNeeded` forms check an existing account like Anchor's `init_if_needed` (2014 / 2015 / 2016 / 2017 and the
-  new 2018 ConstraintMintDecimals). The IDL marks keypair-created accounts as signers.
-- `SystemAccount` / `Mut<SystemAccount>`: Anchor's `SystemAccount`, refused with 3011 (AccountNotSystemOwned) when
-  another program owns it.
-- `@layout borsh` structs as whole instruction arguments, return values and events, in Anchor's Borsh bytes (a
-  FixedString is a String, a FixedVec a Vec, an Option one byte when empty). Arguments are checked as Borsh
-  deserialization does, UTF-8 included (102 otherwise). `return vault` returns a whole struct account.
-- `mulDiv` / `mulDivCeil` on u128 through a 256-bit product (all three u128; literals take that type).
-- Growable `Vec<T>` `push` / `pop` / `clear` inside helpers that take the account as `Mut<T>` (with its payer and
-  SystemProgram, as in instructions).
-- Type parameters standing for fixed-size structs (`pick<Point>(…)`, or taken from struct arguments), and `cond ? a : b`
-  for struct values (places, literals or calls).
-- `acct.create(payer, null)` on `Init<T>`: Anchor's `init` of a keypair account (it must sign; 3010 otherwise), and an
-  optional third argument for Anchor's `space = …` on `create` / `createIfNeeded`.
 - `acct!` on optional accounts (fails with 5115 when it was left out), Pubkeys / Hashes in template strings (base58),
   and data-enum arguments whose variants carry fixed-size structs or arrays.
+- Type parameters standing for fixed-size structs (`pick<Point>(…)`, or taken from struct arguments), and `cond ? a : b`
+  for struct values (places, literals or calls).
+- Growable `Vec<T>` `push` / `pop` / `clear` inside helpers that take the account as `Mut<T>` (with its payer and
+  SystemProgram, as in instructions).
+- `mulDiv` / `mulDivCeil` on u128 through a 256-bit product (all three u128; literals take that type).
+
+CPI:
+- Token-2022 extension instructions: `updateDefaultAccountState`, `updateTransferHook`, `enableRequiredMemoTransfers` /
+  `disableRequiredMemoTransfers`, `updateInterestRate`, `transferCheckedWithFee`, `harvestWithheldTokensToMint`,
+  `withdrawWithheldTokensFromMint`, `setTransferFee`; the Token Metadata interface: `updateMetadataField`,
+  `removeMetadataKey`, `updateMetadataAuthority`, `emitMetadata`; `closeAccount` of a mint; `mintTo` /
+  `initializeMetadata` on a mint created earlier in the instruction; `isTransferring(tokenAccount)` and
+  `transferHookAuthority(mint)`.
+- Metaplex Core plugin values: MasterEdition, VerifiedCreators, Autograph, FreezeExecute, PermanentFreezeExecute, and
+  royalty rule sets (`ruleSet: { programAllowList | programDenyList }`).
+- Bubblegum: `delegateV2`, `freezeV2`, `thawV2`, `setNonTransferableV2`, `updateMetadataV2`, `verifyCreatorV2`,
+  `unverifyCreatorV2`, `setCollectionV2`, and the V1 `transfer`, `burn`, `delegate`. Checked on the real programs with
+  every leaf recomputed: verify → delegate → freeze (a frozen leaf is refused) → thaw → rename, unverify, moving a leaf
+  into a collection, soulbinding a collection's leaf, and a V1 transfer signed by a PDA owner, delegate and burn.
+
+### Fixed
+- Bubblegum leaf fields that may be null at run time (`assetDataHash: Hash | null`, `flags`) are sent as Borsh Options;
+  a null aborted the instruction before.
 
 ## 0.17.0 — 2026-10-28
 
