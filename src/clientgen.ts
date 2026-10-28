@@ -327,6 +327,7 @@ const PROGRAM_KEYS = new Set([
   "pdas",
   "returns",
   "views",
+  "resolve",
   "errors",
   "errorCode",
   "isError",
@@ -735,6 +736,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   // ---- Accounts ---------------------------------------------------------------------------------------------
   const accountOut: string[] = [];
   const accountKeys: string[] = [];
+  /** Each account's decoder object and its Pubkey fields (snake_case), for has_one relations. */
+  const accountConsts: { A: string; pubkeys: Set<string> }[] = [];
   for (const a of idl.accounts ?? []) {
     if (!defs.has(a.name) || typeIssue(a.name) || special(a.name)) {
       notes.push(`account ${a.name}: ${typeIssue(a.name) ?? "no type definition"}; it is left out`);
@@ -785,6 +788,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         `};\n`,
     );
     accountKeys.push(`${prop(a.name)}: ${A}`);
+    const fields = ((defs.get(a.name)!.type.fields ?? []) as IdlField[]).filter((f) => typeof f === "object" && f !== null && "name" in f);
+    accountConsts.push({ A, pubkeys: new Set(fields.filter((f) => f.type === "pubkey" || f.type === "publicKey").map((f) => f.name)) });
   }
 
   // ---- Events -----------------------------------------------------------------------------------------------
@@ -807,6 +812,7 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
   const pdaFns = new Map<string, { json: string; source: string }>();
   const returnKeys: string[] = [];
   const viewKeys: string[] = [];
+  const resolveKeys: string[] = [];
   const usedKeys = new Set<string>();
   for (const ix of idl.instructions) {
     const argIssue = ix.args.map((a) => issue(a.type)).find(Boolean);
@@ -978,6 +984,36 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
         `\n  return {\n    programAddress: PROGRAM_ADDRESS,\n    accounts: [\n${metas.join("\n")}\n      ...remaining,\n    ],\n    data: ${data},\n  } as Instruction;\n}\n`,
     );
     ixKeys.push(`${prop(fn)}: build${P}`);
+    // has_one relations (Anchor's `relations`): a non-signing account another account of the instruction names in a
+    // Pubkey field can be read from that account on chain.
+    const rels: { a: Flat; source: Flat; readers: string[] }[] = [];
+    for (const a of flat) {
+      if (auto(a) || a.optional || a.signer || !a.relations?.length) continue;
+      for (const r of a.relations) {
+        const source = byPath(r, a.group);
+        if (!source || source.optional) continue;
+        const readers = accountConsts
+          .filter((c) => c.pubkeys.has(a.name))
+          .map((c) => `(d) => (hasPrefix(d, ${c.A}.discriminator) ? ${c.A}.decode(d)[${JSON.stringify(camel(a.name))}] : undefined)`);
+        if (!readers.length) continue;
+        rels.push({ a, source, readers });
+        break;
+      }
+    }
+    if (rels.length) {
+      const keysOf = rels.map((r) => JSON.stringify(r.a.key)).join(" | ");
+      resolveKeys.push(
+        `    /** ${P}Accounts with ${rels.map((r) => `${r.a.key} (from ${r.source.key}.${camel(r.a.name)})`).join(", ")} read from the chain when left out. */\n` +
+          `    async ${prop(fn)}(rpc: Rpc<GetAccountInfoApi>, input: Omit<${P}Accounts, ${keysOf}> & Partial<Pick<${P}Accounts, ${keysOf}>>): Promise<${P}Accounts> {\n` +
+          rels
+            .map(
+              (r) =>
+                `      const ${"$" + r.a.key} = input${NAME.test(r.a.key) && !JS_RESERVED.has(r.a.key) ? `.${r.a.key}` : `[${JSON.stringify(r.a.key)}]`} ?? (await readRelation(rpc, key(input${NAME.test(r.source.key) && !JS_RESERVED.has(r.source.key) ? `.${r.source.key}` : `[${JSON.stringify(r.source.key)}]`}), ${JSON.stringify(r.a.key)}, [${r.readers.join(", ")}]));`,
+            )
+            .join("\n") +
+          `\n      return { ...input, ${rels.map((r) => `${prop(r.a.key)}: ${"$" + r.a.key}`).join(", ")} } as ${P}Accounts;\n    },`,
+      );
+    }
     if (ix.returns !== undefined) {
       const why = issue(ix.returns);
       if (why) notes.push(`instruction ${ix.name}: the return value is not decoded (${why})`);
@@ -1050,6 +1086,21 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
       ],
     },
     { name: "programFromBytes", lines: [`const programFromBytes = (b: Uint8Array): Address => getAddressDecoder().decode(b);`] },
+    {
+      name: "readRelation",
+      lines: [
+        `/** A Pubkey field of an account on chain, read by the first reader that knows its type. */`,
+        `const readRelation = async (rpc: Rpc<GetAccountInfoApi>, at: Address, name: string, readers: ((data: ReadonlyUint8Array) => Address | undefined)[]): Promise<Address> => {`,
+        `  const found = await fetchEncodedAccount(rpc, at);`,
+        `  if (!found.exists) throw new Error("cannot fill in " + name + ": account " + at + " does not exist");`,
+        `  for (const read of readers) {`,
+        `    const v = read(found.data);`,
+        `    if (v !== undefined) return v;`,
+        `  }`,
+        `  throw new Error("cannot fill in " + name + ": " + at + " is not an account that names it");`,
+        `};`,
+      ],
+    },
     {
       name: "memcmp",
       lines: [
@@ -1296,6 +1347,9 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
     `  },`,
     `  views: {`,
     ...viewKeys,
+    `  },`,
+    `  resolve: {`,
+    ...resolveKeys,
     `  },`,
     `  errors: ERRORS,`,
     `  errorCode,`,

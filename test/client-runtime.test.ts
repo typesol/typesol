@@ -218,6 +218,23 @@ describe("generated client: runtime helpers", () => {
     expect(events).toEqual([{ signature: results.at(-1)!.signature, event: { name: "Added", data: { by: 3n, count: 3n } } }]);
   });
 
+  it("fills in has_one accounts from the chain (resolve)", async () => {
+    const alice = await fundedSigner(svm);
+    const [tally] = await c.pdas.tally({ owner: alice });
+    const { rpc, rpcSubscriptions } = chain(svm, [tally]);
+    await c.sendInstructions({ rpc, rpcSubscriptions }, alice, [await c.open({ owner: alice })]);
+    const accounts = await c.resolve.poke(rpc, { tally });
+    expect(accounts).toEqual({ tally, owner: alice.address });
+    await c.sendInstructions({ rpc, rpcSubscriptions }, alice, [await c.poke(accounts)]);
+    expect((await c.accounts.Tally.fetch(rpc, tally)).count).toBe(1n);
+    // Given accounts are kept; an account that does not exist is a clear error.
+    const other = (await generateKeyPairSigner()).address;
+    expect(await c.resolve.poke(rpc, { tally, owner: other })).toEqual({ tally, owner: other });
+    await expect(c.resolve.poke(rpc, { tally: other })).rejects.toThrow(/cannot fill in owner: account .* does not exist/);
+    // A signer named by has_one is never filled in: it has to sign.
+    expect(c.resolve.add).toBeUndefined();
+  });
+
   it("names every Anchor error code a program can raise", async () => {
     expect(c.errors[2502]?.name).toBe("RequireKeysEqViolated");
     expect(c.errors[2032]?.name).toBe("ConstraintMintMetadataPointerExtensionMetadataAddress");

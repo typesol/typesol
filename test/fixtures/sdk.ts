@@ -2,6 +2,7 @@
 // read-only view, and remaining accounts.
 import {
   type Account,
+  type AccountInfo,
   type EventAuthority,
   type HasOne,
   type Init,
@@ -49,4 +50,9 @@ export function total(tally: Account<Tally>): u64 {
 /** How many remaining accounts were passed. */
 export function countRest(): u64 {
   return remainingAccounts().length;
+}
+
+/** `has_one = owner` with an owner that does not sign: the client can read it from the tally. */
+export function poke(tally: HasOne<Mut<Tally>, "owner">, owner: AccountInfo): void {
+  tally.count += 1n;
 }

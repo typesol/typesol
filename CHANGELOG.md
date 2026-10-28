@@ -5,6 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- `typesol client --address <program id> --url <rpc>`: a client from the IDL on chain, the canonical Program Metadata
+  IDL (`typesol idl publish`, Codama) or else Anchor's IDL account (`anchor idl init`).
+- Generated clients: `resolve.<instruction>(rpc, accounts)` fills in `has_one` accounts that do not sign from the
+  account that names them, as Anchor's client resolves `relations`.
+
 ## 0.20.0 — 2026-10-28
 
 The generated TypeScript clients catch up with Anchor's: remaining accounts, listing and watching accounts, sending

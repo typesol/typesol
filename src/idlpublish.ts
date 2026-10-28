@@ -5,6 +5,7 @@
  *
  * Works against an RPC (`rpcChain`) or anything else that can read accounts and send transactions (tests use LiteSVM).
  */
+import { inflateSync } from "node:zlib";
 import { Compression, Encoding, Format, fetchMetadataContent, findMetadataPda, packDirectData, writeMetadata } from "@solana-program/program-metadata";
 import {
   type Address,
@@ -13,6 +14,7 @@ import {
   type Rpc,
   type SolanaRpcApi,
   type TransactionSigner,
+  createAddressWithSeed,
   createClient,
   createTransactionMessage,
   createTransactionPlanExecutor,
@@ -158,4 +160,40 @@ export async function metadataAddress(program: Address, authority: Address | nul
 /** Read an IDL back (canonical, or the one `authority` wrote). */
 export async function fetchIdl(rpc: Chain["rpc"], program: Address, authority: Address | null = null): Promise<object> {
   return JSON.parse(await fetchMetadataContent(rpc as never, program, "idl", authority));
+}
+
+/** Where `anchor idl init` keeps a program's IDL: an account derived with seed "anchor:idl" from the program's base PDA. */
+export async function anchorIdlAddress(program: Address): Promise<Address> {
+  const [base] = await getProgramDerivedAddress({ programAddress: program, seeds: [] });
+  return createAddressWithSeed({ baseAddress: base, programAddress: program, seed: "anchor:idl" });
+}
+
+/** The IDL in Anchor's IDL account (`anchor idl init`), or null when the program has none. */
+export async function fetchAnchorIdl(rpc: Chain["rpc"], program: Address): Promise<object | null> {
+  const { value } = await rpc.getAccountInfo(await anchorIdlAddress(program), { encoding: "base64" }).send();
+  if (!value) return null;
+  const data = Buffer.from(value.data[0], "base64");
+  // IdlAccount: 8-byte discriminator, authority (32 bytes), a u32 length, then the zlib-compressed JSON.
+  if (data.length < 44) throw new Error("Anchor IDL account is too short");
+  const len = data.readUInt32LE(40);
+  if (44 + len > data.length) throw new Error("Anchor IDL account is truncated");
+  return JSON.parse(inflateSync(data.subarray(44, 44 + len)).toString("utf8")) as object;
+}
+
+/**
+ * A program's IDL from the chain: the canonical Program Metadata IDL (`typesol idl publish`, Codama) first, else
+ * Anchor's IDL account (`anchor idl init`).
+ */
+export async function fetchProgramIdl(rpc: Chain["rpc"], program: Address): Promise<{ idl: object; source: "program-metadata" | "anchor" }> {
+  let metadataError: unknown;
+  try {
+    return { idl: await fetchIdl(rpc, program), source: "program-metadata" };
+  } catch (e) {
+    metadataError = e;
+  }
+  const anchor = await fetchAnchorIdl(rpc, program);
+  if (anchor) return { idl: anchor, source: "anchor" };
+  throw new Error(
+    `no IDL on chain for ${program}: none in the Program Metadata program (${metadataError instanceof Error ? metadataError.message : String(metadataError)}) and no Anchor IDL account at ${await anchorIdlAddress(program)}`,
+  );
 }
