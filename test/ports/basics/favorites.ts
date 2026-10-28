@@ -1,13 +1,10 @@
 // Port of basics/favorites @ de09019; see test/ports/README.md.
 //
-// PARTIAL:
-//  - interface: `hobbies: Vec<String>` cannot be an argument (Vec argument elements must have a fixed size, and
-//    FixedString is only allowed inside a struct), so it is `Vec<Hobby>` with `Hobby { text: FixedString<50> }`: each
-//    hobby is sent as u32 length + 50 bytes instead of a Borsh string.
-//  - Anchor rejects a sixth hobby when it cannot serialize the account; here it is an explicit require.
-//  - logs: hobbies are printed as `["a", "b"]` without Rust's Debug escaping of quotes and backslashes.
-// The account keeps Anchor's bytes (`@layout borsh`: the `#[max_len(5, 50)] Vec<String>` is a
-// FixedVec<FixedString<50>, 5>) and Anchor's size, 8 + 8 + 54 + 4 + 5 * 54 = 344 bytes.
+// PORTED: `hobbies: Vec<String>` is a `Vec<string>` argument (Borsh, as Anchor sends it), and the account keeps
+// Anchor's bytes (`@layout borsh`: the `#[max_len(5, 50)] Vec<String>` is a FixedVec<FixedString<50>, 5>) and size,
+// 8 + 8 + 54 + 4 + 5 * 54 = 344 bytes. A sixth hobby, or one longer than 50 bytes, does not fit and fails, as Anchor
+// fails to serialize the account. The hobbies log line prints them as Rust's `{:?}` does for plain text (quotes and
+// backslashes inside a hobby are not escaped).
 import {
   type FixedString,
   type FixedVec,
@@ -24,10 +21,6 @@ import {
 } from "typesol";
 
 const PROGRAM_ID = pubkey("ww9C83noARSQVBnqmCUmaVdbJjmiwcV9j2LkXYMoUCV");
-
-export interface Hobby {
-  text: FixedString<50>;
-}
 
 /** @layout borsh */
 export interface Favorites {
@@ -46,7 +39,7 @@ export function setFavorites(
   systemProgram: SystemProgram,
   number: u64,
   color: string,
-  hobbies: Vec<Hobby>,
+  hobbies: Vec<string>,
 ): void {
   favorites.createIfNeeded(user, ["favorites", user.key]);
   require(hobbies.length <= 5n, FavoritesError.TooManyHobbies);
@@ -55,7 +48,7 @@ export function setFavorites(
   let first = true;
   for (const h of hobbies) {
     if (!first) list += ", ";
-    list += `"${h.text}"`;
+    list += `"${h}"`;
     first = false;
   }
   list += "]";
@@ -63,5 +56,5 @@ export function setFavorites(
   favorites.number = number;
   favorites.color = color;
   favorites.hobbies = fixedVec([]);
-  for (const h of hobbies) favorites.hobbies.push(h.text);
+  for (const h of hobbies) favorites.hobbies.push(h);
 }

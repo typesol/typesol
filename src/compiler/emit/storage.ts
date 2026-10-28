@@ -316,7 +316,7 @@ export abstract class StorageEmitter extends EmitterBase {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "get") {
       const owner = node.expression.expression;
       const l = ts.isIdentifier(owner) ? this.lookup(owner.text) : undefined;
-      if (l?.type.kind === "vecArg" && !isScalar(l.type.elem)) {
+      if (l?.type.kind === "vecArg" && !isScalar(l.type.elem) && l.type.elem.kind !== "string") {
         // A Vec<Struct> argument: elements are read in place (validated when the instruction started).
         if (node.arguments.length !== 1) this.fail(node, "get(index) takes one argument");
         const idx = this.index(node.arguments[0], `(uint64_t)${l.c}.len`);

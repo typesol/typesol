@@ -1,6 +1,6 @@
 import { type u32, log, require } from "typesol";
 import { CarnivalError } from "../error";
-import { gameTickets, isGame, logPrize } from "../state/game";
+import { gamePrize, gameTickets, gameTries, isGame } from "../state/game";
 
 export function playGameImpl(gamerName: string, gamerTicketCount: u32, game: string): void {
   require(isGame(game), CarnivalError.UnknownAttraction);
@@ -9,6 +9,6 @@ export function playGameImpl(gamerName: string, gamerTicketCount: u32, game: str
     log(`  Sorry ${gamerName}, you need ${gameTickets(game)} tickets to play ${game}!`);
   } else {
     log("  Let's see what you got!");
-    logPrize(game);
+    log(`  You get ${gameTries(game)} attempts and the prize is a ${gamePrize(game)}!`);
   }
 }

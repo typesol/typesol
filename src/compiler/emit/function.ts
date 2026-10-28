@@ -197,6 +197,29 @@ export class FunctionEmitter extends StatementEmitter {
           head.push(`    if (arg_${a.name}.v >= ${max}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid option argument");`);
         }
         head.push(`  }`);
+      } else if (a.type.kind === "vecArg" && a.type.elem.kind === "string") {
+        // Borsh Vec<String>: u32 count, then each string's u32 length and UTF-8 bytes. Kept as views of the
+        // instruction data in a heap array of TS_Str (each string at least 4 bytes, so the count is bounded first).
+        const v = `arg_${a.name}`;
+        const items = `vs_${a.name}`;
+        const i = `vi_${a.name}`;
+        need("4");
+        head.push(`  TS_VecArg ${v};`, `  ${v}.len = (uint32_t)ts_read_le(${at}, 4);`, `  off += 4;`);
+        need(`(uint64_t)${v}.len * 4`);
+        head.push(
+          `  TS_Str *${items};`,
+          `  TS_TRY(ts_alloc((uint64_t)${v}.len * sizeof(TS_Str), (uint8_t **)&${items}));`,
+          `  for (uint64_t ${i} = 0; ${i} < ${v}.len; ${i}++) {`,
+          `    if (params->data_len < off + 4) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`,
+          `    uint32_t n = (uint32_t)ts_read_le(params->data + off, 4);`,
+          `    off += 4;`,
+          `    if (params->data_len - off < n) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`,
+          `    if (!ts_utf8_valid(params->data + off, n)) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid UTF-8 in a string argument");`,
+          `    ${items}[${i}] = ts_str(params->data + off, n);`,
+          `    off += n;`,
+          `  }`,
+          `  ${v}.ptr = (const uint8_t *)${items};`,
+        );
       } else if (a.type.kind === "vecArg") {
         const elem = a.type.elem;
         const size = this.fieldBytes(elem);

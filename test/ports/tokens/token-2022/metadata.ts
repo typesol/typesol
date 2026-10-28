@@ -1,20 +1,20 @@
 // Port of tokens/token-2022/metadata @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - builtin gaps: no Token-2022 extension or Token Metadata interface builtins, so the mint (a keypair `init` with
-//    `extensions::metadata_pointer::*`) is created in the body (CreateAccount sized for MetadataPointer, MetadataPointer
-//    Initialize, InitializeMint2), and the Token Metadata interface instructions (initialize, update_field, remove_key,
-//    emit, update_authority) are hand-encoded (`invoke`) with the interface's discriminators and Borsh data.
+//  - the mint (a keypair `init` with `extensions::metadata_pointer::*`) is created in the body as Anchor's does it:
+//    CreateAccount sized for MetadataPointer, MetadataPointer Initialize, InitializeMint2.
 //    `extensions::metadata_pointer::metadata_address = mint_account` is checked by walking the TLV list (6000 here).
-//  - interface: `initialize` takes name, symbol and uri as three arguments instead of a TokenMetadataArgs struct (same
-//    instruction bytes, different IDL), since struct arguments must have a fixed layout. `update_field` takes `field: AnchorField` as a unit enum plus a `key` string used for Key, because
-//    TypeSOL arguments cannot be data enums carrying strings (`AnchorField::Key(String)`): the instruction bytes differ.
+//  - interface: `initialize` takes TokenMetadataArgs (`@layout borsh`, Anchor's bytes and IDL; each string up to 200
+//    bytes). `update_field` takes `field: AnchorField` and `value` as two arguments: the same instruction bytes as
+//    UpdateFieldArgs, a different IDL (TypeSOL argument structs cannot hold a data enum yet), and `Key` is a named
+//    field where the original has a tuple. A Key named "name", "symbol" or "uri" updates that field.
 //  - update_field tops the mint up to the rent of its new size. For a Key field the port funds a new entry (key and
 //    value); when the key already exists that is more than the original's exact amount, by the old entry's size.
 //  - logs: the original logs the field, the updated TokenMetadata and the lamports with `{:?}`; the port logs the
 //    lamport lines only.
 import {
   type AccountInfo,
+  type FixedString,
   type AccountMeta,
   type Mint,
   type Pubkey,
@@ -25,23 +25,15 @@ import {
   type u16,
   type u32,
   byteLength,
-  hex,
-  invoke,
   log,
-  pubkey,
   readData,
-  readonly,
-  readonlySigner,
   rentExempt,
   require,
   u64,
-  u8,
-  writable,
 } from "typesol";
 
 /** Base mint (padded to 165) + account type (1) + MetadataPointer TLV (2 + 2 + 64). */
 const MINT_SIZE_METADATA_POINTER = 234n;
-const NO_AUTHORITY = pubkey("11111111111111111111111111111111");
 const METADATA_POINTER: u16 = 18n;
 const TOKEN_METADATA: u16 = 19n;
 
@@ -49,11 +41,13 @@ export enum MetadataError {
   WrongMetadataPointer = "The mint's metadata pointer does not point at the mint",
 }
 
-export enum AnchorField {
-  Name,
-  Symbol,
-  Uri,
-  Key,
+export type AnchorField = { kind: "Name" } | { kind: "Symbol" } | { kind: "Uri" } | { kind: "Key"; key: string };
+
+/** @layout borsh */
+export interface TokenMetadataArgs {
+  name: FixedString<200>;
+  symbol: FixedString<200>;
+  uri: FixedString<200>;
 }
 
 /** Offset of the value of extension `ext` in a Token-2022 account (TLV entries after byte 166), or 0 when absent. */
@@ -80,19 +74,18 @@ export function initialize(
   mintAccount: Mut<Signer>,
   tokenProgram: Token2022Program,
   systemProgram: SystemProgram,
-  name: string,
-  symbol: string,
-  uri: string,
+  args: TokenMetadataArgs,
 ): void {
+  const name: string = args.name;
+  const symbol: string = args.symbol;
+  const uri: string = args.uri;
   systemProgram.createAccount(payer, mintAccount, rentExempt(MINT_SIZE_METADATA_POINTER), MINT_SIZE_METADATA_POINTER, tokenProgram.key);
-  // MetadataPointerExtension (39) / Initialize (0): authority, metadata address.
-  invoke(tokenProgram, [writable(mintAccount)], [u8(39n), u8(0n), payer.key, mintAccount.key]);
+  tokenProgram.initializeMetadataPointer(mintAccount, payer.key, mintAccount.key);
   tokenProgram.initializeMint2(mintAccount, 2n, payer.key, null);
   // TokenMetadata::tlv_size_of: TLV header (4) + authority (32) + mint (32) + three Borsh strings + empty Vec (4).
   const dataLen = 4n + 32n + 32n + 12n + u64(byteLength(name)) + u64(byteLength(symbol)) + u64(byteLength(uri)) + 4n;
   systemProgram.transfer(payer, mintAccount, rentExempt(dataLen));
-  // spl-token-metadata-interface Initialize: name, symbol, uri.
-  invoke(tokenProgram, [writable(mintAccount), readonly(payer), readonly(mintAccount), readonlySigner(payer)], [hex("d2e11ea258b84d8d"), name, symbol, uri]);
+  tokenProgram.initializeMetadata(mintAccount, payer, payer, name, symbol, uri);
 }
 
 export function updateField(
@@ -101,7 +94,6 @@ export function updateField(
   tokenProgram: Token2022Program,
   systemProgram: SystemProgram,
   field: AnchorField,
-  key: string,
   value: string,
 ): void {
   checkPointsAtItself(mintAccount);
@@ -112,10 +104,18 @@ export function updateField(
   const symbolLen = u64(readData<u32>(mintAccount, at + 68n + nameLen));
   const uriLen = u64(readData<u32>(mintAccount, at + 72n + nameLen + symbolLen));
   let newLen = oldLen + u64(byteLength(value));
-  if (field === AnchorField.Name) newLen -= nameLen;
-  else if (field === AnchorField.Symbol) newLen -= symbolLen;
-  else if (field === AnchorField.Uri) newLen -= uriLen;
-  else newLen += 8n + u64(byteLength(key));
+  let name = "name";
+  if (field.kind === "Name") newLen -= nameLen;
+  else if (field.kind === "Symbol") {
+    newLen -= symbolLen;
+    name = "symbol";
+  } else if (field.kind === "Uri") {
+    newLen -= uriLen;
+    name = "uri";
+  } else {
+    newLen += 8n + u64(byteLength(field.key));
+    name = field.key;
+  }
   const required = rentExempt(mintAccount.dataLen - oldLen + newLen);
   log(`Required lamports: ${required}`);
   log(`Current lamports: ${mintAccount.lamports}`);
@@ -124,9 +124,7 @@ export function updateField(
     systemProgram.transfer(authority, mintAccount, difference);
     log(`Transferring ${difference} lamports to metadata account`);
   }
-  // spl-token-metadata-interface UpdateField: Field (Borsh enum), value.
-  if (field === AnchorField.Key) invoke(tokenProgram, [writable(mintAccount), readonlySigner(authority)], [hex("dde9312db5cadcc8"), u8(3n), key, value]);
-  else invoke(tokenProgram, [writable(mintAccount), readonlySigner(authority)], [hex("dde9312db5cadcc8"), field, value]);
+  tokenProgram.updateMetadataField(mintAccount, authority, name, value);
 }
 
 export function removeKey(
@@ -137,13 +135,11 @@ export function removeKey(
   key: string,
 ): void {
   checkPointsAtItself(mintAccount);
-  // spl-token-metadata-interface RemoveKey: idempotent, key.
-  invoke(tokenProgram, [writable(mintAccount), readonlySigner(updateAuthority)], [hex("ea122038598d25b5"), true, key]);
+  tokenProgram.removeMetadataKey(mintAccount, updateAuthority, key, true);
 }
 
 export function emit(mintAccount: Mint, tokenProgram: Token2022Program): void {
-  // spl-token-metadata-interface Emit: start and end are None.
-  invoke(tokenProgram, [readonly(mintAccount)], [hex("faa6b4fa0d0cb846"), u8(0n), u8(0n)]);
+  tokenProgram.emitMetadata(mintAccount);
 }
 
 export function updateAuthority(
@@ -154,7 +150,5 @@ export function updateAuthority(
   systemProgram: SystemProgram,
 ): void {
   checkPointsAtItself(mintAccount);
-  // spl-token-metadata-interface UpdateAuthority: the new authority as an OptionalNonZeroPubkey (zeros: none).
-  const next = newAuthority !== null ? newAuthority.key : NO_AUTHORITY;
-  invoke(tokenProgram, [writable(mintAccount), readonlySigner(currentAuthority)], [hex("d7e4a6e45464567b"), next]);
+  tokenProgram.updateMetadataAuthority(mintAccount, currentAuthority, newAuthority !== null ? newAuthority.key : null);
 }

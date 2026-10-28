@@ -4,7 +4,7 @@
 import { type Address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 import { BN, SYSTEM_PROGRAM, type Meta, acct, customError, decodeAccount, expectOk, fundedSigner, ix, pda, send } from "./harness.js";
-import { allocate, deployPort, fixedString, toFixedString } from "./ports-helpers.js";
+import { allocate, deployPort, fixedString } from "./ports-helpers.js";
 
 const SOL = 1_000_000_000n;
 
@@ -217,7 +217,7 @@ describe("port: basics/favorites", () => {
     const [favorites] = await pda(d.programId, ["favorites", user.address]);
     const set = (who: typeof user, hobbies: string[], target = favorites) =>
       send(d.svm, who, [
-        ix(d, "set_favorites", { number: new BN(23), color: "purple", hobbies: hobbies.map((h) => ({ text: toFixedString(h, 50) })) }, [
+        ix(d, "set_favorites", { number: new BN(23), color: "purple", hobbies }, [
           { address: who.address, signer: who, writable: true },
           { address: target, writable: true },
           { address: SYSTEM_PROGRAM },

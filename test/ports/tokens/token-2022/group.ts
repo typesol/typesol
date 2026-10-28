@@ -1,9 +1,9 @@
 // Port of tokens/token-2022/group @ de09019; see test/ports/README.md.
 //
 // PARTIAL:
-//  - builtin gap: no Token-2022 extension initializers, so the PDA mint (["group"]) Anchor makes with `init`,
-//    `mint::*` and `extensions::group_pointer::*` is created in the body: CreateAccount sized for the extension (signed
-//    with the PDA's seeds), GroupPointer Initialize hand-encoded (`invoke`), then InitializeMint2.
+//  - the PDA mint (["group"]) Anchor makes with `init`, `mint::*` and `extensions::group_pointer::*` is created in the
+//    body as that does: CreateAccount sized for the extension (signed with the PDA's seeds), GroupPointer Initialize,
+//    then InitializeMint2.
 //  - check_mint_data reads the GroupPointer extension by walking the TLV list with readData (what
 //    StateWithExtensions::get_extension does) and requires it to name the mint; the original logs it with `{:?}`.
 import {
@@ -16,14 +16,11 @@ import {
   type SystemProgram,
   type Token2022Program,
   type u16,
-  invoke,
   log,
   readData,
   rentExempt,
   require,
   u64,
-  u8,
-  writable,
 } from "typesol";
 
 /** Base mint (padded to 165) + account type (1) + GroupPointer TLV (2 + 2 + 64). */
@@ -57,8 +54,7 @@ export function testInitializeGroup(
     "group",
     mintAccount.pdaBump,
   ]);
-  // GroupPointerExtension (40) / Initialize (0): authority, group address.
-  invoke(tokenProgram, [writable(mintAccount)], [u8(40n), u8(0n), mintAccount.key, mintAccount.key]);
+  tokenProgram.initializeGroupPointer(mintAccount, mintAccount.key, mintAccount.key);
   tokenProgram.initializeMint2(mintAccount, 2n, mintAccount.key, mintAccount.key);
   // check_mint_data
   const at = extensionOffset(mintAccount, GROUP_POINTER);

@@ -9,12 +9,10 @@
 //    check (2040) — on the first configuration too, where the original lets the caller become the admin. Its
 //    `require_keys_eq!` fails with this program's NotAdmin (6002) instead of RequireKeysEqViolated (2502); the
 //    `require_keys_neq!` case cannot be reached (2040 comes first).
-//  - builtin gap: the source account's TransferHookAccount `transferring` flag is found by walking the TLV list with
-//    readData.
 import {
+  isTransferring,
   type Account,
   type AccountInfo,
-  type AccountMeta,
   type HasOne,
   type InitIfNeeded,
   type Mint,
@@ -23,16 +21,11 @@ import {
   type Seeds,
   type Signer,
   type SystemProgram,
-  type u16,
   initExtraAccountMetas,
-  readData,
   require,
   seedAccountKey,
   u64,
-  u8,
 } from "typesol";
-
-const TRANSFER_HOOK_ACCOUNT: u16 = 15n;
 
 export enum TransferError {
   IsNotCurrentlyTransferring = "The token is not currently transferring",
@@ -49,19 +42,6 @@ export interface TransferSwitch {
 export interface AdminConfig {
   isInitialised: boolean;
   admin: Pubkey;
-}
-
-/** Offset of the value of extension `ext` in a Token-2022 account (TLV entries after byte 166), or 0 when absent. */
-function extensionOffset(account: AccountMeta, ext: u16): u64 {
-  let off = 166n;
-  while (off + 4n <= account.dataLen) {
-    const t = readData<u16>(account, off);
-    const len = readData<u16>(account, off + 2n);
-    if (t === ext) return off + 4n;
-    if (t === 0n) return 0n;
-    off += 4n + u64(len);
-  }
-  return 0n;
 }
 
 export function configureAdmin(admin: Mut<Signer>, newAdmin: Mut<AccountInfo>, adminConfig: InitIfNeeded<AdminConfig>, systemProgram: SystemProgram): void {
@@ -112,7 +92,6 @@ export function transferHook(
   walletSwitch: Seeds<Account<TransferSwitch>, ["@wallet"]>,
   amount: u64,
 ): void {
-  const at = extensionOffset(sourceTokenAccount, TRANSFER_HOOK_ACCOUNT);
-  require(at > 0n && readData<u8>(sourceTokenAccount, at) !== 0n, TransferError.IsNotCurrentlyTransferring);
+  require(isTransferring(sourceTokenAccount), TransferError.IsNotCurrentlyTransferring);
   require(walletSwitch.on, TransferError.SwitchNotOn);
 }

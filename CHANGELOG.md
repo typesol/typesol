@@ -6,6 +6,17 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Token-2022 extension instructions: `updateDefaultAccountState`, `updateTransferHook`, `enableRequiredMemoTransfers` /
+  `disableRequiredMemoTransfers`, `updateInterestRate`, `transferCheckedWithFee`, `harvestWithheldTokensToMint`,
+  `withdrawWithheldTokensFromMint`, `setTransferFee`; the Token Metadata interface: `updateMetadataField`,
+  `removeMetadataKey`, `updateMetadataAuthority`, `emitMetadata`; `closeAccount` of a mint; `mintTo` /
+  `initializeMetadata` on a mint created earlier in the instruction; `isTransferring(tokenAccount)` and
+  `transferHookAuthority(mint)`.
+- Helpers and instructions can return `string` (an instruction's is Borsh String return data).
+- `acct.key` of an `Init<…>` account before it is created (the address is known; Anchor seeds use it that way).
+- `Vec<string>` instruction arguments (Anchor's `Vec<String>`): `.get(i)`, `.length`, `for … of`, list callbacks,
+  helper parameters, storing into `FixedVec<FixedString<N>, M>`, and re-encoding through `invoke`; each string is
+  checked as UTF-8 on entry (102).
 - Metaplex Core plugin values: MasterEdition, VerifiedCreators, Autograph, FreezeExecute, PermanentFreezeExecute, and
   royalty rule sets (`ruleSet: { programAllowList | programDenyList }`).
 - Bubblegum: `delegateV2`, `freezeV2`, `thawV2`, `setNonTransferableV2`, `updateMetadataV2`, `verifyCreatorV2`,

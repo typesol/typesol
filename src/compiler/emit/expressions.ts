@@ -269,8 +269,10 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isIdentifier(node.expression)) {
       const a = this.accounts.get(node.expression.text);
       if (a) {
-        this.assertUsable(a, node);
         const v = `a_${a.name}`;
+        // The address is known before an Init account is created (Anchor seeds use `mint.key()` that way).
+        if (field === "key" && !a.optional) return { c: `&${v}->key`, type: PUBKEY };
+        this.assertUsable(a, node);
         if (field === "key") return { c: `&${v}->key`, type: PUBKEY };
         if (field === "lamports") return { c: `${v}->lamports`, type: U64 };
         if (field === "dataLen") return { c: `${v}->data_len`, type: U64 };
