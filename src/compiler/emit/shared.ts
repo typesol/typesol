@@ -78,6 +78,15 @@ export interface Local {
   /** For struct / data-enum references: the storage paths they alias (e.g. "book.asks[]"), and the declaration. */
   paths?: string[];
   decl?: ts.VariableDeclaration;
+  /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
+  closure?: Closure;
+}
+
+/** A closure and the scopes it was declared in (its free names resolve there, wherever it is called). */
+export interface Closure {
+  node: ts.ArrowFunction | ts.FunctionExpression;
+  name: string;
+  scopes: Map<string, Local>[];
 }
 
 export const cBytes = (bytes: number[]) => `{${bytes.join(", ")}}`;

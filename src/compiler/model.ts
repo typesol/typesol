@@ -196,6 +196,8 @@ export interface Instruction {
 export interface GenericHelper {
   name: string;
   display: string;
+  /** Indexes of parameters with a function type (`f: (x: u64) => u64`): bound per call to a named function. */
+  fnParams: number[];
   node: HelperNode;
   typeParams: string[];
   imports: Map<string, string>;
@@ -229,6 +231,10 @@ export interface Helper {
   statements: readonly ts.Statement[];
   /** A generic helper's instance: type parameter -> the type it stands for. */
   typeArgs?: Map<string, ScalarType>;
+  /** An instance's function parameters: name -> the helper passed for it (its calls go there). */
+  fnArgs?: Map<string, string>;
+  /** Their argument positions, which have no C parameter. */
+  fnArgIndexes?: number[];
   /** The declaring file's `typesol` imports (local name -> export name). */
   imports: Map<string, string>;
 }
@@ -276,6 +282,8 @@ export interface ProgramModel {
   generics: Map<string, GenericHelper>;
   /** Declaration (function, or the const of an arrow) -> helper or generic name, for calls to local arrows. */
   helperDecls: Map<ts.Node, string>;
+  /** Local closures (they read the enclosing function's variables): their declaration -> name; expanded where called. */
+  closureDecls: Map<ts.Node, string>;
   errors: ErrorDef[];
   /** Enum name -> member name -> error */
   errorEnums: Map<string, Map<string, ErrorDef>>;

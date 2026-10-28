@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { resolveValueType } from "../analyze.js";
-import { INT_INFO, type ScalarType, type ValueType, isWritable, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, type Value, cString, scalarC, scalarStorageC, valueC } from "./shared.js";
+import { INT_INFO, type ScalarType, type ValueType, isWritable, optionKey, scalarSize, typeName } from "../model.js";
+import { U64, BOOL, type Value, type Local, type Closure, cString, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
 
 /**
@@ -62,6 +62,8 @@ export abstract class StatementEmitter extends CpiEmitter {
   }
 
   protected returnStatement(stmt: ts.ReturnStatement) {
+    const frame = this.inlineFrames.at(-1);
+    if (frame) return this.closureReturn(stmt, frame);
     const returns = this.helper ? this.helper.returns : this.ix!.returns;
     if (!returns) {
       if (stmt.expression) this.fail(stmt, this.helper ? "this helper returns void" : "this instruction returns void; use `return;`");
@@ -264,6 +266,246 @@ export abstract class StatementEmitter extends CpiEmitter {
     this.line(`}`);
   }
 
+  /**
+   * Expand a closure where it is called: the arguments are evaluated here, in order, into the parameters (scalars,
+   * Pubkeys and strings by value, structs by reference, as JS passes objects); the body then runs with the names it
+   * was declared with, so a block around the call that declares the same name does not change what it reads, and
+   * writes to captured `let`s are seen by the enclosing function. Returns the result (undefined for no value).
+   */
+  protected expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined {
+    const fn = c.node;
+    if (this.inlining.has(fn)) this.fail(node, `${c.name} calls itself: closures cannot be recursive`);
+    if (args.length !== fn.parameters.length) this.fail(node, `${c.name}() takes ${fn.parameters.length} argument(s)`);
+    const params = new Map<string, Local>();
+    fn.parameters.forEach((p, i) => {
+      if (!ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken) this.fail(p, "closure parameters are plain names");
+      const arg = args[i]!;
+      const name = p.name.text;
+      const c2 = `l_${name}_${this.temp++}`;
+      const annotated = p.type ? resolveValueType(p.type, this.scope) : undefined;
+      if (!annotated && this.looksLikeStructPlace(arg)) {
+        const place = this.structPlace(arg)!;
+        this.line(`TSS_${place.struct} *${c2} = ${place.ptr};`);
+        params.set(name, { c: c2, type: { kind: "structRef", struct: place.struct, writable: place.writable }, mutable: false, paths: this.pathsOf(arg) });
+        return;
+      }
+      let v = this.expr(arg, annotated);
+      if (v.isNull && !annotated) this.fail(arg, "give the parameter a type to pass null");
+      if (v.literal !== undefined && !annotated) v = this.literal(v.literal, U64, arg);
+      const type = annotated ?? v.type;
+      v = this.expect(v, type, arg);
+      if (type.kind === "pubkey") this.line(`SolPubkey ${c2} = *(${v.c});`);
+      else this.line(`${valueC(type)}${type.kind === "account" ? "" : " "}${c2} = ${this.ownedString(v).c};`);
+      params.set(name, { c: c2, type, mutable: true });
+    });
+    const declared = fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword ? resolveValueType(fn.type, this.scope) : undefined;
+    if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword && !declared)
+      this.fail(fn.type, "closures return integers, booleans, Pubkeys, strings, enums or Options");
+    const frame = {
+      label: this.tmp("ts_ret_"),
+      result: this.tmp("ret"),
+      type: declared,
+      declAt: this.lines.length,
+      pad: "  ".repeat(this.indent),
+      node: fn,
+    };
+    this.line(declared ? `${declared.kind === "pubkey" ? "SolPubkey" : valueC(declared)} ${frame.result};` : `/* ${frame.result} */`);
+    const saved = { scopes: this.scopes, loops: this.loops.splice(0) };
+    this.scopes = [...c.scopes, params];
+    this.inlining.add(fn);
+    this.inlineFrames.push(frame);
+    try {
+      this.line(`{`);
+      this.block(() => {
+        const body = fn.body;
+        if (ts.isBlock(body)) body.statements.forEach((s) => this.reporter.guard(() => this.statement(s)));
+        else {
+          // An expression body: its value is the result (a call may have none).
+          const ret = ts.factory.createReturnStatement(body);
+          ts.setTextRange(ret, body);
+          (ret as { parent?: ts.Node }).parent = fn;
+          if (ts.isCallExpression(body) && !frame.type) {
+            const v = this.call(body, false);
+            if (v) this.closureResult(v, body, frame);
+          } else this.closureReturn(ret, frame);
+        }
+      });
+      this.line(`}`);
+      this.line(`${frame.label}:;`);
+    } finally {
+      this.inlineFrames.pop();
+      this.inlining.delete(fn);
+      this.scopes = saved.scopes;
+      this.loops.push(...saved.loops);
+    }
+    if (!frame.type) {
+      if (this.lines[frame.declAt]!.includes(`/* ${frame.result} */`)) this.lines[frame.declAt] = "";
+      return undefined;
+    }
+    return frame.type.kind === "pubkey" ? { c: `(&${frame.result})`, type: frame.type } : { c: frame.result, type: frame.type };
+  }
+
+  /**
+   * `xs.forEach / some / every / find / findIndex / reduce / includes / indexOf` on a Vec, FixedArray, FixedVec or Vec
+   * argument: an index loop (the length read each step, as `for … of`), the callback (an arrow written at the call)
+   * expanded with each element as `xs.get(i)` gives it (structs by reference) and, if it takes one, the index.
+   * `find` gives an Option of the element (scalar elements), `findIndex` / `indexOf` an i64 (-1 when absent).
+   */
+  protected listMethod(node: ts.CallExpression, method: string): Value | undefined {
+    const access = node.expression as ts.PropertyAccessExpression;
+    const list = access.expression;
+    const args = node.arguments;
+    const f = ts.factory;
+    const place = <T extends ts.Node>(n: T): T => {
+      ts.setTextRange(n, node);
+      (n as { parent?: ts.Node }).parent = node;
+      return n;
+    };
+    const valueForm = method === "includes" || method === "indexOf";
+    if (args.length !== (method === "reduce" ? 2 : 1))
+      this.fail(node, method === "reduce" ? "reduce(callback, initial) takes two arguments" : `${method}() takes one argument`);
+    const cb = args[0]!;
+    if (!valueForm && !ts.isArrowFunction(cb) && !ts.isFunctionExpression(cb))
+      this.fail(cb, `pass ${method} an arrow function written here: xs.${method}((x) => …)`);
+    const fn = cb as ts.ArrowFunction | ts.FunctionExpression;
+    const index = `__lm${this.temp++}`;
+    const indexId = place(f.createIdentifier(index));
+    const length = place(f.createPropertyAccessExpression(list, "length"));
+    const element = place(f.createCallExpression(place(f.createPropertyAccessExpression(list, "get")), undefined, [indexId]));
+    const I64: ValueType = { kind: "int", name: "i64" };
+
+    // The result, declared before the loop.
+    const res = this.tmp("lm");
+    let result: Value | undefined;
+    let elemType: ValueType | undefined;
+    let accType: ValueType | undefined;
+    let needle: string | undefined;
+    if (method === "some" || method === "includes") (this.line(`bool ${res} = false;`), (result = { c: res, type: BOOL }));
+    if (method === "every") (this.line(`bool ${res} = true;`), (result = { c: res, type: BOOL }));
+    if (method === "findIndex" || method === "indexOf") (this.line(`int64_t ${res} = -1;`), (result = { c: res, type: I64 }));
+    if (method === "reduce") {
+      const accParam = fn.parameters[0];
+      const annotated = accParam?.type ? resolveValueType(accParam.type, this.scope) : undefined;
+      let init = this.expr(args[1]!, annotated);
+      if (init.literal !== undefined && !annotated) init = this.literal(init.literal, U64, args[1]!);
+      accType = annotated ?? init.type;
+      init = this.expect(init, accType, args[1]!);
+      if (!["int", "bool", "pubkey", "string", "enum", "option"].includes(accType.kind))
+        this.fail(args[1]!, `reduce accumulates integers, booleans, Pubkeys, strings, enums or Options, not ${typeName(accType)}`);
+      this.line(accType.kind === "pubkey" ? `SolPubkey ${res} = *(${init.c});` : `${valueC(accType)} ${res} = ${this.ownedString(init).c};`);
+      result = accType.kind === "pubkey" ? { c: `(&${res})`, type: accType } : { c: res, type: accType };
+    }
+    if (valueForm) {
+      // The value looked for, read once, compared with === (scalars and strings).
+      const v = this.expr(cb);
+      needle = `__lv${this.temp++}`;
+      const t = this.tmp("needle");
+      const vt = v.literal !== undefined ? U64 : v.type;
+      if (!["int", "bool", "pubkey", "string", "enum"].includes(vt.kind)) this.fail(cb, `${method} compares integers, booleans, Pubkeys, strings or enums`);
+      const typed = v.literal !== undefined ? v : this.expect(v, vt, cb);
+      this.line(vt.kind === "pubkey" ? `SolPubkey ${t} = *(${typed.c});` : `${valueC(vt)} ${t} = ${typed.c};`);
+      this.scopes.at(-1)!.set(needle, { c: t, type: vt, mutable: false });
+    }
+    if (method === "find") {
+      // Typed from the first element read inside the loop; declared here.
+      result = { c: res, type: BOOL };
+      this.line(`/* ${res} */`);
+    }
+    const findDecl = method === "find" ? this.lines.length - 1 : -1;
+
+    const ci = this.tmp("lm_i");
+    this.line(`{`);
+    this.block(() => {
+      this.line(`uint64_t ${ci} = 0;`);
+      this.scopes.at(-1)!.set(index, { c: ci, type: U64, mutable: false });
+      this.line(`while (1) {`);
+      this.block(() => {
+        const n = this.expect(this.expr(length, U64), U64, list);
+        this.line(`if (!(${ci} < ${n.c})) break;`);
+        if (valueForm) {
+          const eq = place(f.createBinaryExpression(element, ts.SyntaxKind.EqualsEqualsEqualsToken, place(f.createIdentifier(needle!))));
+          const hit = this.expect(this.expr(eq, BOOL), BOOL, node);
+          this.line(`if (${hit.c}) {`);
+          this.line(method === "includes" ? `  ${res} = true;` : `  ${res} = (int64_t)${ci};`);
+          this.line(`  break;`);
+          this.line(`}`);
+        } else {
+          const closure: Closure = { node: fn, name: `${method}'s callback`, scopes: [...this.scopes] };
+          const accId = method === "reduce" ? place(f.createIdentifier(`__acc${this.temp++}`)) : undefined;
+          if (accId) this.scopes.at(-1)!.set(accId.text, { c: res, type: accType!, mutable: true });
+          const all = method === "reduce" ? [accId!, element, indexId] : [element, indexId];
+          const v = this.expandClosure(closure, all.slice(0, fn.parameters.length), cb);
+          if (method === "forEach") {
+            if (v) this.fail(cb, "forEach's callback returns nothing");
+          } else if (method === "reduce") {
+            if (!v) this.fail(cb, "reduce's callback returns the new accumulator");
+            const nv = this.expect(v, accType!, cb);
+            this.line(accType!.kind === "pubkey" ? `${res} = *(${nv.c});` : `${res} = ${nv.c};`);
+          } else {
+            if (!v) this.fail(cb, `${method}'s callback returns a boolean`);
+            const b = this.expect(v, BOOL, cb);
+            if (method === "some") this.line(`if (${b.c}) { ${res} = true; break; }`);
+            if (method === "every") this.line(`if (!(${b.c})) { ${res} = false; break; }`);
+            if (method === "findIndex") this.line(`if (${b.c}) { ${res} = (int64_t)${ci}; break; }`);
+            if (method === "find") {
+              this.line(`if (${b.c}) {`);
+              this.block(() => {
+                const e = this.expr(element);
+                elemType = e.type;
+                if (!["int", "bool", "pubkey", "enum"].includes(e.type.kind))
+                  this.fail(node, "find returns an Option of the element, so the elements must be integers, booleans, Pubkeys or enums; use findIndex");
+                this.line(`${res}.some = 1;`);
+                this.line(e.type.kind === "pubkey" ? `${res}.v = *(${e.c});` : `${res}.v = ${e.c};`);
+                this.line(`break;`);
+              });
+              this.line(`}`);
+            }
+          }
+        }
+        this.line(`${ci}++;`);
+      });
+      this.line(`}`);
+    });
+    this.line(`}`);
+    if (method === "find") {
+      const inner = elemType as ScalarType;
+      this.model.options.set(optionKey(inner), inner);
+      this.lines[findDecl] = `${"  ".repeat(this.indent)}${optC(inner)} ${res};\n${"  ".repeat(this.indent)}ts_memzero(&${res}, sizeof(${res}));`;
+      return { c: res, type: { kind: "option", inner } as ValueType };
+    }
+    return result;
+  }
+
+  /** `return` inside an expanded closure: the value goes to the closure's result, then past its body. */
+  protected closureReturn(stmt: ts.ReturnStatement, frame: (typeof this.inlineFrames)[number]) {
+    if (!stmt.expression) {
+      if (frame.type) this.fail(stmt, "this function returns a value");
+      this.line(`goto ${frame.label};`);
+      return;
+    }
+    this.closureResult(this.expr(stmt.expression, frame.type), stmt.expression, frame);
+  }
+
+  /** Store a closure's result (fixing its type on the first one) and jump past the rest of its body. */
+  protected closureResult(value: Value, at: ts.Expression, frame: (typeof this.inlineFrames)[number]) {
+    let v = value;
+    const stmt = { expression: at };
+    if (v.isNull && !frame.type) this.fail(stmt.expression, "give the function a return type to return null");
+    if (!frame.type) {
+      if (v.literal !== undefined) v = this.literal(v.literal, U64, stmt.expression);
+      const t = v.type;
+      if (!["int", "bool", "pubkey", "string", "enum", "option"].includes(t.kind))
+        this.fail(stmt.expression, `closures return integers, booleans, Pubkeys, strings, enums or Options, not ${typeName(t)}`);
+      frame.type = t;
+      this.lines[frame.declAt] = `${frame.pad}${t.kind === "pubkey" ? "SolPubkey" : valueC(t)} ${frame.result};`;
+    }
+    v = this.expect(v, frame.type, stmt.expression);
+    if (frame.type.kind === "pubkey") this.line(`${frame.result} = *(${v.c});`);
+    else if (frame.type.kind === "option" && v.isNull) this.line(`ts_memzero(&${frame.result}, sizeof(${frame.result}));`);
+    else this.line(`${frame.result} = ${this.ownedString(v).c};`);
+    this.line(`goto ${frame.label};`);
+  }
+
   /** `do { … } while (cond)`: the body once, then the test; `continue` goes to the test. */
   protected doLoop(stmt: ts.DoStatement) {
     const label = this.tmp("ts_continue_");
@@ -297,6 +539,16 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
       // A local function is a helper of its own (lifted when the program was analyzed): nothing to run here.
       if (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) {
+        // A closure: remembered with the scopes it can see, and expanded where it is called.
+        if (this.model.closureDecls.has(d)) {
+          this.scopes.at(-1)!.set(d.name.text, {
+            c: "",
+            type: BOOL,
+            mutable: false,
+            closure: { node: d.initializer, name: d.name.text, scopes: [...this.scopes] },
+          });
+          continue;
+        }
         if (!this.model.helperDecls.has(d)) this.fail(d, "declare local functions with const: const f = (…) => …");
         continue;
       }

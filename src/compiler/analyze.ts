@@ -139,7 +139,7 @@ export const MAX_CPI_ALLOCATION = 10 * 1024;
 export interface Analysis {
   model: ProgramModel;
   /** A generic helper's instance for these type arguments (analyzed once, then kept in `model.helpers`). */
-  instantiate(g: GenericHelper, typeArgs: ScalarType[]): Helper;
+  instantiate(g: GenericHelper, typeArgs: ScalarType[], fnArgs?: string[]): Helper;
   /** TypeScript's checker: used for narrowing (which variant a data-enum value is in a branch). */
   checker: ts.TypeChecker;
   sourceFile: ts.SourceFile;
@@ -440,21 +440,34 @@ export function analyze(entry: string): Analysis {
   for (const f of functions) if (f.node.body && f.node.name) collectLocals(f.node.body, f.node.name.text, f.imports, f.node);
   for (const h of [...helperNodes]) if (h.node.body) collectLocals(h.node.body, h.name, h.imports, h.node);
   const localDecls = new Set(locals.map((l) => l.decl));
-  for (const l of locals) reporter.guard(() => checkCaptures(l, localDecls, checker, reporter));
+  // A local function that reads the enclosing function's variables (or calls one that does) is a closure: it is
+  // expanded where it is called, in the enclosing function. The others become helpers of their own.
+  const inline = new Set(locals.filter((l) => captures(l, localDecls, checker)).map((l) => l.decl));
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const l of locals)
+      if (!inline.has(l.decl) && references(l, inline, checker)) {
+        inline.add(l.decl);
+        changed = true;
+      }
+  }
+  const closureDecls = new Map(locals.filter((l) => inline.has(l.decl)).map((l) => [l.decl, l.display] as const));
 
   const helpers = new Map<string, Helper>();
   const generics = new Map<string, GenericHelper>();
   const helperDecls = new Map<ts.Node, string>();
-  for (const fn of [...helperNodes, ...locals]) {
+  for (const fn of [...helperNodes, ...locals.filter((l) => !inline.has(l.decl))]) {
     helperDecls.set(fn.decl, fn.name);
-    if (fn.node.typeParameters?.length) {
+    const fnParams = fn.node.parameters.map((p, i) => (p.type && ts.isFunctionTypeNode(p.type) ? i : -1)).filter((i) => i >= 0);
+    if (fn.node.typeParameters?.length || fnParams.length) {
       reporter.guard(() => {
-        for (const tp of fn.node.typeParameters!) if (tp.default) reporter.fail(tp, "type parameters of helpers take no default");
+        for (const tp of fn.node.typeParameters ?? []) if (tp.default) reporter.fail(tp, "type parameters of helpers take no default");
         generics.set(fn.name, {
           name: fn.name,
           display: fn.display,
           node: fn.node,
-          typeParams: fn.node.typeParameters!.map((t) => t.name.text),
+          typeParams: (fn.node.typeParameters ?? []).map((t) => t.name.text),
+          fnParams,
           imports: fn.imports,
         });
       });
@@ -464,19 +477,23 @@ export function analyze(entry: string): Analysis {
     if (h) helpers.set(h.name, h);
   }
   const instances = new Map<string, Helper>();
-  const instantiate = (g: GenericHelper, typeArgs: ScalarType[]): Helper => {
-    const key = `${g.name}__${typeArgs.map(scalarKey).join("_")}`;
+  const instantiate = (g: GenericHelper, typeArgs: ScalarType[], fnArgs: string[] = []): Helper => {
+    const key = [g.name, ...typeArgs.map(scalarKey), ...fnArgs.map((f) => `fn_${f}`)].join("__");
     const done = instances.get(key);
     if (done) return done;
     const bound = new Map(g.typeParams.map((n, i) => [n, typeArgs[i]] as const));
-    const display = `${g.display}<${typeArgs.map(typeName).join(", ")}>`;
-    const h = analyzeHelper(g.node, key, display, reporter, { ...scopeFor(g.imports), typeArgs: bound }, structs);
+    const display = `${g.display}<${[...typeArgs.map(typeName), ...fnArgs].join(", ")}>`;
+    const h = analyzeHelper(g.node, key, display, reporter, { ...scopeFor(g.imports), typeArgs: bound }, structs, new Set(g.fnParams));
     h.typeArgs = bound;
+    if (g.fnParams.length) {
+      h.fnArgs = new Map(g.fnParams.map((i, k) => [(g.node.parameters[i]!.name as ts.Identifier).text, fnArgs[k]!] as const));
+      h.fnArgIndexes = g.fnParams;
+    }
     instances.set(key, h);
     helpers.set(key, h);
     return h;
   };
-  reporter.guard(() => checkRecursion([...helperNodes, ...locals], helperDecls, checker, reporter));
+  reporter.guard(() => checkRecursion([...helperNodes, ...locals.filter((l) => !inline.has(l.decl))], helperDecls, checker, reporter));
 
   const accountStructs = new Set<string>();
   const argStructs = new Set<string>();
@@ -549,6 +566,7 @@ export function analyze(entry: string): Analysis {
       helpers,
       generics,
       helperDecls,
+      closureDecls,
       errors,
       errorEnums,
       enums,
@@ -953,28 +971,36 @@ interface HelperSource {
 
 const isFunctionNode = (n: ts.Node) => ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isMethodDeclaration(n);
 
-/**
- * A local function becomes a helper of its own, so it can only use its parameters, its own locals, top-level names and
- * other local functions: reading a variable of the enclosing function (a closure) is refused.
- */
-function checkCaptures(l: HelperSource, localDecls: Set<ts.Node>, checker: ts.TypeChecker, reporter: Reporter) {
+/** Whether a local function reads a variable or parameter of a function around it (a closure). */
+function captures(l: HelperSource, localDecls: Set<ts.Node>, checker: ts.TypeChecker): boolean {
   const fn = l.node;
+  let found = false;
   const visit = (n: ts.Node): void => {
+    if (found) return;
     if (ts.isIdentifier(n)) {
       const sym = ts.isShorthandPropertyAssignment(n.parent) ? checker.getShorthandAssignmentValueSymbol(n.parent) : checker.getSymbolAtLocation(n);
       for (const d of sym?.declarations ?? []) {
         if (!(ts.isVariableDeclaration(d) || ts.isParameter(d) || ts.isBindingElement(d)) || localDecls.has(d)) continue;
         if (d.getSourceFile() !== fn.getSourceFile() || (d.pos >= fn.pos && d.end <= fn.end)) continue;
-        // Declared in some function around this one: a captured variable.
-        for (let p: ts.Node | undefined = d.parent; p; p = p.parent)
-          if (isFunctionNode(p)) {
-            reporter.fail(n, `${l.display} reads "${n.text}" of the function around it; pass it as a parameter (local functions capture nothing)`);
-          }
+        for (let p: ts.Node | undefined = d.parent; p; p = p.parent) if (isFunctionNode(p)) found = true;
       }
     }
     ts.forEachChild(n, visit);
   };
   if (fn.body) visit(fn.body);
+  return found;
+}
+
+/** Whether a function's body names one of `decls` (a closure it calls). */
+function references(l: HelperSource, decls: Set<ts.Node>, checker: ts.TypeChecker): boolean {
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(n)) for (const d of checker.getSymbolAtLocation(n)?.declarations ?? []) if (decls.has(d)) found = true;
+    ts.forEachChild(n, visit);
+  };
+  if (l.node.body) visit(l.node.body);
+  return found;
 }
 
 /**
@@ -1006,7 +1032,15 @@ function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, reporte
         reporter.error(s.node.name, `${s.name} is @layout borsh, so it is account data only; ${other.name}.${f.name} cannot hold one`);
     }
 }
-function analyzeHelper(fn: HelperNode, name: string, display: string, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Helper {
+function analyzeHelper(
+  fn: HelperNode,
+  name: string,
+  display: string,
+  reporter: Reporter,
+  scope: TypeScope,
+  structs: Map<string, StructDef>,
+  skip: Set<number> = new Set(),
+): Helper {
   if (!fn.body) reporter.fail(fn, "helper functions need a body");
   if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
   if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async");
@@ -1019,23 +1053,25 @@ function analyzeHelper(fn: HelperNode, name: string, display: string, reporter: 
     if (!s) reporter.fail(fn.type, "helpers return void, an integer, boolean, Pubkey, a struct or a type parameter");
     returns = { kind: "struct", name: s.name };
   }
-  const params = fn.parameters.map((p) => {
-    if (!ts.isIdentifier(p.name) || !p.type || p.initializer || p.questionToken || p.dotDotDotToken)
-      reporter.fail(p, "parameters need a plain name and an explicit type");
-    // `p_<name>__n` carries a SignerSeeds count: "__" in a name could collide with it.
-    if (p.name.text.includes("__") || p.name.text.includes("$")) reporter.error(p.name, `"${p.name.text}": "__" and "$" are reserved in names`);
-    const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
-    if (type) return { name: p.name.text, type, node: p };
-    if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
-    // Accounts the caller already checked: Signer, AccountInfo, Account<T>/Mut<T>, token accounts, programs.
-    const wrapped = typesolName(p.type, scope.imports);
-    if (wrapped === "HasOne" || wrapped === "Seeds" || wrapped === "CloseTo" || wrapped === "Address" || wrapped === "Ata")
-      reporter.fail(p.type, "constraints belong on instruction parameters; helpers take the plain account type");
-    const account = resolveAccountKind(p.type, reporter, scope.imports, structs);
-    if (account.kind === "init" || account.kind === "initIfNeeded" || account.kind === "zeroed")
-      reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
-    return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
-  });
+  const params = fn.parameters
+    .filter((_, i) => !skip.has(i))
+    .map((p) => {
+      if (!ts.isIdentifier(p.name) || !p.type || p.initializer || p.questionToken || p.dotDotDotToken)
+        reporter.fail(p, "parameters need a plain name and an explicit type");
+      // `p_<name>__n` carries a SignerSeeds count: "__" in a name could collide with it.
+      if (p.name.text.includes("__") || p.name.text.includes("$")) reporter.error(p.name, `"${p.name.text}": "__" and "$" are reserved in names`);
+      const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
+      if (type) return { name: p.name.text, type, node: p };
+      if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
+      // Accounts the caller already checked: Signer, AccountInfo, Account<T>/Mut<T>, token accounts, programs.
+      const wrapped = typesolName(p.type, scope.imports);
+      if (wrapped === "HasOne" || wrapped === "Seeds" || wrapped === "CloseTo" || wrapped === "Address" || wrapped === "Ata")
+        reporter.fail(p.type, "constraints belong on instruction parameters; helpers take the plain account type");
+      const account = resolveAccountKind(p.type, reporter, scope.imports, structs);
+      if (account.kind === "init" || account.kind === "initIfNeeded" || account.kind === "zeroed")
+        reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
+      return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
+    });
   return { name, display, params, returns, node: fn, statements: bodyStatements(fn, !returns), imports: scope.imports };
 }
 

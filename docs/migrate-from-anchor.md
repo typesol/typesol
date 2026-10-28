@@ -99,6 +99,8 @@ matches byte for byte.
 | `invoke_signed(&ix, &accounts, &[seeds])` | `invoke(program, [writable(a), readonly(b)], [data…], seeds)` |
 | `declare_program!(other)` / CPI to another Anchor program | `typesol cpi other.json` generates typed helpers |
 | `for x in v.iter()` | `for (const x of v)` |
+| `v.iter().any(\|x\| …)`, `.all`, `.position`, `.find`, `.fold(init, …)`, `.contains(&x)` | `v.some((x) => …)`, `every`, `findIndex`, `find`, `reduce((acc, x) => …, init)`, `includes(x)` |
+| a closure `\|x\| x + offset` | `const f = (x: u64): u64 => x + offset` (it may read and write the function's variables) |
 | `x.unwrap_or(d)` | `x ?? d` |
 | `fn max<T: PartialOrd>(a: T, b: T) -> T` | `function max<T extends bigint>(a: T, b: T): T` (one copy per type used) |
 | `let fee = \|x: u64\| x / 100;` (no captures) | `const fee = (x: u64): u64 => x / 100n;` |

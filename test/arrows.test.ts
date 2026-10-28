@@ -58,8 +58,9 @@ describe("arrow functions and generic helpers", () => {
         throw e;
       }
     };
-    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n); }`)).toMatch(/reads "x" of the function around it/);
-    expect(errors(`export function f(x: u64): u64 { let k = 1n; const g = (): u64 => k; return g(); }`)).toMatch(/reads "k"/);
+    // Closures compile now (test/closures.test.ts runs them).
+    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n); }`)).toBe("");
+    expect(errors(`export function f(x: u64): u64 { let k = 1n; const g = (): u64 => k; return g(); }`)).toBe("");
     expect(errors(`export function f(x: u64): u64 { let g = (v: u64): u64 => v; return g(x); }`)).toMatch(/declare local functions with const/);
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64) => v; return g(x); }`)).toMatch(/explicit return type/);
     expect(errors(`export const f = (x: u64): u64 => x;`)).toMatch(/instructions are function declarations/);

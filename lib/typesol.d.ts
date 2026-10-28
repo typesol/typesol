@@ -31,7 +31,28 @@ export interface Pubkey {
  * A fixed-length array stored inline in account data, e.g. `scores: FixedArray<u64, 8>`.
  * Indexes are bounds-checked; out of range aborts the instruction.
  */
-export interface FixedArray<T, N extends number> {
+/**
+ * Callback methods of Vec, FixedArray and FixedVec. Each expands into a loop over the elements (as `list.get(i)` gives
+ * them: structs by reference) with the arrow written at the call; it may read and write the function's variables.
+ */
+export interface ListMethods<T> {
+  forEach(fn: (x: T, index: u64) => void): void;
+  /** Whether `fn` holds for some element (stops at the first). */
+  some(fn: (x: T, index: u64) => boolean): boolean;
+  /** Whether `fn` holds for every element (stops at the first that fails). */
+  every(fn: (x: T, index: u64) => boolean): boolean;
+  /** The first element `fn` holds for, or null (integer, boolean, Pubkey and enum elements). */
+  find(fn: (x: T, index: u64) => boolean): T | null;
+  /** The index of the first element `fn` holds for, or -1. */
+  findIndex(fn: (x: T, index: u64) => boolean): i64;
+  reduce<A>(fn: (acc: A, x: T, index: u64) => A, initial: A): A;
+  /** Whether an element equals `value` (===). */
+  includes(value: T): boolean;
+  /** The index of the first element equal to `value`, or -1. */
+  indexOf(value: T): i64;
+}
+
+export interface FixedArray<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
@@ -63,7 +84,7 @@ export type Option<T> = T | null;
  * A growable list. As the last field of an account struct it is stored Borsh-style (u32 length + elements)
  * and the account is resized as it grows. As an instruction argument it is a read-only view.
  */
-export interface Vec<T> {
+export interface Vec<T> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
@@ -82,7 +103,7 @@ export interface Vec<T> {
  * always 4 + N × size(T) bytes). Unlike `Vec<T>` it can be any field, any number of times, and in nested structs;
  * `push` fails (5104) when it is full. Write a whole one with `fixedVec([a, b])`.
  */
-export interface FixedVec<T, N extends number> {
+export interface FixedVec<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
