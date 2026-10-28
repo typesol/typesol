@@ -19,7 +19,11 @@ const [book] = await ledgerbook.pdas.book({ admin: signer.address, title: "grant
 const file = await ledgerbook.file({ who: signer, book }, { amount: 100n, note: "rent", memo: null });
 
 // Accounts: decode bytes you already have, or fetch through an RPC.
-const b = await ledgerbook.accounts.Book.fetch(rpc, book); // { title: string, approver: Address | null, entries: [...], ... }
+const bookData = await ledgerbook.accounts.Book.fetch(rpc, book); // { title: string, approver: Address | null, entries: [...], ... }
+
+// Send and confirm (one transaction, signers in the accounts sign too), or simulate
+const signature = await ledgerbook.sendInstructions({ rpc, rpcSubscriptions }, signer, [create, file]);
+const { err, logs, unitsConsumed, returnData } = await ledgerbook.simulate(rpc, signer, [file]);
 
 // Errors: by name, from a kit SolanaError, a LiteSVM result, a simulation message or a code.
 if (ledgerbook.isError(e, "NotApprover")) { /* ... */ }
@@ -32,13 +36,9 @@ for (const ev of ledgerbook.parseEvents(logs)) if (ev.name === "Filed") ev.data.
 ledgerbook.returns.total(returnDataBytes); // bigint
 await ledgerbook.views.total(rpc, signer, { book }, { status: Status.Approved }); // bigint, nothing sent
 
-// Send and confirm (one transaction, signers in the accounts sign too), or simulate
-const signature = await ledgerbook.sendInstructions({ rpc, rpcSubscriptions }, signer, [create, file]);
-const { err, logs, unitsConsumed, returnData } = await ledgerbook.simulate(rpc, signer, [file]);
-
 // Every Book of the program, or those with given bytes at an offset (after the 8-byte discriminator)
 const books = await ledgerbook.accounts.Book.fetchAll(rpc); // [{ address, data }]
-const several = await ledgerbook.accounts.Book.fetchMultiple(rpc, [a, b]); // (Book | null)[]
+const several = await ledgerbook.accounts.Book.fetchMultiple(rpc, [book, otherBook]); // (Book | null)[]
 
 // Live updates, until the AbortSignal aborts
 for await (const book of ledgerbook.accounts.Book.watch(rpcSubscriptions, address, { abortSignal })) render(book);
@@ -51,7 +51,7 @@ await ledgerbook.approveMany({ approver: signer, book }, { indices: [0n, 1n] }, 
 const accounts = await ledgerbook.resolve.someInstruction(rpc, { book }, { signer }); // signers, and what book's fields name
 
 // Events of a fetched transaction (getTransaction, json): log events and emitCpi events from inner instructions
-ledgerbook.eventsOf(await rpc.getTransaction(signature, { maxSupportedTransactionVersion: 0 }).send());
+ledgerbook.eventsOf(await rpc.getTransaction(signature, { encoding: "json", maxSupportedTransactionVersion: 0 }).send());
 ```
 
 Signer accounts take a `TransactionSigner`, which kit uses to sign; an `Address` works too when you sign separately.

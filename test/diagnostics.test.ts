@@ -130,7 +130,7 @@ describe("subset enforcement", () => {
     [
       "Vecs nested in other structs",
       `export interface Inner { xs: Vec<u64>; }\nexport interface S { inner: Inner; }\nexport function f(s: Mut<S>): void {}`,
-      /can only be account data|ends in a Vec/,
+      /can only be account data|has a growable Vec/,
     ],
     ["value enums with gaps", `export enum E { A = 0, B = 5 }\nexport function f(): void {}`, /numbered 0, 1, 2/],
     ["null where no Option is expected", `export function f(b: Mut<Box>): void { b.value = null as never; }`, /not supported|null is only valid|`as` names/],

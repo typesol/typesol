@@ -23,6 +23,9 @@ it("counts", async () => {
 
 ## Instructions
 
+`t.pda(...seeds)` derives this program's PDA for the seeds; `t.pdaWithBump(...seeds)` gives `[address, bump]`, for an
+instruction that takes the bump as an argument.
+
 `t.ix(name, args, accounts, remaining?)` builds one instruction.
 
 - **Accounts by name**, in camelCase or snake_case. Their signer and writable flags come from the IDL, and accounts
@@ -31,7 +34,8 @@ it("counts", async () => {
   signs, an address otherwise, and `null` to leave an optional account out.
 - **Arguments as plain values:** bigints or numbers for integers, address strings for Pubkeys, `null` for an empty
   Option, objects for structs (camelCase or snake_case fields), arrays for Vecs.
-- **Remaining accounts:** `[{ address, writable?, signer? }]`.
+- **Remaining accounts:** `[{ address, writable?, signer? }]`, where `signer` is the account's `KeyPairSigner` (it then
+  signs as a signer account; `writable` defaults to false).
 
 `t.send(payer, ...ixs)` sends them in one transaction; keypairs given as accounts sign too.
 

@@ -65,21 +65,22 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `u8` … `u128`, `i8` … `i128`, `bool`, `Pubkey` | `u8` … `u128`, `i8` … `i128`, `boolean`, `Pubkey` |
 | `[T; N]` | `FixedArray<T, N>` |
 | `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and N bytes, always N bytes long |
-| `Vec<T>` with `#[max_len(n)]` | `Vec<T>` as the account's last field (it grows with `push(v, payer)`), or `FixedVec<T, n>` anywhere: a u32 length and room for n, always 4 + n × size bytes |
+| `Vec<T>` with `#[max_len(n)]` | `Vec<T>` (any number, declared anywhere, stored after the fixed-size fields; it grows with `push(v, payer)`), or `FixedVec<T, n>`: a u32 length and room for n, always 4 + n × size bytes |
 | `Option<T>` | `Option<T>`: fixed size (1 + size of T) |
 | `#[derive(AnchorSerialize…)] enum` | `export enum` (unit variants) or a data enum `type A = { kind: "X"; … } \| …` |
 
 TypeSOL keeps account data at a fixed layout by default, so three Anchor layouts differ: a Borsh `String` is
 variable-length (TypeSOL uses `FixedString<N>`), a Borsh `Option` takes 1 byte when empty (TypeSOL always reserves the
-value), and a `Vec` can be anywhere in an Anchor struct (TypeSOL keeps a growable one last; a `FixedVec<T, N>` elsewhere
-always takes its full capacity, where Anchor packs the elements and moves the fields after them).
+value), and an Anchor `Vec` stays where it is declared (TypeSOL stores growable Vecs after the fixed-size fields; a
+`FixedVec<T, N>` keeps its place but always takes its full capacity, where Anchor packs the elements and moves the
+fields after them).
 
 To keep an Anchor program's existing accounts, mark the struct `/** @layout borsh */`: it is then stored exactly as
 Anchor stores it (`FixedString<N>` / `FixedVec<T, N>` / `Option<T>` become Borsh String / Vec / Option, N being the
 `#[max_len]`), its IDL type is Anchor's, and the upgraded program reads and writes the accounts in place. `typesol port`
 adds it for you. It costs some compute (the account is unpacked and packed in every instruction that uses it) but stays
-several times cheaper than Anchor. Accounts using them need a migration (or a new program) rather
-than an in-place upgrade, unless they use `@layout borsh`. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
+several times cheaper than Anchor. Without it, accounts that use these types need a migration (or a new program) rather
+than an in-place upgrade. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
 matches byte for byte. A `@layout borsh` struct passed as a whole argument, returned or emitted is Borsh too, so an
 Anchor instruction that takes or returns a struct with `String` / `Vec` / `Option` fields keeps its client bytes.
 
@@ -91,9 +92,8 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `-> Result<u64>` / a struct | `: u64` / a struct: sent as return data, listed in the IDL |
 | `#[error_code] enum MyError { #[msg("…")] X }` | `export enum MyError { X = "…" }` (codes from 6000, in order) |
 | `require!(c, MyError::X)`, `err!(MyError::X)` | `require(c, MyError.X)`, `require(false, MyError.X)` |
-| `require_keys_eq!(a, b)`, `err!(ErrorCode::AccountDidNotDeserialize)` (Anchor's own codes) | `require(a === b, AnchorError.RequireKeysEqViolated)`, `require(false, AnchorError.AccountDidNotDeserialize)` |
+| `require_keys_eq!(a, b)`, `err!(ErrorCode::AccountDidNotDeserialize)` (Anchor's own codes) | `require(a === b, AnchorError.RequireKeysEqViolated)` (or your own error), `require(false, AnchorError.AccountDidNotDeserialize)` |
 | `init_if_needed` + `extensions::…` on a mint | `mint.createIfNeeded(…, { metadataPointer: {…}, … })`: an existing mint is checked as Anchor checks it (2024–2039) |
-| `require_keys_eq!(a, b)` | `require(a === b, …)` |
 | `a.checked_add(b).ok_or(…)?` | `a + b` (every operation is checked; overflow aborts with 5100) |
 | `emit!(Ev { … })` / `emit_cpi!` | `emit<Ev>({ … })` / `emitCpi<Ev>({ … }, eventAuthority, self)` |
 | `msg!("…")` | `log("…")` |
@@ -105,10 +105,9 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `declare_program!(other)` / CPI to another Anchor program | `typesol cpi other.json` generates typed helpers |
 | `for x in v.iter()` | `for (const x of v)` |
 | `v.iter().any(\|x\| …)`, `.all`, `.position`, `.find`, `.fold(init, …)`, `.contains(&x)` | `v.some((x) => …)`, `every`, `findIndex`, `find`, `reduce((acc, x) => …, init)`, `includes(x)` |
-| a closure `\|x\| x + offset` | `const f = (x: u64): u64 => x + offset` (it may read and write the function's variables) |
+| a closure `\|x\| x + offset`, `let fee = \|x: u64\| x / 100;` | `const f = (x: u64): u64 => x + offset` (it may read and write the function's variables), `const fee = (x: u64): u64 => x / 100n;` |
 | `x.unwrap_or(d)` | `x ?? d` |
 | `fn max<T: PartialOrd>(a: T, b: T) -> T` | `function max<T extends bigint>(a: T, b: T): T` (one copy per type used) |
-| `let fee = \|x: u64\| x / 100;` (no captures) | `const fee = (x: u64): u64 => x / 100n;` |
 
 ## Tooling
 

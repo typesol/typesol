@@ -203,7 +203,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const struct = k.kind === "account" || k.kind === "init" || k.kind === "initIfNeeded" || k.kind === "zeroed" ? k.struct : undefined;
         // Only struct accounts: their owner and type are checked, and they never shrink below the struct.
         if (!isWritable(acct.kind) || !struct) this.fail(args[0], "realloc needs a Mut<Struct> account of this program");
-        if (struct?.vec) this.fail(args[0], `${struct.name} ends in a Vec, which sizes the account itself (push/pop/clear)`);
+        if (struct?.vec) this.fail(args[0], `${struct.name} has a growable Vec, which sizes the account itself (push/pop/clear)`);
         const size = this.expect(this.expr(args[1], U64), U64, args[1]);
         const payer = this.accountParam(args[2], "the payer");
         if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(args[2], "the payer must be a Mut<Signer>");

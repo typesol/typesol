@@ -60,10 +60,6 @@ Status:
 | `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PORTED | |
 | `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PORTED | |
 
-"Hand-encoded" means the port builds the instruction with `invoke` because TypeSOL has no builtin for it, or because
-the typed builtin needs a `Mint` or `TokenAccount` that is created in the same instruction without a TypeSOL wrapper
-for it (associated token accounts have one: `Ata<Init<TokenAccount>, …>` / `Ata<InitIfNeeded<TokenAccount>, …>`).
-
 Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` and
 `test/ports-compression.test.ts` (skipped without `pnpm fetch:programs`), `test/ports-token2022-ext.test.ts`, `test/ports-hooks.test.ts`, `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`.
 

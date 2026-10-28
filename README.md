@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/typesol/typesol/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/typesol/typesol/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-3178C6"></a>
-  <a href="CHANGELOG.md"><img alt="Version 0.10.0 release candidate" src="https://img.shields.io/badge/version-0.10.0--rc-9945FF"></a>
+  <a href="https://www.npmjs.com/package/@typesol/cli"><img alt="npm version" src="https://img.shields.io/npm/v/@typesol/cli"></a>
   <img alt="Target: Solana SBF" src="https://img.shields.io/badge/target-Solana%20SBF-14F195">
 </p>
 
@@ -31,9 +31,9 @@ clients read TypeSOL programs unchanged.
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.
-- **Small and fast.** On the same programs, TypeSOL uses 5–46% of Anchor's compute units, with binaries about 10×
-  smaller. It also uses fewer compute units than native Rust and than hand-tuned Pinocchio on every benchmarked
-  instruction.
+- **Small and fast.** In the LiteSVM benchmarks below, TypeSOL uses 5–32% of Anchor's compute units, with binaries
+  about 10× smaller, and fewer compute units than native Rust and hand-tuned Pinocchio on every instruction. On
+  mainnet the results differ by instruction; see [the mainnet table](#on-mainnet).
 - **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` reads a deployed program
   from the cluster and checks it, and the IDL published on chain, against its source.
 
@@ -175,14 +175,14 @@ counter.ts ─▶ tsc typecheck ─▶ subset check ─▶ C + typesol_rt.h ─�
 
 1. **Typecheck.** The TypeScript compiler checks your code against [`lib/typesol.d.ts`](lib/typesol.d.ts), which
    declares every TypeSOL type and built-in.
-2. **Subset check.** TypeSOL rejects anything outside the language (floats, closures, classes, `any`, foreign imports)
+2. **Subset check.** TypeSOL rejects anything outside the language (floats, classes, `any`, foreign imports)
    with a `file:line:col` diagnostic. Nothing is half-supported.
 3. **Lower.** Instruction bodies become C. Account validation, checked arithmetic, Borsh encoding and CPI plumbing
    come from [`runtime/typesol_rt.h`](runtime/typesol_rt.h).
 4. **Build.** The Agave platform-tools `clang` and `ld.lld` produce the `.so` (SBPF v0 by default; v1 and v2 with
    `--sbpf`).
 
-Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts:21)`, or
+Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts:25)`, or
 `TypeSOL: arithmetic overflow (vault.ts:42)`.
 
 ## What you can write
@@ -225,7 +225,8 @@ import { build } from "typesol/compiler";
 const { soPath, idl } = build("programs/counter.ts", "target/counter", programAddress);
 ```
 
-Subpath exports: `typesol/compiler`, `typesol/workspace`, `typesol/cpi`, `typesol/idl`, `typesol/profile`.
+Subpath exports: `typesol/compiler`, `typesol/workspace`, `typesol/cpi`, `typesol/client`, `typesol/idl`,
+`typesol/profile`, `typesol/testing`, `typesol/ts-plugin`.
 
 ## Numbers
 
