@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.24.1 — 2026-10-28
+
+Smaller programs and fewer compute units, with the same results; no change to the language, IDLs or error codes. Also
+new contributor docs (repository layout, a guide to the C runtime). Not externally audited (see SECURITY.md).
+
 ### Performance
 - Smaller programs, same results: the rent calculation no longer links soft-float (an exact integer equivalent,
   checked against IEEE doubles), and every failure logs through one shared call. The benchmarked programs are 11.6%
