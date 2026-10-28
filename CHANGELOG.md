@@ -5,19 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
-### Added
-- Clients generated from Anchor IDLs read and write zero-copy (`bytemuck`, `AccountLoader`) accounts at their
-  `#[repr(C)]` offsets on SBF (padding, `packed` and `align` included), checked byte for byte against an Anchor
-  program, and turn generic types into one concrete type per use (`Pair<u64, 2>` → `PairU64N2`).
-- PDAs seeded from fields of a struct argument (`seeds = [params.id]`) are derived by the instruction builder.
-- `typesol/testing`: `svmConnection(svm)` (and `t.connection`), a kit RPC and subscriptions pair answered by LiteSVM,
-  so a generated client sends, fetches, simulates, resolves and watches in tests as it does against a cluster.
-
 ## 0.22.0 — 2026-10-28
 
-Generated clients fill in the accounts Anchor's client still asked you to pass: signers from a default signer, PDAs
-seeded from string and byte fields, PDAs under a program given as an argument, and a helper for PDAs seeded from their
-own fields. Programs and their bytes are unchanged. Not externally audited (see SECURITY.md).
+Generated clients fill in the accounts Anchor's client still asked you to pass (signers from a default signer, PDAs
+seeded from string, byte and argument fields, PDAs under a program given as an argument, a helper for PDAs seeded from
+their own fields), read Anchor zero-copy accounts and generic types, and run in tests over LiteSVM. Programs and their
+bytes are unchanged. Not externally audited (see SECURITY.md).
 
 ### Added
 - Generated clients fill in the accounts Anchor's client still asks for:
@@ -27,6 +20,12 @@ own fields. Programs and their bytes are unchanged. Not externally audited (see 
     already were.
   - A PDA seeded from its own fields gets a `pdas.<name>({ field values })` helper (its address is needed to read it).
   - A PDA whose program is a `Pubkey` argument is derived by the instruction builder.
+- Clients generated from Anchor IDLs read and write zero-copy (`bytemuck`, `AccountLoader`) accounts at their
+  `#[repr(C)]` offsets on SBF (padding, `packed` and `align` included), checked byte for byte against an Anchor
+  program, and turn generic types into one concrete type per use (`Pair<u64, 2>` → `PairU64N2`).
+- PDAs seeded from fields of a struct argument (`seeds = [params.id]`) are derived by the instruction builder.
+- `typesol/testing`: `svmConnection(svm)` (and `t.connection`), a kit RPC and subscriptions pair answered by LiteSVM,
+  so a generated client sends, fetches, simulates, resolves and watches in tests as it does against a cluster.
 
 ## 0.21.0 — 2026-10-28
 
