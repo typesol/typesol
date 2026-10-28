@@ -89,11 +89,14 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
 
 - **Errors and events are matched by code and discriminator, not by program.** A program this one calls can raise the
   same error code, and `parseEvents` reads every `Program data:` line that decodes as one of this program's events.
-- **Not filled in automatically** (pass them): PDAs seeded from fields inside an argument or from struct fields
-  (Anchor cannot seed with them either), PDAs whose program is another account's field, and a PDA seeded from its own
-  fields (derive it with its `pdas` helper from the values). `typesol client` prints a note for each.
-- **Left out of a client generated from an Anchor IDL**, with a note: generic types and anything using them, and
-  zero-copy (`bytemuck`) accounts.
-- **Not done yet**: a LiteSVM loader for tests (use `svm.addProgramFromFile(ledgerbook.address, soPath)`, or
-  `typesol/testing`). `watchEvents` reads log events; with `rpc` it also fetches each transaction in which the program
-  invoked itself and reads its `emitCpi` events (log subscriptions do not carry inner instructions).
+- **Not filled in automatically** (pass them): PDAs seeded from struct fields (Anchor cannot seed with them either),
+  PDAs whose program is another account's field, and a PDA seeded from its own fields (derive it with its `pdas`
+  helper from the values). `typesol client` prints a note for each.
+- **Anchor IDLs**: zero-copy (`bytemuck`) accounts decode and encode at their `#[repr(C)]` offsets as the program sees
+  them on SBF (padding included; `packed` and `align` honored; 128-bit integers align to 8). Generic types become one
+  type per use with concrete arguments (`Pair<u64, 2>` is `PairU64N2`). Left out, with a note: zero-copy types with
+  Rust's own layout (`repr(Rust)`) or holding a non-zero-copy type, and the generic definitions themselves.
+- **In tests**: `svmConnection(svm)` from `typesol/testing` answers the client's RPC calls from LiteSVM, and
+  `testProgram(...)` has it as `t.connection` ([test-your-program.md](test-your-program.md)).
+- `watchEvents` reads log events; with `rpc` it also fetches each transaction in which the program invoked itself and
+  reads its `emitCpi` events (log subscriptions do not carry inner instructions).

@@ -416,7 +416,8 @@ describe("generated client: untrusted and unusual IDLs", () => {
       }),
     ).notes;
     expect(notes.join("\n")).toMatch(/Wrap is generic/);
-    expect(notes.join("\n")).toMatch(/bytemuck/);
+    // A zero-copy (bytemuck) struct is generated now, at its #[repr(C)] layout.
+    expect(notes.join("\n")).not.toMatch(/Zero/);
   });
 
   it("leaves optional accounts out with null, fills them in when omitted, and seeds PDAs with raw bytes arguments", async () => {
@@ -559,6 +560,83 @@ describe("generated client: untrusted and unusual IDLs", () => {
     // Seeded from its own fields: derived from the values, by a pdas helper.
     const [own] = await kit.getProgramDerivedAddress({ programAddress: PROGRAM, seeds: [new Uint8Array([112]), new TextEncoder().encode("héy")] });
     expect((await c.probe.pdas.profile({ label: "héy" }))[0]).toBe(own);
+  });
+
+  it("lays out packed and aligned zero-copy structs, and seeds PDAs with fields of struct arguments", async () => {
+    const c = await importClient(
+      "zerocopy",
+      generateClient(
+        idl({
+          types: [
+            {
+              name: "Packed",
+              serialization: "bytemuck",
+              repr: { kind: "c", packed: true },
+              type: {
+                kind: "struct",
+                fields: [
+                  { name: "a", type: "u8" },
+                  { name: "b", type: "u64" },
+                ],
+              },
+            },
+            {
+              name: "Aligned",
+              serialization: "bytemuck",
+              repr: { kind: "c", align: 16 },
+              type: {
+                kind: "struct",
+                fields: [
+                  { name: "a", type: "u8" },
+                  { name: "b", type: "u32" },
+                ],
+              },
+            },
+            { name: "Rusty", serialization: "bytemuck", repr: { kind: "rust" }, type: { kind: "struct", fields: [{ name: "a", type: "u8" }] } },
+            {
+              name: "Params",
+              type: {
+                kind: "struct",
+                fields: [
+                  { name: "id", type: "u64" },
+                  { name: "tag", type: "string" },
+                ],
+              },
+            },
+          ],
+          instructions: [
+            {
+              name: "go",
+              discriminator: [4],
+              accounts: [
+                {
+                  name: "slot",
+                  pda: {
+                    seeds: [
+                      { kind: "arg", path: "params.id" },
+                      { kind: "arg", path: "params.tag" },
+                    ],
+                  },
+                },
+              ],
+              args: [{ name: "params", type: { defined: { name: "Params" } } }],
+            },
+          ],
+        }),
+      ).source,
+    );
+    expect([...c.getPackedCodec().encode({ a: 1, b: 2n })]).toEqual([1, 2, 0, 0, 0, 0, 0, 0, 0]);
+    expect([...c.getAlignedCodec().encode({ a: 1, b: 2 })]).toEqual([1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(c.getRustyCodec).toBeUndefined();
+    const params = { id: 5n, tag: "x" };
+    const [slot] = await (
+      await import("@solana/kit")
+    ).getProgramDerivedAddress({
+      programAddress: "11111111111111111111111111111112" as Address,
+      seeds: [new Uint8Array([5, 0, 0, 0, 0, 0, 0, 0]), new TextEncoder().encode("x")],
+    });
+    expect((await c.probe.go({}, { params })).accounts[0].address).toBe(slot);
+    expect((await c.probe.pdas.slot({ params }))[0]).toBe(slot);
   });
 
   it("reads custom codes from kit errors, nested causes and messages", async () => {

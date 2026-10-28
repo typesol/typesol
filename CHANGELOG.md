@@ -5,6 +5,14 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- Clients generated from Anchor IDLs read and write zero-copy (`bytemuck`, `AccountLoader`) accounts at their
+  `#[repr(C)]` offsets on SBF (padding, `packed` and `align` included), checked byte for byte against an Anchor
+  program, and turn generic types into one concrete type per use (`Pair<u64, 2>` → `PairU64N2`).
+- PDAs seeded from fields of a struct argument (`seeds = [params.id]`) are derived by the instruction builder.
+- `typesol/testing`: `svmConnection(svm)` (and `t.connection`), a kit RPC and subscriptions pair answered by LiteSVM,
+  so a generated client sends, fetches, simulates, resolves and watches in tests as it does against a cluster.
+
 ## 0.22.0 — 2026-10-28
 
 Generated clients fill in the accounts Anchor's client still asked you to pass: signers from a default signer, PDAs

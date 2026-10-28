@@ -1,0 +1,353 @@
+{
+  "address": "9si6eTzti7y7PNmSgLGTLVMfH2bj23xtLcemsmYuKrvN",
+  "metadata": {
+    "name": "anchor_zerocopy",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "create",
+      "discriminator": [
+        24,
+        30,
+        200,
+        40,
+        5,
+        28,
+        7,
+        119
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "board",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  97,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "pairs",
+      "docs": [
+        "Generic argument types: the client instantiates Pair<u64, 2> and Wrap<Pair<u64, 2>>."
+      ],
+      "discriminator": [
+        234,
+        153,
+        124,
+        136,
+        38,
+        112,
+        69,
+        173
+      ],
+      "accounts": [],
+      "args": [
+        {
+          "name": "p",
+          "type": {
+            "defined": {
+              "name": "Pair",
+              "generics": [
+                {
+                  "kind": "type",
+                  "type": "u64"
+                },
+                {
+                  "kind": "const",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "w",
+          "type": {
+            "defined": {
+              "name": "Wrap",
+              "generics": [
+                {
+                  "kind": "type",
+                  "type": {
+                    "defined": {
+                      "name": "Pair",
+                      "generics": [
+                        {
+                          "kind": "type",
+                          "type": "u64"
+                        },
+                        {
+                          "kind": "const",
+                          "value": "2"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "q",
+          "type": {
+            "defined": {
+              "name": "Pair",
+              "generics": [
+                {
+                  "kind": "type",
+                  "type": "u8"
+                },
+                {
+                  "kind": "const",
+                  "value": "3"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "returns": "u64"
+    },
+    {
+      "name": "set",
+      "docs": [
+        "Writes every field from the arguments, so the client can check each offset."
+      ],
+      "discriminator": [
+        198,
+        51,
+        53,
+        241,
+        116,
+        29,
+        126,
+        194
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "board"
+          ]
+        },
+        {
+          "name": "board",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "flag",
+          "type": "u8"
+        },
+        {
+          "name": "big",
+          "type": "u128"
+        },
+        {
+          "name": "small",
+          "type": "u16"
+        },
+        {
+          "name": "cells",
+          "type": {
+            "array": [
+              "u16",
+              3
+            ]
+          }
+        },
+        {
+          "name": "x",
+          "type": "u32"
+        },
+        {
+          "name": "y",
+          "type": "u8"
+        },
+        {
+          "name": "last",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Board",
+      "discriminator": [
+        79,
+        48,
+        160,
+        63,
+        153,
+        132,
+        240,
+        56
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "Board",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "flag",
+            "type": "u8"
+          },
+          {
+            "name": "big",
+            "type": "u128"
+          },
+          {
+            "name": "small",
+            "type": "u16"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "cells",
+            "type": {
+              "array": [
+                "u16",
+                3
+              ]
+            }
+          },
+          {
+            "name": "inner",
+            "type": {
+              "defined": {
+                "name": "Inner"
+              }
+            }
+          },
+          {
+            "name": "last",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Inner",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "x",
+            "type": "u32"
+          },
+          {
+            "name": "y",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Pair",
+      "generics": [
+        {
+          "kind": "type",
+          "name": "T"
+        },
+        {
+          "kind": "const",
+          "name": "N",
+          "type": "usize"
+        }
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "a",
+            "type": {
+              "generic": "T"
+            }
+          },
+          {
+            "name": "items",
+            "type": {
+              "array": [
+                {
+                  "generic": "T"
+                },
+                {
+                  "generic": "N"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Wrap",
+      "generics": [
+        {
+          "kind": "type",
+          "name": "T"
+        }
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "v",
+            "type": {
+              "generic": "T"
+            }
+          },
+          {
+            "name": "n",
+            "type": "u32"
+          }
+        ]
+      }
+    }
+  ]
+}
