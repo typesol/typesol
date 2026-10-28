@@ -135,10 +135,33 @@ export abstract class StorageEmitter extends EmitterBase {
       }
   }
 
-  /** Whether the variable declared by `decl` is read after `at` (later in its block, or anywhere in a loop around `at`). */
-  protected usedAfter(decl: ts.VariableDeclaration, at: ts.Node): boolean {
+  /**
+   * Whether the variable declared by `decl` is read after `at` (later in its block, or anywhere in a loop around `at`).
+   * A parameter (of a closure or helper expanded here) is read after `at` when its function reads it after `at`; when
+   * `at` is in another function (a closure or helper it calls), any read of it in its own function counts.
+   */
+  protected usedAfter(decl: ts.VariableDeclaration | ts.ParameterDeclaration, at: ts.Node): boolean {
     const symbol = this.checker.getSymbolAtLocation(decl.name);
     if (!symbol) return true;
+    if (ts.isParameter(decl)) {
+      const fn = decl.parent;
+      const inside = at.getSourceFile() === fn.getSourceFile() && at.pos >= fn.pos && at.end <= fn.end;
+      let read = false;
+      const visitParam = (n: ts.Node) => {
+        if (read) return;
+        if (ts.isIdentifier(n) && n !== decl.name && this.checker.getSymbolAtLocation(n) === symbol) {
+          if (!inside || n.pos >= at.end) read = true;
+          // A loop inside the function, around `at`, reads it again on its next turn.
+          for (let p: ts.Node | undefined = at.parent; inside && p && p !== fn; p = p.parent)
+            if ((ts.isForStatement(p) || ts.isForOfStatement(p) || ts.isWhileStatement(p) || ts.isDoStatement(p)) && n.pos >= p.pos && n.end <= p.end)
+              read = true;
+        }
+        ts.forEachChild(n, visitParam);
+      };
+      const body = (fn as { body?: ts.Node }).body;
+      if (body) visitParam(body);
+      return read;
+    }
     // Loops around `at` that do not also contain the declaration run their earlier statements again later.
     let loop: ts.Node | undefined;
     for (let n: ts.Node | undefined = at.parent; n && n !== decl.parent; n = n.parent)

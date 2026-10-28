@@ -384,6 +384,16 @@ export abstract class EmitterBase {
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
   protected abstract closureOf(arg: ts.Expression): Closure;
+
+  /** The arguments and accounts code written here can name (what a closure written here keeps). */
+  protected envNow(): Closure["env"] {
+    return { args: new Map(this.args), accounts: new Map(this.accounts) };
+  }
+
+  /** None: a helper's or factory's body sees its own parameters and the module only. */
+  protected noEnv(): Closure["env"] {
+    return { args: new Map(), accounts: new Map() };
+  }
   protected abstract madeFunction(call: ts.CallExpression): Closure | undefined;
   protected abstract eachElement(
     list: ts.Expression,

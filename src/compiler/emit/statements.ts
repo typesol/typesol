@@ -264,7 +264,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (l) return l.closure;
     const name = calleeName(id, this.model.helperDecls, this.checker);
     const h = name ? (this.model.helpers.get(name) ?? this.model.generics.get(name)) : undefined;
-    return h ? { node: h.node, name: h.display, scopes: [] } : undefined;
+    return h ? { node: h.node, name: h.display, scopes: [], env: this.noEnv(), imports: h.imports } : undefined;
   }
 
   /** `xs.map(…)` / `xs.filter(…)` (or a chain of them): a list built element by element, not stored anywhere yet. */
@@ -338,7 +338,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         let idx: ts.Expression = indexId;
         let k = 0;
         for (const st of stages) {
-          const closure: Closure = { node: st.fn, name: `${st.kind}'s callback`, scopes: [...this.scopes] };
+          const closure: Closure = { node: st.fn, name: `${st.kind}'s callback`, scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
           const v = this.expandClosure(closure, [element, idx].slice(0, st.fn.parameters.length), st.fn);
           if (st.kind === "filter") {
             if (!v) this.fail(st.fn, "filter's callback returns a boolean");
@@ -415,7 +415,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const inner = (init.expression as ts.PropertyAccessExpression).expression;
       this.eachElement(inner, init, { index: `__ml${this.temp++}`, ci: this.tmp("ml_i") }, (element, index) => {
         this.line(`if (${c}.len >= ${cap0}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the new list is full");`);
-        const closure: Closure = { node: last.fn, name: "map's callback", scopes: [...this.scopes] };
+        const closure: Closure = { node: last.fn, name: "map's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
         this.expandClosure(closure, [element, index].slice(0, last.fn.parameters.length), last.fn, {
           lv: `${c}.items[${c}.len]`,
           type: target,
@@ -494,6 +494,8 @@ export abstract class StatementEmitter extends CpiEmitter {
   protected expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node, into?: Ref): Value | undefined {
     const fn = c.node;
     if (this.inlining.has(fn)) this.fail(node, `${c.name} calls itself: closures cannot be recursive`);
+    // Its types are written in its own file: they mean what that file's imports say (the arguments are the caller's).
+    const calleeScope = c.imports === this.scope.imports ? this.scope : { ...this.scope, imports: c.imports };
     if (args.length !== fn.parameters.length) this.fail(node, `${c.name}() takes ${fn.parameters.length} argument(s)`);
     const params = new Map<string, Local>();
     // Account parameters (of a helper expanded here) name the caller's accounts while the body runs.
@@ -507,20 +509,22 @@ export abstract class StatementEmitter extends CpiEmitter {
         params.set(name, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
         return;
       }
-      if (p.type && ts.isIdentifier(arg) && !this.lookup(arg.text) && this.accounts.has(arg.text) && !resolveValueType(p.type, this.scope)) {
-        const acct = this.accounts.get(arg.text)!;
-        const other = this.accounts.get(name);
-        if (other && other !== acct)
-          this.fail(p.name, `${c.name}'s parameter ${name} names an account of the caller's too; rename the parameter (it is expanded where it is called)`);
-        aliases.set(name, acct);
+      if (p.type && ts.isIdentifier(arg) && !this.lookup(arg.text) && this.accounts.has(arg.text) && !resolveValueType(p.type, calleeScope)) {
+        aliases.set(name, this.accounts.get(arg.text)!);
         return;
       }
       const c2 = `l_${name}_${this.temp++}`;
-      const annotated = p.type ? resolveValueType(p.type, this.scope) : undefined;
+      const annotated = p.type ? resolveValueType(p.type, calleeScope) : undefined;
       if (!annotated && this.looksLikeStructPlace(arg)) {
         const place = this.structPlace(arg)!;
         this.line(`TSS_${place.struct} *${c2} = ${place.ptr};`);
-        params.set(name, { c: c2, type: { kind: "structRef", struct: place.struct, writable: place.writable }, mutable: false, paths: this.pathsOf(arg) });
+        params.set(name, {
+          c: c2,
+          type: { kind: "structRef", struct: place.struct, writable: place.writable },
+          mutable: false,
+          paths: this.pathsOf(arg),
+          decl: p,
+        });
         return;
       }
       let v = this.expr(arg, annotated);
@@ -532,7 +536,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       else this.line(`${valueC(type)}${type.kind === "account" ? "" : " "}${c2} = ${this.ownedString(v).c};`);
       params.set(name, { c: c2, type, mutable: true });
     });
-    const declared = fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword ? resolveValueType(fn.type, this.scope) : undefined;
+    const declared = fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword ? resolveValueType(fn.type, calleeScope) : undefined;
     if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword && !declared)
       this.fail(fn.type, "closures return integers, booleans, Pubkeys, strings, enums or Options");
     const frame = {
@@ -545,10 +549,29 @@ export abstract class StatementEmitter extends CpiEmitter {
       into,
     };
     this.line(declared ? `${declared.kind === "pubkey" ? "SolPubkey" : valueC(declared)} ${frame.result};` : `/* ${frame.result} */`);
-    const saved = { scopes: this.scopes, loops: this.loops.splice(0) };
+    // The body names what it could where it was written: a closure the caller's arguments and accounts, a helper
+    // only its own parameters (its account parameters name the caller's accounts) and the module.
+    const swap = <K, V>(m: Map<K, V>, to: Map<K, V>) => {
+      const before = new Map(m);
+      m.clear();
+      for (const [k, v] of to) m.set(k, v);
+      return before;
+    };
+    const bodyAccounts = new Map(c.env.accounts);
+    for (const [n, a] of aliases) bodyAccounts.set(n, a);
+    // Accounts are found by name before locals: a parameter named like one the body can see would read the account.
+    for (const n of params.keys())
+      if (bodyAccounts.has(n))
+        this.fail(fn.parameters.find((p) => ts.isIdentifier(p.name) && p.name.text === n) ?? node, `"${n}" shadows the account "${n}"; use another name`);
+    const saved = {
+      scope: this.scope,
+      scopes: this.scopes,
+      loops: this.loops.splice(0),
+      args: swap(this.args, c.env.args),
+      accounts: swap(this.accounts, bodyAccounts),
+    };
     this.scopes = [...c.scopes, params];
-    const shadowed = [...aliases.keys()].map((n) => [n, this.accounts.get(n)] as const);
-    for (const [n, a] of aliases) this.accounts.set(n, a);
+    this.scope = calleeScope;
     this.inlining.add(fn);
     this.inlineFrames.push(frame);
     try {
@@ -573,11 +596,10 @@ export abstract class StatementEmitter extends CpiEmitter {
     } finally {
       this.inlineFrames.pop();
       this.inlining.delete(fn);
-      for (const [n, a] of shadowed) {
-        if (a) this.accounts.set(n, a);
-        else this.accounts.delete(n);
-      }
+      swap(this.args, saved.args);
+      swap(this.accounts, saved.accounts);
       this.scopes = saved.scopes;
+      this.scope = saved.scope;
       this.loops.push(...saved.loops);
     }
     if (!frame.type) {
@@ -663,7 +685,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.line(`  break;`);
         this.line(`}`);
       } else {
-        const closure: Closure = { node: fn, name: `${method}'s callback`, scopes: [...this.scopes] };
+        const closure: Closure = { node: fn, name: `${method}'s callback`, scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
         const accId = method === "reduce" ? place(f.createIdentifier(`__acc${this.temp++}`)) : undefined;
         if (accId) this.scopes.at(-1)!.set(accId.text, { c: res, type: accType!, mutable: true });
         const all = method === "reduce" ? [accId!, element, indexId] : [element, indexId];
@@ -783,7 +805,7 @@ export abstract class StatementEmitter extends CpiEmitter {
             c: "",
             type: BOOL,
             mutable: false,
-            closure: { node: d.initializer, name: d.name.text, scopes: [...this.scopes] },
+            closure: { node: d.initializer, name: d.name.text, scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports },
           });
           continue;
         }

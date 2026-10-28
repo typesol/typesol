@@ -955,7 +955,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       this.scope = { ...this.scope, typeArgs: bound, structArgs: structs };
     }
     try {
-      return { value: this.expandClosure({ node: g.node, name: g.display, scopes: [] }, node.arguments, node) };
+      return { value: this.expandClosure({ node: g.node, name: g.display, scopes: [], env: this.noEnv(), imports: g.imports }, node.arguments, node) };
     } finally {
       this.scope = saved;
     }
@@ -984,8 +984,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     let maker: Closure | undefined = local?.closure;
     if (!maker && !local) {
       const name = calleeName(call.expression, this.model.helperDecls, this.checker) ?? call.expression.text;
-      const node = this.model.factories.get(name);
-      if (node) maker = { node, name: call.expression.text, scopes: [] };
+      const f = this.model.factories.get(name);
+      if (f) maker = { node: f.node, name: call.expression.text, scopes: [], env: this.noEnv(), imports: f.imports };
     }
     if (!maker) return undefined;
     const made = this.returnedFunction(maker.node);
@@ -1012,18 +1012,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
       else this.line(`${valueC(type)} ${c} = ${this.ownedString(v).c};`);
       params.set(p.name.text, { c, type, mutable: true });
     });
-    return { node: made, name: `the function ${maker.name}() made`, scopes: [...maker.scopes, params] };
+    return { node: made, name: `the function ${maker.name}() made`, scopes: [...maker.scopes, params], env: maker.env, imports: maker.imports };
   }
 
   /** A function given for a function parameter of an expanded helper or closure, as something to expand. */
   protected closureOf(arg: ts.Expression): Closure {
-    if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) return { node: arg, name: "the function passed", scopes: [...this.scopes] };
+    if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg))
+      return { node: arg, name: "the function passed", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
     if (ts.isIdentifier(arg)) {
       const l = this.lookup(arg.text);
       if (l?.closure) return l.closure;
       const name = calleeName(arg, this.model.helperDecls, this.checker) ?? arg.text;
       const h = this.model.helpers.get(name) ?? this.model.generics.get(name);
-      if (h) return { node: h.node, name: h.display, scopes: [] };
+      if (h) return { node: h.node, name: h.display, scopes: [], env: this.noEnv(), imports: h.imports };
     }
     this.fail(arg, "pass a function: its name, or an arrow written here");
   }
