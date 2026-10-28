@@ -5,6 +5,12 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+## 0.20.0 — 2026-10-28
+
+The generated TypeScript clients catch up with Anchor's: remaining accounts, listing and watching accounts, sending
+and simulating, views, `emitCpi` events and every Anchor error by name. Programs and their bytes are unchanged. Not
+externally audited (see SECURITY.md).
+
 ### Added
 - Generated clients: remaining accounts on every instruction builder; `accounts.<Name>.fetchMultiple`, `fetchAll`
   (getProgramAccounts by discriminator, with `{ offset, bytes }` filters) and `watch` (account subscription);
