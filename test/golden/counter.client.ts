@@ -460,6 +460,26 @@ export const counter = {
   views: {
   },
   resolve: {
+    /** InitializeAccounts with authority (options.signer when left out) filled in. */
+    async initialize(rpc: Rpc<GetAccountInfoApi>, input: Omit<InitializeAccounts, "authority"> & Partial<Pick<InitializeAccounts, "authority">>, options: { signer?: TransactionSigner } = {}): Promise<InitializeAccounts> {
+      const acc: Partial<InitializeAccounts> = { ...input };
+      if (acc.authority === undefined) {
+        if (!options.signer) throw new Error("initialize: pass authority, or a default signer as options.signer");
+        acc.authority = options.signer;
+      }
+      void rpc;
+      return acc as InitializeAccounts;
+    },
+    /** IncrementAccounts with authority (options.signer when left out) filled in. */
+    async increment(rpc: Rpc<GetAccountInfoApi>, input: Omit<IncrementAccounts, "authority"> & Partial<Pick<IncrementAccounts, "authority">>, options: { signer?: TransactionSigner } = {}): Promise<IncrementAccounts> {
+      const acc: Partial<IncrementAccounts> = { ...input };
+      if (acc.authority === undefined) {
+        if (!options.signer) throw new Error("increment: pass authority, or a default signer as options.signer");
+        acc.authority = options.signer;
+      }
+      void rpc;
+      return acc as IncrementAccounts;
+    },
   },
   errors: ERRORS,
   errorCode,

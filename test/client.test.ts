@@ -460,6 +460,107 @@ describe("generated client: untrusted and unusual IDLs", () => {
     expect(filled.accounts.map((a: { address: string }) => a.address)).toEqual(["11111111111111111111111111111113", vault]);
   });
 
+  it("resolves PDAs seeded from string and byte fields, under a program given as an argument, and signers", async () => {
+    const PROFILE = [1, 2, 3, 4, 5, 6, 7, 8];
+    const profileFields = [
+      { name: "label", type: "string" },
+      { name: "code", type: { array: ["u8", 4] } },
+      { name: "blob", type: "bytes" },
+    ];
+    const c = await importClient(
+      "seeds",
+      generateClient(
+        idl({
+          accounts: [{ name: "Profile", discriminator: PROFILE }],
+          types: [{ name: "Profile", type: { kind: "struct", fields: profileFields } } as never],
+          instructions: [
+            {
+              name: "badge",
+              discriminator: [1],
+              accounts: [
+                { name: "user", signer: true },
+                { name: "profile" },
+                {
+                  name: "badge",
+                  pda: {
+                    seeds: [
+                      { kind: "const", value: [98] },
+                      { kind: "account", path: "profile.label", account: "Profile" },
+                      { kind: "account", path: "profile.code", account: "Profile" },
+                      { kind: "account", path: "profile.blob", account: "Profile" },
+                    ],
+                  },
+                },
+              ],
+              args: [],
+            },
+            {
+              name: "foreign",
+              discriminator: [2],
+              accounts: [{ name: "meta", pda: { seeds: [{ kind: "arg", path: "mint" }], program: { kind: "arg", path: "prog" } } }],
+              args: [
+                { name: "prog", type: "pubkey" },
+                { name: "mint", type: "pubkey" },
+              ],
+            },
+            {
+              name: "own",
+              discriminator: [3],
+              accounts: [
+                {
+                  name: "profile",
+                  pda: {
+                    seeds: [
+                      { kind: "const", value: [112] },
+                      { kind: "account", path: "profile.label", account: "Profile" },
+                    ],
+                  },
+                },
+              ],
+              args: [],
+            },
+          ],
+        }),
+      ).source,
+    );
+    const kit = await import("@solana/kit");
+    const PROGRAM = "11111111111111111111111111111112" as Address;
+    const user = await generateKeyPairSigner();
+    const profile = (await generateKeyPairSigner()).address;
+    const data = new Uint8Array([...PROFILE, 4, 0, 0, 0, ...new TextEncoder().encode("héy"), 9, 8, 7, 6, 2, 0, 0, 0, 5, 5]);
+    const rpc = {
+      getAccountInfo: (a: Address) => ({
+        send: async () => ({
+          context: { slot: 1n },
+          value:
+            a === profile
+              ? {
+                  data: [Buffer.from(data).toString("base64"), "base64"],
+                  executable: false,
+                  lamports: 1n,
+                  owner: PROGRAM,
+                  space: BigInt(data.length),
+                  rentEpoch: 0n,
+                }
+              : null,
+        }),
+      }),
+    };
+    const [badge] = await kit.getProgramDerivedAddress({
+      programAddress: PROGRAM,
+      seeds: [new Uint8Array([98]), new TextEncoder().encode("héy"), new Uint8Array([9, 8, 7, 6]), new Uint8Array([5, 5])],
+    });
+    expect(await c.probe.resolve.badge(rpc, { profile }, { signer: user })).toEqual({ user, profile, badge });
+    // The PDA program comes from an argument: the builder derives it.
+    const prog = (await generateKeyPairSigner()).address;
+    const mint = (await generateKeyPairSigner()).address;
+    const [meta] = await kit.getProgramDerivedAddress({ programAddress: prog, seeds: [kit.getAddressEncoder().encode(mint)] });
+    expect((await c.probe.foreign({}, { prog, mint })).accounts[0].address).toBe(meta);
+    // Seeded from its own fields: derived from the values, by a pdas helper.
+    const [own] = await kit.getProgramDerivedAddress({ programAddress: PROGRAM, seeds: [new Uint8Array([112]), new TextEncoder().encode("héy")] });
+    expect((await c.probe.pdas.profile({ label: "héy" }))[0]).toBe(own);
+  });
+
   it("reads custom codes from kit errors, nested causes and messages", async () => {
     const c = await importClient("errors", generateClient(idl({ errors: [{ code: 6000, name: "Nope", msg: "no" }] })).source);
     const custom = new SolanaError(SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM, { code: 6000, index: 0 });

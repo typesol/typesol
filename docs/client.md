@@ -48,7 +48,7 @@ for await (const { signature, event } of ledgerbook.watchEvents(rpcSubscriptions
 await ledgerbook.approveMany({ approver: signer, book }, { indices: [0n, 1n] }, [{ address: extra, role: AccountRole.WRITABLE }]);
 
 // has_one accounts that do not sign, read from the account that names them (Anchor resolves `relations` the same way)
-const accounts = await ledgerbook.resolve.someInstruction(rpc, { book }); // fills in what book's Pubkey fields name
+const accounts = await ledgerbook.resolve.someInstruction(rpc, { book }, { signer }); // signers, and what book's fields name
 
 // Events of a fetched transaction (getTransaction, json): log events and emitCpi events from inner instructions
 ledgerbook.eventsOf(await rpc.getTransaction(signature, { maxSupportedTransactionVersion: 0 }).send());
@@ -64,9 +64,9 @@ Kit's own transaction functions work with the instructions as well; `sendInstruc
 | `<program>.<instruction>(accounts, args)` | Builds the `Instruction`. Accounts with a fixed address and PDAs whose seeds are constants, arguments or other accounts' keys are optional and filled in; pass one to override. An optional account passed as `null` is left out (sent as the program id, the convention TypeSOL and Anchor share); left undefined, it is filled in like any other. |
 | `<program>.<instruction>(accounts, args, remaining?)` | The same, with remaining accounts appended in order (kit `AccountMeta`s). |
 | `<program>.accounts.<Name>` | `decode(bytes)`, `encode(value)`, `fetch(rpc, address)`, `fetchMaybe(rpc, address)`, `fetchMultiple(rpc, addresses)`, `fetchAll(rpc, filters?)` (getProgramAccounts by discriminator, plus `{ offset, bytes }` filters), `watch(rpcSubscriptions, address, { abortSignal })`, `discriminator`. `decode` checks the discriminator. |
-| `<program>.pdas.<account>(seeds)` | The PDA (address and bump) for each account an instruction derives. |
+| `<program>.pdas.<account>(seeds)` | The PDA (address and bump) for each account an instruction derives, also one seeded from its own fields (from the field values). |
 | `<program>.returns.<instruction>(bytes)` | Decodes return data. |
-| `<program>.resolve.<instruction>(rpc, accounts, args?)` | Fills in what needs the chain: `has_one` accounts that do not sign (read from the account that names them) and PDAs seeded from another account's fields (`seeds = [b"vault", book.owner]`: the account is read, then the PDA derived). Given accounts are kept. |
+| `<program>.resolve.<instruction>(rpc, accounts, args?, { signer? })` | Fills in what needs the chain or the wallet: signer accounts left out (`options.signer`, the default signer, like Anchor's provider wallet), `has_one` accounts that do not sign (read from the account that names them), and PDAs seeded from another account's fields, scalars, strings or bytes (`seeds = [b"vault", book.owner]`: the account is read, then the PDA derived). Given accounts are kept. |
 | `<program>.views.<instruction>(rpc, feePayer, accounts, args)` | Simulates an instruction that returns a value and decodes it (throws with the logs if it fails). |
 | `<program>.sendInstructions(connection, feePayer, instructions)`, `simulate(rpc, feePayer, instructions)` | One transaction sent and confirmed (kit's sendAndConfirm), or simulated without signatures (error, logs, units, this program's return data). |
 | `<program>.errors`, `errorCode(e)`, `isError(e, name)` | The program's errors (6000+), and for TypeSOL programs also every Anchor framework error (`AnchorError` and the constraints raise them) and TypeSOL's runtime errors. |
@@ -89,10 +89,9 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
 
 - **Errors and events are matched by code and discriminator, not by program.** A program this one calls can raise the
   same error code, and `parseEvents` reads every `Program data:` line that decodes as one of this program's events.
-- **Not filled in automatically** (pass them): `has_one` accounts that sign (they have to sign), PDAs seeded from an
-  account's own fields or from fields inside an argument, PDAs seeded from non-scalar fields (strings, structs), and PDAs
-  whose program comes from an argument. `typesol client` prints a note for each. `has_one` accounts that do not sign and
-  PDAs seeded from another account's scalar fields are filled in by `resolve` (it reads the chain).
+- **Not filled in automatically** (pass them): PDAs seeded from fields inside an argument or from struct fields
+  (Anchor cannot seed with them either), PDAs whose program is another account's field, and a PDA seeded from its own
+  fields (derive it with its `pdas` helper from the values). `typesol client` prints a note for each.
 - **Left out of a client generated from an Anchor IDL**, with a note: generic types and anything using them, and
   zero-copy (`bytemuck`) accounts.
 - **Not done yet**: a LiteSVM loader for tests (use `svm.addProgramFromFile(ledgerbook.address, soPath)`, or

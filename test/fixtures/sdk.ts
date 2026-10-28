@@ -62,3 +62,19 @@ export function poke(tally: HasOne<Mut<Tally>, "owner">, owner: AccountInfo): vo
 export function stash(tally: Account<Tally>, stash: Seeds<AccountInfo, ["stash", "@tally.owner", "@tally.count"]>): u64 {
   return tally.count;
 }
+
+export interface Slot {
+  owner: Pubkey;
+  id: u64;
+}
+
+export function openSlot(owner: Mut<Signer>, slot: Init<Slot>, systemProgram: SystemProgram, id: u64): void {
+  slot.create(owner, ["slot", owner.key, id]);
+  slot.owner = owner.key;
+  slot.id = id;
+}
+
+/** A PDA seeded from its own fields (Anchor `seeds = [b"slot", slot.owner, slot.id]`): the client derives it from the values. */
+export function slotId(slot: Seeds<Account<Slot>, ["slot", "@slot.owner", "@slot.id"]>): u64 {
+  return slot.id;
+}

@@ -5,6 +5,15 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- Generated clients fill in the accounts Anchor's client still asks for:
+  - `resolve.<instruction>(rpc, accounts, args?, { signer })` fills signer accounts that were left out with a default
+    signer (the wallet), as Anchor's client uses the provider's wallet.
+  - PDAs seeded from another account's string, byte and `FixedString` fields are derived by `resolve`, as scalar fields
+    already were.
+  - A PDA seeded from its own fields gets a `pdas.<name>({ field values })` helper (its address is needed to read it).
+  - A PDA whose program is a `Pubkey` argument is derived by the instruction builder.
+
 ## 0.21.0 — 2026-10-28
 
 Clients from a program's address alone, and the last pieces Anchor's client resolves for you: `has_one` accounts,

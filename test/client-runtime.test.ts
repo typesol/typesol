@@ -238,8 +238,21 @@ describe("generated client: runtime helpers", () => {
     const other = (await generateKeyPairSigner()).address;
     expect(await c.resolve.poke(rpc, { tally, owner: other })).toEqual({ tally, owner: other });
     await expect(c.resolve.poke(rpc, { tally: other })).rejects.toThrow(/cannot fill in owner: account .* does not exist/);
-    // A signer named by has_one is never filled in: it has to sign.
-    expect(c.resolve.add).toBeUndefined();
+    // A signer named by has_one is not read from the chain: it is the default signer passed in, or given.
+    expect(await c.resolve.add(rpc, { tally }, { signer: alice })).toEqual({ tally, owner: alice });
+    expect(await c.resolve.add(rpc, { tally, owner: other })).toEqual({ tally, owner: other });
+  });
+
+  it("fills signers with the default signer, and derives a PDA seeded from its own fields from their values", async () => {
+    const alice = await fundedSigner(svm);
+    const { rpc, rpcSubscriptions } = chain(svm, []);
+    const accounts = await c.resolve.openSlot(rpc, {}, { signer: alice });
+    expect(accounts).toEqual({ owner: alice });
+    await c.sendInstructions({ rpc, rpcSubscriptions }, alice, [await c.openSlot(accounts, { id: 42n })]);
+    const [slot] = await c.pdas.slotIdSlot({ owner: alice.address, id: 42n });
+    expect((await c.accounts.Slot.fetch(rpc, slot)).id).toBe(42n);
+    // The program agrees: its Seeds<…> check on the slot's own fields passes.
+    expect(await c.views.slotId(rpc, alice, { slot })).toBe(42n);
   });
 
   it("derives a PDA seeded from another account's fields (resolve)", async () => {
