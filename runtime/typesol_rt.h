@@ -1154,40 +1154,11 @@ static uint64_t ts_base58_32(const uint8_t *in, TS_Str *out) {
   return SUCCESS;
 }
 
-static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out);
-
-/* The pieces of a template literal, joined with one heap allocation and one copy each. */
-static uint64_t ts_str_join(const TS_Str *parts, uint64_t n, TS_Str *out) {
-  uint64_t total = 0;
-  for (uint64_t i = 0; i < n; i++) total += parts[i].len;
-  uint8_t *p;
-  TS_TRY(ts_alloc(total, &p));
-  uint64_t at = 0;
-  for (uint64_t i = 0; i < n; i++) {
-    ts_memcpy(p + at, parts[i].ptr, parts[i].len);
-    at += parts[i].len;
-  }
-  *out = ts_str(p, total);
-  return SUCCESS;
-}
-
 /*
- * `s += b` on a local string: when `s` ends where the heap's free space starts (it was the last thing allocated), `b`
- * is copied right after it and `s` grows in place; otherwise a new string is made, as ts_str_concat does. Other views
- * of the old `s` keep their length, so they still read the same bytes.
+ * `s += …` on a local string: the pieces are copied right after `s` when it ends where the heap's free space starts
+ * (it was the last thing allocated), and `s` grows in place; otherwise `s` and the pieces are joined into a new string.
+ * Other views of the old `s` keep their length, so they still read the same bytes.
  */
-static uint64_t ts_str_append(TS_Str *s, TS_Str b) {
-  uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
-  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && *next + b.len <= TS_HEAP_LENGTH) {
-    ts_memcpy((uint8_t *)s->ptr + s->len, b.ptr, b.len);
-    *next += b.len;
-    s->len += b.len;
-    return SUCCESS;
-  }
-  return ts_str_concat(*s, b, s);
-}
-
-/* `s += \`…\``: the template's pieces appended to `s` (in place when `s` is the newest heap string). */
 static uint64_t ts_str_append_parts(TS_Str *s, const TS_Str *parts, uint64_t n) {
   uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
   uint64_t add = 0;
@@ -1212,13 +1183,42 @@ static uint64_t ts_str_append_parts(TS_Str *s, const TS_Str *parts, uint64_t n) 
   return SUCCESS;
 }
 
-static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
+/* `s += b` (and `a + b`, with `s` a copy of `a`): the one-piece case of ts_str_append_parts. */
+static uint64_t ts_str_append(TS_Str *s, TS_Str b) {
+  uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
+  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && *next + b.len <= TS_HEAP_LENGTH) {
+    ts_memcpy((uint8_t *)s->ptr + s->len, b.ptr, b.len);
+    *next += b.len;
+    s->len += b.len;
+    return SUCCESS;
+  }
   uint8_t *p;
-  TS_TRY(ts_alloc(a.len + b.len, &p));
-  ts_memcpy(p, a.ptr, a.len);
-  ts_memcpy(p + a.len, b.ptr, b.len);
-  *out = ts_str(p, a.len + b.len);
+  TS_TRY(ts_alloc(s->len + b.len, &p));
+  ts_memcpy(p, s->ptr, s->len);
+  ts_memcpy(p + s->len, b.ptr, b.len);
+  *s = ts_str(p, s->len + b.len);
   return SUCCESS;
+}
+
+/* The pieces of a template literal, joined with one heap allocation and one copy each. */
+static uint64_t ts_str_join(const TS_Str *parts, uint64_t n, TS_Str *out) {
+  uint64_t total = 0;
+  for (uint64_t i = 0; i < n; i++) total += parts[i].len;
+  uint8_t *p;
+  TS_TRY(ts_alloc(total, &p));
+  uint64_t at = 0;
+  for (uint64_t i = 0; i < n; i++) {
+    ts_memcpy(p + at, parts[i].ptr, parts[i].len);
+    at += parts[i].len;
+  }
+  *out = ts_str(p, total);
+  return SUCCESS;
+}
+
+/* `a + b`: a new string (`a` grows in place when it is the newest heap string; its own view keeps its length). */
+static inline uint64_t ts_str_concat(TS_Str a, TS_Str b, TS_Str *out) {
+  *out = a;
+  return ts_str_append(out, b);
 }
 
 /* Decimal text of an integer, on the heap. */

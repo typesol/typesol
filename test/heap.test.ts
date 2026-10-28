@@ -25,11 +25,11 @@ describe("heap size (const HEAP_SIZE_KIB)", () => {
   it("uses a larger heap frame when declared and requested; the default stops at 32 KiB with 5110", async () => {
     const big = await deployFile(fileURLToPath(new URL("./fixtures/bigheap.ts", import.meta.url)));
     const payer = await fundedSigner(big.svm);
-    // 1 + 2 + … + 2^14 bytes ≈ 32 KiB of copies: more than the default heap.
-    const r = expectOk(await send(big.svm, payer, [cuLimit(1_400_000) as never, heapFrame(64 * 1024) as never, ix(big, "grow", { rounds: new BN(14) }, [])]));
-    expect(Buffer.from(r.returnData().data()).readBigUInt64LE()).toBe(16384n);
+    // A 2^15-byte string (it doubles in place on the heap): more than the default 32 KiB heap.
+    const r = expectOk(await send(big.svm, payer, [cuLimit(1_400_000) as never, heapFrame(64 * 1024) as never, ix(big, "grow", { rounds: new BN(15) }, [])]));
+    expect(Buffer.from(r.returnData().data()).readBigUInt64LE()).toBe(32768n);
     // Without the heap frame request the program runs past the real heap and the runtime stops it.
-    const unrequested = await send(big.svm, payer, [cuLimit(1_400_000) as never, ix(big, "grow", { rounds: new BN(14) }, [])]);
+    const unrequested = await send(big.svm, payer, [cuLimit(1_400_000) as never, ix(big, "grow", { rounds: new BN(15) }, [])]);
     expect(String((unrequested as { err?: () => unknown }).err?.())).toMatch(/AccessViolation|ProgramFailedToComplete|InstructionError/);
 
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-heap-"));
@@ -40,6 +40,6 @@ describe("heap size (const HEAP_SIZE_KIB)", () => {
     writeFileSync(path.join(dir, "smallheap.ts"), src);
     const small = await deployFile(path.join(dir, "smallheap.ts"));
     const p2 = await fundedSigner(small.svm);
-    expect(customError(await send(small.svm, p2, [cuLimit(1_400_000) as never, ix(small, "grow", { rounds: new BN(14) }, [])]))).toBe(5110);
+    expect(customError(await send(small.svm, p2, [cuLimit(1_400_000) as never, ix(small, "grow", { rounds: new BN(15) }, [])]))).toBe(5110);
   });
 });
