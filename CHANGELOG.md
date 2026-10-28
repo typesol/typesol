@@ -5,6 +5,19 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 
 ## Unreleased
 
+### Added
+- Functions as values: `const h = g`, and functions that return functions (`function adder(n: u64): (x: u64) => u64
+  { return (x) => x + n; }`), which make a closure where they are called (`const add5 = adder(5n)`, `adder(5n)(x)`).
+- Closures given to helpers with type parameters or accounts: the helper is expanded where it is called, its type
+  parameters bound from the call and its accounts the caller's.
+- A stored `map` to structs or text: `const ps: FixedVec<Pair, 8> = xs.map((o) => ({ qty: o.qty, doubled: o.qty * 2n }))`,
+  `const names: FixedVec<FixedString<8>, 4> = xs.map(…)`.
+- A struct argument holding a FixedVec, when the struct is only an argument: read as Anchor sends it (the FixedVec a
+  Borsh Vec), as a `@layout borsh` struct is.
+- Metaplex Core external plugin adapters: `addExternalPlugin`, `removeExternalPlugin`, `writeExternalPluginData` and
+  their Collection forms, for AppData, Oracle and LifecycleHook (and the Linked forms), checked against the Core program
+  (Core itself answers lifecycle hooks with NotAvailable for now).
+
 ## 0.23.0 — 2026-10-28
 
 Language limits lifted: `map` and `filter`, any number of growable Vecs per account, closures and arrow functions as

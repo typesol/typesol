@@ -60,6 +60,26 @@ describe("closures", () => {
     expect(await run("capturing", { x: new BN(5) })).toBe(11_000n + 1_750n + 3n);
   });
 
+  it("make functions, bind them as values, and give closures to generic and account helpers", async () => {
+    // add5(2) = 7; triple(2) = 6; adder(1)(2) = 3; applyT(t2, 7) runs track once: seen = 7.
+    expect(await run("made", { x: new BN(2) })).toBe(70_000n + 600n + 3n + 7n);
+    const payer = await fundedSigner(d.svm);
+    const [cart] = await pda(d.programId, ["cart", payer.address]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: cart, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    const before = decodeAccount<{ total: BN }>(d, d.svm, "Cart", cart).total.toNumber();
+    const r = await send(d.svm, payer, [
+      ix(d, "bump_total", { by: new BN(4) }, [
+        { address: payer.address, signer: payer },
+        { address: cart, writable: true },
+      ]),
+    ]);
+    expect(u64(r)).toBe(BigInt(before + 4));
+  });
+
   it("refuses recursion and functions used as values", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-closures-"));
     const errors = (body: string) => {
@@ -74,11 +94,15 @@ describe("closures", () => {
       }
     };
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => (v === 0n ? x : g(v - 1n)); return g(3n); }`)).toMatch(/calls itself/);
-    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; const h = g; return h(1n); }`)).toMatch(/is a function/);
+    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; const h = g; return h(1n); }`)).toBe("");
+    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; let h = g; return h(1n); }`)).toMatch(/bind functions with const/);
+    expect(errors(`function mk(n: u64): (x: u64) => u64 { return (x: u64): u64 => x + n; }\nexport function f(x: u64): u64 { mk(1n); return x; }`)).toMatch(
+      /returns a function: bind it/,
+    );
     const apply = "function apply(f: (x: u64) => u64, v: u64): u64 { return f(v); }\n";
     expect(errors(`${apply}export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return apply(g, 1n); }`)).toBe("");
     const pick = "function pick<T>(f: (x: T) => T, v: T): T { return f(v); }\n";
-    expect(errors(`${pick}export function f(x: u64): u64 { return pick((v: u64): u64 => v + x, 1n); }`)).toMatch(/has type parameters/);
+    expect(errors(`${pick}export function f(x: u64): u64 { return pick<u64>((v: u64): u64 => v + x, 1n); }`)).toBe("");
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n, 2n); }`)).toMatch(/Expected 1 arguments/);
   });
 });

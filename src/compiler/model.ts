@@ -299,6 +299,11 @@ export interface ProgramModel {
   helperDecls: Map<ts.Node, string>;
   /** Local closures (they read the enclosing function's variables): their declaration -> name; expanded where called. */
   closureDecls: Map<ts.Node, string>;
+  /**
+   * Functions that return a function (`function adder(n: u64): (x: u64) => u64 { return (x) => x + n; }`): no C
+   * function; a call binds the returned function, with the arguments, as a closure where it is made.
+   */
+  factories: Map<string, HelperNode>;
   errors: ErrorDef[];
   /** Enum name -> member name -> error */
   errorEnums: Map<string, Map<string, ErrorDef>>;

@@ -78,7 +78,7 @@ describe("arrow functions and generic helpers", () => {
     expect(errors(`function id<T>(a: T): T { return a; }\nexport function f(): void { id("x"); }`)).toMatch(/T stands for an integer/);
     expect(errors(`function g<T>(a: T): T { return g(a); }\nexport function f(x: u64): u64 { return g(x); }`)).toMatch(/recursion is not supported: g -> g/);
     expect(errors(`export function f(x: u64): u8 { return x as u8; }`)).toMatch(/`as` does not convert/);
-    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v; const h = g; return h(x); }`)).toMatch(/"g" is a function/);
+    expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v; const h = g; return h(x); }`)).toBe("");
     expect(errors(`function g<T>(a: T): T { const h = (v: T): T => v; return h(a); }\nexport function f(x: u64): u64 { return g(x); }`)).toMatch(
       /inside a generic helper are not supported/,
     );

@@ -490,8 +490,13 @@ export function analyze(entry: string): Analysis {
   const helpers = new Map<string, Helper>();
   const generics = new Map<string, GenericHelper>();
   const helperDecls = new Map<ts.Node, string>();
+  const factories = new Map<string, HelperNode>();
   for (const fn of [...helperNodes, ...locals.filter((l) => !inline.has(l.decl))]) {
     helperDecls.set(fn.decl, fn.name);
+    if (returnsFunction(fn.node)) {
+      factories.set(fn.name, fn.node);
+      continue;
+    }
     const fnParams = fn.node.parameters.map((p, i) => (p.type && ts.isFunctionTypeNode(p.type) ? i : -1)).filter((i) => i >= 0);
     if (fn.node.typeParameters?.length || fnParams.length) {
       reporter.guard(() => {
@@ -562,17 +567,6 @@ export function analyze(entry: string): Analysis {
         if (structs.get(s)!.layout === "borsh" && s !== whole)
           reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} is @layout borsh; pass it as a whole argument, not inside a list or enum`);
     }
-    // Arguments are Borsh: a FixedVec's padded layout is account data only (a @layout borsh struct's FixedVec is a Borsh Vec).
-    for (const a of ix.args) {
-      const seen = new Set<string>();
-      collectStructs(a.type, structs, dataEnums, seen);
-      for (const s of seen)
-        if (structs.get(s)!.layout !== "borsh" && structs.get(s)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined))
-          reporter.error(
-            fn.node.name ?? fn.node,
-            `argument ${a.name}: ${s} holds a FixedVec, which only account data can; make ${s} @layout borsh, or pass the list as its own FixedVec<T, N> argument`,
-          );
-    }
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
     if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
     for (const a of ix.accounts)
@@ -585,6 +579,42 @@ export function analyze(entry: string): Analysis {
           );
       }
   }
+  // Arguments are Borsh, where a FixedVec is a Vec (only what it holds). A struct passed as a whole argument and used
+  // nowhere else (not account data, not nested, not returned) is read as Anchor sends it: @layout borsh, implied.
+  // Anywhere else its FixedVec keeps the padded layout of account data, which an argument cannot have.
+  const hasFixedVec = (n: string) => structs.get(n)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined);
+  const nestedSomewhere = (n: string) =>
+    [...structs.values()].some((o) =>
+      o.fields.some((f) => {
+        const inner = f.type.kind === "array" || f.type.kind === "vec" ? f.type.elem : f.type.kind === "option" ? (f.type.inner as FieldType) : f.type;
+        return inner.kind === "struct" && inner.name === n;
+      }),
+    );
+  for (const ix of instructions)
+    for (const a of ix.args) {
+      const seen = new Set<string>();
+      collectStructs(a.type, structs, dataEnums, seen);
+      const whole = a.type.kind === "structRef" ? a.type.struct : undefined;
+      for (const n of seen) {
+        const sd = structs.get(n)!;
+        if (sd.layout === "borsh" || !hasFixedVec(n)) continue;
+        const onlyArgument =
+          n === whole &&
+          !accountStructs.has(n) &&
+          !nestedSomewhere(n) &&
+          !instructions.some((i) => i.returns?.kind === "struct" && i.returns.name === n) &&
+          !instructions.some((i) => i.args.some((x) => x !== a && x.type.kind !== "structRef" && JSON.stringify(x.type).includes(`"${n}"`)));
+        if (onlyArgument) {
+          sd.layout = "borsh";
+          reporter.guard(() => checkBorshLayout(sd, structs, dataEnums, reporter));
+          continue;
+        }
+        reporter.error(
+          ix.node.name ?? ix.node,
+          `argument ${a.name}: ${n} holds a FixedVec and is also account data, nested or returned (a fixed layout there, Borsh in arguments); declare a separate struct for the argument, or pass the list as its own FixedVec<T, N> argument`,
+        );
+      }
+    }
   checkSnakeDuplicates(
     instructions.map((ix) => ({ name: ix.node.name!.text, node: ix.node.name! })),
     "instructions",
@@ -627,6 +657,7 @@ export function analyze(entry: string): Analysis {
       generics,
       helperDecls,
       closureDecls,
+      factories,
       errors,
       errorEnums,
       enums,
@@ -1081,6 +1112,20 @@ function fnParamType(arrow: ts.Expression, checker: ts.TypeChecker): ts.Function
     if (t && ts.isFunctionTypeNode(t)) return t;
   }
   return undefined;
+}
+
+/** Whether a function returns a function: typed so, or its body is (or only returns) an arrow. */
+function returnsFunction(fn: HelperNode): boolean {
+  if (fn.type) return ts.isFunctionTypeNode(fn.type);
+  const strip = (e: ts.Expression | undefined): ts.Expression | undefined => (e && ts.isParenthesizedExpression(e) ? strip(e.expression) : e);
+  const body = fn.body;
+  const ret =
+    body && !ts.isBlock(body)
+      ? strip(body)
+      : body?.statements.length === 1 && ts.isReturnStatement(body.statements[0]!)
+        ? strip(body.statements[0].expression)
+        : undefined;
+  return !!ret && (ts.isArrowFunction(ret) || ts.isFunctionExpression(ret));
 }
 
 function captures(l: HelperSource, localDecls: Set<ts.Node>, checker: ts.TypeChecker): boolean {

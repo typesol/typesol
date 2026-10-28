@@ -36,14 +36,24 @@ export abstract class EmitterBase {
   /** Bump temporaries from create()/createIfNeeded(), for `acct.pdaBump`. */
   protected readonly bumps = new Map<string, string>();
   /** Closures being expanded, innermost last: a `return` inside one assigns `result` and jumps to `label`. */
-  protected inlineFrames: { label: string; result: string; type?: ValueType; declAt: number; pad: string; node: ts.Node }[] = [];
+  protected inlineFrames: {
+    label: string;
+    result: string;
+    type?: ValueType;
+    declAt: number;
+    pad: string;
+    node: ts.Node;
+    /** A place the result is written to (a stored `map` element), instead of a value. */
+    into?: Ref;
+  }[] = [];
   /** Closures being expanded (a closure calling itself cannot be expanded). */
   protected readonly inlining = new Set<ts.Node>();
   /** Enclosing loops, innermost last; each has a `continue` label. */
   protected readonly loops: string[] = [];
   protected readonly ix: Instruction | undefined;
   protected readonly helper: Helper | undefined;
-  protected readonly scope: TypeScope;
+  /** Type names in effect (a generic helper expanded where it is called binds its type parameters here). */
+  protected scope: TypeScope;
   protected readonly checker: ts.TypeChecker;
   protected readonly analysis: Analysis;
   /** Calls already resolved to a helper (a generic one's instance is found by probing its arguments). */
@@ -169,7 +179,7 @@ export abstract class EmitterBase {
   }
 
   /** A generic call's type arguments: written out (`max<u64>(a, b)`), or the types of the arguments in `T` positions. */
-  private typeArgsOf(node: ts.CallExpression, g: GenericHelper): TypeArg[] {
+  protected typeArgsOf(node: ts.CallExpression, g: GenericHelper): TypeArg[] {
     const usage = `write ${g.display}<u64>(…) with the types`;
     if (node.typeArguments) {
       if (node.typeArguments.length !== g.typeParams.length) this.fail(node, `${g.display} takes ${g.typeParams.length} type argument(s)`);
@@ -374,6 +384,7 @@ export abstract class EmitterBase {
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
   protected abstract closureOf(arg: ts.Expression): Closure;
+  protected abstract madeFunction(call: ts.CallExpression): Closure | undefined;
   protected abstract eachElement(
     list: ts.Expression,
     at: ts.Node,

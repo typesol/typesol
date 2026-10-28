@@ -36,4 +36,19 @@ describe("lists in arguments and events", () => {
     const over = await fire([1, 2, 3, 4]);
     expect(String((over as { err?: () => unknown }).err?.())).toMatch(/Custom\D*102/);
   });
+
+  it("reads a struct argument holding a FixedVec as Borsh (the FixedVec a Vec)", async () => {
+    const payer = await fundedSigner(d.svm);
+    const place = (legs: number[]) =>
+      send(d.svm, payer, [ix(d, "place", { ticket: { id: new BN(5), legs: legs.map((x) => new BN(x)) } }, [{ address: payer.address, signer: payer }])]);
+    expect(
+      Buffer.from(
+        expectOk(await place([1, 2]))
+          .returnData()
+          .data(),
+      ).readBigUInt64LE(0),
+    ).toBe(523n);
+    expect(String(((await place([1, 2, 3, 4])) as { err?: () => unknown }).err?.())).toMatch(/Custom\D*102/);
+    expect(d.idl.types!.find((t) => t.name === "Ticket")!.type).toMatchObject({ fields: [{ name: "id" }, { name: "legs", type: { vec: "u64" } }] });
+  });
 });
