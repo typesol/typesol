@@ -584,7 +584,13 @@ export declare function emitCpi<T>(event: T, eventAuthority: EventAuthority, sel
 export type CorePluginAuthority = "none" | "owner" | "updateAuthority" | Pubkey;
 /** A Metaplex Core plugin, written as an object literal (Core's Plugin enum, with its authority when it is added). */
 export type CorePlugin = (
-  | { kind: "Royalties"; basisPoints: u16; creators: { address: Pubkey; percentage: u8 }[] }
+  | {
+      kind: "Royalties";
+      basisPoints: u16;
+      creators: { address: Pubkey; percentage: u8 }[];
+      /** Programs allowed (or denied) to move the asset; none by default. */
+      ruleSet?: { programAllowList: Pubkey[] } | { programDenyList: Pubkey[] };
+    }
   | { kind: "FreezeDelegate"; frozen: boolean }
   | { kind: "BurnDelegate" }
   | { kind: "TransferDelegate" }
@@ -598,8 +604,13 @@ export type CorePlugin = (
   | { kind: "ImmutableMetadata" }
   /** On a collection: lets Bubblegum mint compressed NFTs into it (mintV2 with a collection). */
   | { kind: "BubblegumV2" }
+  | { kind: "MasterEdition"; maxSupply?: u32 | null; name?: string | null; uri?: string | null }
+  | { kind: "VerifiedCreators"; signatures: { address: Pubkey; verified: boolean }[] }
+  | { kind: "Autograph"; signatures: { address: Pubkey; message: string }[] }
+  | { kind: "FreezeExecute"; frozen: boolean }
+  | { kind: "PermanentFreezeExecute"; frozen: boolean }
 ) & { authority?: CorePluginAuthority };
-export type CorePluginKind = CorePlugin["kind"] | "MasterEdition" | "VerifiedCreators" | "Autograph";
+export type CorePluginKind = CorePlugin["kind"] | "Groups";
 
 export interface MplCoreProgram extends AccountMeta {
   readonly __mpl_core: void;
@@ -836,6 +847,180 @@ export interface BubblegumProgram extends AccountMeta {
     proof: RemainingAccounts | RemainingSlice,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /** DelegateV2: the owner (null: the payer) sets a new leaf delegate. */
+  delegateV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    leafOwner: AccountMeta | null,
+    previousLeafDelegate: AccountMeta | null,
+    newLeafDelegate: AccountMeta,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeaf & { collectionHash?: Hash | null },
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** FreezeV2 / ThawV2: the leaf delegate (as `authority`, null: the payer) freezes or thaws the leaf. */
+  freezeV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeaf,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  thawV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeaf,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** SetNonTransferableV2 (soulbound), by the collection's permanent freeze delegate. */
+  setNonTransferableV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeaf,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** UpdateMetadataV2: the tree creator / delegate (or the collection's update authority) changes the metadata. */
+  updateMetadataV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafRef,
+    currentMetadata: CompressedMetadataV2,
+    update: CompressedMetadataUpdate,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** VerifyCreatorV2 / UnverifyCreatorV2: a creator (signing) marks itself verified or not. */
+  verifyCreatorV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    creator: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafRef,
+    metadata: CompressedMetadataV2,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  unverifyCreatorV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    creator: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafRef,
+    metadata: CompressedMetadataV2,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** SetCollectionV2: move the leaf into (or out of) a Core collection. */
+  setCollectionV2(
+    treeConfig: AccountMeta,
+    payer: Mut<Signer>,
+    authority: AccountMeta | null,
+    newCollectionAuthority: AccountMeta | null,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta | null,
+    merkleTree: AccountMeta,
+    coreCollection: AccountMeta | null,
+    newCoreCollection: AccountMeta | null,
+    mplCoreCpiSigner: AccountMeta | null,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    mplCoreProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafRef,
+    metadata: CompressedMetadataV2,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /**
+   * V1 trees (SPL Account Compression): Transfer / Burn, signed by the leaf owner or delegate (a PDA owner signs with
+   * `signerSeeds`), and Delegate by the owner.
+   */
+  transfer(
+    treeConfig: AccountMeta,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta,
+    newLeafOwner: AccountMeta,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafV1,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  burn(
+    treeConfig: AccountMeta,
+    leafOwner: AccountMeta,
+    leafDelegate: AccountMeta,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafV1,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  delegate(
+    treeConfig: AccountMeta,
+    leafOwner: AccountMeta,
+    previousLeafDelegate: AccountMeta,
+    newLeafDelegate: AccountMeta,
+    merkleTree: AccountMeta,
+    logWrapper: AccountMeta,
+    compressionProgram: AccountMeta,
+    systemProgram: SystemProgram,
+    leaf: CompressedLeafV1,
+    proof: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
 }
 /** Bubblegum V2 leaf metadata (MetadataArgsV2): non-fungible, primary sale not happened, mutable unless `isMutable: false`. */
 export interface CompressedMetadata {
@@ -844,6 +1029,37 @@ export interface CompressedMetadata {
   uri: string;
   sellerFeeBasisPoints: u16;
   creators?: { address: Pubkey; verified: boolean; share: u8 }[];
+  isMutable?: boolean;
+}
+/** A leaf whose data and creator hashes the instruction computes from the metadata passed with it. */
+export interface CompressedLeafRef {
+  root: Hash;
+  assetDataHash?: Hash | null;
+  flags?: u8 | null;
+  nonce: u64;
+  index: u32;
+}
+/** A V1 tree's leaf. */
+export interface CompressedLeafV1 {
+  root: Hash;
+  dataHash: Hash;
+  creatorHash: Hash;
+  nonce: u64;
+  index: u32;
+}
+/** A leaf's full MetadataArgsV2, as it is now (with its creators' verified flags and its collection). */
+export interface CompressedMetadataV2 extends CompressedMetadata {
+  primarySaleHappened?: boolean;
+  collection?: Pubkey | null;
+}
+/** UpdateArgs: what to change (left out: unchanged). */
+export interface CompressedMetadataUpdate {
+  name?: string;
+  symbol?: string;
+  uri?: string;
+  creators?: { address: Pubkey; verified: boolean; share: u8 }[];
+  sellerFeeBasisPoints?: u16;
+  primarySaleHappened?: boolean;
   isMutable?: boolean;
 }
 /** The leaf a transfer or burn replaces, as an indexer (DAS getAssetProof / getAsset) reports it. */

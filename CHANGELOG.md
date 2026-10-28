@@ -6,6 +6,16 @@ until 1.0, a minor version may change the language, the IDL layout or error code
 ## Unreleased
 
 ### Added
+- Metaplex Core plugin values: MasterEdition, VerifiedCreators, Autograph, FreezeExecute, PermanentFreezeExecute, and
+  royalty rule sets (`ruleSet: { programAllowList | programDenyList }`).
+- Bubblegum: `delegateV2`, `freezeV2`, `thawV2`, `setNonTransferableV2`, `updateMetadataV2`, `verifyCreatorV2`,
+  `unverifyCreatorV2`, `setCollectionV2`, and the V1 `transfer`, `burn`, `delegate`. Checked on the real programs with
+  every leaf recomputed: verify → delegate → freeze (a frozen leaf is refused) → thaw → rename, unverify, moving a leaf
+  into a collection, soulbinding a collection's leaf, and a V1 transfer signed by a PDA owner, delegate and burn.
+
+### Fixed
+- Bubblegum leaf fields that may be null at run time (`assetDataHash: Hash | null`, `flags`) are sent as Borsh Options;
+  a null aborted the instruction before.
 - Closures: a local function that reads or writes the enclosing function's variables is expanded where it is called,
   with the names it was declared with (a block at the call that declares the same name does not change it), struct
   parameters by reference and `return` leaving the closure. Recursion and storing / returning closures are refused.
