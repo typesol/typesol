@@ -446,6 +446,27 @@ export function analyze(entry: string): Analysis {
         });
         return;
       }
+      // An arrow written as a helper's function argument (`apply((x: u64): u64 => x + 1n, v)`): a local function of
+      // its own, passed like a named one. Missing parameter and return types come from the helper's parameter type.
+      const target = (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && ts.isCallExpression(n.parent) ? fnParamType(n, checker) : undefined;
+      if (target) {
+        reporter.guard(() => {
+          if (generic) reporter.fail(n, "arrow functions passed inside a generic helper are not supported; declare the function at the top level");
+          const lit = n as ts.ArrowFunction | ts.FunctionExpression;
+          lit.parameters.forEach((p, i) => {
+            const from = target.parameters[i]?.type;
+            if (!p.type && from) (p as { type?: ts.TypeNode }).type = from;
+          });
+          if (!lit.type) (lit as { type?: ts.TypeNode }).type = target.type;
+          let name = `${outer}__fn`;
+          for (let i = 2; taken.has(name); i++) name = `${outer}__fn${i}`;
+          taken.add(name);
+          const src: HelperSource = { node: lit as ts.ArrowFunction, name, display: "the function passed here", decl: lit, imports, outer: fn };
+          locals.push(src);
+          if (lit.body) collectLocals(lit.body, name, imports, lit as ts.ArrowFunction);
+        });
+        return;
+      }
       ts.forEachChild(n, visit);
     };
     visit(body);
@@ -614,6 +635,7 @@ export function analyze(entry: string): Analysis {
       argStructs,
       fstrings,
       fixedVecs,
+      localVecs: new Map(),
     },
     sourceFile,
     files: programFiles(program, entryPath).map((f) => f.fileName),
@@ -1013,6 +1035,28 @@ interface HelperSource {
 const isFunctionNode = (n: ts.Node) => ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isMethodDeclaration(n);
 
 /** Whether a local function reads a variable or parameter of a function around it (a closure). */
+/**
+ * The function type of the helper parameter an arrow is passed for (`f` in `function apply(f: (x: u64) => u64, …)`),
+ * when the arrow is an argument of a call to a declared function or const arrow; undefined otherwise.
+ */
+function fnParamType(arrow: ts.Expression, checker: ts.TypeChecker): ts.FunctionTypeNode | undefined {
+  const call = arrow.parent as ts.CallExpression;
+  const i = call.arguments.indexOf(arrow);
+  if (i < 0 || !ts.isIdentifier(call.expression)) return undefined;
+  let sym = checker.getSymbolAtLocation(call.expression);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  for (const d of sym?.declarations ?? []) {
+    const fn = ts.isFunctionDeclaration(d)
+      ? d
+      : ts.isVariableDeclaration(d) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))
+        ? d.initializer
+        : undefined;
+    const t = fn?.parameters[i]?.type;
+    if (t && ts.isFunctionTypeNode(t)) return t;
+  }
+  return undefined;
+}
+
 function captures(l: HelperSource, localDecls: Set<ts.Node>, checker: ts.TypeChecker): boolean {
   const fn = l.node;
   let found = false;

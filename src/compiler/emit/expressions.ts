@@ -160,6 +160,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (l) {
         if (l.closure) this.fail(node, `"${node.text}" is a function: TypeSOL functions are called (${node.text}(…)), not passed around or stored`);
         if (l.type.kind === "array") this.fail(node, `"${node.text}" is an array; use .get(i)`);
+        if (l.type.kind === "vec") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
         if (l.type.kind === "remaining") return { c: "", type: l.type };
         return l.type.kind === "pubkey" && !l.ptr ? { c: `(&${l.c})`, type: l.type } : { c: l.c, type: l.type };
       }
@@ -232,6 +233,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const field = node.name.text;
     if (field === "length") {
       if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.ix!.accounts.length}))`, type: U64 };
+      // The number of elements a map / filter chain gives: counted, nothing stored.
+      if (this.isPipeline(node.expression)) {
+        const n = this.tmp("count");
+        this.line(`uint64_t ${n} = 0;`);
+        this.eachElement(node.expression, node, { index: `__ln${this.temp++}`, ci: this.tmp("ln_i") }, () => this.line(`${n}++;`));
+        return { c: n, type: U64 };
+      }
       const arr = this.ref(node.expression);
       if (arr?.type.kind === "array") return { c: `${arr.type.len}ULL`, type: U64 };
       if (arr?.type.kind === "vec") return { c: vecCount(arr.vec!), type: U64 };

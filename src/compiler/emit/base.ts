@@ -122,6 +122,15 @@ export abstract class EmitterBase {
     return g.fnParams.map((i) => {
       const arg = node.arguments[i];
       const pname = (g.node.parameters[i]!.name as ts.Identifier).text;
+      // An arrow written here: lifted to a local function when it reads nothing around it.
+      if (arg && (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg))) {
+        const lifted = this.model.helperDecls.get(arg);
+        if (lifted) return lifted;
+        this.fail(
+          arg,
+          `this function reads the variables of the function around it, so it can only run there, not be passed to ${g.display}; pass the values it needs as arguments`,
+        );
+      }
       if (!arg || !ts.isIdentifier(arg)) this.fail(arg ?? node, `pass ${g.display}'s ${pname} a named function (declare it: const f = (…) => …)`);
       const passed = this.helper?.fnArgs?.get(arg.text);
       if (passed) return passed;
@@ -350,4 +359,11 @@ export abstract class EmitterBase {
   protected abstract epilogue(): string[];
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
+  protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
+  protected abstract eachElement(
+    list: ts.Expression,
+    at: ts.Node,
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean },
+    body: (element: ts.Expression, index: ts.Expression) => void,
+  ): void;
 }

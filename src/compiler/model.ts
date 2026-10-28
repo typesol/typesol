@@ -312,6 +312,8 @@ export interface ProgramModel {
   fstrings: Set<number>;
   /** FixedVec<T, N> types in use (IDL name -> type), for IDL types. */
   fixedVecs: Map<string, FieldType & { kind: "vec" }>;
+  /** FixedVec types of local lists (`const ys = xs.map(…)`), filled in while emitting: C typedefs only, not the IDL. */
+  localVecs: Map<string, FieldType & { kind: "vec" }>;
 }
 
 export function isWritable(k: ParamKind): boolean {
