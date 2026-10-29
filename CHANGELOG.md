@@ -6,7 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
-Editor errors that follow you through a program, faster.
+## 0.30.0 — 2026-10-30
+
+Editor errors that follow you through a program, faster. The compiler's output is the same as 0.29.0 for every
+program.
 
 - Changed: `typesol/ts-plugin` shows the compiler's refusals in every file of a program (a helper or state file the
   entry imports, not only the entry), for the unsaved text of every open file, underlining the whole construct.
