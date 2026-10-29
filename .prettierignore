@@ -1,7 +1,7 @@
 dist
 node_modules
 target
-bench/anchor/target
+test/anchor-twins/target
 test/golden
 test/programs
 # TypeSOL programs: tests and the golden C refer to their line numbers

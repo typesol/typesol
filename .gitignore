@@ -12,7 +12,7 @@ keys/
 !.env.example
 .DS_Store
 *.log
-bench/anchor/target/
+test/anchor-twins/target/
 !test/programs/*.so
 # Fetched with scripts/fetch-programs.sh, not kept in the repository (see test/programs/SOURCES.md): Token Metadata,
 # Core and Bubblegum are under the Metaplex NFT Open Source License; the mpl-account-compression pair is Apache-2.0 but

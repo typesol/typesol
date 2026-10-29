@@ -846,7 +846,7 @@ assert(bestAsk.returnData?.readBigUInt64LE() === 103n, "best ask is the partly f
     console.log("\ngenerated CPI helpers -> Anchor vault");
     const dir = path.join(ROOT, "target", network, "cpigen-src");
     mkdirSync(dir, { recursive: true });
-    const { generateCpi } = await import("../dist/cpigen.js");
+    const { generateCpi } = await import("../dist/tools/cpigen.js");
     writeFileSync(path.join(dir, "vault_cpi.ts"), generateCpi(vaultIdl).source);
     writeFileSync(
       path.join(dir, "vault_caller.ts"),
@@ -960,7 +960,7 @@ assert(bestAsk.returnData?.readBigUInt64LE() === 103n, "best ask is the partly f
 {
   // ---- canonical on-chain IDL, Metaplex Core + Bubblegum, SBPF v1/v2 -----------------------
   console.log("\nIDL publishing, Metaplex Core and Bubblegum, SBPF v1/v2");
-  const { publishIdl, fetchIdl, rpcChain } = await import("../dist/idlpublish.js");
+  const { publishIdl, fetchIdl, rpcChain } = await import("../dist/tools/idlpublish.js");
   const pc = await deploy("platform-idl", path.join(ROOT, "test/fixtures/platform.ts"));
   const idl = JSON.parse(readFileSync(path.join(ROOT, "target", network, "platform-idl", "platform.json"), "utf8"));
   try {

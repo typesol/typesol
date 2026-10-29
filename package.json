@@ -22,16 +22,16 @@
       "default": "./dist/workspace.js"
     },
     "./cpi": {
-      "types": "./dist/cpigen.d.ts",
-      "default": "./dist/cpigen.js"
+      "types": "./dist/tools/cpigen.d.ts",
+      "default": "./dist/tools/cpigen.js"
     },
     "./client": {
-      "types": "./dist/clientgen.d.ts",
-      "default": "./dist/clientgen.js"
+      "types": "./dist/tools/clientgen.d.ts",
+      "default": "./dist/tools/clientgen.js"
     },
     "./profile": {
-      "types": "./dist/profile.d.ts",
-      "default": "./dist/profile.js"
+      "types": "./dist/tools/profile.d.ts",
+      "default": "./dist/tools/profile.js"
     },
     "./testing": {
       "types": "./dist/testing.d.ts",
@@ -39,8 +39,8 @@
     },
     "./ts-plugin": "./ts-plugin/index.js",
     "./idl": {
-      "types": "./dist/idlpublish.d.ts",
-      "default": "./dist/idlpublish.js"
+      "types": "./dist/tools/idlpublish.d.ts",
+      "default": "./dist/tools/idlpublish.js"
     },
     "./package.json": "./package.json"
   },
@@ -63,12 +63,12 @@
     "test": "vitest run",
     "typesol": "node dist/cli.js",
     "smoke": "node scripts/smoke.ts",
-    "fuzz": "FUZZ_RUNS=2000 FUZZ_STEPS=600 FUZZ_VERBOSE=1 vitest run test/fuzz-arith.test.ts test/fuzz-state.test.ts test/differential.test.ts --silent=false",
-    "bench:anchor": "cd bench/anchor && cargo-build-sbf",
+    "fuzz": "FUZZ_RUNS=2000 FUZZ_STEPS=600 FUZZ_VERBOSE=1 vitest run test/verification/fuzz-arith.test.ts test/verification/fuzz-state.test.ts test/verification/differential.test.ts --silent=false",
+    "build:twins": "cd test/anchor-twins && cargo-build-sbf",
     "prepack": "npm run build",
     "fetch:programs": "bash scripts/fetch-programs.sh",
-    "format": "prettier --write \"src/**/*.ts\" \"test/*.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\"",
-    "lint": "prettier --check \"src/**/*.ts\" \"test/*.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\" && pnpm typecheck",
+    "format": "prettier --write \"src/**/*.ts\" \"test/*.ts\" \"test/*/*.test.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\"",
+    "lint": "prettier --check \"src/**/*.ts\" \"test/*.ts\" \"test/*/*.test.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\" && pnpm typecheck",
     "prepublishOnly": "pnpm lint && pnpm test"
   },
   "engines": {

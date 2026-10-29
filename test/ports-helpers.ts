@@ -1,4 +1,4 @@
-// Shared helpers for the ports of solana-developers/program-examples (test/ports/**/*.ts, test/ports-*.test.ts).
+// Shared helpers for the ports of solana-developers/program-examples (test/ports/**/*.ts, test/porting/ports-*.test.ts).
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as t22 from "@solana-program/token-2022";
 import { getTokenDecoder } from "@solana-program/token";

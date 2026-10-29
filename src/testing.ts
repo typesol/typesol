@@ -39,7 +39,7 @@ import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { type SvmConnection, svmConnection } from "./svmrpc.js";
+import { type SvmConnection, svmConnection } from "./tools/svmrpc.js";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
 
 export { type SvmConnection, svmConnection };

@@ -87,8 +87,8 @@ jobs:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
     # pushes and pull requests.
     if: ${{ inputs.differential != 'no' }}
-    # The Anchor programs (bench/anchor) make test/differential.test.ts, the cpigen Anchor test, the @layout borsh
-    # comparison (test/borsh-layout.test.ts) and the zero-copy client test (test/client-anchor.test.ts) run instead of skip.
+    # The Anchor programs (test/anchor-twins) make test/verification/differential.test.ts, the cpigen Anchor test, the @layout borsh
+    # comparison (test/language/borsh-layout.test.ts) and the zero-copy client test (test/client/client-anchor.test.ts) run instead of skip.
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
@@ -106,11 +106,11 @@ jobs:
             ~/.local/share/solana
             ~/.cache/solana
             ~/.cargo/registry
-            bench/anchor/target
-          key: differential-agave-3.1.10-${{ hashFiles('bench/anchor/Cargo.lock') }}
+            test/anchor-twins/target
+          key: differential-agave-3.1.10-${{ hashFiles('test/anchor-twins/Cargo.lock') }}
       - run: |
           [ -x ~/.local/share/solana/install/active_release/bin/solana ] || sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm bench:anchor
-      - run: FUZZ_RUNS=500 FUZZ_STEPS=300 pnpm vitest run test/differential.test.ts test/cpigen.test.ts test/borsh-layout.test.ts test/client-anchor.test.ts
+      - run: pnpm build:twins
+      - run: FUZZ_RUNS=500 FUZZ_STEPS=300 pnpm vitest run test/verification/differential.test.ts test/client/cpigen.test.ts test/language/borsh-layout.test.ts test/client/client-anchor.test.ts

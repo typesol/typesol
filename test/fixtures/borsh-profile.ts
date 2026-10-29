@@ -1,4 +1,4 @@
-// The Profile program with `@layout borsh`: Anchor's account bytes (bench/anchor/programs/profile is its Anchor twin).
+// The Profile program with `@layout borsh`: Anchor's account bytes (test/anchor-twins/programs/profile is its Anchor twin).
 import {
   type Account,
   type FixedString,

@@ -9,8 +9,8 @@ fixtures="$ledger-fixtures"
 read -r pyth sb < <(node "$here/scripts/localnet-fixtures.ts" "$fixtures")
 extra=()
 load() { [[ -f "$2" ]] && extra+=(--bpf-program "$1" "$2") || true; }
-# The Anchor vault twin (bench/anchor, `cargo-build-sbf` there) at its declared id, for the generated-CPI check.
-load HVWmZ4JYMsvmLQoZMXDcjoat1GHHfC1GsgQjSjbGFGX "$here/bench/anchor/target/deploy/anchor_vault.so"
+# The Anchor vault twin (test/anchor-twins, `cargo-build-sbf` there) at its declared id, for the generated-CPI check.
+load HVWmZ4JYMsvmLQoZMXDcjoat1GHHfC1GsgQjSjbGFGX "$here/test/anchor-twins/target/deploy/anchor_vault.so"
 programs="$here/test/programs"
 load metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s "$programs/mpl_token_metadata.so"
 load ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S "$programs/program_metadata.so"

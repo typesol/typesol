@@ -1,0 +1,11 @@
+# Anchor twins of examples/{counter,vault,escrow}.ts: same accounts, layouts, instruction names and
+# error order, so the differential test can send identical transactions to both implementations.
+# programs/zerocopy is not a twin: a zero-copy account and generic types for the client test (test/client/client-anchor.test.ts).
+[workspace]
+members = ["programs/*"]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
