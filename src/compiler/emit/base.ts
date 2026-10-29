@@ -88,7 +88,12 @@ export abstract class EmitterBase {
       this.ix = target;
       for (const a of target.accounts) {
         this.accounts.set(a.name, a);
-        if (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || ((a.kind.kind === "token" || a.kind.kind === "mint") && a.kind.init))
+        if (
+          a.kind.kind === "init" ||
+          a.kind.kind === "initIfNeeded" ||
+          a.kind.kind === "migrate" ||
+          ((a.kind.kind === "token" || a.kind.kind === "mint") && a.kind.init)
+        )
           this.pendingInit.add(a.name);
       }
       for (const a of target.args)

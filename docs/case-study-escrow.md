@@ -184,9 +184,9 @@ Both implementations refuse the hostile calls the comparison makes:
 
 TypeSOL checks each account's constraints in Anchor's order, so a refused transaction usually gets the same error
 code (see [which error a transaction gets](errors.md#which-error-a-transaction-gets)). The second call differs on
-purpose: taker and maker are then the same writable account, which TypeSOL refuses for any two writable parameters,
-where Anchor only compares program and token accounts and fails later, on the maker's token account. A client that
-matches on this code needs to accept either.
+purpose: taker and maker are then the same writable account, which TypeSOL refuses for any two writable parameters
+unless one is marked `Dup<…>`, where Anchor only compares program and token accounts and fails later, on the maker's
+token account. A client that matches on this code needs to accept either.
 
 ## Cost
 

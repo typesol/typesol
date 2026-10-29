@@ -88,6 +88,13 @@ export class FunctionEmitter extends StatementEmitter {
         }
         head.push(`  TS_TRY(ts_check_executable(${v}));`);
       }
+      // Migrate<From, To>: an existing From account (owner, discriminator, size), kept to be rewritten as To.
+      if (k.kind === "migrate")
+        head.push(
+          `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.from.name}, sizeof(TSS_${k.from.name})));`,
+          `  const TSS_${k.from.name} *df_${a.name} = (const TSS_${k.from.name} *)(${v}->data + 8);`,
+          `  uint64_t entry_${a.name} = ${v}->data_len;`,
+        );
       if (k.kind === "zeroed") head.push(`  TS_TRY(ts_init_zeroed(${v}, params->program_id, TS_DISC_${k.struct.name}, sizeof(TSS_${k.struct.name})));`);
       if (k.kind === "initIfNeeded" && k.struct.vec) this.reporter.fail(a.node, "InitIfNeeded accounts cannot end in a Vec yet");
       if ((k.kind === "account" || k.kind === "init" || k.kind === "initIfNeeded") && k.struct.layout === "borsh") {
@@ -353,6 +360,13 @@ export class FunctionEmitter extends StatementEmitter {
     for (const name of this.pendingInit) {
       const k = this.accounts.get(name)!.kind;
       const a = this.accounts.get(name)!;
+      if (k.kind === "migrate") {
+        this.reporter.error(
+          a.node,
+          `Migrate account "${name}" is never migrated; call ${name}.migrate(payer, value) (Anchor fails such an instruction with AccountNotMigrated)`,
+        );
+        continue;
+      }
       const how =
         k.kind === "token" && a.constraints.ata
           ? `${name}.${k.init === "create" ? "create" : "createIfNeeded"}(payer)`

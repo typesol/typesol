@@ -5,11 +5,13 @@ import { decodeAddress } from "../../keys.js";
 import {
   INT_INFO,
   INT_NAMES,
+  type AccountParam,
   type ErrorDef,
   type FieldType,
   type Helper,
   type IntName,
   type ScalarType,
+  type StructDef,
   isScalar,
   isWritable,
   sameType,
@@ -559,6 +561,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         )
           return target.kind.kind === "token" && target.constraints.ata ? this.createAta(node, target, topLevel)! : this.createToken(node, target, topLevel);
         if (target?.kind.kind === "init" && method === "create") return this.create(node, target, topLevel);
+        if (target?.kind.kind === "migrate" && method === "migrate") return this.migrate(node, target, topLevel);
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);
         if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, target);
@@ -1004,6 +1007,35 @@ export abstract class CallEmitter extends ExpressionEmitter {
       this.line(`TS_TRY(ts_claim_mut(params, ${h}));`);
     }
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: mut } };
+  }
+
+  /**
+   * `acct.migrate(payer, value)` on a Migrate<From, To> account: the new value is built in full first (it may read
+   * acct.from, whose bytes the rewrite overwrites), then the account is resized (the payer tops up the rent when it
+   * grows; shrinking keeps the lamports) and rewritten with To's discriminator and the value.
+   */
+  protected migrate(node: ts.CallExpression, a: AccountParam, topLevel: boolean): Value | undefined {
+    const k = a.kind as { kind: "migrate"; from: StructDef; to: StructDef };
+    const call = `${a.name}.migrate`;
+    if (!topLevel) this.fail(node, `${call}(…) must be a top-level statement of the instruction`);
+    if (this.created.has(a.name)) this.fail(node, `${a.name} is already migrated`);
+    if (node.arguments.length !== 2) this.fail(node, `${call}(payer, value) takes the payer and the new ${k.to.name}`);
+    const payer = this.accountParam(node.arguments[0]!, "the payer");
+    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(node.arguments[0]!, "the payer must be a Mut<Signer>");
+    this.assertNotAliased([a.name], node, "migrate");
+    const To = k.to.name;
+    const tmp = this.tmp("next");
+    this.line(`TSS_${To} *${tmp} = NULL;`);
+    this.line(`TS_TRY(ts_alloc(sizeof(TSS_${To}), (uint8_t **)&${tmp}));`);
+    this.writeAggregate({ lv: `(*${tmp})`, type: { kind: "struct", name: To }, writable: true }, node.arguments[1]!);
+    this.line(`TS_TRY(ts_resize(params, a_${payer.name}, a_${a.name}, 8 + sizeof(TSS_${To}), entry_${a.name}));`);
+    this.line(`ts_memcpy(a_${a.name}->data, TS_DISC_${To}, 8);`);
+    this.line(`ts_memcpy(a_${a.name}->data + 8, ${tmp}, sizeof(TSS_${To}));`);
+    this.line(`TSS_${To} *dt_${a.name} = (TSS_${To} *)(a_${a.name}->data + 8);`);
+    this.line(`(void)dt_${a.name};`);
+    this.created.add(a.name);
+    this.pendingInit.delete(a.name);
+    return undefined;
   }
 
   /** Whether a helper (or one it calls) grows a Vec, which needs the instruction's SystemProgram for rent. */

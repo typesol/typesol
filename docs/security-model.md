@@ -51,7 +51,9 @@ Each holds for every instruction of every program the compiler accepts. A break 
    written before it (compile error). Creation refuses an account that already exists (3000), and an address someone
    pre-funded still gets created. `createIfNeeded` on an existing account re-derives the canonical PDA and checks
    owner, discriminator and size (token accounts: mint and owner; mints: decimals, authorities and the extensions it
-   names).
+   names). A `Migrate<From, To>` account is checked as an existing `From`; `migrate(…)` is a top-level statement every
+   path reaches, builds the new value before rewriting the bytes, and nothing reads the old data after it (compile
+   errors).
 9. **Writes through references.** A place is never written after the code that computes its value may have moved it:
    replacing or resizing what a live reference points into is a compile error, as is writing a Vec element with a
    right side that may resize the Vec.

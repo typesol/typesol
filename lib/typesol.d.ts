@@ -636,6 +636,21 @@ export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extend
  * what you need before writing. Not for accounts that are created, closed, a close destination or `@layout borsh`.
  */
 export type Dup<A> = A & { readonly __dup?: true };
+/**
+ * Anchor 1.0's `Migration<From, To>`: an existing `From` account (owner, discriminator and size checked) that this
+ * instruction rewrites as `To` with `acct.migrate(payer, value)`, a top-level statement every path must reach. Read
+ * the old data through `acct.from` before migrating (the new value may use it: it is built in full before the account
+ * is rewritten), and the new data through `acct.to` after. The account is resized to `To`: the payer tops up the rent
+ * when it grows (at most 10 KiB), and shrinking keeps the lamports. `From` usually keeps the old type's discriminator
+ * under a new name: `/** @discriminator account:Counter *\/ interface CounterV1 { … }`. An account already migrated
+ * fails with 3002, as under Anchor.
+ */
+export interface Migrate<From, To> extends AccountMeta {
+  readonly __migrate: [From, To];
+  readonly from: Readonly<From>;
+  readonly to: To;
+  migrate(payer: Mut<Signer>, value: To): void;
+}
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
   /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */
