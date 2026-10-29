@@ -6,14 +6,19 @@ codes, and says so here.
 
 ## Unreleased
 
-- New: examples/raydium-cp-swap, Raydium CP-Swap's trading core (swaps both ways, deposit, withdraw, fee collection,
-  config and status admin; 9 of its 24 instructions), checked against the program deployed on mainnet on 59
-  transactions (creator fees, the price oracle's wrap and Token-2022 transfer fees included): same outcomes, account bytes and events, 51–79% fewer compute units. docs/case-study-raydium-cp-swap.md.
+## 0.31.0 — 2026-10-30
 
-- New: Token-2022 fee and extension reads an AMM needs: `transferFeeInverse(mint, amountReceived)` (spl-token-2022's
+A second real program checked against its mainnet binary: Raydium CP-Swap's trading core, and the Token-2022 reads an
+AMM needs. Programs that do not use the new reads compile to the same binaries as in 0.30.0.
+
+- New: Token-2022 fee and extension reads: `transferFeeInverse(mint, amountReceived)` (spl-token-2022's
   `calculate_inverse_epoch_fee`: what to send so the recipient gets that much), `transferFeeBasisPoints(mint)` and
   `transferFeeMaximum(mint)` (this epoch's), and `extensionsWithin(account, [types…])` (accept only mints whose
   extensions you handle).
+- New: examples/raydium-cp-swap, Raydium CP-Swap's trading core (swaps both ways, deposit, withdraw, fee collection,
+  config and status admin; 9 of its 24 instructions), checked against the program deployed on mainnet on 59
+  transactions (creator fees, the price oracle's wrap and Token-2022 transfer fees included): same outcomes, account
+  bytes and events, 51–79% fewer compute units. docs/case-study-raydium-cp-swap.md.
 
 ## 0.30.0 — 2026-10-30
 
