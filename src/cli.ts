@@ -7,12 +7,12 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import ts from "typescript";
 import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Sbpf } from "./compiler/index.js";
-import { generateCpi, type Idl } from "./cpigen.js";
-import { generatePort, type PortIdl } from "./portgen.js";
-import { generateClient, writeClient, type ClientIdl } from "./clientgen.js";
+import { generateCpi, type Idl } from "./tools/cpigen.js";
+import { generatePort, type PortIdl } from "./tools/portgen.js";
+import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
 import { buildIdl } from "./compiler/idl.js";
 import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
-import { formatProfile, profileLogs } from "./profile.js";
+import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import { buildWorkspace, CONFIG, deployArgs, findWorkspace, programAddress, programForEntry, programPaths, scaffold, type Workspace } from "./workspace.js";
 
@@ -220,7 +220,7 @@ const COMMANDS: Record<string, Command> = {
         throw new Error(`no signer keypair${keyFile ? ` at ${keyFile}` : ""}: pass --keypair, or set keypair_path in the Solana CLI config`);
       // Loaded only here: the other commands do not need an RPC client.
       const kit = await import("@solana/kit");
-      const { publishIdl, rpcChain } = await import("./idlpublish.js");
+      const { publishIdl, rpcChain } = await import("./tools/idlpublish.js");
       const signer = await kit.createKeyPairSignerFromBytes(readKeypair(keyFile));
       const chain = rpcChain(kit.createSolanaRpc(clusterUrl(rpcUrl)));
       for (const name of names(ws, args)) {
@@ -289,7 +289,7 @@ const COMMANDS: Record<string, Command> = {
         if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
         // Loaded only here: the other commands do not need an RPC client.
         const kit = await import("@solana/kit");
-        const { fetchProgramIdl } = await import("./idlpublish.js");
+        const { fetchProgramIdl } = await import("./tools/idlpublish.js");
         const found = await fetchProgramIdl(kit.createSolanaRpc(clusterUrl(rpcUrl)), kit.address(v.address as string));
         console.error(`  IDL from ${found.source === "anchor" ? "Anchor's IDL account" : "the Program Metadata program"}`);
         idl = found.idl;
@@ -329,7 +329,8 @@ const COMMANDS: Record<string, Command> = {
       if (!existsSync(entry)) throw new UsageError(`${entry} does not exist`);
 
       let deployed: Buffer;
-      let onChain: { address: string; info: import("./onchain.js").Deployed; rpc: import("@solana/kit").Rpc<import("@solana/kit").SolanaRpcApi> } | undefined;
+      let onChain:
+        { address: string; info: import("./tools/onchain.js").Deployed; rpc: import("@solana/kit").Rpc<import("@solana/kit").SolanaRpcApi> } | undefined;
       if (deployedPath) {
         if (!existsSync(deployedPath)) throw new UsageError(`${deployedPath} does not exist`);
         deployed = readFileSync(deployedPath);
@@ -340,7 +341,7 @@ const COMMANDS: Record<string, Command> = {
         if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
         // Loaded only here: the other commands do not need an RPC client.
         const kit = await import("@solana/kit");
-        const { fetchDeployed } = await import("./onchain.js");
+        const { fetchDeployed } = await import("./tools/onchain.js");
         const rpc = kit.createSolanaRpc(clusterUrl(rpcUrl));
         const info = await fetchDeployed(rpc, address);
         onChain = { address, info, rpc };
@@ -369,8 +370,8 @@ const COMMANDS: Record<string, Command> = {
 
       const { info } = onChain;
       log(`  authority ${info.authority ?? "none: the program is immutable"}${info.slot !== undefined ? `; last deployed in slot ${info.slot}` : ""}`);
-      const { fetchIdl, metadataAddress } = await import("./idlpublish.js");
-      const { canonicalJson } = await import("./onchain.js");
+      const { fetchIdl, metadataAddress } = await import("./tools/idlpublish.js");
+      const { canonicalJson } = await import("./tools/onchain.js");
       // No canonical metadata account means nothing was published; one that cannot be read is an error, not "none".
       const at = await metadataAddress(onChain.address as never, null);
       const exists = (await onChain.rpc.getAccountInfo(at, { encoding: "base64" }).send()).value !== null;

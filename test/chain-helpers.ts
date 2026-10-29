@@ -2,7 +2,7 @@
 import { type Address, type Blockhash, getAddressEncoder, getBase64Encoder, getProgramDerivedAddress, getTransactionDecoder, lamports } from "@solana/kit";
 import { FailedTransactionMetadata, type LiteSVM } from "litesvm";
 import { readFileSync } from "node:fs";
-import type { Chain } from "../src/idlpublish.js";
+import type { Chain } from "../src/tools/idlpublish.js";
 
 /** A Chain over LiteSVM: RPC-shaped account reads, sends through the VM. */
 export function svmChain(svm: LiteSVM): Chain {

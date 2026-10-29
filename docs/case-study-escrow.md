@@ -166,7 +166,7 @@ is marked PORTED in [the ports table](../test/ports/README.md).
 
 Two independent checks run the original and the port against each other.
 
-- **The port's own test** ([`test/ports-tokens.test.ts`](../test/ports-tokens.test.ts)) runs the upstream flow with SPL
+- **The port's own test** ([`test/porting/ports-tokens.test.ts`](../test/porting/ports-tokens.test.ts)) runs the upstream flow with SPL
   Token mints and again with Token-2022 mints: make, take (creating the taker's and the maker's missing token accounts),
   make again, a refund attempt by someone other than the maker, and the refund. It checks balances, the decoded offer
   and that offer and vault are closed.

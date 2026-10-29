@@ -4,7 +4,7 @@ TypeSOL rewrites of the Anchor programs in [solana-developers/program-examples](
 at commit `de090195e4de698e150572c4f886c333323a64a5` (2026-09-28). Each port is an original TypeScript program written
 against the upstream Rust and tests, not a translation; it keeps the original's declared program id, instruction names,
 accounts and error codes where TypeSOL can express them. The files mirror the upstream paths (minus `/anchor`), and
-`test/ports-*.test.ts` runs the original flows and failure paths against them in LiteSVM.
+`test/porting/ports-*.test.ts` runs the original flows and failure paths against them in LiteSVM.
 
 Status:
 - **PORTED**: same interface, account layout, checks and behaviour.
@@ -60,8 +60,8 @@ Status:
 | `tokens/token-swap` | `tokens/token-swap/{lib,state}.ts` | PORTED | |
 | `tokens/transfer-tokens` | `tokens/transfer-tokens.ts` | PORTED | |
 
-Tests: `test/ports-basics.test.ts`, `test/ports-tokens.test.ts`, `test/ports-metaplex.test.ts` and
-`test/ports-compression.test.ts` (skipped without `pnpm fetch:programs`), `test/ports-token2022-ext.test.ts`, `test/ports-hooks.test.ts`, `test/ports-token2022.test.ts`, `test/ports-oracles.test.ts`.
+Tests: `test/porting/ports-basics.test.ts`, `test/porting/ports-tokens.test.ts`, `test/porting/ports-metaplex.test.ts` and
+`test/porting/ports-compression.test.ts` (skipped without `pnpm fetch:programs`), `test/porting/ports-token2022-ext.test.ts`, `test/porting/ports-hooks.test.ts`, `test/porting/ports-token2022.test.ts`, `test/porting/ports-oracles.test.ts`.
 
 ## License
 

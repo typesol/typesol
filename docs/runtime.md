@@ -56,4 +56,4 @@ In file order:
 - A change that alters behavior (a result, an error code, a log line, account bytes) is a language change and goes
   in the CHANGELOG as one. One that only changes cost says so: "same results".
 - New error codes: add the `#define` here, the row in [errors.md](errors.md) and the name in the compiler's runtime
-  error list (`TYPESOL_ERRORS` in `src/clientgen.ts`), so clients name it (a test checks every code has a name).
+  error list (`TYPESOL_ERRORS` in `src/tools/clientgen.ts`), so clients name it (a test checks every code has a name).

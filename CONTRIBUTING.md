@@ -11,13 +11,13 @@ a constraint or an error code.
   `cargo-build-sbf --version` once (it downloads platform-tools).
 - `pnpm install && pnpm build && pnpm test`.
 - Optional: `pnpm fetch:programs` (Metaplex programs for the Token Metadata / Core / Bubblegum tests),
-  `pnpm bench:anchor` (Anchor twins for the differential tests; needs Rust + Anchor 1.0.2).
+  `pnpm build:twins` (Anchor twins for the differential tests; needs Rust + Anchor 1.0.2).
 
 ## Before a pull request
 
 - `pnpm typecheck` and `pnpm test` pass; new behaviour has a test (a fixture under `test/fixtures/` run in LiteSVM,
-  or a diagnostic case in `test/diagnostics.test.ts`).
-- Changes to generated C: review `UPDATE_GOLDEN=1 pnpm test test/diagnostics.test.ts` output before committing it.
+  or a diagnostic case in `test/language/diagnostics.test.ts`).
+- Changes to generated C: review `UPDATE_GOLDEN=1 pnpm test test/language/diagnostics.test.ts` output before committing it.
 - Changes touching funds-related checks: add a negative test (the attack fails, with the expected error code).
 - A language change that lets a PARTIAL port of program-examples get closer to the original: update the port
   and its row in [test/ports/README.md](test/ports/README.md).

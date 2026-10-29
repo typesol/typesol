@@ -26,13 +26,13 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 
 | Path | Contents |
 | --- | --- |
-| `src/` | The compiler (`src/compiler/`) and the tools around it: CLI, workspace, client, CPI and port generators, testing, IDL publishing (source map below) |
+| `src/` | The compiler (`src/compiler/`); the CLI, projects, init templates and `typesol/testing` at the top; generators and chain tooling in `src/tools/` (client, CPI and port generators, IDL publishing, on-chain reads, profiling, the LiteSVM RPC). Source map below |
 | `runtime/` | `typesol_rt.h`, the C runtime every program includes ([runtime.md](runtime.md)) |
 | `lib/` | `typesol.d.ts`, the language surface programs typecheck against |
 | `ts-plugin/` | The editor plugin (`typesol/ts-plugin`) |
 | `examples/` | Example programs; the `typesol init` templates are copies of three of them |
-| `test/` | The test suite: `fixtures/` (programs the tests compile), `ports/` (TypeSOL rewrites of solana-developers/program-examples), `golden/` (pinned generated clients), `programs/` (third-party program binaries, see its SOURCES.md) |
-| `bench/anchor/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm bench:anchor`) and the zero-copy client test; the benchmarks themselves are in [typesol/benchmarks](https://github.com/typesol/benchmarks) |
+| `test/` | The test suite, by subject: `language/`, `security/`, `examples/`, `integrations/` (token, Metaplex, oracle and other CPIs), `client/`, `cli/`, `porting/`, `verification/` (differential and fuzz tests). Shared: `harness.ts` and the `*-helpers.ts`, `fixtures/` (programs the tests compile), `ports/` (TypeSOL rewrites of solana-developers/program-examples), `golden/` (pinned generated C and clients), `programs/` (third-party program binaries, see its SOURCES.md), `anchor-twins/` (below) |
+| `test/anchor-twins/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm build:twins`) and the zero-copy client test; the benchmarks themselves are in [typesol/benchmarks](https://github.com/typesol/benchmarks) |
 | `scripts/` | `smoke.ts` and `localnet.sh` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers) |
 | `docs/` | User and contributor documentation (also published on typesol.com) |
 | `assets/` | The CLI's logo and the README images (`readme/`, generated) |
@@ -53,17 +53,17 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/compiler/index.ts` | The compiler's API (`generate`, `build`, `verifyBinary`, the build manifest). |
 | `runtime/typesol_rt.h` | The C runtime: error codes, word-wise memory helpers, the entry point's input parser (`ts_deserialize`), account checks, checked math, Borsh helpers, CPIs (System, Token, Token-2022, ATA, Metaplex), oracles and the heap allocator. Header-only and `static inline`, so unused code is dropped. |
 | `src/workspace.ts` | `typesol.json` projects, program keypairs, `typesol init` templates and deploy arguments. |
-| `src/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSOL CPI helpers. |
-| `src/clientgen.ts` | The TypeScript client (`<name>.client.ts`, [client.md](client.md)): reads an IDL, validates it (it may come from anywhere), and writes one `@solana/kit` file. Not part of the compiler core: `workspace.ts` and the CLI write it after `build()`, and `typesol client` writes it for any IDL. |
-| `src/idlpublish.ts` | `typesol idl publish` through the Program Metadata program, and reading a program's IDL back from the chain (Program Metadata or Anchor's IDL account) for `typesol client --address`. |
-| `src/portgen.ts` | `typesol port`: a TypeSOL program skeleton from an Anchor IDL (structs, enums, errors, events, one function per instruction). |
+| `src/tools/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSOL CPI helpers. |
+| `src/tools/clientgen.ts` | The TypeScript client (`<name>.client.ts`, [client.md](client.md)): reads an IDL, validates it (it may come from anywhere), and writes one `@solana/kit` file. Not part of the compiler core: `workspace.ts` and the CLI write it after `build()`, and `typesol client` writes it for any IDL. |
+| `src/tools/idlpublish.ts` | `typesol idl publish` through the Program Metadata program, and reading a program's IDL back from the chain (Program Metadata or Anchor's IDL account) for `typesol client --address`. |
+| `src/tools/portgen.ts` | `typesol port`: a TypeSOL program skeleton from an Anchor IDL (structs, enums, errors, events, one function per instruction). |
 | `src/templates.ts` | The programs and tests `typesol init --template` writes (copies of `examples/`; a test checks they match). |
-| `src/svmrpc.ts` | `svmConnection`: a kit RPC and subscriptions pair answered by LiteSVM, so generated clients run in tests (exported by `typesol/testing`). |
+| `src/tools/svmrpc.ts` | `svmConnection`: a kit RPC and subscriptions pair answered by LiteSVM, so generated clients run in tests (exported by `typesol/testing`). |
 | `src/keys.ts` | Base58 and program keypair helpers. |
 | `ts-plugin/index.js` | `typesol/ts-plugin` (CommonJS, loaded by tsserver): runs `typesol check --json --stdin` on program entries and adds the diagnostics. |
 | `src/testing.ts` | `typesol/testing`: LiteSVM test helpers for projects (accounts by name from the IDL, plain values). |
-| `src/onchain.ts` | `typesol verify --address`: a deployed program's ELF, authority and deploy slot under loader v2, v3 or v4. |
-| `src/profile.ts` | Turns `--profile` logs into compute units per source line. |
+| `src/tools/onchain.ts` | `typesol verify --address`: a deployed program's ELF, authority and deploy slot under loader v2, v3 or v4. |
+| `src/tools/profile.ts` | Turns `--profile` logs into compute units per source line. |
 | `src/cli.ts` | Command parsing. Every command has strict options, `--help`, and exit codes 0 (success), 1 (failure), 2 (usage error) and 3 (verify mismatch). |
 
 ## The emitter
@@ -123,7 +123,7 @@ These invariants are easy to break. Each one has tests.
 3. Put any C helper in `runtime/typesol_rt.h` as `static inline`, returning `uint64_t` (`SUCCESS` or an error code)
    so that callers can wrap it in `TS_TRY`.
 4. Add an execution test that compiles a fixture under `test/fixtures/` and runs it in LiteSVM. Add a diagnostics
-   case in `test/diagnostics.test.ts` for each misuse you reject.
+   case in `test/language/diagnostics.test.ts` for each misuse you reject.
 5. Document it in `docs/language.md` and add a line to `CHANGELOG.md`.
 
 ### Add an account constraint
@@ -145,7 +145,7 @@ These invariants are easy to break. Each one has tests.
 ### Change generated C
 
 `test/golden/counter.c` pins the output for the counter example. Run
-`UPDATE_GOLDEN=1 pnpm test test/diagnostics.test.ts`, review the diff, and commit it with the change.
+`UPDATE_GOLDEN=1 pnpm test test/language/diagnostics.test.ts`, review the diff, and commit it with the change.
 
 For refactors that should not change behaviour, compare binaries: build every example and fixture before and after
 the change. The sha256 values in the `*.build.json` manifests must not change.
@@ -154,12 +154,12 @@ the change. The sha256 values in the `*.build.json` manifests must not change.
 
 | Files | What they cover |
 | --- | --- |
-| `test/<feature>.test.ts` | Execution tests. Each compiles fixtures and runs them in LiteSVM through `test/harness.ts`. |
-| `test/diagnostics.test.ts` | Every rejected construct, plus the golden C. |
-| `test/hardening.test.ts`, `test/regressions.test.ts` | Attacks and edge cases that once failed. Keep each as a negative test. |
-| `test/fuzz-*.test.ts`, `test/differential.test.ts` | Randomized checks against BigInt, a TypeScript state model, and the Anchor twins in `bench/anchor`. See [testing.md](testing.md). |
+| `test/<subject>/<feature>.test.ts` | Execution tests. Each compiles fixtures and runs them in LiteSVM through `test/harness.ts`. |
+| `test/language/diagnostics.test.ts` | Every rejected construct, plus the golden C. |
+| `test/security/hardening.test.ts`, `test/security/regressions.test.ts` | Attacks and edge cases that once failed. Keep each as a negative test. |
+| `test/verification/fuzz-*.test.ts`, `test/verification/differential.test.ts` | Randomized checks against BigInt, a TypeScript state model, and the Anchor twins in `test/anchor-twins`. See [testing.md](testing.md). |
 | `scripts/smoke.ts` | End to end against a real `solana-test-validator` (`scripts/localnet.sh`). |
 
 Some tests need optional inputs and are skipped without them:
 - `pnpm fetch:programs` downloads the Metaplex programs, which cannot be redistributed.
-- `pnpm bench:anchor` builds the Anchor twins and needs Rust and Anchor.
+- `pnpm build:twins` builds the Anchor twins and needs Rust and Anchor.

@@ -1,6 +1,6 @@
 // Programs and tests that `typesol init --template <name>` writes. Each test runs its program in LiteSVM and covers its
 // main flow and at least one refused call, so a new project starts from something that passes and shows how to test.
-// The programs are copies of examples/ (test/workspace.test.ts checks they still match).
+// The programs are copies of examples/ (test/cli/workspace.test.ts checks they still match).
 
 export const TEMPLATE_NAMES = ["counter", "vault", "escrow"] as const;
 export type TemplateName = (typeof TEMPLATE_NAMES)[number];

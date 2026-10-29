@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Repository layout: tests grouped by subject under `test/` (`language/`, `security/`, `examples/`, `integrations/`,
+  `client/`, `cli/`, `porting/`, `verification/`); the Anchor twins moved from `bench/anchor` to `test/anchor-twins`
+  (`pnpm build:twins`); the generators and chain tooling moved to `src/tools/`. The package's import paths
+  (`typesol/client`, `typesol/cpi`, …) are unchanged.
+
 - Repository: Dependabot updates for npm and GitHub Actions (weekly, grouped; TypeScript on its own).
 
 ## 0.25.0 — 2026-10-29

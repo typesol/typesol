@@ -13,7 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { writeClient } from "./clientgen.js";
+import { writeClient } from "./tools/clientgen.js";
 import { build, COMPILER_VERSION, SBPF_VERSIONS, type BuildResult, type Sbpf } from "./compiler/index.js";
 import { loadOrCreateKeypair } from "./keys.js";
 import { TEMPLATES, type TemplateName } from "./templates.js";
