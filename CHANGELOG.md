@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.27.0 — 2026-10-29
+
+Anchor 1.0 parity: instruction introspection, `Dup<…>` and account migration. Existing programs compile to the same
+binaries as in 0.26.0.
+
 - New: instruction introspection. `InstructionsSysvar` has `length`, `currentIndex()` and `get(i)`, a
   `TransactionInstruction` with `programId`, its accounts (key, signer, writable), its data
   (`readU8/U16/U32/U64/readPubkey`) and `is(program, "name")` (an instruction by its Anchor discriminator); every read
