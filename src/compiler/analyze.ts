@@ -120,6 +120,7 @@ const TYPE_EXPORTS = new Set([
   "Owner",
   "Executable",
   "Dup",
+  "Migrate",
   "Optional",
   "EventAuthority",
   "MplCoreProgram",
@@ -179,6 +180,20 @@ export function snakeCase(name: string): string {
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/([A-Z])([A-Z][a-z])/g, "$1_$2")
     .toLowerCase();
+}
+
+/**
+ * An account struct's discriminator: Anchor's sha256("account:<Name>")[..8], or the one a `/** @discriminator … *\/` tag
+ * gives (a sha256 preimage such as `account:Counter`, or 0x and 8 bytes), e.g. for an old version of a struct kept under
+ * a new name for Migrate<From, To>.
+ */
+function accountDiscriminator(decl: ts.Node, name: string, reporter: Reporter): number[] {
+  const tag = ts.getJSDocTags(decl).find((t) => t.tagName.text === "discriminator");
+  if (!tag) return discriminator(`account:${name}`);
+  const text = (typeof tag.comment === "string" ? tag.comment : (ts.getTextOfJSDocComment(tag.comment) ?? "")).trim();
+  if (/^0x([0-9a-fA-F]{2}){8}$/.test(text)) return [...Buffer.from(text.slice(2), "hex")];
+  if (text && !text.startsWith("0x")) return discriminator(text);
+  reporter.fail(decl, "@discriminator on an account struct needs a sha256 preimage (account:<Name>) or 0x and 8 bytes");
 }
 
 export function discriminator(preimage: string): number[] {
@@ -613,7 +628,11 @@ export function analyze(entry: string): Analysis {
     }
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
     if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
-    for (const a of ix.accounts)
+    for (const a of ix.accounts) {
+      if (a.kind.kind === "migrate") {
+        accountStructs.add(a.kind.from.name);
+        accountStructs.add(a.kind.to.name);
+      }
       if (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded") {
         accountStructs.add(a.kind.struct.name);
         if (a.kind.struct.viewsOnly)
@@ -622,6 +641,7 @@ export function analyze(entry: string): Analysis {
             `${a.kind.struct.name} holds a string (or an enum carrying one), so it is an argument, return value or event; account data uses FixedString<N>`,
           );
       }
+    }
   }
   // Arguments are Borsh, where a FixedVec is a Vec (only what it holds). A struct passed as a whole argument and used
   // nowhere else (not account data, not nested, not returned) is read as Anchor sends it: @layout borsh, implied.
@@ -970,7 +990,7 @@ function analyzeStructs(
         name,
         fields: stored,
         size: undefined,
-        accountDiscriminator: discriminator(`account:${name}`),
+        accountDiscriminator: accountDiscriminator(decl, name, reporter),
         eventDiscriminator: discriminator(`event:${name}`),
         node: decl,
         layout: layoutText === "borsh" ? "borsh" : "fixed",
@@ -1312,7 +1332,7 @@ function analyzeHelper(
       )
         reporter.fail(p.type, "constraints belong on instruction parameters; helpers take the plain account type");
       const account = resolveAccountKind(p.type, reporter, scope.imports, structs);
-      if (account.kind === "init" || account.kind === "initIfNeeded" || account.kind === "zeroed")
+      if (account.kind === "init" || account.kind === "initIfNeeded" || account.kind === "zeroed" || account.kind === "migrate")
         reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
       return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
     });
@@ -1430,7 +1450,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
       const kind = resolveAccountKind(inner, reporter, imports, structs);
       if (
         optional &&
-        (["init", "initIfNeeded", "zeroed", "pyth", "eventAuthority", "selfProgram", "programData"].includes(kind.kind) ||
+        (["init", "initIfNeeded", "zeroed", "migrate", "pyth", "eventAuthority", "selfProgram", "programData"].includes(kind.kind) ||
           ((kind.kind === "token" || kind.kind === "mint") && kind.init))
       )
         reporter.fail(p, "Init, InitIfNeeded, Zeroed, PythPriceUpdate, EventAuthority, SelfProgram and ProgramData accounts cannot be optional");
@@ -1547,6 +1567,20 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   })();
   if (pushes && !needs("system")) reporter.error(fn.name, "instructions that grow a Vec (push) need a SystemProgram parameter to top up rent");
   if (needs("init") && !needs("system")) reporter.error(fn.name, "instructions with Init<...> accounts need a SystemProgram parameter");
+  if (accounts.some((a) => a.kind.kind === "migrate" && a.kind.to.size! > a.kind.from.size!) && !needs("system"))
+    reporter.error(fn.name, "a Migrate<From, To> that grows the account needs a SystemProgram parameter (the payer tops up its rent)");
+  for (const a of accounts)
+    if (
+      a.kind.kind === "migrate" &&
+      (a.constraints.hasOne.length ||
+        a.constraints.seeds ||
+        a.constraints.closeTo ||
+        a.constraints.ata ||
+        a.constraints.address ||
+        a.constraints.owner ||
+        a.constraints.dup)
+    )
+      reporter.error(a.node, "Migrate<From, To> takes no constraints yet: check the old fields with require(…, …) on acct.from");
 
   const name = snakeCase(fn.name.text);
   // `/** @discriminator spl-transfer-hook-interface:execute */` (sha256 preimage) or `@discriminator 0x...` (raw bytes)
@@ -1633,6 +1667,9 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
   if (!args[0]) reporter.fail(node, `${name}<…> wraps an account type`);
   return unwrapConstraints(args[0], reporter, imports, out);
 }
+
+/** Solana: an account grows at most this many bytes per instruction. */
+const MAX_PERMITTED_DATA_INCREASE = 10_240;
 
 function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<string, string>, structs: Map<string, StructDef>): ParamKind {
   const outer = typesolName(node, imports);
@@ -1726,6 +1763,24 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       if (!s) reporter.fail(node, "InitIfNeeded<T> needs a struct declared in this program");
       if (s.size! + 8 > MAX_CPI_ALLOCATION) reporter.fail(node, `${s.name} is too large to create in a program; use Zeroed<${s.name}>`);
       return { kind: "initIfNeeded", struct: s };
+    }
+    case "Migrate": {
+      const [fromNode, toNode] = ref.typeArguments ?? [];
+      const from = fromNode && structOf(fromNode);
+      const to = toNode && structOf(toNode);
+      if (!from || !to || ref.typeArguments!.length !== 2) reporter.fail(node, "Migrate<From, To> takes two account structs declared in this program");
+      for (const s of [from, to]) {
+        if (s.vec) reporter.fail(node, `${s.name} has a growable Vec; Migrate<From, To> takes fixed-size structs`);
+        if (s.layout === "borsh") reporter.fail(node, `${s.name} is @layout borsh; Migrate<From, To> takes fixed layouts`);
+      }
+      if (from.accountDiscriminator.join() === to.accountDiscriminator.join())
+        reporter.fail(
+          node,
+          `${from.name} and ${to.name} have the same discriminator: give the new struct another name (or the old one /** @discriminator account:<OldName> */)`,
+        );
+      if (to.size! - from.size! > MAX_PERMITTED_DATA_INCREASE)
+        reporter.fail(node, `${to.name} is more than 10 KiB larger than ${from.name}; an account grows at most 10 KiB per instruction`);
+      return { kind: "migrate", from, to };
     }
     case "Zeroed": {
       const s = structOf(inner());

@@ -12,6 +12,11 @@ codes, and says so here.
   is bounds-checked (5104). `stackHeight()` is 1 at the top level, more under a CPI.
 - New: `Dup<…>`, Anchor's `dup`: a writable parameter that may be the same account as another, for accounts read and
   written in place (not created, closed, a close destination or `@layout borsh`, which are refused at compile time).
+- New: `Migrate<From, To>`, Anchor 1.0's `Migration`: an existing account rewritten from one struct to another with
+  `acct.migrate(payer, value)`, the old data readable through `acct.from` until then (the new value is built before
+  the bytes are rewritten), the new through `acct.to` after; resized with the payer topping up rent.
+- New: `/** @discriminator … */` on an account struct (a sha256 preimage such as `account:Counter`, or 0x and 8
+  bytes), Anchor's `#[account(discriminator = …)]`: keeps an old type's on-chain discriminator under a new name.
 
 ## 0.26.0 — 2026-10-29
 

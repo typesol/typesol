@@ -256,6 +256,22 @@ export abstract class StorageEmitter extends EmitterBase {
     }
     if (ts.isPropertyAccessExpression(node)) {
       const field = node.name.text;
+      // Migrate<From, To>: acct.from (the old data, read-only, until migrate()) and acct.to (after it).
+      if (ts.isIdentifier(node.expression)) {
+        const m = this.accounts.get(node.expression.text);
+        if (m?.kind.kind === "migrate") {
+          const migrated = this.created.has(m.name);
+          if (field === "from") {
+            if (migrated) this.fail(node, `${m.name}.from is gone after ${m.name}.migrate(…): read what you need from it before`);
+            return { lv: `(*df_${m.name})`, type: { kind: "struct", name: m.kind.from.name }, writable: false, account: m, path: ["from"] };
+          }
+          if (field === "to") {
+            if (!migrated) this.fail(node, `${m.name}.to exists after ${m.name}.migrate(payer, value)`);
+            return { lv: `(*dt_${m.name})`, type: { kind: "struct", name: m.kind.to.name }, writable: true, account: m, path: ["to"] };
+          }
+          this.fail(node.name, `a Migrate account has .from (before migrate), .to (after), key, lamports and migrate(payer, value)`);
+        }
+      }
       // acct.field on a struct account
       if (ts.isIdentifier(node.expression)) {
         const a = this.accounts.get(node.expression.text);

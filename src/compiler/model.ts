@@ -125,6 +125,8 @@ export type ParamKind =
   | { kind: "initIfNeeded"; struct: StructDef }
   /** A large account the client already allocated (zeroed, owned by this program); initialized here. */
   | { kind: "zeroed"; struct: StructDef }
+  /** Anchor's Migration<From, To>: an existing `from` account rewritten as `to` by `acct.migrate(payer, value)`. */
+  | { kind: "migrate"; from: StructDef; to: StructDef }
   /** `init`: an associated token account this instruction creates (`Ata<Init<TokenAccount>, …>`, create) or creates when
    * missing (`Ata<InitIfNeeded<TokenAccount>, …>`, createIfNeeded); it is a TokenAccount once that call has run. */
   | { kind: "token"; mut: boolean; init?: "create" | "ifNeeded" }
@@ -338,6 +340,7 @@ export function isWritable(k: ParamKind): boolean {
     case "init":
     case "zeroed":
     case "initIfNeeded":
+    case "migrate":
       return true;
     case "signer":
     case "info":

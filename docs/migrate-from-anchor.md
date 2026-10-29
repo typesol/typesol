@@ -46,6 +46,8 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `Option<Account<'info, T>>` | `Mut<T> \| null` (the client passes the program id to leave it out) |
 | `UncheckedAccount` / `AccountInfo` | `AccountInfo` / `Mut<AccountInfo>`: check what you rely on yourself |
 | `SystemAccount<'info>` | `SystemAccount` / `Mut<SystemAccount>` |
+| `Migration<'info, From, To>` | `Migrate<From, To>`, then `acct.migrate(payer, value)`; the old struct keeps its on-chain discriminator with `/** @discriminator account:<OldName> */` |
+| `#[account(discriminator = …)]` | `/** @discriminator <preimage or 0x8 bytes> */` on the struct |
 | `AccountLoader<T>` with `#[account(zero)]` | `Zeroed<T>` (TypeSOL reads every account in place: no copy to avoid) |
 | `Program<'info, System>` | `SystemProgram` |
 | `Program<'info, Token>` / `Token2022` / `Interface<'info, TokenInterface>` | `TokenProgram` / `Token2022Program` / `TokenInterface` |
