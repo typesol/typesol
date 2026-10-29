@@ -262,23 +262,28 @@ units are not a safety claim. The differential tests also run the escrow against
 ### On mainnet
 
 The official escrow ([tokens/escrow](https://github.com/solana-developers/program-examples/tree/de090195e4de698e150572c4f886c333323a64a5/tokens/escrow)),
-deployed to Solana mainnet-beta in all four versions on 2026-10-27 and called with the same mints, amounts and accounts,
-one instruction per transaction. Each figure is the compute units of that transaction, linked to Solscan; the lowest per row is in bold. The deployed
-programs match these builds byte for byte (`typesol verify` for TypeSOL), and the TypeSOL program's IDL is published
-on chain with `typesol idl publish`.
+deployed to Solana mainnet-beta in all four versions and called with the same mints, amounts and accounts, one
+instruction per transaction. The TypeSOL program was upgraded in place to 0.25.0 on 2026-10-29; the others are as first
+deployed on 2026-10-27. Each figure is the compute units of that transaction, linked to Solscan; the lowest per row is
+in bold. The deployed programs match these builds byte for byte (`typesol verify` for TypeSOL), and the TypeSOL
+program's IDL is published on chain with `typesol idl publish`.
 
 | Transaction | TypeSOL | Pinocchio | Native Rust | Anchor |
 | --- | ---: | ---: | ---: | ---: |
-| make_offer (offer 1) | [20,304](https://solscan.io/tx/32PVva77dT1rSWrMWX2sHTMPZiwztdEZYtpANaxrsuJxPcd3hnV6pDgJJaV4LkL3bX6ALDoHMNF8fjngtodYHBS1) | [**19,645**](https://solscan.io/tx/528BdMTrnLWauSXVh2vaFfy4XwKFpbyt95hQ6w3fwjtpkT85RPkRhGydunAizNDRqTTLPxcEVMrdcDvRer4H9LRE) | [30,698](https://solscan.io/tx/4MQgt75MvojaAkfxnvrE2yJWabGpE8bsZhNq2CeGJxHZg6uD6A64Kv71JmrsgiGnaEovvv8K34DYL49owLjhs4QJ) | [38,648](https://solscan.io/tx/9T1ZY9JaSMb1GMqv1i22AuZuJQN6B5XcgqeDv5tGqEm5Uox3MBTdXsECt59GwcXkFG9QKgXJyqndTEzpSXhbAVM) |
-| take_offer (offer 1) | [**7,998**](https://solscan.io/tx/49EQwgnKShFdsAs37AEzYmv6tLY8DipcCjmRgqwj4fVTFEgVVWdEXw5AvuEufL5ymJYs4T4hVFdkENW9XK9een5m) | [25,206](https://solscan.io/tx/21MGkXpKRe4c7EeA1hC6JHevsk78xUdbcWmyqG47EbLeCNKSMTzTjkJQqtydnQmV8uHPmr6bJHnvQmmQTSZB7Am2) | [28,612](https://solscan.io/tx/B1hu1EL4Y5vWhBVWdyZEpzRNJb8kd6G9CgN7KtyNNGpQ84o9dfn1sdy9Z1UCHECNtp24Mw8bEH2iYz2YADdEUjx) | [32,835](https://solscan.io/tx/3ZLuQQz7Bx5YdgmFXpVQWHn5kyc8v39jr2BnfofH6sqenzfJpAdVm4h38uYcHwYygnfso92kJe7HRHeASsABoKPQ) |
-| make_offer (offer 2) | [21,804](https://solscan.io/tx/xuu9KXbZvzGDpTEEcDE9LYvBqmPen81y6ty92e6crRxT8m4Mc4XyxhjWHbjVNsr9RE3QY4M1j1Sw9cH7PRMKKuc) | [**19,645**](https://solscan.io/tx/LLzS13AJrqACGoT1VHZN278ij39pNkttb1Z4Wh2AYXknWxwjaiaiMeD7WZomjP6TBv18RHfQHUfogQzApvXr2mC) | [35,198](https://solscan.io/tx/4xiKfzyccVatef1T52tZ3VAJwcx5R7iWgHWezBzZ3p2WpvoLzMp1PSUgr7x3sspE53mDE5JaghaNPKuUohVgPuwc) | [47,648](https://solscan.io/tx/4mxW8D5zpY8t4fL8JRbvhp6ejU6CUvB3iWmFjACipzexW6tZfFeatfnEnDTX3Y97BxsvAftoX9eQauiVu84xrLxh) |
-| refund_offer (offer 2) | [**5,961**](https://solscan.io/tx/4kY7s3y95Lrd2WGCWGPWW3zFBVtEKH6EskdscuYmRCRRgPt2rJTZ1CmZMGUUkHs7aai9AygEiTSUG23EMUrFr7rg) | [13,387](https://solscan.io/tx/QUXWwdbKRcT6WhZvSe4U8nxr4GAMaPNV6pZ1fwrC28kRxdJm7HKXVr2DFRuKD9bEzoS6hFdiA2rLr1mQWyrN3oz) | [17,731](https://solscan.io/tx/5zj7E4c61j1JzUsUPC1fNs9ECFLVmCug9rsdYsVLn7YD1RSxdbAJUQDam1BX3epTzW6ed2uFGwTiNhwaYo7vqdwm) | [23,576](https://solscan.io/tx/5Kjwnq5tN8mzj5s67VGxSry4kRzZk6HLdgXW65FyTvpUeC1D7aQoDGTwzrA7kqyYEvV9y9znnZmLaqU98zFrJJo4) |
+| make_offer (offer 1) | [29,205](https://solscan.io/tx/4AaenpnDGYmT2JXAm8HuN5D9GkEWLYeqyMNxJq6D9aYk6ssunSwNTigFmZoCJtY7MZ3FFBXLsig8jo1YmjUFVTpX) | [**21,145**](https://solscan.io/tx/3tWjcMQxTja6QjEmAvi1MRF9qCsnPBsAmQNPnd5RcNTwnkkJYmk9JFFnZoJbTAc6MEr2QYQd7KtgPGtaNr3inrCG) | [45,698](https://solscan.io/tx/4AgQzePrXL4f4qYrFQBzE65d8cszpmqSiQVt9yVsAotbrYTnartXuM2g2PFg7VhUGaZpbhfH9jzXgwXdRLXwB7tk) | [38,648](https://solscan.io/tx/4Hm62foYd5hoNqmEfLk51HhVVb5VHa5oTr81rjAKNNXyKFYwSrpXZhzFVwbk3WxRzEsiqGxHbn7B4eBop6RC1Sgx) |
+| take_offer (offer 1) | [**9,951**](https://solscan.io/tx/52ej6M3zFt5kgMGKUef9VGZdmZWqJdSoHCvCEB9P3btg7DSbvHkM24uk95W7HXjSX12XHmEmXATC7GLcQQ1U22kK) | [26,706](https://solscan.io/tx/4KLfVqTM2KmwgqF4xECWmNuZWYufsWcocdT5saamWdZQfRYhY7aTsyEyk5pVTxug6LJnngJhWDU7NMiPnZxu9sH2) | [31,628](https://solscan.io/tx/5f2VxEcPUfZbCVHpbYbUntVwfUN4k6ieetxSjdpJVwfck2tDuv2QTGbFFtNcy34Nn8d6bKSp5efzKDSbg7xj5TbJ) | [32,835](https://solscan.io/tx/3sJVTUvGRRtvYisFyqthvYQUZpeLmNN2UtXJq9TsQHW2TLP8YwtiuFGoPvu51w5YoZyJjKc3dM3zF6JXTFRFjc6H) |
+| make_offer (offer 2) | [20,205](https://solscan.io/tx/36mSJoMESxSLoxL5apVkoPzptAgFmUM9z2ZVuKpCadQajxbTF3T6BT93bw2ugHfLX7qSXvcBQ96kd8m22y3DsbTH) | [**19,645**](https://solscan.io/tx/PXPGNGCN3RN15L812K9Ho99Xz5YmUgMDaDy8aXuSg1kFgtdX42Z6foLLJkn8X9XB68xgeQsTBQhoDdUfRPKks2f) | [29,198](https://solscan.io/tx/2n38Urd1FsijNB2kbQy1b2cNHrvU7sXwYe5zH9SeyZUJRhUaD8TXSJGkvjEGYCTy3bdmAvEqqE27Ufgcxg3S3uFe) | [38,648](https://solscan.io/tx/185ZpYg3H1Ku4upHPBoBavrTczwzwxQiz7wjqqYWXd8MmxbimbLz7VvjuQdnqAGaAMy11G8M1QqPzXbrPof8gQb) |
+| refund_offer (offer 2) | [**5,478**](https://solscan.io/tx/55Q7pTfsew4F4N9DPB21BEqeHPANhkgQmUGAYVerFP73D7qMTp4eeo5CPMpYQqU7SLS4e49fuKtLkZ9XowbyoKET) | [13,387](https://solscan.io/tx/2cNkvA4xuFJBQzFcFTnLrxRzDU1q5617T8TCF5sBS7JeNzCPUxCPfzS37uv1RUg7xs9Mqyya6KDV9GSZxGiToevT) | [17,731](https://solscan.io/tx/Nj8RGLqEgbj8SEhd9hLcB2JQJY7YwkP1CnMdeJFBdsFhftntFqm1j1wAD1Mc715wrkPv2pFCWu93AF29oHQUDYr) | [20,576](https://solscan.io/tx/5on9Fxe6mADcbWwVn43yQ5wYtdWyx2u3Ry2hSniLJjRqoj2J55Hbgv4AbZoVZ5CDp2VrrghEkKRBvmXxjv1TynmY) |
+| escrow program's own part, 4 transactions | **28,118** | 36,956 | 93,273 | 102,926 |
 | program | [65ybkcg6…](https://solscan.io/account/65ybkcg6mQa9t5EuHtirRdvf2qAu12qRiK6wYBbGk16P) | [FrQwq3iU…](https://solscan.io/account/FrQwq3iUa8ZkWEne1y27webXTAyLgH4Hj6t986t6VS2G) | [5pnmi1Md…](https://solscan.io/account/5pnmi1MdxzXKmgX7ooRSE212rzZK8rb7nNpRTSMqP8V1) | [EG7M3sLL…](https://solscan.io/account/EG7M3sLLwB7MhmtzwYsaxbhZaFDbshL9hmVK79bQVyVq) |
 
-Most of make_offer is the Associated Token Account program creating the vault (about 13,500 CU in every version); it
-searches for the vault address's bump itself at 1,500 CU a try, which is why TypeSOL's offer 2 cost 1,500 more than
-offer 1 (its own part was 6,719 CU both times). The Pinocchio version takes the offer PDA's bump from the client instead
-of searching for it (its own part: 6,051 CU). Mainnet figures differ from the LiteSVM means above.
+Most of make_offer is the Associated Token Account program creating the vault. It searches for the vault address's
+bump itself at 1,500 CU a try, and every offer has its own vault, so that part varies from offer to offer in every
+version (13,585 to 22,585 CU of the make_offers above); programs that check the vault's address re-derive it, so
+take_offer and refund_offer vary with it too. The escrow program's own part is steadier: TypeSOL's make_offer spent
+6,620 CU of its own on both offers. The Pinocchio version takes the offer PDA's bump from the client instead of
+searching for it. Mainnet figures differ from the LiteSVM means above. Every run, including the one before the
+upgrade, is in [typesol/benchmarks](https://github.com/typesol/benchmarks) (`results/`).
 
 ## How it is tested
 
