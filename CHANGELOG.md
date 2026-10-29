@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.29.0 — 2026-10-30
+
 The remaining Anchor gaps: declarative constraints in Anchor's order, Anchor's unbounded `Vec` in Borsh accounts, and
 more than 32 accounts per instruction. Programs that use none of them compile to the same binaries as in 0.28.0.
 
