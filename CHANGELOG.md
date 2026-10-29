@@ -6,6 +6,16 @@ codes, and says so here.
 
 ## Unreleased
 
+Editor errors that follow you through a program, faster.
+
+- Changed: `typesol/ts-plugin` shows the compiler's refusals in every file of a program (a helper or state file the
+  entry imports, not only the entry), for the unsaved text of every open file, underlining the whole construct.
+- Changed: the plugin runs the compiler inside the editor's TypeScript server once it has loaded (a check takes
+  milliseconds instead of starting a process), and `typesol init` writes `.vscode/settings.json` so VS Code offers the
+  workspace's TypeScript, which loads the plugin.
+- New: `typesol check --files` reads `{ "files": { "<path>": "<text>" } }` from stdin (unsaved buffers of any file);
+  `--json` diagnostics carry a `length`. The compiler's `generate(entry, { files })` takes the same overrides.
+
 ## 0.29.0 — 2026-10-30
 
 The remaining Anchor gaps: declarative constraints in Anchor's order, Anchor's unbounded `Vec` in Borsh accounts, and

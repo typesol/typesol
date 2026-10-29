@@ -5,6 +5,8 @@ export interface Diagnostic {
   line: number;
   column: number;
   message: string;
+  /** Characters the problem spans from line:column (the construct refused), when known. */
+  length?: number;
 }
 
 export class CompileError extends Error {
@@ -20,8 +22,9 @@ export function formatDiagnostic(d: Diagnostic): string {
 
 export function diagnosticAt(node: ts.Node, message: string): Diagnostic {
   const sf = node.getSourceFile();
-  const { line, character } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
-  return { file: sf.fileName, line: line + 1, column: character + 1, message };
+  const start = node.getStart(sf);
+  const { line, character } = sf.getLineAndCharacterOfPosition(start);
+  return { file: sf.fileName, line: line + 1, column: character + 1, message, length: Math.max(1, node.getEnd() - start) };
 }
 
 /** Collects diagnostics; `fail` records one and throws to unwind the current construct. */

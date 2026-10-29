@@ -210,7 +210,16 @@ export function discriminator(preimage: string): number[] {
 }
 
 /** Run the TypeScript checker over the entry file with `typesol` mapped to our declarations. */
-function typecheck(entry: string): { program: ts.Program; sourceFile: ts.SourceFile } {
+/**
+ * Library declarations (TypeScript's lib files, typesol.d.ts) parsed once per process: an editor checks the same
+ * program on every keystroke, and these never change.
+ */
+const libSourceFiles = new Map<string, ts.SourceFile>();
+
+/** Source text by absolute path: an editor's unsaved buffers, read instead of the files on disk. */
+export type SourceOverrides = ReadonlyMap<string, string>;
+
+function typecheck(entry: string, files?: SourceOverrides): { program: ts.Program; sourceFile: ts.SourceFile } {
   const options: ts.CompilerOptions = {
     strict: true,
     noEmit: true,
@@ -222,7 +231,27 @@ function typecheck(entry: string): { program: ts.Program; sourceFile: ts.SourceF
     paths: { typesol: [LIB_PATH] },
     skipLibCheck: true,
   };
-  const program = ts.createProgram([entry], options);
+  const host = ts.createCompilerHost(options);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (fileName, language, onError, shouldCreate) => {
+    const text = files?.get(path.resolve(fileName));
+    if (text !== undefined) return ts.createSourceFile(fileName, text, language, true);
+    const lib = fileName.endsWith(".d.ts") && (path.resolve(fileName) === LIB_PATH || fileName.includes(`${path.sep}typescript${path.sep}lib${path.sep}`));
+    if (!lib) return getSourceFile(fileName, language, onError, shouldCreate);
+    let sf = libSourceFiles.get(fileName);
+    if (!sf) {
+      sf = getSourceFile(fileName, language, onError, shouldCreate);
+      if (sf) libSourceFiles.set(fileName, sf);
+    }
+    return sf;
+  };
+  if (files) {
+    const readFile = host.readFile.bind(host);
+    const fileExists = host.fileExists.bind(host);
+    host.readFile = (f) => files.get(path.resolve(f)) ?? readFile(f);
+    host.fileExists = (f) => files.has(path.resolve(f)) || fileExists(f);
+  }
+  const program = ts.createProgram([entry], options, host);
   const sourceFile = program.getSourceFile(entry);
   if (!sourceFile) throw new CompileError([{ file: entry, line: 1, column: 1, message: "cannot read source file" }]);
 
@@ -234,7 +263,7 @@ function typecheck(entry: string): { program: ts.Program; sourceFile: ts.SourceF
       const message = ts.flattenDiagnosticMessageText(d.messageText, "\n");
       if (!d.file || d.start === undefined) return { file: entry, line: 1, column: 1, message };
       const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
-      return { file: d.file.fileName, line: line + 1, column: character + 1, message };
+      return { file: d.file.fileName, line: line + 1, column: character + 1, message, length: d.length };
     });
     throw new CompileError(diagnostics);
   }
@@ -256,13 +285,13 @@ export function resolveRelative(from: string, spec: string): string | undefined 
  * Reject foreign imports before typechecking so the user sees why, not "cannot find module".
  * Follows relative imports so every file of the program is checked.
  */
-function checkImports(entry: string): void {
+function checkImports(entry: string, files?: SourceOverrides): void {
   const reporter: Reporter = new Reporter();
   const seen = new Set<string>();
   const visit = (file: string) => {
     if (seen.has(file)) return;
     seen.add(file);
-    const text = ts.sys.readFile(file);
+    const text = files?.get(file) ?? ts.sys.readFile(file);
     if (text === undefined) throw new CompileError([{ file, line: 1, column: 1, message: "cannot read source file" }]);
     const sf = ts.createSourceFile(file, text, ts.ScriptTarget.ES2022, true);
     for (const stmt of sf.statements) {
@@ -302,10 +331,10 @@ function programFiles(program: ts.Program, entry: string): ts.SourceFile[] {
   return order;
 }
 
-export function analyze(entry: string): Analysis {
+export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const entryPath = path.resolve(entry);
-  checkImports(entryPath);
-  const { program, sourceFile } = typecheck(entryPath);
+  checkImports(entryPath, files);
+  const { program, sourceFile } = typecheck(entryPath, files);
   const reporter: Reporter = new Reporter();
   const errorEnums = new Map<string, Map<string, ErrorDef>>();
   const enums = new Map<string, EnumDef>();

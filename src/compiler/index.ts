@@ -23,7 +23,7 @@ export interface Generated {
 
 /** Typecheck, enforce the TypeSOL subset, and generate C. Throws CompileError with every diagnostic. */
 export function generate(entry: string, opts: EmitOptions = {}): Generated {
-  const analysis = analyze(entry);
+  const analysis = analyze(entry, opts.files);
   analysis.reporter.throwIfAny();
   const c = emitProgram(analysis, opts);
   analysis.reporter.throwIfAny();

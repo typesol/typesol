@@ -314,6 +314,8 @@ export function helperSignature(h: Helper): string {
 export interface EmitOptions {
   /** Log a marker and the remaining compute units before every statement (`typesol build --profile`). */
   profile?: boolean;
+  /** Source text by absolute path (an editor's unsaved buffers), read instead of the files on disk. */
+  files?: ReadonlyMap<string, string>;
 }
 
 /** C type of a growable Vec stored after the first one of struct `s`: `{ uint32_t len; T items[]; }`. */
