@@ -50,7 +50,14 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "signer") head.push(`  TS_TRY(ts_check_signer(${v}));`);
       // Mut<…>: Anchor's `mut` (2000). Anchor checks it with the constraints, after seeds and associated token; here it
       // sits with the type checks, which keeps binaries smaller (only a transaction breaking both sees the difference).
+      // Zeroed<T> (Anchor's `zero`): its discriminator, owner and size come before `mut`, as under Anchor.
+      if (k.kind === "zeroed")
+        head.push(
+          `  TS_TRY(ts_check_zeroed(${v}, params->program_id, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : `sizeof(TSS_${k.struct.name})`}));`,
+        );
       if (isWritable(k)) head.push(`  TS_TRY(ts_check_mut(${v}));`);
+      // Signed<…>: Anchor's `signer` constraint (2002), right after `mut`.
+      if (a.constraints.signed) head.push(`  if (!${v}->is_signer) TS_FAIL(TS_ERR_CONSTRAINT_SIGNER, "TypeSOL: ${a.name} must sign");`);
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       if (k.kind === "account")
         head.push(
@@ -95,9 +102,9 @@ export class FunctionEmitter extends StatementEmitter {
           `  const TSS_${k.from.name} *df_${a.name} = (const TSS_${k.from.name} *)(${v}->data + 8);`,
           `  uint64_t entry_${a.name} = ${v}->data_len;`,
         );
-      if (k.kind === "zeroed") head.push(`  TS_TRY(ts_init_zeroed(${v}, params->program_id, TS_DISC_${k.struct.name}, sizeof(TSS_${k.struct.name})));`);
+      if (k.kind === "zeroed") head.push(`  TS_TRY(ts_init_zeroed(${v}, TS_DISC_${k.struct.name}));`);
       if (k.kind === "initIfNeeded" && k.struct.vec) this.reporter.fail(a.node, "InitIfNeeded accounts cannot end in a Vec yet");
-      if ((k.kind === "account" || k.kind === "init" || k.kind === "initIfNeeded") && k.struct.layout === "borsh") {
+      if ((k.kind === "account" || k.kind === "init" || k.kind === "initIfNeeded" || k.kind === "zeroed") && k.struct.layout === "borsh") {
         // Worked on as its fixed-layout struct on the heap, packed back when the instruction returns. The heap is zero at
         // entry and these are its first allocations (before the body uses it), so a string's padding and a list's
         // unused slots start as zero: ts_unpack_* only writes what the Borsh bytes hold.
@@ -389,7 +396,7 @@ export class FunctionEmitter extends StatementEmitter {
     if (!this.ix) return [];
     // @layout borsh accounts go back to their Borsh bytes (unless closed, or never created).
     const packs = this.ix.accounts
-      .filter((a) => (a.kind.kind === "account" ? a.kind.mut : a.kind.kind === "init" || a.kind.kind === "initIfNeeded"))
+      .filter((a) => (a.kind.kind === "account" ? a.kind.mut : a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || a.kind.kind === "zeroed"))
       .filter((a) => (a.kind as { struct: StructDef }).struct.layout === "borsh")
       .map((a) => {
         const v = `a_${a.name}`;
@@ -593,9 +600,11 @@ export class FunctionEmitter extends StatementEmitter {
     const seeds = `cs_${a.name}`;
     out.push(`  SolSignerSeed ${seeds}[${parts.length + 1}] = {${parts.join(", ")}};`);
     if (c.seeds!.bump) {
-      out.push(`  ${seeds}[${parts.length}] = (SolSignerSeed){&d_${a.name}->${c.seeds!.bump}, 1};`);
+      // The account's own bump field, or "@acct.field": one stored in another struct account.
+      const bump = c.seeds!.bump.startsWith("@") ? `d_${c.seeds!.bump.slice(1).replace(".", "->")}` : `d_${a.name}->${c.seeds!.bump}`;
+      out.push(`  ${seeds}[${parts.length}] = (SolSignerSeed){&${bump}, 1};`);
       out.push(`  TS_TRY(ts_require_pda(a_${a.name}, ${seeds}, ${parts.length + 1}, ${program}));`);
-      this.bumps.set(a.name, `d_${a.name}->${c.seeds!.bump}`);
+      this.bumps.set(a.name, bump);
     } else {
       bumpDecls.push(`  uint8_t sb_${a.name}; (void)sb_${a.name};`);
       out.push(`  { SolPubkey pda_${a.name};`);

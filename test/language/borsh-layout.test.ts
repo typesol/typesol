@@ -136,7 +136,7 @@ describe("@layout borsh", () => {
     // Whole arguments, return values and events are Borsh (test/language/borsh-values.test.ts); inside a list they are not.
     expect(errors(`${S}export function f(s: S): S { return s; }`)).toBe("");
     expect(errors(`${S}export function f(s: FixedArray<S, 2>): void {}`)).toMatch(/pass it as a whole argument/);
-    expect(errors(`${S}export function f(s: Zeroed<S>): void {}`)).toMatch(/Zeroed<T>/);
+    expect(errors(`${S}export function f(s: Zeroed<S>): void { s.n = 1n; }`)).toBe(""); // starts empty (test/language/multisig-features.test.ts)
     expect(errors(`${S}export function f(): void { emit<S>({ n: 1n, name: "x" }); }`)).toBe("");
     expect(errors(`${S}export function f(): void { const s = loadAccount<S>(remainingAccounts().get(0n)); }`)).toMatch(/instruction parameter/);
     expect(errors(`${S}export interface T { s: S }\nexport function f(t: Mut<T>): void {}`)).toMatch(/account data only/);

@@ -6,6 +6,24 @@ codes, and says so here.
 
 ## Unreleased
 
+A port of coral-xyz/multisig, checked against the program deployed on mainnet, and the features it needed.
+
+- New: `invokeInstruction(programId, metas, data, infos, signerSeeds?)`, a CPI decided at run time (Rust's
+  `invoke_signed` of an `Instruction` built from data): metas are structs with `pubkey`, `isSigner`, `isWritable`, the
+  data a list of u8, and every account in `infos` (the remaining accounts or a slice) goes to the runtime.
+- New: `Signed<A>`, Anchor's `signer` constraint on an account that is not a `Signer` (2002); the IDL marks it a signer.
+- New: `Zeroed<T>` of a `@layout borsh` struct (Anchor's `#[account(zero)]` on a Borsh account): it starts empty and is
+  written as Borsh when the instruction returns.
+- New: a Seeds bump stored in another struct account, `Seeds<A, ["@multisig"], "@multisig.nonce">` (Anchor's
+  `bump = multisig.nonce`).
+- New: `list = vecArgument` copies a `Vec` argument (or another list of the same elements) into a `FixedVec` (5104 when
+  it does not fit).
+- Changed: a `Zeroed<T>` account whose discriminator is already set fails with 2013 (ConstraintZero), checked before its
+  owner, as under Anchor; it was 3000 after the owner check.
+- Changed: `key`, `lamports`, `dataLen`, `isSigner`, `isWritable` and `pdaBump` are refused as field names only in
+  structs held in an account (where they would shadow `acct.key` and the others), no longer in every struct.
+- Docs: `docs/case-study-multisig.md`; the mainnet binary is in `test/programs/coral_multisig.so`.
+
 ## 0.27.0 — 2026-10-29
 
 Anchor 1.0 parity: instruction introspection, `Dup<…>` and account migration. Existing programs compile to the same

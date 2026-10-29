@@ -27,6 +27,7 @@
 #define TS_ERR_CONSTRAINT_EXECUTABLE 2007  /* ConstraintExecutable */
 #define TS_ERR_ASSOCIATED 2009             /* ConstraintAssociated */
 #define TS_ERR_ADDRESS 2012                /* ConstraintAddress */
+#define TS_ERR_CONSTRAINT_ZERO 2013        /* ConstraintZero */
 #define TS_ERR_TOKEN_MINT 2014             /* ConstraintTokenMint */
 #define TS_ERR_TOKEN_OWNER 2015            /* ConstraintTokenOwner */
 #define TS_ERR_MINT_AUTHORITY 2016         /* ConstraintMintMintAuthority */
@@ -654,10 +655,15 @@ static inline uint64_t ts_now(int64_t *out) {
  * to this program. It must be writable, rent-exempt, big enough and still all-zero in its discriminator;
  * the discriminator is written here so the account can never be initialized twice.
  */
-static inline uint64_t ts_init_zeroed(TsAccount *a, const SolPubkey *program_id, const uint8_t disc[8], uint64_t size) {
+/* Zeroed<T> (Anchor's `zero`), in Anchor's order: a discriminator already set (2013), then owner and size as the
+ * account type checks them; the rent check and the discriminator write come after the mut / signer checks. */
+static inline uint64_t ts_check_zeroed(const TsAccount *a, const SolPubkey *program_id, uint64_t size) {
+  if (a->data_len >= 8 && ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_CONSTRAINT_ZERO, "TypeSOL: account already initialized");
   if (!ts_key_eq(&a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
   if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
-  if (ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already initialized");
+  return SUCCESS;
+}
+static inline uint64_t ts_init_zeroed(TsAccount *a, const uint8_t disc[8]) {
   uint64_t need;
   TS_TRY(ts_minimum_balance(a->data_len, &need));
   if (a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSOL: account is not rent-exempt");

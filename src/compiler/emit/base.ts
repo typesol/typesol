@@ -428,6 +428,7 @@ export abstract class EmitterBase {
   protected abstract coreOp(node: ts.CallExpression, core: AccountParam, method: string): undefined;
   protected abstract bubblegumOp(node: ts.CallExpression, bg: AccountParam, method: string): undefined;
   protected abstract invoke(node: ts.CallExpression): undefined;
+  protected abstract invokeInstruction(node: ts.CallExpression): undefined;
   protected abstract emitEvent(node: ts.CallExpression, cpi?: { authority: string; program: string }): undefined;
   protected abstract epilogue(): string[];
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;

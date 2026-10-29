@@ -164,6 +164,8 @@ export interface Constraints {
   executable?: boolean;
   /** Dup<A> (Anchor's `dup`): may be the same account as another writable parameter (see function.ts). */
   dup?: boolean;
+  /** Signed<A> (Anchor's `signer` constraint on an account of another type): it must sign (2002). */
+  signed?: boolean;
   /** Close this account into that parameter when the instruction succeeds. */
   closeTo?: string;
   /** Address<A, "base58">: the account must be exactly this address. */

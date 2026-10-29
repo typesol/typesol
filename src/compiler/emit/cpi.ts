@@ -2787,6 +2787,66 @@ export abstract class CpiEmitter extends CallEmitter {
   }
 
   /**
+   * `invokeInstruction(programId, metas, data, infos, signerSeeds?)`: a CPI decided at run time (Rust's
+   * `invoke_signed(&Instruction { program_id, accounts, data }, infos, seeds)`), e.g. one stored in account data. Each
+   * meta is a struct with `pubkey`, `isSigner` and `isWritable`; `data` a list of u8; every account in `infos` (the
+   * remaining accounts, or a slice of them) goes to the runtime, which finds each meta's account there by key (an
+   * account missing there fails the CPI, as under Rust) and checks the privileges: a meta may only be a signer or
+   * writable as the transaction passed it, or a PDA of this program that `signerSeeds` sign for.
+   */
+  protected invokeInstruction(node: ts.CallExpression): undefined {
+    const a = node.arguments;
+    if (!this.ix) this.fail(node, "invokeInstruction is only available in instructions (it passes remaining accounts)");
+    if (a.length !== 4 && a.length !== 5) this.fail(node, "invokeInstruction(programId, accounts, data, infos, signerSeeds?) takes 4 or 5 arguments");
+    const program = this.expect(this.expr(a[0]!, PUBKEY), PUBKEY, a[0]!);
+    const programKey = this.tmp("dprog");
+    this.line(`SolPubkey ${programKey} = *(${program.c});`);
+    const list = (e: ts.Expression, what: string): { items: string; count: string; elem: FieldType } => {
+      const l = ts.isIdentifier(e) ? this.lookup(e.text) : undefined;
+      if (l?.type.kind === "vecArg") return { items: `${l.c}.ptr`, count: `((uint64_t)${l.c}.len)`, elem: l.type.elem };
+      const r = this.ref(e);
+      if (r?.vec && r.type.kind === "vec") return { items: `${r.vec.items}`, count: vecCount(r.vec), elem: r.type.elem };
+      this.fail(e, `${what}: a Vec or FixedVec (account data, an argument or a local list)`);
+    };
+    const metas = list(a[1]!, "the accounts");
+    const elem = metas.elem;
+    const st = elem.kind === "struct" ? this.model.structs.get(elem.name) : undefined;
+    const field = (name: string, kind: "pubkey" | "bool") => st?.fields.find((f) => f.name === name && f.type.kind === kind);
+    if (!st || !field("pubkey", "pubkey") || !field("isSigner", "bool") || !field("isWritable", "bool"))
+      this.fail(a[1]!, "each account is a struct with pubkey: Pubkey, isSigner: boolean and isWritable: boolean");
+    const data = list(a[2]!, "the data");
+    if (data.elem.kind !== "int" || data.elem.name !== "u8") this.fail(a[2]!, "the data is a list of u8");
+    const range = this.remainingRange(a[3]!) ?? this.fail(a[3]!, "pass the accounts the CPI may use: remainingAccounts() or rest.slice(a, b)");
+    const seeds = a.length === 5 ? this.signingSeeds(a[4]!) : undefined;
+
+    const n = this.tmp("dn");
+    const m = this.tmp("dmetas");
+    const i = this.tmp("di");
+    const k = this.tmp("dk");
+    this.line(`uint64_t ${n} = ${metas.count};`);
+    this.line(`SolAccountMeta *${m} = NULL;`);
+    this.line(`TS_TRY(ts_alloc(${n} * sizeof(SolAccountMeta) + 1, (uint8_t **)&${m}));`);
+    this.line(`for (uint64_t ${i} = 0; ${i} < ${n}; ${i}++) {`);
+    this.line(`  const TSS_${st.name} *e = &((const TSS_${st.name} *)${metas.items})[${i}];`);
+    this.line(`  ${m}[${i}] = (SolAccountMeta){(SolPubkey *)&e->pubkey, e->isWritable != 0, e->isSigner != 0};`);
+    this.line(`}`);
+    // Every account offered goes along as an AccountInfo (ts_invoke's scratch holds TS_MAX_ACCOUNTS of them).
+    const base = this.ix.accounts.length;
+    this.line(`uint64_t ${k} = 0;`);
+    this.line(`for (uint64_t ${i}b = ${base} + ${range.from}; ${i}b < ${base} + ${range.to}; ${i}b++) ts_info(params->ka[${i}b], &params->infos[${k}++]);`);
+    const ixName = this.tmp("cpi");
+    this.line(`SolInstruction ${ixName} = {&${programKey}, ${m}, ${n}, (uint8_t *)${data.items}, ${data.count}};`);
+    if (seeds) {
+      const signer = this.tmp("signer");
+      this.line(`SolSignerSeeds ${signer} = {${seeds.name}, ${seeds.count}};`);
+      this.line(
+        `TS_TRY(sol_invoke_signed(&${ixName}, params->infos, ${k}, &${signer}, ${typeof seeds.count === "number" ? (seeds.count > 0 ? 1 : 0) : `${seeds.count} > 0 ? 1 : 0`}));`,
+      );
+    } else this.line(`TS_TRY(sol_invoke_signed(&${ixName}, params->infos, ${k}, NULL, 0));`);
+    return undefined;
+  }
+
+  /**
    * A byte buffer written front to back. Its C declaration is patched in afterwards so it is
    * exactly as large as the fixed content, and only falls back to `max` when strings make it dynamic.
    */

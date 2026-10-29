@@ -292,6 +292,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "invoke":
         return this.invoke(node);
+      case "invokeInstruction":
+        return this.invokeInstruction(node);
       case "sha256":
       case "keccak256":
         return this.hashCall(node, builtin);

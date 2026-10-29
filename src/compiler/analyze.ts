@@ -38,7 +38,15 @@ import {
 export const LIB_PATH = fileURLToPath(new URL("../../lib/typesol.d.ts", import.meta.url));
 
 /** Names a struct field may not use because account parameters already expose them. */
-const RESERVED_FIELDS = new Set(["key", "lamports", "dataLen", "create", "equals", "get", "set", "length", "isSigner", "isWritable", "pdaBump"]);
+const RESERVED_FIELDS = new Set(["create", "equals", "get", "set", "length"]);
+/** Members every account parameter has (`acct.key`, `acct.isSigner`, …): a struct held in an account cannot use them. */
+const ACCOUNT_MEMBERS = new Set(["key", "lamports", "dataLen", "isSigner", "isWritable", "pdaBump"]);
+/** A struct used as account data: none of its fields may shadow an account member. */
+export function checkAccountMembers(s: StructDef, at: ts.Node, reporter: Reporter): void {
+  const clash = s.fields.find((f) => ACCOUNT_MEMBERS.has(f.name));
+  if (clash)
+    reporter.fail(at, `${s.name}.${clash.name}: "${clash.name}" is an account member (acct.${clash.name}); rename the field to hold ${s.name} in an account`);
+}
 
 /**
  * Struct fields and enum variants become C member names as written. C keywords and the object-like
@@ -120,6 +128,7 @@ const TYPE_EXPORTS = new Set([
   "Owner",
   "Executable",
   "Dup",
+  "Signed",
   "Migrate",
   "Optional",
   "EventAuthority",
@@ -1328,7 +1337,8 @@ function analyzeHelper(
         wrapped === "Seeds" ||
         wrapped === "CloseTo" ||
         wrapped === "Address" ||
-        wrapped === "Ata"
+        wrapped === "Ata" ||
+        wrapped === "Signed"
       )
         reporter.fail(p.type, "constraints belong on instruction parameters; helpers take the plain account type");
       const account = resolveAccountKind(p.type, reporter, scope.imports, structs);
@@ -1515,8 +1525,17 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
         if (!field || field.type.kind !== "pubkey" || field.type.hash) reporter.fail(a.node, `HasOne<…, "${f}">: ${struct.name} needs a Pubkey field "${f}"`);
         if (!accounts.some((o) => o.name === f)) reporter.fail(a.node, `HasOne<…, "${f}">: add an account parameter named "${f}"`);
       }
-      if (c.seeds?.bump) {
-        if (!struct) reporter.fail(a.node, "Seeds with a bump field needs a struct account");
+      if (c.seeds?.bump?.startsWith("@")) {
+        // "@acct.field": the bump stored in another struct account (Anchor `bump = multisig.nonce`).
+        const [owner, field, ...rest] = c.seeds.bump.slice(1).split(".");
+        const o = accounts.find((x) => x.name === owner);
+        const os = o?.kind.kind === "account" ? o.kind.struct : undefined;
+        if (!os || !field || rest.length)
+          reporter.fail(a.node, `Seeds bump: "${c.seeds.bump}" must name a u8 field of a struct account parameter ("@config.bump")`);
+        const bf = os.fields.find((x) => x.name === field);
+        if (!bf || bf.type.kind !== "int" || bf.type.name !== "u8") reporter.fail(a.node, `Seeds bump: ${os.name} needs a u8 field "${field}"`);
+      } else if (c.seeds?.bump) {
+        if (!struct) reporter.fail(a.node, `Seeds with a bump field needs a struct account; for a bump stored elsewhere name it "@acct.field"`);
         const bf = struct.fields.find((x) => x.name === c.seeds!.bump);
         if (!bf || bf.type.kind !== "int" || bf.type.name !== "u8") reporter.fail(a.node, `Seeds bump: ${struct.name} needs a u8 field "${c.seeds.bump}"`);
       }
@@ -1543,6 +1562,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
       ...c.hasOne.map((e) => e.split("=").at(-1)!),
       ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1).split(".")[0]!),
       ...(c.seeds?.program?.startsWith("@") ? [c.seeds.program.slice(1)] : []),
+      ...(c.seeds?.bump?.startsWith("@") ? [c.seeds.bump.slice(1).split(".")[0]!] : []),
       ...(c.closeTo ? [c.closeTo] : []),
       ...(c.ata
         ? [c.ata.owner, c.ata.mint, ...(a.kind.kind === "token" ? [] : accounts.filter((o) => o.kind.kind === "tokenProgram").map((o) => o.name))]
@@ -1610,7 +1630,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
 /** Peel HasOne / Seeds / CloseTo wrappers off a parameter type, recording what they ask for. */
 function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<string, string>, out: Constraints): ts.TypeNode {
   const name = typesolName(node, imports);
-  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable", "Dup"].includes(name ?? "")) return node;
+  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable", "Dup", "Signed"].includes(name ?? "")) return node;
   const args = (node as ts.TypeReferenceNode).typeArguments ?? [];
   const lit = (t: ts.TypeNode | undefined): string[] => {
     if (!t) return [];
@@ -1641,6 +1661,7 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
   }
   if (name === "Executable") out.executable = true;
   if (name === "Dup") out.dup = true;
+  if (name === "Signed") out.signed = true;
   if (name === "Address") {
     const text = lit(args[1])[0];
     const bytes = text === undefined ? undefined : decodeAddress(text);
@@ -1681,6 +1702,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
   const structOf = (t: ts.TypeNode): StructDef | undefined => {
     const s = ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) ? structs.get(t.typeName.text) : undefined;
     if (s && s.size === undefined) reporter.fail(t, `${s.name} has a variable-length string field and cannot be account data; use FixedString<N>`);
+    if (s) checkAccountMembers(s, t, reporter);
     return s;
   };
 
@@ -1785,8 +1807,7 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     case "Zeroed": {
       const s = structOf(inner());
       if (!s) reporter.fail(node, "Zeroed<T> needs a struct declared in this program");
-      if (s.vec) reporter.fail(node, `${s.name} has a growable Vec; Zeroed<T> is for fixed-size (large) accounts`);
-      if (s.layout === "borsh") reporter.fail(node, `${s.name} is @layout borsh; Zeroed<T> reads large accounts in place, so it takes fixed layouts only`);
+      if (s.vec) reporter.fail(node, `${s.name} has a growable Vec; Zeroed<T> is for fixed-size accounts (or @layout borsh with FixedVec)`);
       return { kind: "zeroed", struct: s };
     }
     case "Mut": {

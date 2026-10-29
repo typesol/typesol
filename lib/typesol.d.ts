@@ -123,7 +123,7 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
-  push(value: T): void;
+  push(value: T, ...rest: never[]): void;
   pop(): T;
   clear(): void;
   [Symbol.iterator](): Iterator<T>;
@@ -636,6 +636,11 @@ export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extend
  * what you need before writing. Not for accounts that are created, closed, a close destination or `@layout borsh`.
  */
 export type Dup<A> = A & { readonly __dup?: true };
+/**
+ * The account must sign the transaction (Anchor's `signer` constraint on an account that is not a `Signer`; 2002), e.g.
+ * `Signed<Zeroed<Multisig>>` for an account the client creates with a fresh keypair in the same transaction.
+ */
+export type Signed<A> = A & { readonly __signed?: true };
 /**
  * Anchor 1.0's `Migration<From, To>`: an existing `From` account (owner, discriminator and size checked) that this
  * instruction rewrites as `To` with `acct.migrate(payer, value)`, a top-level statement every path must reach. Read
@@ -1379,9 +1384,10 @@ export type Init<T> = T extends TokenAccount
         };
 
 /**
- * A large account (over 10 KiB, up to 10 MiB) the client already allocated with System CreateAccount,
- * owned by this program and still zeroed. Owner, size, rent exemption and emptiness are checked, then
- * the discriminator is written: from here on it is a `Mut<T>`. Same idea as Anchor's zero-copy `zero`.
+ * An account the client already allocated with System CreateAccount (any size up to 10 MiB; over 10 KiB a program
+ * cannot create it itself), owned by this program and still zeroed: Anchor's `zero`. Emptiness (2013), owner, size and
+ * rent exemption are checked, then the discriminator is written: from here on it is a `Mut<T>`. A `@layout borsh`
+ * struct starts empty (lists and strings empty, Options None) and is written as Borsh when the instruction returns.
  */
 export type Zeroed<T> = T & AccountMeta;
 
@@ -1607,6 +1613,32 @@ export declare function invoke(
   program: Program<string> | UncheckedProgram | SystemProgram | TokenProgram | Token2022Program | TokenInterface | RemainingAccount,
   accounts: CpiAccount[],
   data: CpiData[],
+  signerSeeds?: Seed[] | SignerSeeds,
+): void;
+
+/** One account of an instruction built at run time (Rust's `AccountMeta`): any struct with these three fields. */
+export interface InstructionAccountMeta {
+  readonly pubkey: Pubkey;
+  readonly isSigner: boolean;
+  readonly isWritable: boolean;
+}
+/** A list read by index: a Vec or FixedVec in account data, a Vec argument, or a stored local list. */
+export interface IndexedList<T> {
+  readonly length: u64;
+  get(index: bigint): T;
+}
+/**
+ * A CPI decided at run time, e.g. one stored in account data (Rust's `invoke_signed(&Instruction { program_id,
+ * accounts, data }, infos, seeds)`). Every account in `infos` (`remainingAccounts()` or a slice of it) is handed to the
+ * runtime, which finds each meta's account there by key: one that is missing fails the CPI, as under Rust. A meta may
+ * be a signer or writable only as the transaction passed that account, or as a PDA of this program `signerSeeds` sign
+ * for (`signer([multisig.key, multisig.nonce])`).
+ */
+export declare function invokeInstruction(
+  programId: Pubkey,
+  accounts: IndexedList<InstructionAccountMeta>,
+  data: IndexedList<u8>,
+  infos: RemainingAccounts | RemainingSlice,
   signerSeeds?: Seed[] | SignerSeeds,
 ): void;
 

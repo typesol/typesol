@@ -49,6 +49,9 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `Migration<'info, From, To>` | `Migrate<From, To>`, then `acct.migrate(payer, value)`; the old struct keeps its on-chain discriminator with `/** @discriminator account:<OldName> */` |
 | `#[account(discriminator = …)]` | `/** @discriminator <preimage or 0x8 bytes> */` on the struct |
 | `AccountLoader<T>` with `#[account(zero)]` | `Zeroed<T>` (TypeSOL reads every account in place: no copy to avoid) |
+| `Account<T>` with `#[account(zero)]` (Borsh) | `Zeroed<T>` of a `/** @layout borsh */` struct |
+| `#[account(signer)]` on a non-`Signer` account | `Signed<A>`, e.g. `Signed<Zeroed<Multisig>>` |
+| `seeds = [multisig.key().as_ref()], bump = multisig.nonce` | `Seeds<A, ["@multisig"], "@multisig.nonce">` |
 | `Program<'info, System>` | `SystemProgram` |
 | `Program<'info, Token>` / `Token2022` / `Interface<'info, TokenInterface>` | `TokenProgram` / `Token2022Program` / `TokenInterface` |
 | `Account<'info, TokenAccount>` / `Account<'info, Mint>` (`InterfaceAccount`) | `TokenAccount` / `Mint` (`Mut<…>` when written) |
@@ -108,6 +111,8 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `system_program::transfer(CpiContext::new(…), lamports)` | `systemProgram.transfer(from, to, lamports)` |
 | `token::transfer_checked(CpiContext::new_with_signer(…, seeds), amount, decimals)` | `tokenProgram.transferChecked(from, mint, to, authority, amount, ["seed", key, bump])` |
 | `invoke_signed(&ix, &accounts, &[seeds])` | `invoke(program, [writable(a), readonly(b)], [data…], seeds)` |
+| `invoke_signed(&Instruction { program_id, accounts, data }, ctx.remaining_accounts, …)` built at run time | `invokeInstruction(programId, metas, data, remainingAccounts(), seeds)` |
+| `multisig.owners = owners` (a `Vec` argument into account data) | the same, into a `FixedVec<Pubkey, N>` |
 | `declare_program!(other)` / CPI to another Anchor program | `typesol cpi other.json` generates typed helpers |
 | `for x in v.iter()` | `for (const x of v)` |
 | `v.iter().any(\|x\| …)`, `.all`, `.position`, `.find`, `.fold(init, …)`, `.contains(&x)` | `v.some((x) => …)`, `every`, `findIndex`, `find`, `reduce((acc, x) => …, init)`, `includes(x)` |
