@@ -1058,6 +1058,62 @@ static inline uint64_t ts_t22_transfer_fee(const TsAccount *mint, uint64_t amoun
   return SUCCESS;
 }
 
+/* The TransferFee in force this epoch (TransferFeeConfig, extension 1): basis points and maximum, both 0 without one. */
+static inline uint64_t ts_t22_epoch_fee(const TsAccount *mint, uint64_t *bps, uint64_t *maximum) {
+  uint64_t off, len;
+  *bps = 0;
+  *maximum = 0;
+  if (!ts_t22_ext(mint, 1, &off, &len) || len < 108) return SUCCESS;
+  uint64_t epoch;
+  TS_TRY(ts_clock_u64(2, &epoch));
+  const uint8_t *newer = mint->data + off + 90;
+  const uint8_t *fee = epoch >= ts_read_le(newer, 8) ? newer : mint->data + off + 72;
+  *maximum = ts_read_le(fee + 8, 8);
+  *bps = ts_read_le(fee + 16, 2);
+  return SUCCESS;
+}
+
+/* The fee withheld when the recipient is to get `post` (spl-token-2022's calculate_inverse_epoch_fee): the amount to
+   send, as calculate_pre_fee_amount finds it, then the fee on it. Fails (5100) where spl-token-2022 returns None. */
+static inline uint64_t ts_t22_transfer_fee_inverse(const TsAccount *mint, uint64_t post, uint64_t *out) {
+  uint64_t bps, maximum, pre;
+  *out = 0;
+  TS_TRY(ts_t22_epoch_fee(mint, &bps, &maximum));
+  if (bps == 0) pre = post;
+  else if (post == 0) pre = 0;
+  else if (bps == 10000) {
+    if (__builtin_add_overflow(maximum, post, &pre)) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: transfer fee overflow");
+  } else {
+    unsigned __int128 raw = ((unsigned __int128)post * 10000 + (10000 - bps) - 1) / (10000 - bps);
+    if (raw - post >= maximum) {
+      if (__builtin_add_overflow(post, maximum, &pre)) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: transfer fee overflow");
+    } else {
+      if (raw > UINT64_MAX) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: transfer fee overflow");
+      pre = (uint64_t)raw;
+    }
+  }
+  if (bps == 0 || pre == 0) return SUCCESS;
+  unsigned __int128 fee = ((unsigned __int128)pre * bps + 9999) / 10000;
+  *out = fee > maximum ? maximum : (uint64_t)fee;
+  return SUCCESS;
+}
+
+/* Whether every extension of a Token-2022 mint or account is one of `allowed` (true for legacy SPL Token ones). */
+static inline bool ts_t22_extensions_within(const TsAccount *a, const uint16_t *allowed, uint64_t n) {
+  if (!ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID) || a->data_len <= TS_TOKEN_ACCOUNT_LEN + 1) return true;
+  uint64_t at = TS_TOKEN_ACCOUNT_LEN + 1;
+  while (at + 4 <= a->data_len) {
+    uint16_t t = (uint16_t)ts_read_le(a->data + at, 2);
+    uint16_t len = (uint16_t)ts_read_le(a->data + at + 2, 2);
+    if (t == 0) return true; /* uninitialized: end of the entries */
+    bool ok = false;
+    for (uint64_t i = 0; i < n; i++) ok = ok || allowed[i] == t;
+    if (!ok) return false;
+    at += 4 + (uint64_t)len;
+  }
+  return true;
+}
+
 /* ---- Metaplex Core and Bubblegum ----------------------------------------- */
 static const SolPubkey TS_MPL_CORE_ID = {{175, 84, 171, 16, 189, 151, 165, 66, 160, 158, 247, 179, 152, 137, 221, 12, 211, 148, 164, 204, 233, 223, 166, 205, 201, 126, 190, 45, 35, 91, 167, 72}};
 static const SolPubkey TS_BUBBLEGUM_ID = {{152, 139, 128, 235, 121, 53, 40, 105, 178, 36, 116, 95, 89, 221, 191, 138, 38, 88, 202, 19, 220, 104, 129, 33, 38, 53, 28, 174, 7, 193, 165, 165}};

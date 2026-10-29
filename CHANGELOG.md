@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: Token-2022 fee and extension reads an AMM needs: `transferFeeInverse(mint, amountReceived)` (spl-token-2022's
+  `calculate_inverse_epoch_fee`: what to send so the recipient gets that much), `transferFeeBasisPoints(mint)` and
+  `transferFeeMaximum(mint)` (this epoch's), and `extensionsWithin(account, [types…])` (accept only mints whose
+  extensions you handle).
+
 ## 0.30.0 — 2026-10-30
 
 Editor errors that follow you through a program, faster. The compiler's output is the same as 0.29.0 for every

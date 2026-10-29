@@ -490,6 +490,21 @@ export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<S
  * transferFee: the fee withheld when `amount` is sent now (TransferFeeConfig for the current epoch; 0 without it).
  */
 export declare function transferFee(mint: AccountMeta | RemainingAccount, amount: u64): u64;
+/**
+ * The fee withheld when the recipient is to get `amountReceived` (spl-token-2022's `calculate_inverse_epoch_fee`):
+ * send `amountReceived + transferFeeInverse(mint, amountReceived)`. 0 without TransferFeeConfig; fails (5100) where
+ * spl-token-2022 has no answer.
+ */
+export declare function transferFeeInverse(mint: AccountMeta | RemainingAccount, amountReceived: u64): u64;
+/** The TransferFeeConfig in force this epoch: its basis points (0 without the extension). */
+export declare function transferFeeBasisPoints(mint: AccountMeta | RemainingAccount): u16;
+/** The TransferFeeConfig in force this epoch: its maximum fee (0 without the extension). */
+export declare function transferFeeMaximum(mint: AccountMeta | RemainingAccount): u64;
+/**
+ * Whether every Token-2022 extension of `account` is one of `types` (a list of u16 extension types, e.g.
+ * `[1n, 18n, 19n, 10n, 25n]`): a pool that accepts only mints it knows how to handle. True for legacy SPL Token accounts.
+ */
+export declare function extensionsWithin(account: AccountMeta | RemainingAccount, types: u16[]): boolean;
 /** The TransferHook extension's program, if any. */
 export declare function transferHookProgram(mint: AccountMeta | RemainingAccount): Option<Pubkey>;
 /** The TransferHook extension's authority (who may change the hook program), if any. */
