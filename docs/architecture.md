@@ -92,6 +92,29 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 `borsh.ts` writes the Borsh pack/unpack codecs of `@layout borsh` structs, and `program.ts` assembles the C file
 (typedefs, codecs, helpers, instructions, the entry point). `index.ts` is the emitter's export.
 
+## Why there is no IR (yet)
+
+The emitter lowers the checked TypeScript AST straight to C, and clang (-O2) optimizes it. There is no intermediate
+representation in between. We reviewed this on 2026-10-30 and kept it that way for now:
+
+- **What an IR would buy:** flow-sensitive analyses instead of syntactic ones (aliasing today follows storage paths
+  named in the source, see `alias.ts`), a second backend (SBF without clang), and optimizations clang cannot see
+  because they depend on account semantics (dropping a repeated check, packing a `@layout borsh` account only where
+  it changed).
+- **What it would cost now:** rewriting most of the compiler's 12,000 lines, and losing the property every release
+  relies on: programs that do not use a change compile to the same binaries. Audit scope and differential results
+  would start over.
+- **What we have instead:** the layers above, each owning one concern; `Ref` / `Value` as the typed place and value
+  model; refusals where the syntactic analysis cannot prove safety (a false refusal is a compile error, never a wrong
+  program); clang for the generic optimizations. Refactors are checked with `scripts/codegen-snapshot.ts`: the
+  generated C and IDL of every example, fixture and port, compared byte for byte before and after.
+
+Revisit it when one of these becomes real:
+
+1. a second backend (no clang, or another VM);
+2. an optimization that needs data flow across statements and pays for itself in the benchmarks;
+3. aliasing refusals that users hit in correct programs and that only flow-sensitive analysis can lift.
+
 ## Rules the emitter keeps
 
 These invariants are easy to break. Each one has tests.
