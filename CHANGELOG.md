@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Docs: [security model](docs/security-model.md) (the guarantees a compiled program can rely on, trust boundaries,
+  what is left to the author) and [audit package](docs/audit.md) (scope, priorities, earlier reviews, evidence).
+- Tests: `test/verification/fuzz-layout.test.ts`, model-based fuzzing of an account with two growable Vecs and of
+  `loadAccountMut` aliasing through remaining accounts (also in `pnpm fuzz`).
+
 - Repository layout: tests grouped by subject under `test/` (`language/`, `security/`, `examples/`, `integrations/`,
   `client/`, `cli/`, `porting/`, `verification/`); the Anchor twins moved from `bench/anchor` to `test/anchor-twins`
   (`pnpm build:twins`); the generators and chain tooling moved to `src/tools/`. The package's import paths
