@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.26.0 — 2026-10-29
+
+A first-run experience pass, the security model and audit package, and more fuzzing. The compiler's output is the
+same as 0.25.0 for every program.
+
 - New: `typesol doctor` checks Node.js, the platform-tools, the Solana CLI, its keypair, the RPC and the keypair's
   balance there, and the project, and prints the command that fixes each problem (exit 1 when building is impossible).
 - `typesol init` prints the files it creates relative to where it runs, warns with the install commands when the
@@ -13,19 +18,14 @@ codes, and says so here.
 - `typesol deploy` checks, before sending anything, that the RPC answers (else: start `solana-test-validator`, or
   `--url devnet`) and that the payer can pay the rent (else: how much, and the `solana airdrop` command on devnet or a
   local validator). RPC URLs in these messages show only the host.
-- README: deploying on devnet and on a local validator.
-
 - Docs: [security model](docs/security-model.md) (the guarantees a compiled program can rely on, trust boundaries,
-  what is left to the author) and [audit package](docs/audit.md) (scope, priorities, earlier reviews, evidence).
+  what is left to the author) and [audit package](docs/audit.md) (scope, priorities, earlier reviews, evidence);
+  README: deploying on devnet and on a local validator.
 - Tests: `test/verification/fuzz-layout.test.ts`, model-based fuzzing of an account with two growable Vecs and of
   `loadAccountMut` aliasing through remaining accounts (also in `pnpm fuzz`).
-
-- Repository layout: tests grouped by subject under `test/` (`language/`, `security/`, `examples/`, `integrations/`,
-  `client/`, `cli/`, `porting/`, `verification/`); the Anchor twins moved from `bench/anchor` to `test/anchor-twins`
-  (`pnpm build:twins`); the generators and chain tooling moved to `src/tools/`. The package's import paths
-  (`typesol/client`, `typesol/cpi`, …) are unchanged.
-
-- Repository: Dependabot updates for npm and GitHub Actions (weekly, grouped; TypeScript on its own).
+- Repository: tests grouped by subject under `test/`, the Anchor twins in `test/anchor-twins` (`pnpm build:twins`),
+  the generators and chain tooling in `src/tools/` (the package's import paths are unchanged); Dependabot for npm and
+  GitHub Actions.
 
 ## 0.25.0 — 2026-10-29
 
