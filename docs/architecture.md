@@ -80,7 +80,11 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 | `storage.ts` | `StorageEmitter` | references into account data and locals, reads and writes, indexing, aliasing, argument validation |
 | `expressions.ts` | `ExpressionEmitter` | literals, operators and checked arithmetic, property reads, conditionals, text, casts |
 | `calls.ts` | `CallEmitter` | `call()` (the built-in dispatch), Vec methods, helpers, remaining accounts, foreign reads, return data |
-| `cpi.ts` | `CpiEmitter` | seeds and PDAs, `create`, System/Token/ATA/Metaplex CPIs, `invoke`, Borsh serialization, events |
+| `cpi-core.ts` | `CpiCoreEmitter` | seeds and PDAs, signer seeds, remaining-account ranges, byte buffers and Borsh serialization |
+| `create.ts` | `CreateEmitter` | `create` / `createIfNeeded` of program accounts, mints (with Token-2022 extensions), token accounts and ATAs; System transfers |
+| `token.ts` | `TokenEmitter` | SPL Token / Token-2022 instructions and the ATA program |
+| `metaplex.ts` | `MetaplexEmitter` | Token Metadata, Core (plugins, external plugins) and Bubblegum |
+| `cpi.ts` | `CpiEmitter` | `invoke`, `invokeInstruction`, events |
 | `statements.ts` | `StatementEmitter` | variables, assignment, `if`/loops/`switch`, `return` |
 | `function.ts` | `FunctionEmitter` | the instruction prologue (account checks, constraints, argument decoding) and epilogue |
 
