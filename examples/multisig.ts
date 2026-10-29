@@ -20,7 +20,7 @@ import {
   type u8,
   type u32,
   u64,
-  AnchorError,
+  constraint,
   invokeInstruction,
   remainingAccounts,
   require,
@@ -116,8 +116,8 @@ export function approve(
   /** One of the multisig owners. Checked in the handler. */
   owner: Signer,
 ): void {
-  // The original's `constraint = multisig.owner_set_seqno == transaction.owner_set_seqno`.
-  require(multisig.ownerSetSeqno === transaction.ownerSetSeqno, AnchorError.ConstraintRaw);
+  // The original's `#[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]` on multisig.
+  constraint(multisig, multisig.ownerSetSeqno === transaction.ownerSetSeqno);
   const found = multisig.owners.indexOf(owner.key);
   require(found >= 0n, ErrorCode.InvalidOwner);
   transaction.signers.set(u64(found), true);
@@ -165,7 +165,7 @@ export function executeTransaction(
   multisigSigner: Seeds<AccountInfo, ["@multisig"], "@multisig.nonce">,
   transaction: HasOne<Mut<Transaction>, "multisig">,
 ): void {
-  require(multisig.ownerSetSeqno === transaction.ownerSetSeqno, AnchorError.ConstraintRaw);
+  constraint(multisig, multisig.ownerSetSeqno === transaction.ownerSetSeqno);
   // Has this been executed already?
   require(!transaction.didExecute, ErrorCode.AlreadyExecuted);
   // Do we have enough signers?

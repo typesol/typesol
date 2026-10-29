@@ -67,6 +67,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length) this.fail(node, "stackHeight() takes no arguments");
         return { c: "sol_get_stack_height()", type: U64 };
       }
+      case "constraint":
+        this.fail(node, "constraint(account, condition, error?) goes at the start of an instruction's body, before any other statement");
       case "require": {
         if (args.length !== 2) this.fail(node, "require(condition, error) takes two arguments");
         const cond = this.expect(this.expr(args[0], BOOL), BOOL, args[0]);

@@ -1732,6 +1732,13 @@ export declare enum AnchorError {
  * 6000 + N, numbered after the program's error enums and listed in the IDL.
  */
 export declare function require(condition: boolean, error: string | AnchorError): asserts condition;
+/**
+ * Anchor's `constraint = condition @ error` on `account`. Written at the start of an instruction's body (before any
+ * other statement), it runs with that account's checks, after its has_one and before its owner check, so a transaction
+ * that breaks several checks fails with the same code as under Anchor. It may read every account and argument. The
+ * default error is `AnchorError.ConstraintRaw` (2003); `error` is an error-enum member, an `AnchorError` or a string.
+ */
+export declare function constraint(account: AccountMeta | RemainingAccount | null, condition: boolean, error?: string | AnchorError): void;
 
 /** Write a string, integer or pubkey to the program log. */
 export declare function log(value: string | bigint | Pubkey | Hash): void;

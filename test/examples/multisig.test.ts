@@ -135,6 +135,11 @@ describe("examples/multisig.ts against coral-xyz/multisig on mainnet", () => {
     expect(ms.owner_set_seqno).toBe(1);
     // The owner set changed under it: the executed proposal no longer matches (the original's raw constraint, 2003).
     expect(await both("execute again", m.payer, [executeIx(m, tx)])).toBe(custom(2003));
+    // Another multisig's proposal (has_one, 2001) whose sequence number also differs (2003): the original checks the
+    // constraint on `multisig` first, so it is 2003 under both.
+    const fresh = await setup([a.address, b.address], 1);
+    const { tx: freshTx } = await propose(fresh, a, selfCall("change_threshold", { threshold: new BN(1) }, fresh.multisig, fresh.signer), "fresh: propose");
+    expect(await both("double fault: has_one and seqno", m.payer, [approveIx(m, freshTx, a)], [freshTx])).toBe(custom(2003));
   });
 
   it("Assert Unique Owners (the original's second test) and the other create_multisig refusals", async () => {

@@ -14,7 +14,7 @@ import {
   typeName,
 } from "../model.js";
 import { borshIdentical, borshMinSize } from "./borsh.js";
-import { MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature, emptySizeC, vecLenCheck } from "./shared.js";
+import { BOOL, MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature, emptySizeC, vecLenCheck } from "./shared.js";
 import { StatementEmitter } from "./statements.js";
 /**
  * One instruction or helper as a C function: the instruction prologue (account checks, constraints and
@@ -358,12 +358,14 @@ export class FunctionEmitter extends StatementEmitter {
       }
     }
     if (ix.args.length) head.push(`  (void)off;`);
-    head.push(...this.constraintChecks(ix));
+    this.scopes = [new Map()];
+    const raw = this.rawConstraints(ix);
+    head.push(...this.constraintChecks(ix, raw.lines));
 
     this.scopes = [new Map()];
     // Two back-to-back markers measure what one marker costs, so the profiler can subtract it.
     if (this.profile) for (let i = 0; i < 2; i++) (this.line(`sol_log("ts:~");`), this.line(`sol_log_compute_units();`));
-    for (const stmt of ix.node.body!.statements) this.reporter.guard(() => this.statement(stmt, true));
+    for (const stmt of ix.node.body!.statements.slice(raw.count)) this.reporter.guard(() => this.statement(stmt, true));
     for (const name of this.pendingInit) {
       const k = this.accounts.get(name)!.kind;
       const a = this.accounts.get(name)!;
@@ -417,10 +419,39 @@ export class FunctionEmitter extends StatementEmitter {
 
   /**
    * Each account's constraints, account by account in parameter order and, within one account, in Anchor's order
-   * (anchor-syn's `linearize`): seeds, associated token, has_one, owner, executable, address, token::, mint::.
+   * (anchor-syn's `linearize`): seeds, associated token, has_one, constraint, owner, executable, address, token::, mint::.
    * A transaction that breaks several checks then fails with the same error code as under Anchor.
    */
-  protected constraintChecks(ix: Instruction): string[] {
+  /**
+   * `constraint(account, condition, error?)` statements at the start of the body: Anchor's `constraint = expr @ error`.
+   * Each is lowered here, with the arguments decoded, and runs with its account's constraints (after has_one, before
+   * owner), so a transaction breaking several checks gets Anchor's error code. The default error is ConstraintRaw (2003).
+   */
+  protected rawConstraints(ix: Instruction): { lines: Map<string, string[]>; count: number } {
+    const lines = new Map<string, string[]>();
+    let count = 0;
+    for (const stmt of ix.node.body!.statements) {
+      const call = ts.isExpressionStatement(stmt) && ts.isCallExpression(stmt.expression) ? stmt.expression : undefined;
+      if (!call || this.exportName(call.expression) !== "constraint") break;
+      count++;
+      this.reporter.guard(() => {
+        const [acct, cond, error] = call.arguments;
+        if (!acct || !cond || call.arguments.length > 3) this.fail(call, "constraint(account, condition, error?) takes an account parameter, a condition and an optional error");
+        const a = ts.isIdentifier(acct) ? ix.accounts.find((x) => x.name === acct.text) : undefined;
+        if (!a) this.fail(acct, "constraint's first argument is the account parameter the check belongs to (it runs with that account's checks)");
+        const mark = this.lines.length;
+        const hoistMark = this.hoisted.length;
+        const c = this.expect(this.expr(cond, BOOL), BOOL, cond);
+        const err = error ? this.errorRef(error) : { code: 2003, name: "ConstraintRaw", msg: "ConstraintRaw" };
+        this.line(`if (!${c.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(call)})`)});`);
+        const emitted = [...this.hoisted.splice(hoistMark), ...this.lines.splice(mark)];
+        lines.set(a.name, [...(lines.get(a.name) ?? []), ...emitted]);
+      });
+    }
+    return { lines, count };
+  }
+
+  protected constraintChecks(ix: Instruction, raw = new Map<string, string[]>()): string[] {
     const out: string[] = [];
     // Bumps found by Seeds<…> checks, declared ahead of the (possibly optional-guarded) checks for `acct.pdaBump`.
     const bumpDecls: string[] = [];
@@ -465,6 +496,7 @@ export class FunctionEmitter extends StatementEmitter {
           hasOne.push(`  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
       }
       if (k === "account") out.push(...hasOne);
+      out.push(...(raw.get(a.name) ?? []));
       if (c.owner) {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
