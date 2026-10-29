@@ -38,7 +38,7 @@ describe("examples/orderbook (multi-file program, 28 KiB Zeroed account)", () =>
     const book = await allocate(admin);
     expectOk(await send(d.svm, admin, [init(admin, book)]));
     expect((d.svm.getAccount(book) as { data: Uint8Array }).data.length).toBe(BOOK_SIZE);
-    expect(customError(await send(d.svm, admin, [init(admin, book)]))).toBe(3000);
+    expect(customError(await send(d.svm, admin, [init(admin, book)]))).toBe(2013); // Anchor's ConstraintZero
   });
 
   it("refuses accounts that are not ours, too small, or not rent-exempt", async () => {

@@ -102,7 +102,8 @@ These invariants are easy to break. Each one has tests.
   pointer per account, and lengths, lamports and owners a CPI changes are seen without copying anything back. CPIs
   go through `ts_invoke`, which builds `SolAccountInfo` records only for the accounts the call lists. It finds each
   record from its meta (the key sits 8 bytes into it), so every `SolAccountMeta` must point at `&acct->key` of an
-  instruction account, never at a derived or local `SolPubkey`.
+  instruction account, never at a derived or local `SolPubkey`. `invokeInstruction` is the one exception: its metas
+  point into data, so it calls `sol_invoke_signed` directly with records for every account it was handed.
 - **Runtime messages carry the source location.** `line()` appends `(file.ts:line)` to every `"TypeSOL: …"`
   message.
 - **No SDK byte loops.** Generated code and the runtime compare, copy and zero memory with `ts_key_eq`, `ts_mem_eq`,

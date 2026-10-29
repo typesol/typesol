@@ -40,6 +40,7 @@ accepts. Areas where a bug would be most damaging, and where earlier internal re
   the Vecs that follow, `@layout borsh` accounts.
 - **Arithmetic**: every operator and cast at every width, compound assignment, `mulDiv`, rent.
 - **CPIs and signing**: signer-seed arrays (including their reuse across statements), account flags in `invoke`,
+  `invokeInstruction` (metas from data, the infos it hands over, `ts_alloc` of the meta array),
   account creation on pre-funded addresses, closing.
 - **The runtime's parsing**: instruction data, the serialized accounts, Token-2022 extension data, oracle accounts and
   the instructions sysvar.

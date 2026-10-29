@@ -628,9 +628,34 @@ export abstract class StorageEmitter extends EmitterBase {
       this.line(`}`);
       return;
     }
+    // `list = owners`: a Vec argument, or a Vec / FixedVec of the same elements, copied whole into a FixedVec (Anchor's
+    // `multisig.owners = owners`); more elements than it holds fail with 5104, as push does.
+    if (target.type.kind === "vec" && target.type.cap !== undefined && target.type.elem.kind !== "string" && target.type.elem.kind !== "fstring") {
+      const t = target.type as FieldType & { kind: "vec"; cap: number };
+      const l = ts.isIdentifier(valueNode) ? this.lookup(valueNode.text) : undefined;
+      const r = l?.type.kind === "vecArg" ? undefined : this.reporter.guard(() => this.ref(valueNode));
+      const from =
+        l?.type.kind === "vecArg" && sameType(l.type.elem, t.elem)
+          ? { items: `${l.c}.ptr`, count: `((uint64_t)${l.c}.len)` }
+          : r?.vec && r.type.kind === "vec" && sameType(r.type.elem, t.elem) && !sameType(r.type, t)
+            ? { items: r.vec.items, count: vecCount(r.vec) }
+            : undefined;
+      if (from) {
+        const n = this.tmp("vn");
+        this.line(`uint64_t ${n} = ${from.count};`);
+        this.line(`if (${n} > ${t.cap}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: more elements than the ${typeName(t)} holds");`);
+        // Slots past the new length keep what they held, as after pop() / clear().
+        this.line(`ts_memcpy(${target.lv}.items, (const uint8_t *)${from.items}, ${n} * ${this.fieldBytes(t.elem)});`);
+        this.line(`${target.lv}.len = (uint32_t)${n};`);
+        return;
+      }
+    }
     const src = this.ref(valueNode) ?? this.wholeAccount(valueNode);
     if (!src || !sameType(src.type, target.type))
-      this.fail(valueNode, `expected a ${typeName(target.type)}: an object literal or another ${typeName(target.type)}`);
+      this.fail(
+        valueNode,
+        `expected a ${typeName(target.type)}: an object literal, another ${typeName(target.type)}${target.type.kind === "vec" && target.type.cap !== undefined ? " or a Vec of the same elements" : ""}`,
+      );
     // Same-typed places are either distinct or identical (`a.p = a.p`); ts_copy skips the latter.
     this.line(`ts_copy(&${target.lv}, &${src.lv}, sizeof(${target.lv}));`);
   }
