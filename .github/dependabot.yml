@@ -1,12 +1,16 @@
 # Weekly dependency updates, grouped into one pull request per ecosystem. CI (the tests and the differential tests)
 # decides whether an update can merge. typescript is the compiler's front end: a new minor can change
-# what parses, so it comes in its own pull request.
+# what parses, so it comes in its own pull request, and major versions are not proposed (TypeScript 7, the native
+# compiler, ships only an unstable API, not the compiler API TypeSOL's analysis is built on; moving is a project of its own).
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
