@@ -9,6 +9,8 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
   firm.** Do not put significant value behind programs built with it until an external audit of the compiler and
   runtime is published, and audit your own programs as you would any Solana program.
 - Only the latest 0.x release receives security fixes.
+- What a compiled program can rely on is specified in [docs/security-model.md](docs/security-model.md); the package
+  for an external audit is [docs/audit.md](docs/audit.md).
 
 ## Reporting a vulnerability
 

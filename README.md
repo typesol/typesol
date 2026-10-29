@@ -316,7 +316,9 @@ change.
 - The compiler, runtime and tooling have been through internal security reviews and are covered by the tests above.
 - They have **not been audited by an independent firm**. Do not put significant value behind programs built with
   TypeSOL until such an audit is published.
-- Audit your own programs as you would any Solana program.
+- Audit your own programs as you would any Solana program. What a compiled program can rely on, and what is left to
+  you, is in [docs/security-model.md](docs/security-model.md); [docs/audit.md](docs/audit.md) is the package for an
+  external audit.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 Not supported yet: see the end of [docs/language.md](docs/language.md#not-supported-yet).

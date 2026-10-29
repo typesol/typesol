@@ -63,7 +63,7 @@
     "test": "vitest run",
     "typesol": "node dist/cli.js",
     "smoke": "node scripts/smoke.ts",
-    "fuzz": "FUZZ_RUNS=2000 FUZZ_STEPS=600 FUZZ_VERBOSE=1 vitest run test/verification/fuzz-arith.test.ts test/verification/fuzz-state.test.ts test/verification/differential.test.ts --silent=false",
+    "fuzz": "FUZZ_RUNS=2000 FUZZ_STEPS=600 FUZZ_VERBOSE=1 vitest run test/verification/fuzz-arith.test.ts test/verification/fuzz-state.test.ts test/verification/fuzz-layout.test.ts test/verification/differential.test.ts --silent=false",
     "build:twins": "cd test/anchor-twins && cargo-build-sbf",
     "prepack": "npm run build",
     "fetch:programs": "bash scripts/fetch-programs.sh",
