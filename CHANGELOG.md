@@ -6,8 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
-The last two Anchor gaps the multisig port showed: declarative constraints in Anchor's order, and Anchor's unbounded
-`Vec` in Borsh accounts. Programs that use neither compile to the same C as in 0.28.0.
+The remaining Anchor gaps: declarative constraints in Anchor's order, Anchor's unbounded `Vec` in Borsh accounts, and
+more than 32 accounts per instruction. Programs that use none of them compile to the same binaries as in 0.28.0.
+
+- New: `export const MAX_ACCOUNTS = 128n` (33–255) lets a program's instructions take more than 32 accounts, as Anchor
+  programs can. Above 32 the CPI scratch lists live on the heap, grown as needed.
 
 - New: `constraint(account, condition, error?)`, Anchor's `constraint = condition @ error`: statements at the start of
   an instruction that run with that account's checks (after its `has_one`), so a transaction breaking several checks

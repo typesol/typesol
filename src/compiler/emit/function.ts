@@ -14,7 +14,7 @@ import {
   typeName,
 } from "../model.js";
 import { borshIdentical, borshMinSize } from "./borsh.js";
-import { BOOL, MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature, emptySizeC, vecLenCheck } from "./shared.js";
+import { BOOL, accountLimit, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature, emptySizeC, vecLenCheck } from "./shared.js";
 import { StatementEmitter } from "./statements.js";
 /**
  * One instruction or helper as a C function: the instruction prologue (account checks, constraints and
@@ -39,7 +39,8 @@ export class FunctionEmitter extends StatementEmitter {
     const head: string[] = [];
     head.push(`__attribute__((noinline)) static uint64_t ix_${ix.name}(TsParams *params) {`);
     const n = ix.accounts.length;
-    if (n > MAX_ACCOUNTS) this.reporter.fail(ix.node, `instructions may take at most ${MAX_ACCOUNTS} accounts`);
+    const limit = accountLimit(this.model);
+    if (n > limit) this.reporter.fail(ix.node, `instructions may take at most ${limit} accounts (const MAX_ACCOUNTS = …n raises it, up to 255)`);
     head.push(`  if (params->ka_num < ${n}) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");`);
 
     for (const a of ix.accounts) {

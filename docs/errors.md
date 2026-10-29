@@ -44,7 +44,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 5110 | out of heap building strings |
 | 5111 | oracle check failed (unverified, stale, wrong feed, no samples) |
 | 5112 | data enum is not the variant the code expected |
-| 5113 | more than 32 accounts in one instruction |
+| 5113 | more accounts in one instruction (or one CPI) than the program takes: 32, or its `MAX_ACCOUNTS` |
 | 5114 | a function with a result ended without returning one |
 | 5115 | an optional account that was left out was used |
 | 6000+ | your error enums' members, in declaration order (imported files first), then one `RequireFailed<N>` error (code 6000 + N) per distinct `require(cond, "message")` string |

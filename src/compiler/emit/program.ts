@@ -1,6 +1,6 @@
 import type { Analysis } from "../analyze.js";
 import { type FieldType, type StructDef } from "../model.js";
-import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fieldC, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
+import { accountLimit, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fieldC, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
 import { emitBorshCodecs } from "./borsh.js";
 
@@ -39,6 +39,13 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     if (typeof heap.value !== "bigint" || heap.value < 32n || heap.value > 256n)
       reporter.error(analysis.sourceFile, "HEAP_SIZE_KIB must be an integer from 32 to 256 (the requestHeapFrame limits)");
     else out.push(`#define TS_HEAP_LENGTH (${heap.value}ULL * 1024)`);
+  }
+  // `const MAX_ACCOUNTS = 64n`: instructions take up to that many accounts (32 otherwise, at most 255).
+  const maxAccounts = model.constants.get("MAX_ACCOUNTS");
+  if (maxAccounts) {
+    if (typeof maxAccounts.value !== "bigint" || maxAccounts.value < 32n || maxAccounts.value > 255n)
+      reporter.error(analysis.sourceFile, "MAX_ACCOUNTS must be an integer from 32 to 255 (accounts one instruction takes)");
+    else if (maxAccounts.value > 32n) out.push(`#define TS_MAX_ACCOUNTS ${maxAccounts.value}`);
   }
   out.push(`#include "typesol_rt.h"`, "");
 
@@ -120,15 +127,19 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   if (helpers.length) out.push("");
   out.push(...helperBodies, ...ixBodies);
 
-  out.push(`_Static_assert(TS_MAX_ACCOUNTS == ${MAX_ACCOUNTS}, "TS_MAX_ACCOUNTS");`);
+  const limit = accountLimit(model);
+  out.push(`_Static_assert(TS_MAX_ACCOUNTS == ${limit}, "TS_MAX_ACCOUNTS");`);
   out.push(`extern uint64_t entrypoint(const uint8_t *input) {`);
   out.push(`  TsParams params; /* filled in by ts_deserialize */`);
   // Clamping the count to what fits would make extra accounts silently vanish from remainingAccounts():
   // refuse more than the array holds instead (ts_deserialize relies on this bound).
-  out.push(`  if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: at most ${MAX_ACCOUNTS} accounts per instruction");`);
+  out.push(`  if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: at most ${limit} accounts per instruction");`);
   out.push(`  ts_deserialize(input, &params);`);
   // loadAccountMut's record of the accounts it loaded: set up only in programs that use it (one store otherwise wasted).
-  if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_claim_mut("))) out.push(`  params.loaded_mut = 0;`);
+  // Above 32 accounts the CPI scratch lists are taken from the heap when first needed.
+  if (limit > 32) out.push(`  params.infos_cap = 0;`, `  params.metas = NULL;`);
+  if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_claim_mut(")))
+    out.push(limit > 64 ? `  ts_memzero(params.loaded_mut, sizeof(params.loaded_mut));` : `  params.loaded_mut = 0;`);
   const minDisc = Math.min(8, ...model.instructions.map((ix) => ix.discriminator.length));
   out.push(`  if (params.data_len < ${minDisc}) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSOL: instruction data too short");`);
   // Self-CPI events (emitCpi): accept the event instruction when its authority PDA signed it, like Anchor.

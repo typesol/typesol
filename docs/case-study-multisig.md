@@ -155,9 +155,10 @@ escrow case study and the benchmarks compare against Anchor 1.x.
 
 ## Where they differ
 
-- **Accounts per instruction.** A TypeSOL instruction takes at most 32 accounts (5113), so `execute_transaction` can
-  hand a stored instruction at most 29 remaining accounts, and the port builds the signed metas in a list of 32. The
-  original takes as many as the runtime allows.
+- **Accounts per stored instruction.** The port builds the signed metas in a list of 32 and keeps TypeSOL's default of
+  32 accounts per instruction, so `execute_transaction` hands a stored instruction at most 29 remaining accounts. The
+  original takes as many as the runtime allows. `const MAX_ACCOUNTS = …n` (up to 255) and a larger list lift this for a
+  multisig that needs it.
 - **Heap.** Both hold a Borsh account's lists on the heap (32 KiB by default) while the instruction runs. The port's
   lists grow by doubling, as Rust's do, so both run out at about the same sizes: far beyond what these accounts hold.
 - **Logs.** Error messages are logged in TypeSOL's words and the original's error names are not logged; codes are the

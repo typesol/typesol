@@ -3,6 +3,7 @@ import {
   INT_INFO,
   type AccountParam,
   type FieldType,
+  type ProgramModel,
   type Helper,
   type IntName,
   type ParamKind,
@@ -19,6 +20,11 @@ import {
 
 /** Maximum accounts the generated entrypoint deserializes. */
 export const MAX_ACCOUNTS = 32;
+/** The most accounts one instruction takes: 32, or what the program declares with `const MAX_ACCOUNTS = …n` (33–255). */
+export function accountLimit(model: Pick<ProgramModel, "constants">): number {
+  const c = model.constants.get("MAX_ACCOUNTS");
+  return c && typeof c.value === "bigint" && c.value >= 32n && c.value <= 255n ? Number(c.value) : MAX_ACCOUNTS;
+}
 export const MAX_SEEDS = 15; // + bump = 16, the runtime limit
 /** Max instruction data an invoke() may build, and max event payload. */
 export const MAX_CPI_DATA = 1024;

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { discriminator, heapVecOf, snakeCase } from "../analyze.js";
 import { type FieldType, type StructDef, type ValueType, isScalar, isWritable, sameType, typeName } from "../model.js";
-import { MAX_ACCOUNTS, MAX_CPI_DATA, MAX_EVENT, PUBKEY, STRING, type Value, cBytes, valueC, fixedVecC, vecCount } from "./shared.js";
+import { accountLimit, MAX_CPI_DATA, MAX_EVENT, PUBKEY, STRING, type Value, cBytes, valueC, fixedVecC, vecCount } from "./shared.js";
 import { MetaplexEmitter } from "./metaplex.js";
 
 /** Generic CPIs (`invoke`, `invokeInstruction`) and events (`emit`, `emitCpi`). */
@@ -65,7 +65,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     }
 
     // The CPI's account list is built in a buffer with room for one entry per instruction account.
-    if (metas.length > MAX_ACCOUNTS) this.fail(a[1], `invoke takes at most ${MAX_ACCOUNTS} accounts`);
+    if (metas.length > accountLimit(this.model)) this.fail(a[1], `invoke takes at most ${accountLimit(this.model)} accounts`);
 
     // Data: integers (LE at their width), booleans, Pubkeys, strings (Borsh), sighash("name"), hex("..")
     if (!ts.isArrayLiteralExpression(a[2])) this.fail(a[2], "data must be an array literal");
@@ -133,11 +133,11 @@ export abstract class CpiEmitter extends MetaplexEmitter {
       // Room for every account of the instruction (ts_invoke's scratch holds TS_MAX_ACCOUNTS records).
       const n = this.ix!.accounts.length;
       const cnt = this.tmp("nmetas");
-      this.line(`SolAccountMeta ${metasName}[TS_MAX_ACCOUNTS];`);
+      this.line(`TS_METAS_ROOM(${metasName});`);
       this.line(`uint64_t ${cnt} = 0;`);
       const spreads = parts.filter((p): p is Spread => p.kind === "spread");
       const total = [String(metas.length), ...spreads.map((p) => `(${p.to} - ${p.from})`)].join(" + ");
-      this.line(`if (${total} > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${MAX_ACCOUNTS} accounts");`);
+      this.line(`if (${total} > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${accountLimit(this.model)} accounts");`);
       for (const p of parts) {
         if (p.kind === "meta") {
           this.line(`${metasName}[${cnt}++] = (SolAccountMeta)${p.c};`);
@@ -215,6 +215,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     // Every account offered goes along as an AccountInfo (ts_invoke's scratch holds TS_MAX_ACCOUNTS of them).
     const base = this.ix.accounts.length;
     this.line(`uint64_t ${k} = 0;`);
+    this.line(`TS_INFOS_RESERVE(params, (${range.to}) - (${range.from}));`);
     this.line(`for (uint64_t ${i}b = ${base} + ${range.from}; ${i}b < ${base} + ${range.to}; ${i}b++) ts_info(params->ka[${i}b], &params->infos[${k}++]);`);
     const ixName = this.tmp("cpi");
     this.line(`SolInstruction ${ixName} = {&${programKey}, ${m}, ${n}, (uint8_t *)${data.items}, ${data.count}};`);
