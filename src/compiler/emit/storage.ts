@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { resolveScalarType } from "../analyze.js";
+import { heapVecOf, resolveScalarType } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
 import { AliasEmitter } from "./alias.js";
@@ -193,6 +193,7 @@ export abstract class StorageEmitter extends AliasEmitter {
           this.assertUsable(a, node);
           const r: Ref = { lv: `d_${a.name}->${f.name}`, type: f.type, writable: isWritable(a.kind), account: a, path: [f.name] };
           if (f.type.kind === "vec" && f.type.cap !== undefined) r.vec = this.fixedVec(r.lv, f.type.elem, f.type.cap);
+          else if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
           else if (f.type.kind === "vec") {
             // Growing needs the account's length at instruction entry: instructions have it, helpers get it passed.
             const s = a.kind.struct;
@@ -262,8 +263,9 @@ export abstract class StorageEmitter extends AliasEmitter {
         const f = s.fields.find((x) => x.name === field);
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
         const r: Ref = { ...base, lv: `${base.lv}.${f.name}`, type: f.type, path: base.path && [...base.path, f.name], vec: undefined };
+        if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
         // Vecs of loaded accounts can be read and updated in place but not resized (no entry length known).
-        if (f.type.kind === "vec" && f.type.cap === undefined) {
+        else if (f.type.kind === "vec" && f.type.cap === undefined) {
           const k = s.vecs!.findIndex((v) => v.name === f.name);
           const at = s.vecs!.length === 1 ? { len: `${base.lv}.${f.name}__len`, items: r.lv } : vecPlace(s, base.lv, k);
           r.lv = at.items;
@@ -504,6 +506,9 @@ export abstract class StorageEmitter extends AliasEmitter {
       this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
+    // A struct holding a heap Vec is copied field by field: a whole copy would share one list between two places.
+    if (target.type.kind === "struct" && heapVecOf(this.model.structs.get(target.type.name)!))
+      this.fail(valueNode, `${target.type.name} holds a Vec<T>: assign its fields one by one`);
     if (ts.isObjectLiteralExpression(valueNode)) {
       if (target.type.kind !== "struct") this.fail(valueNode, `expected a ${typeName(target.type)}, not an object literal`);
       const s = this.model.structs.get(target.type.name)!;
@@ -540,28 +545,42 @@ export abstract class StorageEmitter extends AliasEmitter {
       this.line(`}`);
       return;
     }
-    // `list = owners`: a Vec argument, or a Vec / FixedVec of the same elements, copied whole into a FixedVec (Anchor's
-    // `multisig.owners = owners`); more elements than it holds fail with 5104, as push does.
-    if (target.type.kind === "vec" && target.type.cap !== undefined && target.type.elem.kind !== "string" && target.type.elem.kind !== "fstring") {
-      const t = target.type as FieldType & { kind: "vec"; cap: number };
+    // `list = owners`: a Vec argument, or a Vec / FixedVec of the same elements, copied whole into a FixedVec or a heap
+    // Vec (Anchor's `multisig.owners = owners`). More than a FixedVec holds fail with 5104, as push does; a heap Vec
+    // grows (the account bounds it when it is written back, 3004).
+    const heap = target.type.kind === "vec" && !!target.type.heap;
+    if (target.type.kind === "vec" && (target.type.cap !== undefined || heap) && target.type.elem.kind !== "string" && target.type.elem.kind !== "fstring") {
+      const t = target.type as FieldType & { kind: "vec" };
       const l = ts.isIdentifier(valueNode) ? this.lookup(valueNode.text) : undefined;
       const r = l?.type.kind === "vecArg" ? undefined : this.reporter.guard(() => this.ref(valueNode));
       const from =
         l?.type.kind === "vecArg" && sameType(l.type.elem, t.elem)
           ? { items: `${l.c}.ptr`, count: `((uint64_t)${l.c}.len)` }
-          : r?.vec && r.type.kind === "vec" && sameType(r.type.elem, t.elem) && !sameType(r.type, t)
+          : r?.vec && r.type.kind === "vec" && sameType(r.type.elem, t.elem) && (heap || !sameType(r.type, t))
             ? { items: r.vec.items, count: vecCount(r.vec) }
             : undefined;
       if (from) {
+        const size = this.fieldBytes(t.elem);
         const n = this.tmp("vn");
         this.line(`uint64_t ${n} = ${from.count};`);
-        this.line(`if (${n} > ${t.cap}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: more elements than the ${typeName(t)} holds");`);
-        // Slots past the new length keep what they held, as after pop() / clear().
-        this.line(`ts_memcpy(${target.lv}.items, (const uint8_t *)${from.items}, ${n} * ${this.fieldBytes(t.elem)});`);
+        if (heap) {
+          // Growing may move the elements: references into them cannot outlive this.
+          this.assertNotAliased(
+            this.pathsOf(valueNode)?.map((p) => `${p}[]`),
+            valueNode,
+          );
+          this.line(`TS_TRY(ts_hvec_reserve(&${target.lv}, ${n}, ${size}));`);
+          this.line(`ts_memmove(${target.lv}.items, (const uint8_t *)${from.items}, ${n} * ${size});`);
+        } else {
+          this.line(`if (${n} > ${t.cap}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: more elements than the ${typeName(t)} holds");`);
+          // Slots past the new length keep what they held, as after pop() / clear().
+          this.line(`ts_memcpy(${target.lv}.items, (const uint8_t *)${from.items}, ${n} * ${size});`);
+        }
         this.line(`${target.lv}.len = (uint32_t)${n};`);
         return;
       }
     }
+    if (heap) this.fail(valueNode, `expected a ${typeName(target.type)}: a Vec argument or another list of the same elements`);
     const src = this.ref(valueNode) ?? this.wholeAccount(valueNode);
     if (!src || !sameType(src.type, target.type))
       this.fail(
@@ -577,9 +596,15 @@ export abstract class StorageEmitter extends AliasEmitter {
     return { len: `${lv}.len`, items: `${lv}.items`, fixed: "", elemSize: this.fieldBytes(elem), resizable: false, cap };
   }
 
-  /** A place whose type is a FixedVec gets its Vec view. */
+  /** A heap Vec (a Vec<T> in a `@layout borsh` struct) at `lv`: `{ len, cap, items }`, grown by ts_hvec_reserve. */
+  protected heapVec(lv: string, elem: FieldType): NonNullable<Ref["vec"]> {
+    return { len: `${lv}.len`, items: `${lv}.items`, fixed: "", elemSize: this.fieldBytes(elem), resizable: false, heap: true };
+  }
+
+  /** A place whose type is a FixedVec (or a heap Vec) gets its Vec view. */
   protected withFixedVec(r: Ref): Ref {
     if (r.type.kind === "vec" && r.type.cap !== undefined) r.vec = this.fixedVec(r.lv, r.type.elem, r.type.cap);
+    else if (r.type.kind === "vec" && r.type.heap) r.vec = this.heapVec(r.lv, r.type.elem);
     return r;
   }
 
@@ -656,6 +681,7 @@ export abstract class StorageEmitter extends AliasEmitter {
         return this.model.structs.get(t.name)!.size!;
       case "vec":
         if (t.cap !== undefined) return 4 + this.fieldBytes(t.elem) * t.cap;
+        if (t.heap) return 16; // TSH_*: length, capacity, pointer
         throw new Error("unreachable: variable-size field has no fixed size");
       case "string":
         throw new Error("unreachable: variable-size field has no fixed size");

@@ -1,6 +1,6 @@
 // A port of coral-xyz/multisig (programs/multisig/src/lib.rs, Anchor 0.25), Copyright the coral-xyz/multisig authors,
 // licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). Changes: rewritten in
-// TypeSOL; Vec fields hold at most the counts below (see docs/case-study-multisig.md).
+// TypeSOL (see docs/case-study-multisig.md).
 //
 // A multisig that executes arbitrary instructions once `threshold` of its owners approve. The multisig's PDA
 // ([multisig.key], bump = multisig.nonce) signs them, so it can hold an upgrade authority, a mint authority, etc.
@@ -20,16 +20,15 @@ import {
   type u8,
   type u32,
   u64,
-  AnchorError,
+  constraint,
   invokeInstruction,
   remainingAccounts,
   require,
 } from "typesol";
 
-// Every list holds more than one transaction can carry (1232 bytes), so only a CPI caller sending more meets a limit.
 /** @layout borsh */
 export interface Multisig {
-  owners: FixedVec<Pubkey, 34>;
+  owners: Vec<Pubkey>;
   threshold: u64;
   nonce: u8;
   ownerSetSeqno: u32;
@@ -42,11 +41,11 @@ export interface Transaction {
   /** Target program to execute against. */
   programId: Pubkey;
   /** Accounts required for the transaction. */
-  accounts: FixedVec<TransactionAccount, 32>;
+  accounts: Vec<TransactionAccount>;
   /** Instruction data for the transaction. */
-  data: FixedVec<u8, 1100>;
+  data: Vec<u8>;
   /** signers[index] is true iff multisig.owners[index] signed the transaction. */
-  signers: FixedVec<boolean, 34>;
+  signers: Vec<boolean>;
   /** Boolean ensuring one time execution. */
   didExecute: boolean;
   /** Owner set sequence number. */
@@ -116,8 +115,8 @@ export function approve(
   /** One of the multisig owners. Checked in the handler. */
   owner: Signer,
 ): void {
-  // The original's `constraint = multisig.owner_set_seqno == transaction.owner_set_seqno`.
-  require(multisig.ownerSetSeqno === transaction.ownerSetSeqno, AnchorError.ConstraintRaw);
+  // The original's `#[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]` on multisig.
+  constraint(multisig, multisig.ownerSetSeqno === transaction.ownerSetSeqno);
   const found = multisig.owners.indexOf(owner.key);
   require(found >= 0n, ErrorCode.InvalidOwner);
   transaction.signers.set(u64(found), true);
@@ -165,7 +164,7 @@ export function executeTransaction(
   multisigSigner: Seeds<AccountInfo, ["@multisig"], "@multisig.nonce">,
   transaction: HasOne<Mut<Transaction>, "multisig">,
 ): void {
-  require(multisig.ownerSetSeqno === transaction.ownerSetSeqno, AnchorError.ConstraintRaw);
+  constraint(multisig, multisig.ownerSetSeqno === transaction.ownerSetSeqno);
   // Has this been executed already?
   require(!transaction.didExecute, ErrorCode.AlreadyExecuted);
   // Do we have enough signers?

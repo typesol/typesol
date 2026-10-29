@@ -1,6 +1,6 @@
 import type { Analysis } from "../analyze.js";
 import { type FieldType, type StructDef } from "../model.js";
-import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
+import { MAX_ACCOUNTS, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fieldC, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
 import { emitBorshCodecs } from "./borsh.js";
 
@@ -59,6 +59,13 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
       if (emitted.has(name)) return;
       emitted.add(name);
       out.push(`typedef struct __attribute__((packed)) {`, `  uint32_t len;`, `  ${storageDecl(t.elem, `items[${t.cap}]`)};`, `} ${name};`, "");
+    }
+    // A heap Vec (in a @layout borsh struct): its length, its capacity and its elements on the heap (ts_hvec_reserve).
+    if (t.kind === "vec" && t.heap) {
+      const name = fieldC(t);
+      if (emitted.has(name)) return;
+      emitted.add(name);
+      out.push(`typedef struct __attribute__((packed)) {`, `  uint32_t len;`, `  uint32_t cap;`, `  ${storageDecl(t.elem, `*items`)};`, `} ${name};`, "");
     }
     if (t.kind === "option" && t.inner.kind === "struct") {
       const key = `opt:${t.inner.name}`;

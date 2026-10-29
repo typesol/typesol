@@ -67,6 +67,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length) this.fail(node, "stackHeight() takes no arguments");
         return { c: "sol_get_stack_height()", type: U64 };
       }
+      case "constraint":
+        this.fail(node, "constraint(account, condition, error?) goes at the start of an instruction's body, before any other statement");
       case "require": {
         if (args.length !== 2) this.fail(node, "require(condition, error) takes two arguments");
         const cond = this.expect(this.expr(args[0], BOOL), BOOL, args[0]);
@@ -617,7 +619,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // Elements removed or replaced here must not be referenced afterwards.
     const elemPaths = () => (ts.isPropertyAccessExpression(node.expression) ? this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`) : undefined);
     const resize = (newLen: string, payer: string) => {
-      if (info.cap !== undefined) return; // a FixedVec has its room already
+      if (info.cap !== undefined || info.heap) return; // a FixedVec has its room already; a heap Vec is not in the account
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
@@ -647,6 +649,20 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return undefined;
       }
       case "push": {
+        if (info.heap) {
+          // A Vec in a @layout borsh account: room on the heap, which may move the elements (no references may
+          // outlive it); the account bounds the list when it is written back (3004), as under Anchor.
+          if (args.length !== 1) this.fail(node, "push(value) on a Vec of a @layout borsh account takes the value only (the account is resized by realloc)");
+          needWritable();
+          this.assertNotAliased(elemPaths(), node);
+          const write = stageElem(args[0]);
+          const n = this.tmp("n");
+          this.line(`uint64_t ${n} = (uint64_t)${info.len};`);
+          this.line(`TS_TRY(ts_hvec_reserve(&${info.len.replace(/\.len$/, "")}, ${n} + 1, ${info.elemSize}));`);
+          this.line(`${info.len} = (uint32_t)(${n} + 1);`);
+          write(elemRef(n));
+          return undefined;
+        }
         if (info.cap !== undefined) {
           if (args.length !== 1) this.fail(node, "push(value) on a FixedVec takes the value (it has room for its capacity already)");
           needWritable();
@@ -694,7 +710,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           } else this.line(`${valueC(st)} ${out} = ${val.c};`);
           result = st.kind === "pubkey" ? { c: `(&${out})`, type: st } : { c: out, type: st };
         }
-        const t = info.cap === undefined ? tailStart() : undefined;
+        const t = info.cap === undefined && !info.heap ? tailStart() : undefined;
         if (t) this.line(`ts_memmove(${t.at} - ${info.elemSize}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = (uint32_t)(${n} - 1);`);
         resize(`${n} - 1`, "NULL");
@@ -704,7 +720,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length !== 0) this.fail(node, "clear() takes no arguments");
         needWritable();
         this.assertNotAliased(elemPaths(), node);
-        const t = info.cap === undefined ? tailStart() : undefined;
+        const t = info.cap === undefined && !info.heap ? tailStart() : undefined;
         if (t) this.line(`ts_memmove((uint8_t *)${info.items}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = 0;`);
         resize("0", "NULL");

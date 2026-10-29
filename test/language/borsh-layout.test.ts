@@ -128,7 +128,7 @@ describe("@layout borsh", () => {
       );
     const S = "/** @layout borsh */\nexport interface S { n: u64; name: FixedString<8> }\n";
     expect(errors(`${S}export function f(s: Mut<S>): void { s.n += 1n; }`)).toBe("");
-    expect(errors(`/** @layout borsh */\nexport interface S { n: u64; xs: Vec<u64> }\nexport function f(s: Mut<S>): void {}`)).toMatch(/growable Vec/);
+    expect(errors(`/** @layout borsh */\nexport interface S { n: u64; xs: Vec<u64> }\nexport function f(s: Mut<S>): void {}`)).toBe(""); // Anchor's Vec (borsh-vec.test.ts)
     expect(errors(`/** @layout packed */\nexport interface S { n: u64 }\nexport function f(s: Mut<S>): void {}`)).toMatch(/@layout is borsh/);
     expect(
       errors(`export interface In { name: FixedString<8> }\n/** @layout borsh */\nexport interface S { inner: In }\nexport function f(s: Mut<S>): void {}`),

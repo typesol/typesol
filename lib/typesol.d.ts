@@ -97,15 +97,20 @@ export type Option<T> = T | null;
 /**
  * A growable list. As an account struct field it is stored Borsh-style (u32 length + elements) and the account is
  * resized as it grows. An account may have any number of them, declared anywhere: they are stored after the
- * fixed-size fields, in the order declared (in a `@layout borsh` struct, a Vec must be the last field). As an
- * instruction argument it is a read-only view.
+ * fixed-size fields, in the order declared. In a `@layout borsh` struct it is Anchor's `Vec<T>`: anywhere among the
+ * fields, held on the heap while the instruction runs, and bounded only by the account when it is written back
+ * (3004). As an instruction argument it is a read-only view.
  */
 export interface Vec<T> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
-  /** Append, growing the account by one element; `payer` tops up rent when needed. */
-  push(value: T, payer: Mut<Signer>): void;
+  /**
+   * Append. In account data the account grows by one element and `payer` (required there) tops up rent; in a
+   * `@layout borsh` struct the list grows on the heap and takes no payer (the account must hold it when it is written
+   * back: 3004, as under Anchor).
+   */
+  push(value: T, payer?: Mut<Signer>): void;
   /** Remove and return the last element, shrinking the account. */
   pop(): T;
   /** Remove every element, shrinking the account. */
@@ -123,8 +128,7 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
-  // `...rest: never[]` takes nothing, but lets a Vec (whose push takes a payer) be assigned to a FixedVec: `acct.owners = owners`.
-  push(value: T, ...rest: never[]): void;
+  push(value: T): void;
   pop(): T;
   clear(): void;
   [Symbol.iterator](): Iterator<T>;
@@ -1732,6 +1736,13 @@ export declare enum AnchorError {
  * 6000 + N, numbered after the program's error enums and listed in the IDL.
  */
 export declare function require(condition: boolean, error: string | AnchorError): asserts condition;
+/**
+ * Anchor's `constraint = condition @ error` on `account`. Written at the start of an instruction's body (before any
+ * other statement), it runs with that account's checks, after its has_one and before its owner check, so a transaction
+ * that breaks several checks fails with the same code as under Anchor. It may read every account and argument. The
+ * default error is `AnchorError.ConstraintRaw` (2003); `error` is an error-enum member, an `AnchorError` or a string.
+ */
+export declare function constraint(account: AccountMeta | RemainingAccount | null, condition: boolean, error?: string | AnchorError): void;
 
 /** Write a string, integer or pubkey to the program log. */
 export declare function log(value: string | bigint | Pubkey | Hash): void;

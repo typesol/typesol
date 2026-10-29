@@ -71,9 +71,12 @@ export type FieldType =
   | { kind: "option"; inner: ScalarType | { kind: "struct"; name: string } }
   /** A data-carrying enum (discriminated union): fixed { u8 tag; payload sized for the largest variant }. */
   | { kind: "dataEnum"; name: string }
-  /** `Vec<T>`: Borsh u32 length + elements. Only as the last field of an account struct. */
-  /** `Vec<T>` (last field, grows the account) or, with `cap`, `FixedVec<T, N>`: a u32 length and room for N elements. */
-  | { kind: "vec"; elem: FieldType; cap?: number };
+  /**
+   * `Vec<T>` (stored after the fixed-size fields, grows the account) or, with `cap`, `FixedVec<T, N>`: a u32 length and
+   * room for N elements. With `heap`, a `Vec<T>` in a `@layout borsh` struct: Anchor's Vec, held on the heap while the
+   * instruction runs (`TSH_*`: length, capacity, elements) and bounded only by the account when it is written back.
+   */
+  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true };
 
 export interface StructField {
   name: string;
@@ -418,7 +421,7 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
     case "option":
       return sameType(a.inner, (b as typeof a).inner);
     case "vec":
-      return a.cap === (b as typeof a).cap && sameType(a.elem, (b as typeof a).elem);
+      return a.cap === (b as typeof a).cap && !a.heap === !(b as typeof a).heap && sameType(a.elem, (b as typeof a).elem);
     case "vecArg":
       return sameType(a.elem, (b as typeof a).elem);
     case "arrayArg":
@@ -449,6 +452,13 @@ export function optionKey(t: ScalarType | { kind: "struct"; name: string }): str
 
 export function scalarKey(t: ScalarType): string {
   return t.kind === "int" ? t.name : t.kind === "enum" ? `e_${t.name}` : t.kind === "pubkey" && t.hash ? "hash" : t.kind;
+}
+
+/** The C type of a heap Vec<T> (in a `@layout borsh` struct): `TSH_<T>`. */
+export function heapVecName(t: FieldType & { kind: "vec" }): string {
+  return `TSH_${typeName(t.elem)
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/_+$/, "")}`;
 }
 
 /** The IDL type name of a FixedVec<T, N>: `FixedVec<N>_<T>`. */

@@ -176,7 +176,7 @@ program's address.
 Coming from Anchor: [docs/migrate-from-anchor.md](docs/migrate-from-anchor.md) maps every construct, `typesol port`
 starts from your program's IDL, and [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one complete Anchor
 program through the port; [docs/case-study-multisig.md](docs/case-study-multisig.md) ports coral-xyz/multisig and
-checks it against the binary deployed on mainnet (same outcomes and account bytes; 73–84% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+checks it against the binary deployed on mainnet (same outcomes and account bytes; 66–84% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works

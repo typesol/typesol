@@ -90,7 +90,7 @@ describe("typesol port", () => {
     expect(source).toContain("@layout borsh");
     expect(ported.types?.find((t: { name: string }) => t.name === "Thing")).toMatchObject({ type: idl.types![0]!.type });
     expect(notes.join("\n")).toMatch(/Thing\.name: set the String's capacity to Anchor's #\[max_len\]/);
-    expect(notes.join("\n")).toMatch(/Thing\.items: set the Vec's capacity/);
+    expect(notes.join("\n")).not.toMatch(/Thing\.items/); // a Vec<u64> is Anchor's Vec as is
     expect(notes.join("\n")).not.toMatch(/layout differs/);
     expect(notes.join("\n")).toMatch(/errors: .*6100/);
     expect(notes.join("\n")).toMatch(/account Thing: its discriminator is not/);

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { discriminator, snakeCase } from "../analyze.js";
+import { discriminator, heapVecOf, snakeCase } from "../analyze.js";
 import { type FieldType, type StructDef, type ValueType, isScalar, isWritable, sameType, typeName } from "../model.js";
 import { MAX_ACCOUNTS, MAX_CPI_DATA, MAX_EVENT, PUBKEY, STRING, type Value, cBytes, valueC, fixedVecC, vecCount } from "./shared.js";
 import { MetaplexEmitter } from "./metaplex.js";
@@ -343,6 +343,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
 
   /** emit<T> of a @layout borsh struct: built like account data, then packed as Anchor serializes it. */
   private emitBorshEvent(node: ts.CallExpression, s: StructDef, obj: ts.ObjectLiteralExpression, cpi?: { authority: string; program: string }): undefined {
+    if (heapVecOf(s)) this.fail(node, `${s.name} holds a Vec<T>; events take a struct with FixedVec<T, N> instead`);
     this.model.events.add(s.name);
     const t = this.tmp("evs");
     const b = this.tmp("evb");

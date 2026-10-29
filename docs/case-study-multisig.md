@@ -22,19 +22,21 @@ authority, a treasury.
 - `set_owners(owners)`, `change_threshold(threshold)` and `set_owners_and_change_threshold(...)` change the multisig;
   only its PDA can sign them, so they run as stored transactions the multisig executes on itself.
 
-Upstream it is 337 lines of Rust; the port is 184 lines of TypeScript, comments included.
+Upstream it is 337 lines of Rust; the port is 183 lines of TypeScript, comments included.
 
 ## What it needed
 
-The port needed five features TypeSOL did not have. They are general features now, each with tests of its own
-(`test/language/dynamic-cpi.test.ts`):
+The port needed seven features TypeSOL did not have. They are general features now, each with tests of its own
+(`test/language/dynamic-cpi.test.ts`, `constraint.test.ts`, `borsh-vec.test.ts`):
 
 | Anchor | TypeSOL | |
 | --- | --- | --- |
 | `invoke_signed(&ix, ctx.remaining_accounts, …)` with `ix` built from account data | `invokeInstruction(programId, metas, data, remainingAccounts(), seeds)` | A CPI decided at run time. Each meta is a struct with `pubkey`, `isSigner`, `isWritable`. The runtime finds each account among the infos by key and checks privileges, as it does for Rust. |
 | `#[account(zero, signer)] multisig: Box<Account<'info, Multisig>>` | `Signed<Zeroed<Multisig>>` of a `/** @layout borsh */` struct | `Zeroed` now takes Borsh structs (they start empty and are written as Borsh on return). `Signed<…>` is Anchor's `signer` constraint (2002). `Zeroed` now reports an already-set discriminator first, with Anchor's 2013. |
 | `seeds = [multisig.key().as_ref()], bump = multisig.nonce` | `Seeds<Signer, ["@multisig"], "@multisig.nonce">` | A bump stored in another account. |
-| `multisig.owners = owners` | the same, into a `FixedVec<Pubkey, 34>` | A `Vec` argument copied whole into a list in account data. |
+| `pub owners: Vec<Pubkey>` in an `#[account]` | `owners: Vec<Pubkey>` in a `/** @layout borsh */` struct | Anchor's Vec: any field, held on the heap while the instruction runs, bounded only by the account when it is written back (3004). |
+| `multisig.owners = owners` | the same | A `Vec` argument copied whole into a list in account data. |
+| `#[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]` | `constraint(multisig, multisig.ownerSetSeqno === transaction.ownerSetSeqno)` | Runs with the account's checks, so a transaction breaking several gets Anchor's code. |
 | `TransactionAccount { pubkey, is_signer, is_writable }` | `interface TransactionAccount { pubkey; isSigner; isWritable }` | `isSigner` / `isWritable` were reserved field names everywhere; now only in structs held in an account, where they would shadow `acct.isSigner`. |
 
 ## Side by side
@@ -74,7 +76,7 @@ export function executeTransaction(
   multisigSigner: Seeds<AccountInfo, ["@multisig"], "@multisig.nonce">,
   transaction: HasOne<Mut<Transaction>, "multisig">,
 ): void {
-  require(multisig.ownerSetSeqno === transaction.ownerSetSeqno, AnchorError.ConstraintRaw);
+  constraint(multisig, multisig.ownerSetSeqno === transaction.ownerSetSeqno);
   require(!transaction.didExecute, ErrorCode.AlreadyExecuted);
   let sigCount = 0n;
   for (const didSign of transaction.signers) if (didSign) sigCount++;
@@ -89,8 +91,8 @@ export function executeTransaction(
 }
 ```
 
-The `#[derive(Accounts)]` structs become parameter types. Anchor's `constraint = multisig.owner_set_seqno ==
-transaction.owner_set_seqno` becomes the first `require`, raising the same 2003. The error enum keeps its order and
+The `#[derive(Accounts)]` structs become parameter types, and Anchor's `constraint = …` becomes `constraint(…)` at
+the start of the body: it runs with the multisig's checks, raising the same 2003. The error enum keeps its order and
 messages, so the codes stay 6000–6008. Account and instruction names and the Borsh layout are the original's, so
 existing clients and existing accounts work with the port unchanged.
 
@@ -101,7 +103,7 @@ existing clients and existing accounts work with the port unchanged.
 another, both at `msigUdDB…`, then sends each transaction to both. After each one it requires the same outcome (success,
 or the same error down to the code) and the same lamports, owner and data bytes for every account involved.
 
-There are 43 transactions:
+There are 52 transactions:
 
 - **The upstream test suite** (`tests/multisig.js`): create a 2-of-3 multisig, propose `set_owners`, approve, and
   execute through the PDA. Then `Assert Unique Owners` (6008).
@@ -114,7 +116,8 @@ There are 43 transactions:
   - too few approvals (6002);
   - a wrong PDA (2006);
   - executing twice (6006);
-  - a changed owner set invalidating a proposal (2003);
+  - a changed owner set invalidating a proposal (2003), also when the proposal belongs to another multisig as well
+    (2003 under both: the constraint on `multisig` runs before the transaction's `has_one`);
   - `set_owners` sent directly, which the PDA cannot sign (3010);
   - a Transaction passed as a Multisig (3002);
   - the target program missing from the remaining accounts (the runtime's error).
@@ -125,6 +128,8 @@ There are 43 transactions:
   - a threshold too high, which fails inside the CPI and fails the whole execution with 6007.
 - **A real payout**: the PDA sends 1.5 SOL through a System transfer. A stored meta claiming the recipient signed is
   refused by the runtime under both programs.
+- **An account larger than one transaction can fill**: a multisig with 40 owners in a 2,000-byte account, as the
+  original holds it after `set_owners` calls grew the set, proposed to, approved and executed under both.
 
 ## Cost
 
@@ -133,13 +138,13 @@ instruction it runs.
 
 | Instruction | Anchor 0.25 (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `create_multisig` | 3,591 | 564 | −84% |
-| `create_transaction` | 6,591 | 1,077 | −84% |
-| `approve` | 5,515 | 1,003 | −82% |
-| `execute_transaction` → `set_owners` | 15,227 | 4,133 | −73% |
-| `execute_transaction` → `change_threshold` | 14,723 | 3,781 | −74% |
-| `execute_transaction` → `set_owners_and_change_threshold` | 15,129 | 4,095 | −73% |
-| `execute_transaction` → System transfer | 9,961 | 3,182 | −68% |
+| `create_multisig` | 3,591 | 560 | −84% |
+| `create_transaction` | 6,591 | 1,125 | −83% |
+| `approve` | 5,515 | 1,175 | −79% |
+| `execute_transaction` → `set_owners` | 15,227 | 4,313 | −72% |
+| `execute_transaction` → `change_threshold` | 14,723 | 3,972 | −73% |
+| `execute_transaction` → `set_owners_and_change_threshold` | 15,129 | 4,273 | −72% |
+| `execute_transaction` → System transfer | 9,961 | 3,358 | −66% |
 
 Refusals cost less too. For example, an already-initialized account costs 3,378 against 160, and a missing signature
 4,229 against 177. The binary is 526,688 bytes on mainnet and 29,984 bytes for the port, 18 times smaller. Deploying it
@@ -150,18 +155,14 @@ escrow case study and the benchmarks compare against Anchor 1.x.
 
 ## Where they differ
 
-- **List capacities.** Anchor's `Vec` fields are bounded only by the account's size. The port's lists are `FixedVec`s:
-  - 34 owners;
-  - 32 accounts and 1,100 data bytes per stored instruction;
-  - 34 approvals.
-
-  A transaction (1,232 bytes) cannot carry more than these, so a client never meets them. A program calling the
-  multisig through a CPI can send more (CPI data may reach 10 KiB). The original would accept that if the account were
-  large enough; the port refuses with 5104. Reading an account the original wrote with more elements fails with 3003.
-- **Check order on one double fault.** In `approve` and `execute_transaction` the original checks the owner-set
-  sequence number (2003) with the multisig account, before the transaction's `has_one` (2001). The port checks
-  `has_one` in the prologue and the sequence number first in the body. So a transaction that belongs to another
-  multisig *and* has a stale sequence number gets 2001 here and 2003 there. A transaction breaking only one of the two
-  gets the same code under both.
+- **Accounts per instruction.** A TypeSOL instruction takes at most 32 accounts (5113), so `execute_transaction` can
+  hand a stored instruction at most 29 remaining accounts, and the port builds the signed metas in a list of 32. The
+  original takes as many as the runtime allows.
+- **Heap.** Both hold a Borsh account's lists on the heap (32 KiB by default) while the instruction runs. The port's
+  lists grow by doubling, as Rust's do, so both run out at about the same sizes: far beyond what these accounts hold.
 - **Logs.** Error messages are logged in TypeSOL's words and the original's error names are not logged; codes are the
   same.
+
+Earlier versions of this port held its lists in `FixedVec`s with fixed capacities and checked the owner-set sequence
+number in the body, after `has_one`. Both differences are gone: the lists are Anchor's `Vec`, bounded only by the account,
+and `constraint(…)` runs where Anchor runs it.

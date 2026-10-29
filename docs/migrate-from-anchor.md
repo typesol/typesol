@@ -41,7 +41,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `close = destination` | `CloseTo<Mut<T>, "destination">`, or `close(acct, destination)` in the body |
 | `address = ADMIN` | `Address<AccountInfo, "Admin1111…">` |
 | `owner = program`, `executable` | `Owner<A, "…">`, `Executable<A>` |
-| `constraint = expr @ MyError::X` | `require(expr, MyError.X)` at the start of the body |
+| `constraint = expr @ MyError::X` (or without an error: 2003) | `constraint(acct, expr, MyError.X)` (or `constraint(acct, expr)`) at the start of the body: it runs with `acct`'s checks, where Anchor runs it |
 | `realloc = n, realloc::payer = p` | `realloc(acct, n, p)` |
 | `Option<Account<'info, T>>` | `Mut<T> \| null` (the client passes the program id to leave it out) |
 | `UncheckedAccount` / `AccountInfo` | `AccountInfo` / `Mut<AccountInfo>`: check what you rely on yourself |
@@ -74,7 +74,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `u8` … `u128`, `i8` … `i128`, `bool`, `Pubkey` | `u8` … `u128`, `i8` … `i128`, `boolean`, `Pubkey` |
 | `[T; N]` | `FixedArray<T, N>` |
 | `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and N bytes, always N bytes long |
-| `Vec<T>` with `#[max_len(n)]` | `Vec<T>` (any number, declared anywhere, stored after the fixed-size fields; it grows with `push(v, payer)`), or `FixedVec<T, n>`: a u32 length and room for n, always 4 + n × size bytes |
+| `Vec<T>` with `#[max_len(n)]` | `Vec<T>` (any number, declared anywhere, stored after the fixed-size fields; it grows with `push(v, payer)`), or `FixedVec<T, n>`: a u32 length and room for n, always 4 + n × size bytes; in a `@layout borsh` struct, `Vec<T>` is Anchor's own, bounded only by the account |
 | `Option<T>` | `Option<T>`: fixed size (1 + size of T) |
 | `#[derive(AnchorSerialize…)] enum` | `export enum` (unit variants) or a data enum `type A = { kind: "X"; … } \| …` |
 
@@ -112,7 +112,7 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `token::transfer_checked(CpiContext::new_with_signer(…, seeds), amount, decimals)` | `tokenProgram.transferChecked(from, mint, to, authority, amount, ["seed", key, bump])` |
 | `invoke_signed(&ix, &accounts, &[seeds])` | `invoke(program, [writable(a), readonly(b)], [data…], seeds)` |
 | `invoke_signed(&Instruction { program_id, accounts, data }, ctx.remaining_accounts, …)` built at run time | `invokeInstruction(programId, metas, data, remainingAccounts(), seeds)` |
-| `multisig.owners = owners` (a `Vec` argument into account data) | the same, into a `FixedVec<Pubkey, N>` |
+| `multisig.owners = owners` (a `Vec` argument into account data) | the same |
 | `declare_program!(other)` / CPI to another Anchor program | `typesol cpi other.json` generates typed helpers |
 | `for x in v.iter()` | `for (const x of v)` |
 | `v.iter().any(\|x\| …)`, `.all`, `.position`, `.find`, `.fold(init, …)`, `.contains(&x)` | `v.some((x) => …)`, `every`, `findIndex`, `find`, `reduce((acc, x) => …, init)`, `includes(x)` |
