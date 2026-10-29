@@ -77,6 +77,7 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 | --- | --- | --- |
 | `shared.ts` | | `Value`, `Ref` and `Local`, limits, and the C type helpers (`valueC`, `fieldC`, `storageDecl`, `cString`), growable Vec placement (`vecPlace`, `vecLenCheck`) |
 | `base.ts` | `EmitterBase` | function state; `line()`, `tmp()`, `settle()`, scopes, `fail()`, account lookup |
+| `alias.ts` | `AliasEmitter` | aliasing, in one place: the storage paths an expression names, refusing to replace data a live reference still reads, and which values may resize a growable Vec |
 | `storage.ts` | `StorageEmitter` | references into account data and locals, reads and writes, indexing, aliasing, argument validation |
 | `expressions.ts` | `ExpressionEmitter` | literals, operators and checked arithmetic, property reads, conditionals, text, casts |
 | `calls.ts` | `CallEmitter` | `call()` (the built-in dispatch), Vec methods, helpers, remaining accounts, foreign reads, return data |

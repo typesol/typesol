@@ -2,13 +2,13 @@ import ts from "typescript";
 import { resolveScalarType } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
-import { EmitterBase } from "./base.js";
+import { AliasEmitter } from "./alias.js";
 
 /**
  * Places in account data and locals: references, reads and writes, Vec/array indexing, aliasing rules and
  * argument validation.
  */
-export abstract class StorageEmitter extends EmitterBase {
+export abstract class StorageEmitter extends AliasEmitter {
   protected abstract callHelper(node: ts.CallExpression, h: Helper): Value | undefined;
 
   /** C lines rejecting malformed fixed-layout data at `lv`: bools, enums, option tags, string lengths, enum tags. */
@@ -82,94 +82,6 @@ export abstract class StorageEmitter extends EmitterBase {
     const i = e.variants.findIndex((v) => v.name === lit.text);
     if (i < 0) this.fail(lit, `${enumName} has no variant "${lit.text}"`);
     return i;
-  }
-
-  /**
-   * Storage paths an expression names, syntactically: `acct.a.b` -> ["acct.a.b"], `v.get(i)` -> ["v[]"],
-   * a reference local -> the paths it aliases, a ternary -> both sides. Undefined when unknown.
-   */
-  protected pathsOf(node: ts.Expression): string[] | undefined {
-    if (ts.isParenthesizedExpression(node)) return this.pathsOf(node.expression);
-    if (ts.isIdentifier(node)) {
-      const l = this.lookup(node.text);
-      if (l) return l.paths ?? (l.type.kind === "array" ? [`@${l.c}`] : undefined);
-      return this.accounts.has(node.text) ? [node.text] : undefined;
-    }
-    if (ts.isPropertyAccessExpression(node)) return this.pathsOf(node.expression)?.map((p) => `${p}.${node.name.text}`);
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "get")
-      return this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`);
-    if (ts.isConditionalExpression(node)) {
-      const a = this.pathsOf(node.whenTrue);
-      const b = this.pathsOf(node.whenFalse);
-      return a && b ? [...a, ...b] : undefined;
-    }
-    return undefined;
-  }
-
-  /**
-   * In JS, replacing an object (`acct.pos = {...}`, `v.set(i, {...})`, `v.pop()`) leaves earlier references
-   * to the old object unchanged. Here a reference is a pointer into account data, so it would see the new
-   * value. Refuse when a live reference into the replaced place is still used afterwards.
-   */
-  protected assertNotAliased(replaced: string[] | undefined, at: ts.Node, helper?: string) {
-    if (!replaced) return;
-    for (const scope of this.scopes)
-      for (const [name, l] of scope) {
-        if (!l.paths || !l.decl) continue;
-        const hit = replaced.find((r) => l.paths!.some((p) => p === r || p.startsWith(`${r}.`) || p.startsWith(`${r}[]`)));
-        if (!hit || !this.usedAfter(l.decl, at)) continue;
-        this.fail(
-          at,
-          helper
-            ? `"${name}" still refers to data in ${hit}, and ${helper}() may replace it (then "${name}" would read the new value; in JS it keeps the old one). Copy the fields you need into locals first`
-            : `"${name}" still refers to ${hit}; replacing it here would change what "${name}" reads (in JS it keeps the old value). Copy the fields you need into locals first`,
-        );
-      }
-  }
-
-  /**
-   * Whether the variable declared by `decl` is read after `at` (later in its block, or anywhere in a loop around `at`).
-   * A parameter (of a closure or helper expanded here) is read after `at` when its function reads it after `at`; when
-   * `at` is in another function (a closure or helper it calls), any read of it in its own function counts.
-   */
-  protected usedAfter(decl: ts.VariableDeclaration | ts.ParameterDeclaration, at: ts.Node): boolean {
-    const symbol = this.checker.getSymbolAtLocation(decl.name);
-    if (!symbol) return true;
-    if (ts.isParameter(decl)) {
-      const fn = decl.parent;
-      const inside = at.getSourceFile() === fn.getSourceFile() && at.pos >= fn.pos && at.end <= fn.end;
-      let read = false;
-      const visitParam = (n: ts.Node) => {
-        if (read) return;
-        if (ts.isIdentifier(n) && n !== decl.name && this.checker.getSymbolAtLocation(n) === symbol) {
-          if (!inside || n.pos >= at.end) read = true;
-          // A loop inside the function, around `at`, reads it again on its next turn.
-          for (let p: ts.Node | undefined = at.parent; inside && p && p !== fn; p = p.parent)
-            if ((ts.isForStatement(p) || ts.isForOfStatement(p) || ts.isWhileStatement(p) || ts.isDoStatement(p)) && n.pos >= p.pos && n.end <= p.end)
-              read = true;
-        }
-        ts.forEachChild(n, visitParam);
-      };
-      const body = (fn as { body?: ts.Node }).body;
-      if (body) visitParam(body);
-      return read;
-    }
-    // Loops around `at` that do not also contain the declaration run their earlier statements again later.
-    let loop: ts.Node | undefined;
-    for (let n: ts.Node | undefined = at.parent; n && n !== decl.parent; n = n.parent)
-      if ((ts.isForStatement(n) || ts.isForOfStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n)) && !(decl.pos >= n.pos && decl.end <= n.end))
-        loop = n;
-    let found = false;
-    const scope = decl.parent.parent.parent; // VariableDeclaration -> List -> Statement -> enclosing block
-    const visit = (n: ts.Node) => {
-      if (found) return;
-      if (ts.isIdentifier(n) && n !== decl.name && this.checker.getSymbolAtLocation(n) === symbol) {
-        if (n.pos >= at.end || (loop && n.pos >= loop.pos && n.end <= loop.end)) found = true;
-      }
-      ts.forEachChild(n, visit);
-    };
-    visit(scope);
-    return found;
   }
 
   /**
