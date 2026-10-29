@@ -17,4 +17,6 @@ dump noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV spl_noop.so
 dump ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S program_metadata.so
 # coral-xyz/multisig as deployed on mainnet (the differential test of examples/multisig.ts runs against it).
 [[ -f coral_multisig.so ]] || solana program dump -u mainnet-beta msigUdDBsR4zSUYqYEDrc1LcgtmuSDDM7KxpRUXNC6U coral_multisig.so
+# Raydium CP-Swap as deployed on mainnet (examples/raydium-cp-swap's differential test).
+[[ -f raydium_cp_swap.so ]] || solana program dump -u mainnet-beta CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C raydium_cp_swap.so
 ls -la *.so

@@ -176,7 +176,9 @@ program's address.
 Coming from Anchor: [docs/migrate-from-anchor.md](docs/migrate-from-anchor.md) maps every construct, `typesol port`
 starts from your program's IDL, and [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one complete Anchor
 program through the port; [docs/case-study-multisig.md](docs/case-study-multisig.md) ports coral-xyz/multisig and
-checks it against the binary deployed on mainnet (same outcomes and account bytes; 66–84% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+checks it against the binary deployed on mainnet (same outcomes and account bytes; 66–84% fewer compute units), and
+[docs/case-study-raydium-cp-swap.md](docs/case-study-raydium-cp-swap.md) does the same for Raydium CP-Swap's swaps and liquidity
+(same outcomes, account bytes and events on 59 transactions; 51–79% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
@@ -324,6 +326,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`relay.ts`](examples/relay.ts), [`caller.ts`](examples/caller.ts) | generic `invoke`, PDA-signed transfers, return data |
 | [`profiles.ts`](examples/profiles.ts) | nested structs, FixedString, events |
 | [`orderbook/`](examples/orderbook) | a three-file, 28 KiB zero-copy limit order book |
+| [`raydium-cp-swap/`](examples/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
 | [`multisig.ts`](examples/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status
