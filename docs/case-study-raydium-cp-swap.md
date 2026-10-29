@@ -33,8 +33,8 @@ These are not ported yet:
 - **The support-mint instructions**: `create_support_mint_associated` and `close_support_mint_associated`.
 - **`collect_excess_lamports`.**
 
-The pool logic these depend on is in the port (fee booking, the creator-fee split in the swap math), so a pool the
-original created and configured is traded the same way.
+The pool logic these depend on is in the port (fee booking, the creator-fee split in the swap math, tested below with
+the creator fee on), so a pool the original created and configured is traded the same way.
 
 ## What it needed
 
@@ -67,14 +67,18 @@ LiteSVM and the port into another. Both use the same program id and the same clo
 **Comparison.** For each transaction, the test requires the same outcome (success, or the same error down to the
 code), the same lamports, owner and data for every account involved, and the same events byte for byte.
 
-There are 40 transactions:
+There are 59 transactions:
 
 - **Swaps.** Both directions, by input and by output; the observation ring advancing as the clock moves; slippage
   (6005); zero amounts.
 - **Liquidity.** Deposit, a partial withdrawal, slippage both ways, withdrawing more LP than held, zero.
 - **Fees.** Protocol and fund fees collected by their owners after trading, and refused for anyone else (6001).
+- **Creator fees.** Pools with the creator fee on at 0.05%, taken from the input token, only token_0, or only
+  token_1: swaps both ways, by input and by output, booking the fee on the right side.
+- **The price oracle.** A new point, a second swap within 15 seconds (added to the current point), and a ring at its
+  last slot whose cumulative price is 10 below `u128::MAX`: the next point wraps to slot 0 and the sum wraps around.
 - **Token-2022.** A pool of two transfer-fee mints (1.5% and 0.37%): swaps both ways and by output, deposit and
-  withdrawal, through the inverse-fee path.
+  withdrawal, through the inverse-fee path; and a pool of Token-2022 mints without a fee.
 - **Refusals.**
   - Another config (2012), another pool's vault (2003), another observation account (2012) or mint (2012).
   - The same vault twice, a wrong pool authority (2006), another trader's account.
@@ -107,8 +111,8 @@ On size, the port's binary is 105,952 bytes and the deployed original is 793,824
 
 - **Panics.** Where the original calls `unwrap()` or `assert!`, it aborts with `ProgramFailedToComplete`. The port
   fails with a numbered error instead:
-  - arithmetic overflow, 5100;
-  - a division by zero, 5101: the price of an empty side, or exact-output swaps for more than the vault holds;
+  - an overflow or underflow, 5100: an exact-output swap for more than the vault holds;
+  - a division by zero, 5101: the price of an empty side, or an exact-output swap for exactly what the vault holds;
   - invalid input, 6003: a fee rate out of range in the admin instructions, which only the admin can reach.
 
   The swaps and liquidity instructions reach none of these with the amounts a pool can hold.

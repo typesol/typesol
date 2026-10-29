@@ -41,6 +41,7 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
   let original: LiteSVM;
   const cu: Record<string, [bigint, bigint]> = {};
   let eventsCompared = 0;
+  let compared = 0;
   beforeAll(async () => {
     d = await deployFile(PORT, { programId: PROGRAM });
     original = new LiteSVM();
@@ -82,6 +83,7 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
   /** Send to both: the same outcome, account bytes and events. */
   const both = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[]) => {
     const [a, b] = [await send(original, payer, ixs), await send(d.svm, payer, ixs)];
+    compared++;
     const logs = (r: Result) => meta(r).logs().join("\n");
     expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
     for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
@@ -144,13 +146,28 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
   };
 
   /** A pool as the original's initialize leaves it, with `reserve0` / `reserve1` in its vaults. */
-  async function pool(opts: { fee0?: { bps: number; max: bigint }; fee1?: { bps: number; max: bigint }; tradeFee?: bigint; status?: number; reserve0?: bigint; reserve1?: bigint } = {}) {
+  async function pool(
+    opts: {
+      fee0?: { bps: number; max: bigint };
+      fee1?: { bps: number; max: bigint };
+      /** Token-2022 mints without a transfer fee. */
+      t22?: boolean;
+      tradeFee?: bigint;
+      status?: number;
+      reserve0?: bigint;
+      reserve1?: bigint;
+      /** The creator fee on, at `rate`, taken as `on` says (0 the input's token, 1 token_0, 2 token_1). */
+      creatorFee?: { rate: bigint; on: number };
+      /** The observation ring at its last slot, with a cumulative price about to wrap. */
+      ringAtEnd?: boolean;
+    } = {},
+  ) {
     const admin = await funded();
     const protocolOwner = await funded();
     const fundOwner = await funded();
     const [authority, authBump] = await pda(PROGRAM, ["vault_and_lp_mint_auth_seed"]);
-    let m0 = await mint(admin, opts.fee0 ? TOKEN_2022 : TOKEN, 6, opts.fee0);
-    let m1 = await mint(admin, opts.fee1 ? TOKEN_2022 : TOKEN, 9, opts.fee1);
+    let m0 = await mint(admin, opts.fee0 || opts.t22 ? TOKEN_2022 : TOKEN, 6, opts.fee0);
+    let m1 = await mint(admin, opts.fee1 || opts.t22 ? TOKEN_2022 : TOKEN, 9, opts.fee1);
     if (Buffer.compare(key(m0.address), key(m1.address)) > 0) [m0, m1] = [m1, m0];
     const index = Math.floor(Math.random() * 60_000);
     const [config, configBump] = await pda(PROGRAM, ["amm_config", u16(index).reverse()]);
@@ -167,7 +184,7 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
         u64(0n),
         key(protocolOwner.address),
         key(fundOwner.address),
-        u64(0n),
+        u64(opts.creatorFee?.rate ?? 0n),
         u64(0n),
         Buffer.alloc(8 * 14),
       ]),
@@ -214,15 +231,28 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
       u64(0n),
       u64(0n), // open_time
       u64(900n),
-      u8(0),
-      u8(0),
+      u8(opts.creatorFee?.on ?? 0),
+      u8(opts.creatorFee ? 1 : 0),
       Buffer.alloc(6),
       u64(0n),
       u64(0n),
       Buffer.alloc(8 * 28),
     ]);
     write(poolKey, pv);
-    write(observation, Buffer.concat([disc("ObservationState"), u8(0), u16(0), key(poolKey), Buffer.alloc(40 * 100 + 8 + 24)]));
+    const ring = Buffer.alloc(40 * 100);
+    let lastUpdate = 0n;
+    if (opts.ringAtEnd) {
+      // Slot 99 written 100 s ago, its cumulative token_0 price 10 below u128::MAX: the next point wraps both.
+      lastUpdate = original.getClock().unixTimestamp - 100n;
+      ring.writeBigUInt64LE(lastUpdate, 99 * 40);
+      ring.writeBigUInt64LE(2n ** 64n - 10n, 99 * 40 + 8);
+      ring.writeBigUInt64LE(2n ** 64n - 1n, 99 * 40 + 16);
+      ring.writeBigUInt64LE(5n, 99 * 40 + 24);
+    }
+    write(
+      observation,
+      Buffer.concat([disc("ObservationState"), u8(opts.ringAtEnd ? 1 : 0), u16(opts.ringAtEnd ? 99 : 0), key(poolKey), ring, u64(lastUpdate), Buffer.alloc(24)]),
+    );
     return { admin, protocolOwner, fundOwner, authority, config, pool: poolKey, lp, observation, m0, m1, vault0, vault1, liquidity };
   }
   type Pool = Awaited<ReturnType<typeof pool>>;
@@ -391,10 +421,50 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
     expect(await both("update_amm_config by a stranger", t.signer, [update], [p.config])).toBe(custom(6001));
   });
 
+  it("records prices in the observation ring: a new point, the same point within 15 s, and the wrap at the end", async () => {
+    const p = await pool();
+    const t = await trader(p);
+    const tick = (s: bigint) => {
+      for (const vm of vms()) {
+        const c = vm.getClock();
+        c.unixTimestamp += s;
+        vm.setClock(c);
+      }
+    };
+    expect(await both("oracle: first point", t.signer, [swap("swap_base_input", p, t, true, 1_000_000n, 1n)], watchAll(p, t))).toBe("ok");
+    tick(5n);
+    expect(await both("oracle: within 15 s", t.signer, [swap("swap_base_input", p, t, false, 4_000_000_000n, 1n)], watchAll(p, t))).toBe("ok");
+    tick(30n);
+    expect(await both("oracle: next point", t.signer, [swap("swap_base_input", p, t, true, 1_000_000n, 1n)], watchAll(p, t))).toBe("ok");
+    const end = await pool({ ringAtEnd: true });
+    const te = await trader(end);
+    expect(await both("oracle: wrap to slot 0", te.signer, [swap("swap_base_input", end, te, true, 1_000_000n, 1n)], watchAll(end, te))).toBe("ok");
+  });
+
+  it("takes the creator fee as the pool says: from the input, only token_0, only token_1", async () => {
+    for (const on of [0, 1, 2]) {
+      const p = await pool({ creatorFee: { rate: 500n, on } });
+      const t = await trader(p);
+      expect(await both(`creator fee ${on}: input 0→1`, t.signer, [swap("swap_base_input", p, t, true, 2_000_000n, 1n)], watchAll(p, t))).toBe("ok");
+      expect(await both(`creator fee ${on}: input 1→0`, t.signer, [swap("swap_base_input", p, t, false, 8_000_000_000n, 1n)], watchAll(p, t))).toBe("ok");
+      expect(await both(`creator fee ${on}: output 0→1`, t.signer, [swap("swap_base_output", p, t, true, 10_000_000n, 1_000_000_000n)], watchAll(p, t))).toBe("ok");
+      expect(await both(`creator fee ${on}: output 1→0`, t.signer, [swap("swap_base_output", p, t, false, 9_000_000_000n, 300_000n)], watchAll(p, t))).toBe("ok");
+    }
+  });
+
+  it("trades Token-2022 mints without a transfer fee as the original", async () => {
+    const p = await pool({ t22: true });
+    const t = await trader(p);
+    expect(await both("plain t22 swap_base_output", t.signer, [swap("swap_base_output", p, t, true, 10_000_000n, 1_000_000_000n)], watchAll(p, t))).toBe("ok");
+    expect(await both("plain t22 deposit", t.signer, [liquidity("deposit", p, t, 1_000_000n, 10n ** 12n, 10n ** 15n)], watchAll(p, t))).toBe("ok");
+    expect(await both("plain t22 zero out", t.signer, [swap("swap_base_output", p, t, true, 1_000n, 0n)], watchAll(p, t))).toBe(custom(2505));
+  });
+
   it("reports compute units side by side", () => {
     const rows = Object.entries(cu).map(([k, [o, t]]) => `${k.padEnd(40)} ${String(o).padStart(8)} ${String(t).padStart(8)}`);
     console.log(["instruction".padEnd(40) + " original  TypeSOL", ...rows].join("\n"));
     expect(rows.length).toBeGreaterThan(0);
-    expect(eventsCompared).toBe(13); // one per successful swap, deposit and withdrawal, byte for byte
+    expect(compared).toBe(59); // as docs/case-study-raydium-cp-swap.md says
+    expect(eventsCompared).toBe(13 + 4 + 12 + 2); // one per successful swap, deposit and withdrawal, byte for byte
   });
 });
