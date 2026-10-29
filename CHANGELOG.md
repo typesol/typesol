@@ -6,7 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
-A port of coral-xyz/multisig, checked against the program deployed on mainnet, and the features it needed.
+## 0.28.0 — 2026-10-29
+
+A port of coral-xyz/multisig, checked against the program deployed on mainnet, and the features it needed. The
+benchmark programs compile to the same numbers as in 0.27.0.
 
 - New: `invokeInstruction(programId, metas, data, infos, signerSeeds?)`, a CPI decided at run time (Rust's
   `invoke_signed` of an `Instruction` built from data): metas are structs with `pubkey`, `isSigner`, `isWritable`, the
