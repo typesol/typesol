@@ -70,5 +70,5 @@ Where TypeSOL's order differs, only a transaction that breaks two of these check
 - Too few accounts fails with 3005 before any account is checked; Anchor fails on the first account it cannot find.
 - Accounts the instruction creates (`Init<…>`, `create(…)`) are created in the body, after every other check, where
   Anchor creates them before checking the other accounts.
-- TypeSOL refuses any two writable parameters naming one account (2040), where Anchor only compares program and token
+- TypeSOL refuses any two writable parameters naming one account (2040) unless one is `Dup<…>`, where Anchor only compares program and token
   accounts: a signer passed as two writable parameters fails with 2040 here and later, or not at all, under Anchor.

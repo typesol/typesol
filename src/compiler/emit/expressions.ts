@@ -241,6 +241,14 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const field = node.name.text;
     if (field === "length") {
       if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.ix!.accounts.length}))`, type: U64 };
+      const sysvar = this.instructionsParam(node.expression);
+      if (sysvar) {
+        this.assertUsable(sysvar, node.expression);
+        const t = this.tmp("ixn");
+        this.line(`uint64_t ${t};`);
+        this.line(`TS_TRY(ts_ix_count(a_${sysvar.name}, &${t}));`);
+        return { c: t, type: U64 };
+      }
       // The number of elements a map / filter chain gives: counted, nothing stored.
       if (this.isPipeline(node.expression)) {
         const n = this.tmp("count");
@@ -256,6 +264,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         if (l?.type.kind === "vecArg") return { c: `((uint64_t)${l.c}.len)`, type: U64 };
       }
       this.fail(node, "use byteLength(s) for strings; .length is available on arrays, Vecs and remainingAccounts()");
+    }
+    if (this.isTxIx(node.expression)) {
+      const ix = this.expr(node.expression);
+      if (field === "programId") return { c: `(${ix.c}.program_id)`, type: PUBKEY };
+      if (field === "accountsLength") return { c: `((uint64_t)${ix.c}.num_accounts)`, type: U64 };
+      if (field === "dataLength") return { c: `((uint64_t)${ix.c}.data_len)`, type: U64 };
+      this.fail(node.name, `a TransactionInstruction has programId, accountsLength and dataLength, not ${field}`);
     }
     const h = this.handle(node.expression);
     if (h) {

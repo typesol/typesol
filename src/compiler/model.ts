@@ -49,6 +49,8 @@ export type ValueType =
   | { kind: "account" }
   /** The remainingAccounts() list itself. */
   | { kind: "remaining" }
+  /** One instruction of the transaction (InstructionsSysvar.get(i)): a `TsIx` view into the sysvar. */
+  | { kind: "txIx" }
   /** A struct loaded from a remaining account with loadAccount / loadAccountMut. */
   | { kind: "structRef"; struct: string; writable: boolean }
   /** A data-enum place (local value, argument, or alias into account data): `TS_DE_<name> *`. */
@@ -158,6 +160,8 @@ export interface Constraints {
   owner?: { base58: string; bytes: number[] };
   /** Executable<A>: the account must be an executable program. */
   executable?: boolean;
+  /** Dup<A> (Anchor's `dup`): may be the same account as another writable parameter (see function.ts). */
+  dup?: boolean;
   /** Close this account into that parameter when the instruction succeeds. */
   closeTo?: string;
   /** Address<A, "base58">: the account must be exactly this address. */
@@ -382,6 +386,8 @@ export function typeName(t: ValueType | FieldType): string {
       return "AccountInfo";
     case "remaining":
       return "RemainingAccounts";
+    case "txIx":
+      return "TransactionInstruction";
     case "structRef":
       return t.struct;
   }

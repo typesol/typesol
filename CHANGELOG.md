@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: instruction introspection. `InstructionsSysvar` has `length`, `currentIndex()` and `get(i)`, a
+  `TransactionInstruction` with `programId`, its accounts (key, signer, writable), its data
+  (`readU8/U16/U32/U64/readPubkey`) and `is(program, "name")` (an instruction by its Anchor discriminator); every read
+  is bounds-checked (5104). `stackHeight()` is 1 at the top level, more under a CPI.
+- New: `Dup<…>`, Anchor's `dup`: a writable parameter that may be the same account as another, for accounts read and
+  written in place (not created, closed, a close destination or `@layout borsh`, which are refused at compile time).
+
 ## 0.26.0 — 2026-10-29
 
 A first-run experience pass, the security model and audit package, and more fuzzing. The compiler's output is the

@@ -144,9 +144,25 @@ export class FunctionEmitter extends StatementEmitter {
     // The loader passes each account once and marks repeats as duplicates, which share its record (ts_deserialize),
     // so two parameters name the same account exactly when their pointers are equal.
     const writable = ix.accounts.filter((a) => isWritable(a.kind));
+    // Dup<…> (Anchor's `dup`) lifts the check for a pair when both accounts are read and written in place: not created
+    // here, not closed or a close destination, not a @layout borsh heap copy (a lost update when packed back).
+    const closing = new Set(ix.accounts.flatMap((a) => (a.constraints.closeTo ? [a.name, a.constraints.closeTo] : [])));
+    const inPlace = (a: (typeof writable)[number]) => {
+      const k = a.kind;
+      if (closing.has(a.name)) return false;
+      if (k.kind === "account") return k.struct.layout !== "borsh";
+      if (k.kind === "token" || k.kind === "mint") return !k.init;
+      return k.kind === "signer" || k.kind === "info";
+    };
+    for (const a of writable)
+      if (a.constraints.dup && !inPlace(a))
+        this.reporter.fail(a.node, "Dup<…> is for accounts read and written in place: not created, closed, a close destination or @layout borsh");
+    for (const a of ix.accounts)
+      if (a.constraints.dup && !isWritable(a.kind)) this.reporter.fail(a.node, "Dup<…> lets a writable account alias another; this one is not writable");
     const pairs: string[] = [];
     for (let i = 0; i < writable.length; i++)
       for (let j = i + 1; j < writable.length; j++) {
+        if ((writable[i].constraints.dup || writable[j].constraints.dup) && inPlace(writable[i]) && inPlace(writable[j])) continue;
         const present = [writable[i], writable[j]]
           .filter((a) => a.optional)
           .map((a) => `a_${a.name} && `)

@@ -159,6 +159,8 @@ export function valueC(t: ValueType): string {
       return "TS_VecArg";
     case "account":
       return "TsAccount *";
+    case "txIx":
+      return "TsIx";
     case "structRef":
       return `TSS_${t.struct} *`;
     case "enumRef":

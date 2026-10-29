@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { calleeName, resolveScalarType, resolveValueType } from "../analyze.js";
+import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase } from "../analyze.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
@@ -61,6 +61,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       return this.cast(args[0], { kind: "int", name: builtin as IntName });
     }
     switch (builtin) {
+      case "stackHeight": {
+        if (args.length) this.fail(node, "stackHeight() takes no arguments");
+        return { c: "sol_get_stack_height()", type: U64 };
+      }
       case "require": {
         if (args.length !== 2) this.fail(node, "require(condition, error) takes two arguments");
         const cond = this.expect(this.expr(args[0], BOOL), BOOL, args[0]);
@@ -471,6 +475,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
 
     if (ts.isPropertyAccessExpression(callee)) {
       const method = callee.name.text;
+      const introspected = this.instructionsCall(node, callee, method);
+      if (introspected) return introspected;
       // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
       if (LIST_METHODS.has(method)) {
         const l = ts.isIdentifier(callee.expression) ? this.lookup(callee.expression.text) : undefined;
@@ -814,6 +820,93 @@ export abstract class CallEmitter extends ExpressionEmitter {
   }
 
   /** C pointer (`TsAccount *`) for an expression naming a remaining account, or undefined. */
+  /** Whether `node` is an InstructionsSysvar parameter. */
+  protected instructionsParam(node: ts.Expression) {
+    const a = ts.isIdentifier(node) ? this.accounts.get(node.text) : undefined;
+    return a?.kind.kind === "instructionsSysvar" ? a : undefined;
+  }
+
+  /** Whether `node` is a TransactionInstruction: a local holding one, or `ixs.get(i)`. */
+  protected isTxIx(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isTxIx(node.expression);
+    if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "txIx";
+    return (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "get" &&
+      !!this.instructionsParam(node.expression.expression)
+    );
+  }
+
+  /**
+   * InstructionsSysvar.currentIndex() / .get(i) and the methods of a TransactionInstruction: bounds-checked reads of the
+   * sysvar (ts_ix_* in the runtime). Undefined when the call is something else.
+   */
+  protected instructionsCall(node: ts.CallExpression, callee: ts.PropertyAccessExpression, method: string): Value | undefined {
+    const args = node.arguments;
+    const sysvar = this.instructionsParam(callee.expression);
+    if (sysvar) {
+      this.assertUsable(sysvar, callee.expression);
+      if (method === "currentIndex") {
+        if (args.length) this.fail(node, "currentIndex() takes no arguments");
+        const t = this.tmp("ixi");
+        this.line(`uint64_t ${t};`);
+        this.line(`TS_TRY(ts_ix_current(a_${sysvar.name}, &${t}));`);
+        return { c: t, type: U64 };
+      }
+      if (method === "get") {
+        if (args.length !== 1) this.fail(node, "get(index) takes the instruction's index");
+        const i = this.expect(this.expr(args[0], U64), U64, args[0]);
+        const t = this.tmp("ix");
+        this.line(`TsIx ${t};`);
+        this.line(`TS_TRY(ts_ix_load(a_${sysvar.name}, ${i.c}, &${t}));`);
+        return { c: t, type: { kind: "txIx" } };
+      }
+      this.fail(node, "the Instructions sysvar has .length, currentIndex() and get(index)");
+    }
+    if (!this.isTxIx(callee.expression)) return undefined;
+    const ix = this.expr(callee.expression);
+    const one = (what: string) => {
+      if (args.length !== 1) this.fail(node, `${method}(${what}) takes one argument`);
+      return this.expect(this.expr(args[0], U64), U64, args[0]).c;
+    };
+    if (method === "accountKey" || method === "accountIsSigner" || method === "accountIsWritable") {
+      const i = one("i");
+      const t = this.tmp("ixa");
+      this.line(`const uint8_t *${t};`);
+      this.line(`TS_TRY(ts_ix_account(&${ix.c}, ${i}, &${t}));`);
+      if (method === "accountKey") return { c: `((const SolPubkey *)(${t} + 1))`, type: PUBKEY };
+      return { c: `((${t}[0] & ${method === "accountIsSigner" ? 1 : 2}) != 0)`, type: BOOL };
+    }
+    const reads: Record<string, [string, Value["type"]]> = {
+      readU8: ["uint8_t", U8],
+      readU16: ["uint16_t", { kind: "int", name: "u16" }],
+      readU32: ["uint32_t", { kind: "int", name: "u32" }],
+      readU64: ["uint64_t", U64],
+      readPubkey: ["SolPubkey", PUBKEY],
+    };
+    if (reads[method]) {
+      const [c, type] = reads[method]!;
+      const off = one("offset");
+      const t = this.tmp("ixr");
+      this.line(`${c} ${t};`);
+      this.line(`TS_TRY(ts_ix_read(&${ix.c}, ${off}, sizeof(${c}), &${t}));`);
+      return type.kind === "pubkey" ? { c: `(&${t})`, type } : { c: t, type };
+    }
+    if (method === "is") {
+      if (args.length !== 2 || !ts.isStringLiteralLike(args[1]))
+        this.fail(node, 'is(program, "instruction_name") takes the program and the instruction name as a string literal');
+      const program = this.expect(this.expr(args[0], PUBKEY), PUBKEY, args[0]);
+      const disc = this.tmp("disc");
+      this.line(`static const uint8_t ${disc}[8] = ${cBytes(discriminator(`global:${snakeCase(args[1].text)}`))};`);
+      return { c: `ts_ix_is(&${ix.c}, ${program.c}, ${disc})`, type: BOOL };
+    }
+    this.fail(
+      node,
+      "a TransactionInstruction has programId, accountsLength, dataLength, accountKey/accountIsSigner/accountIsWritable(i), readU8/U16/U32/U64/readPubkey(offset) and is(program, name)",
+    );
+  }
+
   protected handle(node: ts.Expression): string | undefined {
     if (ts.isParenthesizedExpression(node)) return this.handle(node.expression);
     if (ts.isIdentifier(node)) {
