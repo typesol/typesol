@@ -14,7 +14,8 @@ codes, and says so here.
   written in place (not created, closed, a close destination or `@layout borsh`, which are refused at compile time).
 - New: `Migrate<From, To>`, Anchor 1.0's `Migration`: an existing account rewritten from one struct to another with
   `acct.migrate(payer, value)`, the old data readable through `acct.from` until then (the new value is built before
-  the bytes are rewritten), the new through `acct.to` after; resized with the payer topping up rent.
+  the bytes are rewritten), the new through `acct.to` after; resized with the payer topping up rent. For now:
+  fixed-layout structs without growable Vecs, no constraints on the account, and it cannot be passed to a helper.
 - New: `/** @discriminator … */` on an account struct (a sha256 preimage such as `account:Counter`, or 0x and 8
   bytes), Anchor's `#[account(discriminator = …)]`: keeps an old type's on-chain discriminator under a new name.
 

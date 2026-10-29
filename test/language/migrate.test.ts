@@ -68,6 +68,8 @@ describe("Migrate<From, To>", () => {
     ["acct.to before migrate", ix_(P, "c.to.count = 1n;"), /c\.to exists after c\.migrate/],
     ["acct.from after migrate", ix_(P, 'c.migrate(payer, { authority: payer.key, count: 0n, label: "" });\nconst n = c.from.count;'), /c\.from is gone after/],
     ["never migrated", ix_(P, "const n = c.from.count;"), /is never migrated/],
+    // Every field of the new struct is set: a forgotten one would silently be zero.
+    ["a value missing a field", ix_(P, "c.migrate(payer, { authority: payer.key, count: 1n });"), /not assignable to parameter of type 'CounterV2'/],
     [
       "migrate not at the top level",
       ix_(P, 'if (c.from.count > 0n) { c.migrate(payer, { authority: payer.key, count: 0n, label: "" }); }'),
