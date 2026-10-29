@@ -20,6 +20,7 @@ import {
   send,
   type Deployed,
 } from "./harness.js";
+import { createMint, fundAta } from "./ports-helpers.js";
 
 describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
   let d: Deployed;
@@ -162,6 +163,20 @@ describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
     const check = (auth: Address) => send(d.svm, payer, [ix(d, "check_mint", {}, [{ address: mint }, { address: auth }])]);
     expectOk(await check(payer.address));
     expect(customError(await check((await generateKeyPairSigner()).address))).toBe(2016);
+  });
+
+  it("MintOf / TokenOf naming the token program: Anchor's mint::token_program (2022) / token::token_program (2021)", async () => {
+    const payer = await fundedSigner(d.svm);
+    const mint = await createMint(d.svm, payer);
+    const account = await fundAta(d.svm, payer, payer.address, mint, 0n);
+    const mint22 = await createMint(d.svm, payer, { tokenProgram: TOKEN_2022 });
+    const account22 = await fundAta(d.svm, payer, payer.address, mint22, 0n, { tokenProgram: TOKEN_2022 });
+    const check = (m: Address, a: Address, tp: Address) =>
+      send(d.svm, payer, [ix(d, "check_token_program", {}, [{ address: m }, { address: a }, { address: tp }])]);
+    expectOk(await check(mint, account, TOKEN_PROGRAM));
+    expectOk(await check(mint22, account22, TOKEN_2022));
+    expect(customError(await check(mint22, account, TOKEN_PROGRAM))).toBe(2022);
+    expect(customError(await check(mint, account22, TOKEN_PROGRAM))).toBe(2021);
   });
 
   it("creates a new keypair mint, which must sign", async () => {

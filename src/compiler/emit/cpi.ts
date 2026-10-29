@@ -772,6 +772,10 @@ export abstract class CpiEmitter extends CallEmitter {
     const ataProgram = need("ataProgram", "an AssociatedTokenProgram");
     const system = need("system", "a SystemProgram");
     const tokenProgram = need("tokenProgram", "a token program (TokenProgram, Token2022Program or TokenInterface)");
+    // The address is derived under the token program: with two, which one the mint uses is not known here.
+    const tokenPrograms = this.ix!.accounts.filter((o) => o.kind.kind === "tokenProgram");
+    if (tokenPrograms.length > 1)
+      this.fail(node, `${call}(...) needs exactly one token program parameter (found ${tokenPrograms.map((o) => o.name).join(", ")}); use TokenInterface`);
     const { owner, mint } = target.constraints.ata!;
     const a = `a_${target.name}`;
     const create = `TS_TRY(ts_ata_create(params, a_${ataProgram.name}, a_${payer.name}, ${a}, a_${owner}, a_${mint}, a_${system.name}, a_${tokenProgram.name}, false));`;

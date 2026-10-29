@@ -366,7 +366,7 @@ describe("subset enforcement", () => {
     [
       "a Vec element target with a helper that may change the Vec",
       `export interface P { x: u64; }\nexport interface L { ps: Vec<P>; }\nfunction bump(l: Mut<L>): u64 { l.ps.pop(); return 1n; }\nexport function g(l: Mut<L>): void { l.ps.get(0n).x = bump(l); }`,
-      /helper that may change this Vec; store its result in a local first/,
+      /the right side may change this Vec .*store its result in a local first/,
     ],
     ["require without an error", `export function f(b: Mut<Box>): void { require(b.value > 0n); }`, /Expected 2 arguments|takes two arguments/],
   ];

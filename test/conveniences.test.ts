@@ -51,8 +51,8 @@ describe("Anchor-style conveniences (test/fixtures/conveniences.ts)", () => {
     expect(decodeAccount<{ visits: BN }>(d, d.svm, "Stash", stash).visits.toString()).toBe("3");
 
     const mallory = await fundedSigner(d.svm);
-    // Mallory signs as "owner" for alice's stash: has_one (checked first) refuses; the seeds would refuse too.
-    expect(customError(await send(d.svm, mallory, [op("Add", 1, mallory)]))).toBe(2001);
+    // Mallory signs as "owner" for alice's stash: the seeds (checked first, as in Anchor) refuse; has_one would too.
+    expect(customError(await send(d.svm, mallory, [op("Add", 1, mallory)]))).toBe(2006);
   });
 
   it("has_one rejects a mismatched owner even when the seeds match", async () => {

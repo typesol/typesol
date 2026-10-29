@@ -11,6 +11,7 @@ import {
   type SystemAccount,
   type SystemProgram,
   type TokenAccount,
+  type TokenOf,
   type Token2022Program,
   type TokenInterface,
   type u8,
@@ -76,3 +77,10 @@ export function plainExtMint(payer: Mut<Signer>, mint: Init<Mint>, tokenProgram:
 
 /** `mint::authority = auth` on an existing mint, naming the parameter. */
 export function checkMint(mint: MintOf<Mint, "auth">, auth: AccountInfo): void {}
+
+/** Anchor's mint::token_program = tokenProgram (2022) and token::token_program (2021). */
+export function checkTokenProgram(
+  mint: MintOf<Mint, never, never, "tokenProgram">,
+  account: TokenOf<TokenAccount, never, never, "tokenProgram">,
+  tokenProgram: TokenInterface,
+): void {}

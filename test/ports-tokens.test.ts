@@ -108,9 +108,10 @@ describe("port: tokens/escrow", () => {
 
     const second = await make();
     const before = tokenBalance(svm, aliceA)!;
-    // Bob claims to be the maker: the offer PDA is not derived from him and has_one maker fails.
+    // Bob claims to be the maker: the offer PDA is not derived from him. Seeds are checked before has_one, as in
+    // Anchor, so it fails as Anchor's does (2006).
     await fundAta(svm, bob, bob.address, mintA, 0n, { tokenProgram });
-    expect(customError(await refund(bob, bobA, second.offer, second.vault))).toBe(2001);
+    expect(customError(await refund(bob, bobA, second.offer, second.vault))).toBe(2006);
     expectOk(await refund(alice, aliceA, second.offer, second.vault));
     expect(tokenBalance(svm, aliceA)).toBe(before + 1_000_000n);
     expect(svm.getAccount(second.offer).exists).toBe(false);

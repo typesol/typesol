@@ -77,6 +77,12 @@ describe("oracles (test/fixtures/oracles.ts)", () => {
     expect(customError(await read(partial))).toBe(5111);
     const forged = await plant(priceUpdate({ price: 1n, expo: -8, publish: NOW }), d.programId);
     expect(customError(await read(forged))).toBe(3007);
+    // With the expected exponent: the same feed at another scale is refused.
+    const e8 = async (acct: Address) => send(d.svm, payer, [ix(d, "pyth_usd_e8", { feed_id: feedArg, max_age: new BN(60) }, [{ address: acct }])]);
+    expect(i64(expectOk(await e8(fresh)))).toBe(15_012_345_678n);
+    const e6 = await plant(priceUpdate({ price: 150_123_456n, expo: -6, publish: NOW - 10n }), PYTH_RECEIVER);
+    expect(customError(await e8(e6))).toBe(5111);
+    expect(i64(expectOk(await read(e6)))).toBe(150_123_456n); // without it, read at whatever scale the feed has
     // Raw fields parse at the right offsets for both verification-level encodings.
     const raw = async (acct: Address) => i64(expectOk(await send(d.svm, payer, [ix(d, "pyth_raw", {}, [{ address: acct }])])));
     expect(await raw(fresh)).toBe(15_012_345_678n);
@@ -99,6 +105,10 @@ describe("oracles (test/fixtures/oracles.ts)", () => {
     // "Never stale": slot + u64::MAX must not wrap around into "stale".
     expect(i64(expectOk(await read(good, 2n ** 64n - 1n)))).toBe(1_234_567_891n);
     expect(customError(await read(await plant(pullFeed({ value: 1n, samples: 0, slot: SLOT }), SB_MAINNET)))).toBe(5111);
+    // minSamples: a result resting on fewer oracle samples is refused.
+    const read3 = async (acct: Address) => send(d.svm, payer, [ix(d, "sb_value3", { expected: key(acct), max_stale_slots: new BN(100) }, [{ address: acct }])]);
+    expect(i64(expectOk(await read3(good)))).toBe(1_234_567_891n); // 3 samples
+    expect(customError(await read3(negative))).toBe(5111); // 1 sample
     expect(customError(await read(await plant(pullFeed({ value: 1n, samples: 1, slot: SLOT }), SB_DEVNET)))).toBe(3007); // devnet feed on a mainnet program
   });
 });

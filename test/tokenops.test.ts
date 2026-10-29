@@ -189,7 +189,7 @@ describe("token operations, constraints and fields (test/fixtures/tokenops.ts)",
     expect(ret(expectOk(await send(d.svm, payer, [ix(d, "authorities", { who: pk(next) }, [{ address: m2 }])])))).toBe(2n);
   });
 
-  it("checks associated token accounts declaratively (2009)", async () => {
+  it("checks associated token accounts declaratively (2015 / 2009)", async () => {
     const { mint, vault, mintTo } = await world(TOKEN_PROGRAM);
     const owner = await fundedSigner(d.svm);
     const ata = (await spl.findAssociatedTokenPda({ owner: owner.address, mint, tokenProgram: TOKEN_PROGRAM }))[0];
@@ -197,7 +197,8 @@ describe("token operations, constraints and fields (test/fixtures/tokenops.ts)",
     expectOk(await mintTo(ata, 9));
     const check = (acct: Address) => send(d.svm, payer, [ix(d, "check_ata", {}, [{ address: acct }, { address: owner.address }, { address: mint }])]);
     expect(ret(expectOk(await check(ata)))).toBe(9n);
-    expect(customError(await check(vault))).toBe(2009);
+    // Another wallet's token account: its owner is checked before its address, as Anchor's associated_token:: does.
+    expect(customError(await check(vault))).toBe(2015);
     expect(d.idl.instructions.find((i) => i.name === "check_ata")!.accounts[0]).toMatchObject({ name: "account" });
   });
 

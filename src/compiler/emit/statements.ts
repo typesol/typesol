@@ -1007,6 +1007,10 @@ export abstract class StatementEmitter extends CpiEmitter {
   }
 
   protected assign(target: ts.Expression, valueNode: ts.Expression, op?: ts.BinaryOperator, topLevel = false) {
+    // The place is resolved before the right side runs (JS order). A right side that can resize a Vec of the account
+    // would move the element out from under it: the write would land in the bytes that follow.
+    if (this.writesThroughVec(target) && this.mayResizeVecs(valueNode))
+      this.fail(target, "the right side may change this Vec (a helper, closure or push/pop/clear); store its result in a local first");
     if (op !== undefined) {
       const place = this.place(target);
       let current: Value = { c: place.read, type: place.type };
@@ -1062,8 +1066,6 @@ export abstract class StatementEmitter extends CpiEmitter {
       isCall && ts.isIdentifier((valueNode as ts.CallExpression).expression)
         ? this.helperOf(valueNode as ts.CallExpression)?.returns?.kind === "struct"
         : false;
-    if (structCall && this.writesThroughVec(target) && this.helperTakesMutAccounts(valueNode as ts.CallExpression))
-      this.fail(target, "the right side calls a helper that may change this Vec; store its result in a local first");
     // Whole arrays / structs: copy between identical layouts.
     const targetRef = isCall && !structCall ? undefined : this.ref(target);
     if (
@@ -1081,9 +1083,6 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     const place = this.place(target);
     if (isCall && !createsFirst) {
-      // A helper that may replace a Vec element would leave `place` pointing at the new one (JS writes the old object).
-      if (this.writesThroughVec(target) && this.helperTakesMutAccounts(valueNode as ts.CallExpression))
-        this.fail(target, "the right side calls a helper that may change this Vec; store its result in a local first");
       raw = this.call(valueNode as ts.CallExpression, topLevel);
       if (!raw) this.fail(valueNode, "this call does not produce a value");
     }
@@ -1108,5 +1107,32 @@ export abstract class StatementEmitter extends CpiEmitter {
   protected helperTakesMutAccounts(node: ts.CallExpression): boolean {
     const h = this.helperOf(node);
     return !!h?.params.some((p) => p.account && isWritable(p.account));
+  }
+
+  /**
+   * Whether evaluating `node` may resize a growable Vec (and so move the Vecs after it): a push / pop / clear, a
+   * realloc or close, a helper taking a writable account or a function argument, or a closure (its body is not
+   * looked into: it may capture the account). Conservative: it only decides whether a Vec element may be the target.
+   */
+  protected mayResizeVecs(node: ts.Node): boolean {
+    let found = false;
+    const isClosure = (e: ts.Expression) => ts.isArrowFunction(e) || ts.isFunctionExpression(e) || (ts.isIdentifier(e) && !!this.lookup(e.text)?.closure);
+    const visit = (n: ts.Node) => {
+      if (found) return;
+      if (ts.isCallExpression(n)) {
+        const callee = n.expression;
+        if (ts.isPropertyAccessExpression(callee) && ["push", "pop", "clear"].includes(callee.name.text)) found = true;
+        else if (ts.isCallExpression(callee))
+          found = true; // a function a function returns
+        else if (ts.isIdentifier(callee)) {
+          if (this.lookup(callee.text)?.closure) found = true;
+          else if (["realloc", "close"].includes(this.exportName(callee) ?? "")) found = true;
+          else if (this.helperOf(n) && (this.helperTakesMutAccounts(n) || n.arguments.some(isClosure))) found = true;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(node);
+    return found;
   }
 }

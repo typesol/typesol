@@ -3,8 +3,8 @@
 // PORTED: `vault` (`init`) and `taker_token_account_a` / `maker_token_account_b` (`init_if_needed`) are associated
 // token accounts the instruction creates: Ata<Init<TokenAccount>, …> / Ata<InitIfNeeded<TokenAccount>, …>. The offer PDA
 // (seeded with its own `id` field) is checked declaratively: Seeds<…, ["offer", "@maker", "@offer.id"], "bump">.
+// `mint::token_program = token_program` on make_offer's mints is MintOf<Mint, never, never, "tokenProgram">.
 import {
-  type AccountInfo,
   type Ata,
   type AssociatedTokenProgram,
   type CloseTo,
@@ -12,11 +12,12 @@ import {
   type Init,
   type InitIfNeeded,
   type Mint,
+  type MintOf,
   type Mut,
-  type Owner,
   type Pubkey,
   type Seeds,
   type Signer,
+  type SystemAccount,
   type SystemProgram,
   type TokenAccount,
   type TokenInterface,
@@ -39,8 +40,8 @@ export enum ErrorCode {
 
 export function makeOffer(
   maker: Mut<Signer>,
-  tokenMintA: Mint,
-  tokenMintB: Mint,
+  tokenMintA: MintOf<Mint, never, never, "tokenProgram">,
+  tokenMintB: MintOf<Mint, never, never, "tokenProgram">,
   makerTokenAccountA: Ata<Mut<TokenAccount>, "maker", "tokenMintA">,
   offer: Init<Offer>,
   vault: Ata<Init<TokenAccount>, "offer", "tokenMintA">,
@@ -63,7 +64,7 @@ export function makeOffer(
 
 export function takeOffer(
   taker: Mut<Signer>,
-  maker: Owner<Mut<AccountInfo>, "11111111111111111111111111111111">,
+  maker: Mut<SystemAccount>,
   tokenMintA: Mint,
   tokenMintB: Mint,
   takerTokenAccountA: Ata<InitIfNeeded<TokenAccount>, "taker", "tokenMintA">,
