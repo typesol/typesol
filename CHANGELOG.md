@@ -6,6 +6,15 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `typesol doctor` checks Node.js, the platform-tools, the Solana CLI, its keypair, the RPC and the keypair's
+  balance there, and the project, and prints the command that fixes each problem (exit 1 when building is impossible).
+- `typesol init` prints the files it creates relative to where it runs, warns with the install commands when the
+  platform-tools are missing, and lists the next steps.
+- `typesol deploy` checks, before sending anything, that the RPC answers (else: start `solana-test-validator`, or
+  `--url devnet`) and that the payer can pay the rent (else: how much, and the `solana airdrop` command on devnet or a
+  local validator). RPC URLs in these messages show only the host.
+- README: deploying on devnet and on a local validator.
+
 - Docs: [security model](docs/security-model.md) (the guarantees a compiled program can rely on, trust boundaries,
   what is left to the author) and [audit package](docs/audit.md) (scope, priorities, earlier reviews, evidence).
 - Tests: `test/verification/fuzz-layout.test.ts`, model-based fuzzing of an account with two growable Vecs and of

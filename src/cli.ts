@@ -15,6 +15,7 @@ import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
 import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import { buildWorkspace, CONFIG, deployArgs, findWorkspace, programAddress, programForEntry, programPaths, scaffold, type Workspace } from "./workspace.js";
+import { clusterUrl, deployPreflight, doctorChecks, formatChecks, INSTALL_AGAVE, solanaConfig as readSolanaConfig, toolchainCheck } from "./tools/doctor.js";
 
 const ASSETS = fileURLToPath(new URL("../assets/", import.meta.url));
 
@@ -79,8 +80,21 @@ const COMMANDS: Record<string, Command> = {
         .replace(/^_+|_+$/g, "")
         .toLowerCase();
       const name = (v.name as string | undefined) ?? (/^[a-z]/.test(derived) ? derived : `p_${derived || "program"}`);
-      for (const f of scaffold(root, name, template as TemplateName)) log(`  created ${path.join(root, f)}`);
-      log(`\n  next: cd ${path.relative(process.cwd(), root) || "."} && npm install && npm test`);
+      const rel = path.relative(process.cwd(), root) || ".";
+      for (const f of scaffold(root, name, template as TemplateName)) log(`  created ${path.join(rel, f)}`);
+      const tools = toolchainCheck();
+      if (!tools.ok)
+        log(
+          `\n  ! The Solana platform-tools are not installed yet; npm test compiles with them. Install once:\n` +
+            (tools.fix ?? []).map((f) => `      ${f}`).join("\n"),
+        );
+      log(
+        `\n  next:\n` +
+          (rel === "." ? "" : `    cd ${rel}\n`) +
+          `    npm install\n` +
+          `    npm test             # builds ${name} and runs its test in LiteSVM, a Solana runtime in-process\n` +
+          `    npx typesol doctor   # checks the toolchain, keypair and RPC before a deploy`,
+      );
       return 0;
     },
   },
@@ -172,6 +186,20 @@ const COMMANDS: Record<string, Command> = {
       return 0;
     },
   },
+  doctor: {
+    usage: "typesol doctor [--url <rpc>] [--config <solana cli config>]",
+    help: [
+      "Check what building, testing and deploying need: Node.js, the platform-tools, the Solana CLI, its keypair, the RPC",
+      "(and the keypair's balance there) and the project. Each problem comes with the command that fixes it. Exit code 1",
+      "when building is impossible (Node.js or the platform-tools); a missing deploy piece is a warning.",
+    ].join("\n  "),
+    options: { url: { type: "string" }, config: { type: "string" } },
+    async run(v) {
+      const checks = await doctorChecks({ cwd: process.cwd(), url: v.url as string | undefined, config: v.config as string | undefined });
+      log(formatChecks(checks));
+      return checks.some((c) => !c.ok && !c.optional) ? 1 : 0;
+    },
+  },
   deploy: {
     usage: "typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--dry-run]",
     help: [
@@ -180,9 +208,20 @@ const COMMANDS: Record<string, Command> = {
       "Needs the Agave CLI (`solana`) on PATH.",
     ].join("\n  "),
     options: { url: { type: "string" }, keypair: { type: "string" }, config: { type: "string" }, "dry-run": { type: "boolean" }, sbpf: { type: "string" } },
-    run(v, args) {
+    async run(v, args) {
       const ws = needWorkspace("deploy");
       const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v) });
+      if (!v["dry-run"]) {
+        // Before any transaction: the RPC answers and the payer can afford it, with what to do if not.
+        const cfg = solanaConfig(v.config as string | undefined);
+        const url = (v.url as string | undefined) ?? cfg.url;
+        if (url)
+          await deployPreflight({
+            url: clusterUrl(url),
+            payer: (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json"),
+            programs: built.map((b) => ({ soPath: b.result.soPath, address: b.address, name: b.paths.name })),
+          });
+      }
       for (const b of built) {
         const cliArgs = deployArgs(b.result.soPath, b.paths.keypair, { url: v.url as string, payer: v.keypair as string, config: v.config as string });
         if (v["dry-run"]) {
@@ -193,8 +232,7 @@ const COMMANDS: Record<string, Command> = {
         try {
           execFileSync("solana", cliArgs, { stdio: "inherit" });
         } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === "ENOENT")
-            throw new Error("`solana` was not found on PATH. Install the Agave CLI: https://docs.anza.xyz/cli/install");
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`\`solana\` was not found on PATH. Install the Agave CLI: ${INSTALL_AGAVE}`);
           throw new Error(`solana program deploy failed for ${b.paths.name} (see its output above)`);
         }
       }
@@ -478,32 +516,11 @@ function overrideFile(file: string, text: string): () => void {
   };
 }
 
-/** The Solana CLI's cluster monikers, as `solana --url` accepts them; anything else is used as given. */
-function clusterUrl(url: string): string {
-  const monikers: Record<string, string> = {
-    "mainnet-beta": "https://api.mainnet-beta.solana.com",
-    m: "https://api.mainnet-beta.solana.com",
-    devnet: "https://api.devnet.solana.com",
-    d: "https://api.devnet.solana.com",
-    testnet: "https://api.testnet.solana.com",
-    t: "https://api.testnet.solana.com",
-    localhost: "http://127.0.0.1:8899",
-    l: "http://127.0.0.1:8899",
-  };
-  return monikers[url] ?? url;
-}
-
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
 function solanaConfig(file?: string): { url?: string; keypair?: string } {
-  const configPath = file ?? path.join(os.homedir(), ".config/solana/cli/config.yml");
-  if (!existsSync(configPath)) {
-    if (file) throw new UsageError(`${file} does not exist`);
-    return {};
-  }
-  const text = readFileSync(configPath, "utf8");
-  const get = (k: string) => new RegExp(`^${k}:\\s*["']?([^"'\\n]+?)["']?\\s*$`, "m").exec(text)?.[1];
-  const expand = (p?: string) => (p?.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p);
-  return { url: get("json_rpc_url"), keypair: expand(get("keypair_path")) };
+  const cfg = readSolanaConfig(file);
+  if (file && !cfg.exists) throw new UsageError(`${file} does not exist`);
+  return { url: cfg.url, keypair: cfg.keypair };
 }
 
 export async function main(argv: string[]): Promise<number> {
