@@ -248,6 +248,36 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_t22_transfer_fee(${m}, ${amt.c}, &${t}));`);
         return { c: t, type: U64 };
       }
+      case "transferFeeInverse": {
+        if (args.length !== 2) this.fail(node, "transferFeeInverse(mint, amountReceived) takes the mint and the amount the recipient is to get");
+        const m = this.anyAccount(args[0], "the mint");
+        this.line(`TS_TRY(ts_t22_layout(${m}, 1));`);
+        const amt = this.expect(this.expr(args[1], U64), U64, args[1]);
+        const t = this.tmp("fee");
+        this.line(`uint64_t ${t};`);
+        this.line(`TS_TRY(ts_t22_transfer_fee_inverse(${m}, ${amt.c}, &${t}));`);
+        return { c: t, type: U64 };
+      }
+      case "transferFeeBasisPoints":
+      case "transferFeeMaximum": {
+        if (args.length !== 1) this.fail(node, `${builtin}(mint) takes the mint`);
+        const m = this.anyAccount(args[0], "the mint");
+        this.line(`TS_TRY(ts_t22_layout(${m}, 1));`);
+        const t = this.tmp("tf");
+        this.line(`uint64_t ${t}b, ${t}m;`);
+        this.line(`TS_TRY(ts_t22_epoch_fee(${m}, &${t}b, &${t}m));`);
+        return builtin === "transferFeeBasisPoints" ? { c: `((uint16_t)${t}b)`, type: { kind: "int", name: "u16" } } : { c: `${t}m`, type: U64 };
+      }
+      case "extensionsWithin": {
+        if (args.length !== 2 || !ts.isArrayLiteralExpression(args[1]))
+          this.fail(node, "extensionsWithin(account, [types…]) takes a Token-2022 mint or account and a list of u16 extension types");
+        const m = this.anyAccount(args[0], "the account");
+        this.line(`TS_TRY(ts_t22_layout(${m}, 0));`);
+        const types = args[1].elements.map((e) => this.expect(this.expr(e, { kind: "int", name: "u16" }), { kind: "int", name: "u16" }, e).c);
+        const t = this.tmp("ext");
+        this.line(`const uint16_t ${t}[${Math.max(types.length, 1)}] = {${types.join(", ")}};`);
+        return { c: `ts_t22_extensions_within(${m}, ${t}, ${types.length})`, type: BOOL };
+      }
       case "isTransferring": {
         // TransferHookAccount (15) on a Token-2022 token account: set only while Token-2022 runs a transfer of it.
         if (args.length !== 1) this.fail(node, "isTransferring(tokenAccount) takes the source token account");
