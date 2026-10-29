@@ -135,6 +135,10 @@ describe("invokeInstruction, Signed, Zeroed borsh, stored bumps elsewhere, Vec i
     expect(errors(`export interface S { isSigner: boolean }\nexport function f(s: Mut<S>): void {}`)).toMatch(/account member/);
     expect(errors(`export interface S { k: Pubkey }\nexport function f(a: Seeds<AccountInfo, ["x"], "@s.k">, s: Mut<S>): void {}`)).toMatch(/u8 field/);
     expect(errors(`export function f(a: Seeds<AccountInfo, ["x"], "@nope.bump">): void {}`)).toMatch(/struct account parameter/);
+    // A Vec is assignable to a FixedVec in TypeScript (for `acct.owners = owners`): a helper taking a list reads it as
+    // a view, and a local copy is refused by the compiler.
+    expect(errors(`function g(xs: FixedVec<u64, 4>): u64 { return xs.length; }\nexport function f(xs: Vec<u64>): u64 { return g(xs); }`)).toBe("");
+    expect(errors(`export function f(xs: Vec<Pubkey>): void { const y: FixedVec<Pubkey, 4> = xs; }`)).toMatch(/local type must be/);
     // A struct without the three fields is a type error; the data must be bytes.
     expect(
       errors(

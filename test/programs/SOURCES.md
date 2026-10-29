@@ -1,7 +1,7 @@
 # Third-party program binaries
 
 Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Solana devnet (program data account,
-45-byte header removed) on 2026-10-22/23 (the mpl-account-compression pair on 2026-10-28); `scripts/fetch-programs.sh [cluster]` downloads them again.
+45-byte header removed) on 2026-10-22/23 (the mpl-account-compression pair on 2026-10-28; `coral_multisig.so` from mainnet on 2026-10-29); `scripts/fetch-programs.sh [cluster]` downloads them again.
 
 | File | Program id | Upstream | License | In the repository | sha256 (as dumped) |
 | --- | --- | --- | --- | --- | --- |

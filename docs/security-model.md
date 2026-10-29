@@ -65,6 +65,10 @@ Each holds for every instruction of every program the compiler accepts. A break 
 12. **CPIs.** A program signs only for its own PDAs (the runtime enforces it; the seeds are those written in the
     source). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
     signs for it; remaining accounts keep the flags they were passed with, or are checked for the role requested.
+    `invokeInstruction` is the exception by design: its program, account flags and data come from values (stored in
+    account data or passed in), so the compiler cannot check them; the runtime does, refusing any account the
+    transaction did not pass that way and any signer the program's seeds do not cover. Only programs that store
+    instructions to run (a multisig, a DAO) need it; review who can write those values.
     Return data is read only from the program named, at the expected size (5106).
 13. **Events.** `emitCpi` is accepted only from this program's event-authority PDA, signed (2002).
 

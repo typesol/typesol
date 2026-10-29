@@ -123,6 +123,7 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   readonly length: u64;
   get(index: bigint): T;
   set(index: bigint, value: T): void;
+  // `...rest: never[]` takes nothing, but lets a Vec (whose push takes a payer) be assigned to a FixedVec: `acct.owners = owners`.
   push(value: T, ...rest: never[]): void;
   pop(): T;
   clear(): void;
