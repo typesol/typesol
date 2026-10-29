@@ -1,6 +1,6 @@
 {
   "name": "@typesol/cli",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "description": "Compile a TypeScript-syntax language directly to Solana SBF programs.",
   "type": "module",
   "license": "MIT",

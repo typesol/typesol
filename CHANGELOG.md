@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.25.0 — 2026-10-29
+
 Security review (October 2026) fixes, and error codes aligned with Anchor. Some refused transactions now report a
 different error code (below): a minor version.
 
