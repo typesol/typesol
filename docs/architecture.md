@@ -60,7 +60,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/templates.ts` | The programs and tests `typesol init --template` writes (copies of `examples/`; a test checks they match). |
 | `src/tools/svmrpc.ts` | `svmConnection`: a kit RPC and subscriptions pair answered by LiteSVM, so generated clients run in tests (exported by `typesol/testing`). |
 | `src/keys.ts` | Base58 and program keypair helpers. |
-| `ts-plugin/index.js` | `typesol/ts-plugin` (CommonJS, loaded by tsserver): runs `typesol check --json --stdin` on program entries and adds the diagnostics. |
+| `ts-plugin/index.js` | `typesol/ts-plugin` (CommonJS, loaded by tsserver): checks the program entries with the editor's texts (`generate(entry, { files })`, in-process once `dist/compiler` has loaded, `typesol check --json --files` before) and adds each diagnostic to the file it is in. |
 | `src/testing.ts` | `typesol/testing`: LiteSVM test helpers for projects (accounts by name from the IDL, plain values). |
 | `src/tools/onchain.ts` | `typesol verify --address`: a deployed program's ELF, authority and deploy slot under loader v2, v3 or v4. |
 | `src/tools/profile.ts` | Turns `--profile` logs into compute units per source line. |

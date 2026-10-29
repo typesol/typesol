@@ -10,11 +10,14 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const require = createRequire(import.meta.url);
-const plugin = require("../../ts-plugin/index.js") as (m: { typescript: typeof ts }) => { create(info: unknown): ts.LanguageService };
+type PluginLS = ts.LanguageService & { typesolReady(): Promise<unknown> };
+const plugin = require("../../ts-plugin/index.js") as (m: { typescript: typeof ts }) => { create(info: unknown): PluginLS };
 
 function project() {
   const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "typesol-plugin-")));
   expect(spawnSync("node", [path.join(ROOT, "dist/cli.js"), "init", ".", "--name", "app"], { cwd: dir }).status).toBe(0);
+  // init sets VS Code up to use the workspace's TypeScript, which loads tsconfig plugins.
+  expect(JSON.parse(readFileSync(path.join(dir, ".vscode/settings.json"), "utf8"))).toMatchObject({ "typescript.tsdk": "node_modules/typescript/lib" });
   const file = path.join(dir, "programs/app.ts");
   const texts = new Map([[file, readFileSync(file, "utf8")]]);
   const options: ts.CompilerOptions = {
@@ -63,7 +66,32 @@ describe("typesol/ts-plugin", () => {
     // A floating-point literal, at the literal.
     expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/no floating-point numbers/)]);
     expect(diags[0]).toMatchObject({ source: "typesol", code: 9900, category: ts.DiagnosticCategory.Error });
-    expect(bad.slice(diags[0].start!, diags[0].start! + 3)).toBe("1.5");
+    expect(bad.slice(diags[0].start!, diags[0].start! + diags[0].length!)).toBe("1.5"); // the whole construct
+  });
+
+  it("checks in the editor's process once the compiler has loaded, with the same result", async () => {
+    const p = project();
+    await p.ls.typesolReady();
+    p.edit(p.file, p.text().replace("counter.count += by;", "const rate = 1.5;\n  counter.count += by;"));
+    const started = performance.now();
+    const diags = p.ls.getSemanticDiagnostics(p.file);
+    expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/no floating-point numbers/)]);
+    expect(performance.now() - started).toBeLessThan(2000); // no child process
+  });
+
+  it("shows a refusal in a file the entry imports, for its unsaved text", async () => {
+    const p = project();
+    await p.ls.typesolReady();
+    const helper = path.join(p.dir, "programs/math.ts");
+    writeFileSync(helper, `import { type u64 } from "typesol";\nexport function double(x: u64): u64 {\n  return x * 2n;\n}\n`);
+    p.edit(helper, readFileSync(helper, "utf8"));
+    p.edit(p.file, `import { double } from "./math";\n${p.text().replace("counter.count += by;", "counter.count += double(by);")}`);
+    expect(p.ls.getSemanticDiagnostics(helper)).toEqual([]);
+    // Unsaved: a construct the compiler refuses, in the helper.
+    p.edit(helper, `import { type u64 } from "typesol";\nexport function double(x: u64): u64 {\n  const half = 0.5;\n  return x * 2n;\n}\n`);
+    const diags = p.ls.getSemanticDiagnostics(helper);
+    expect(diags.map((d) => String(d.messageText))).toEqual([expect.stringMatching(/no floating-point numbers/)]);
+    expect(p.ls.getSemanticDiagnostics(p.file)).toEqual([]); // reported where it is, not in the entry
   });
 
   it("leaves TypeScript's own errors alone and skips files that are not program entries", () => {

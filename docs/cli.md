@@ -38,10 +38,13 @@ safe and out of git: it is each program's address and its first upgrade authorit
 ## Editor
 
 `typesol init` projects load `typesol/ts-plugin` from `programs/tsconfig.json`: besides TypeScript's errors, the editor
-shows what the TypeSOL compiler refuses (an unsupported construct, a constraint that cannot hold…) at its line, for the
-text being edited, once TypeScript itself has nothing to report. It checks the program entries listed in
-`typesol.json`. Editors load tsconfig plugins from the project's own TypeScript: in VS Code, run "TypeScript: Select
-TypeScript Version" → "Use Workspace Version". To add it to an existing project:
+underlines what the TypeSOL compiler refuses (an unsupported construct, a constraint that cannot hold…), for the text
+being edited (unsaved changes in every open file), once TypeScript itself has nothing to report. It checks the program
+entries listed in `typesol.json` and shows each problem in the file it is in, the entry or any file it imports. The
+compiler runs inside the editor's TypeScript server once it has loaded (a check takes milliseconds; the first ones run
+`typesol check --json --files` as a child process). Editors load tsconfig plugins from the project's own TypeScript:
+`typesol init` writes `.vscode/settings.json` so VS Code offers to switch to it ("Use Workspace Version"). To add the
+plugin to an existing project:
 
 ```json
 { "compilerOptions": { "plugins": [{ "name": "typesol/ts-plugin" }] } }

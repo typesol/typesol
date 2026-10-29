@@ -132,7 +132,7 @@ export function deployArgs(soPath: string, keypair: string, opts: { url?: string
   return args;
 }
 
-/** Create a project: typesol.json, one program from a template, its LiteSVM test, configs. Refuses to overwrite files. */
+/** Create a project: typesol.json, one program from a template, its LiteSVM test, configs (editor settings included). Refuses to overwrite files. */
 export function scaffold(dir: string, name: string, template: TemplateName = "counter"): string[] {
   const t = TEMPLATES[template];
   if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`program name "${name}" must be snake_case`);
@@ -182,6 +182,9 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
         null,
         2,
       ) + "\n",
+    // VS Code loads tsconfig plugins (typesol/ts-plugin) only with the workspace's TypeScript: offer to switch to it.
+    ".vscode/settings.json":
+      JSON.stringify({ "typescript.tsdk": "node_modules/typescript/lib", "typescript.enablePromptUseWorkspaceTsdk": true }, null, 2) + "\n",
     // target/deploy/*-keypair.json are the programs' addresses: never commit them, but keep a backup.
     ".gitignore":
       "node_modules/\n# target/deploy/*-keypair.json are the programs' addresses (and upgrade keys): never commit them, but BACK THEM UP.\n# A fresh clone cannot build or deploy a program whose address is recorded in typesol.json without its keypair.\ntarget/\n",

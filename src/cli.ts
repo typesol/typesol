@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import ts from "typescript";
 import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Sbpf } from "./compiler/index.js";
 import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
@@ -59,7 +58,7 @@ const COMMANDS: Record<string, Command> = {
   init: {
     usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow]",
     help: [
-      "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore.",
+      "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore, .vscode/settings.json (editor errors).",
       "Refuses to overwrite files. <name> must be snake_case (default: derived from <dir>).",
       "--template counter   a PDA counter per user (default)",
       "--template vault     a SOL vault at a PDA: deposit, withdraw above rent, close",
@@ -150,19 +149,25 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   check: {
-    usage: "typesol check <program.ts> [--json] [--stdin]",
+    usage: "typesol check <program.ts> [--json] [--stdin | --files]",
     help: [
       "Typecheck and validate the TypeSOL subset without building.",
       "--json    print { ok, diagnostics: [{ file, line, column, message }] } (exit 1 when there are diagnostics)",
       "--stdin   read <program.ts>'s text from stdin instead of the file (an editor's unsaved buffer); its imports are read from disk",
+      '--files   read { "files": { "<absolute path>": "<text>", … } } from stdin: those files\' texts instead of the disk (unsaved buffers)',
     ].join("\n  "),
-    options: { json: { type: "boolean" }, stdin: { type: "boolean" } },
+    options: { json: { type: "boolean" }, stdin: { type: "boolean" }, files: { type: "boolean" } },
     run(v, args) {
       const file = path.resolve(one(args, "<program.ts>"));
-      const restore = v.stdin ? overrideFile(file, readFileSync(0, "utf8")) : undefined;
+      let files: Map<string, string> | undefined;
+      if (v.stdin) files = new Map([[file, readFileSync(0, "utf8")]]);
+      else if (v.files) {
+        const given = (JSON.parse(readFileSync(0, "utf8")) as { files?: Record<string, string> }).files ?? {};
+        files = new Map(Object.entries(given).map(([p, t]) => [path.resolve(p), t]));
+      }
       try {
-        if (!v.stdin) mustExist(file);
-        const { model } = generate(file);
+        if (!files?.has(file)) mustExist(file);
+        const { model } = generate(file, { files });
         if (v.json) log(JSON.stringify({ ok: true, diagnostics: [] }));
         else log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
         return 0;
@@ -170,8 +175,6 @@ const COMMANDS: Record<string, Command> = {
         if (!v.json || !(e instanceof CompileError)) throw e;
         log(JSON.stringify({ ok: false, diagnostics: e.diagnostics }));
         return 1;
-      } finally {
-        restore?.();
       }
     },
   },
@@ -505,17 +508,6 @@ function readJson(file: string): unknown {
 }
 
 /** Make the compiler read `text` for `file` (instead of the disk) until the returned function is called. */
-function overrideFile(file: string, text: string): () => void {
-  const sys = ts.sys;
-  const { readFile, fileExists } = sys;
-  sys.readFile = (p, enc) => (path.resolve(p) === file ? text : readFile.call(sys, p, enc));
-  sys.fileExists = (p) => path.resolve(p) === file || fileExists.call(sys, p);
-  return () => {
-    sys.readFile = readFile;
-    sys.fileExists = fileExists;
-  };
-}
-
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
 function solanaConfig(file?: string): { url?: string; keypair?: string } {
   const cfg = readSolanaConfig(file);
