@@ -1,17 +1,6 @@
 import ts from "typescript";
 import { MAX_RETURN_DATA, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
-import {
-  INT_INFO,
-  type AccountParam,
-  type FieldType,
-  type ScalarType,
-  type ValueType,
-  isScalar,
-  isWritable,
-  optionKey,
-  scalarSize,
-  typeName,
-} from "../model.js";
+import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, type Value, type Local, type Closure, type Ref, cString, fixedVecC, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
 
@@ -1090,49 +1079,5 @@ export abstract class StatementEmitter extends CpiEmitter {
     // A local, or a string field of a variable enum (a view), keeps its own copy of account text.
     if (ts.isIdentifier(target) || (value.type.kind === "string" && this.peekKind(target) === "string")) value = this.ownedString(value);
     this.line(place.write(value.c) + ";");
-  }
-
-  /** Whether a place goes through a Vec element (`v.get(i).x`, `v.get(i)`). */
-  protected writesThroughVec(node: ts.Expression): boolean {
-    for (let n: ts.Expression = node; ;) {
-      if (ts.isParenthesizedExpression(n)) n = n.expression;
-      else if (ts.isPropertyAccessExpression(n)) n = n.expression;
-      else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "get") {
-        if (this.peekKind(n.expression.expression) === "vec") return true;
-        n = n.expression.expression;
-      } else return false;
-    }
-  }
-
-  protected helperTakesMutAccounts(node: ts.CallExpression): boolean {
-    const h = this.helperOf(node);
-    return !!h?.params.some((p) => p.account && isWritable(p.account));
-  }
-
-  /**
-   * Whether evaluating `node` may resize a growable Vec (and so move the Vecs after it): a push / pop / clear, a
-   * realloc or close, a helper taking a writable account or a function argument, or a closure (its body is not
-   * looked into: it may capture the account). Conservative: it only decides whether a Vec element may be the target.
-   */
-  protected mayResizeVecs(node: ts.Node): boolean {
-    let found = false;
-    const isClosure = (e: ts.Expression) => ts.isArrowFunction(e) || ts.isFunctionExpression(e) || (ts.isIdentifier(e) && !!this.lookup(e.text)?.closure);
-    const visit = (n: ts.Node) => {
-      if (found) return;
-      if (ts.isCallExpression(n)) {
-        const callee = n.expression;
-        if (ts.isPropertyAccessExpression(callee) && ["push", "pop", "clear"].includes(callee.name.text)) found = true;
-        else if (ts.isCallExpression(callee))
-          found = true; // a function a function returns
-        else if (ts.isIdentifier(callee)) {
-          if (this.lookup(callee.text)?.closure) found = true;
-          else if (["realloc", "close"].includes(this.exportName(callee) ?? "")) found = true;
-          else if (this.helperOf(n) && (this.helperTakesMutAccounts(n) || n.arguments.some(isClosure))) found = true;
-        }
-      }
-      ts.forEachChild(n, visit);
-    };
-    visit(node);
-    return found;
   }
 }

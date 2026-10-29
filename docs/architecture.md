@@ -77,15 +77,43 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 | --- | --- | --- |
 | `shared.ts` | | `Value`, `Ref` and `Local`, limits, and the C type helpers (`valueC`, `fieldC`, `storageDecl`, `cString`), growable Vec placement (`vecPlace`, `vecLenCheck`) |
 | `base.ts` | `EmitterBase` | function state; `line()`, `tmp()`, `settle()`, scopes, `fail()`, account lookup |
+| `alias.ts` | `AliasEmitter` | aliasing, in one place: the storage paths an expression names, refusing to replace data a live reference still reads, and which values may resize a growable Vec |
 | `storage.ts` | `StorageEmitter` | references into account data and locals, reads and writes, indexing, aliasing, argument validation |
 | `expressions.ts` | `ExpressionEmitter` | literals, operators and checked arithmetic, property reads, conditionals, text, casts |
 | `calls.ts` | `CallEmitter` | `call()` (the built-in dispatch), Vec methods, helpers, remaining accounts, foreign reads, return data |
-| `cpi.ts` | `CpiEmitter` | seeds and PDAs, `create`, System/Token/ATA/Metaplex CPIs, `invoke`, Borsh serialization, events |
+| `cpi-core.ts` | `CpiCoreEmitter` | seeds and PDAs, signer seeds, remaining-account ranges, byte buffers and Borsh serialization |
+| `create.ts` | `CreateEmitter` | `create` / `createIfNeeded` of program accounts, mints (with Token-2022 extensions), token accounts and ATAs; System transfers |
+| `token.ts` | `TokenEmitter` | SPL Token / Token-2022 instructions and the ATA program |
+| `metaplex.ts` | `MetaplexEmitter` | Token Metadata, Core (plugins, external plugins) and Bubblegum |
+| `cpi.ts` | `CpiEmitter` | `invoke`, `invokeInstruction`, events |
 | `statements.ts` | `StatementEmitter` | variables, assignment, `if`/loops/`switch`, `return` |
 | `function.ts` | `FunctionEmitter` | the instruction prologue (account checks, constraints, argument decoding) and epilogue |
 
 `borsh.ts` writes the Borsh pack/unpack codecs of `@layout borsh` structs, and `program.ts` assembles the C file
 (typedefs, codecs, helpers, instructions, the entry point). `index.ts` is the emitter's export.
+
+## Why there is no IR (yet)
+
+The emitter lowers the checked TypeScript AST straight to C, and clang (-O2) optimizes it. There is no intermediate
+representation in between. We reviewed this on 2026-10-30 and kept it that way for now:
+
+- **What an IR would buy:** flow-sensitive analyses instead of syntactic ones (aliasing today follows storage paths
+  named in the source, see `alias.ts`), a second backend (SBF without clang), and optimizations clang cannot see
+  because they depend on account semantics (dropping a repeated check, packing a `@layout borsh` account only where
+  it changed).
+- **What it would cost now:** rewriting most of the compiler's 12,000 lines, and losing the property every release
+  relies on: programs that do not use a change compile to the same binaries. Audit scope and differential results
+  would start over.
+- **What we have instead:** the layers above, each owning one concern; `Ref` / `Value` as the typed place and value
+  model; refusals where the syntactic analysis cannot prove safety (a false refusal is a compile error, never a wrong
+  program); clang for the generic optimizations. Refactors are checked with `scripts/codegen-snapshot.ts`: the
+  generated C and IDL of every example, fixture and port, compared byte for byte before and after.
+
+Revisit it when one of these becomes real:
+
+1. a second backend (no clang, or another VM);
+2. an optimization that needs data flow across statements and pays for itself in the benchmarks;
+3. aliasing refusals that users hit in correct programs and that only flow-sensitive analysis can lift.
 
 ## Rules the emitter keeps
 
