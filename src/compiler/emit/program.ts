@@ -120,6 +120,8 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   // refuse more than the array holds instead (ts_deserialize relies on this bound).
   out.push(`  if (*(const uint64_t *)input > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: at most ${MAX_ACCOUNTS} accounts per instruction");`);
   out.push(`  ts_deserialize(input, &params);`);
+  // loadAccountMut's record of the accounts it loaded: set up only in programs that use it (one store otherwise wasted).
+  if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_claim_mut("))) out.push(`  params.loaded_mut = 0;`);
   const minDisc = Math.min(8, ...model.instructions.map((ix) => ix.discriminator.length));
   out.push(`  if (params.data_len < ${minDisc}) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSOL: instruction data too short");`);
   // Self-CPI events (emitCpi): accept the event instruction when its authority PDA signed it, like Anchor.

@@ -1465,6 +1465,12 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
         const [f, param = f] = entry.split("=") as [string, string?];
         if (entry.includes("=")) {
           if (!accounts.some((o) => o.name === param)) reporter.fail(a.node, `add an account parameter named "${param}"`);
+          if (f === "tokenProgram") {
+            if (a.kind.kind !== "token" && a.kind.kind !== "mint") reporter.fail(a.node, "TokenOf / MintOf apply to a TokenAccount / Mint");
+            if (accounts.find((o) => o.name === param)!.kind.kind !== "tokenProgram")
+              reporter.fail(a.node, `"${param}" must be a TokenProgram, Token2022Program or TokenInterface parameter`);
+            continue;
+          }
           if (a.kind.kind === "token" ? f !== "mint" && f !== "owner" : a.kind.kind === "mint" ? false : true)
             reporter.fail(
               a.node,
@@ -1585,9 +1591,11 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     const one = (t: ts.TypeNode | undefined) => (t && t.kind !== ts.SyntaxKind.NeverKeyword ? lit(t)[0] : undefined);
     const p1 = one(args[1]);
     const p2 = one(args[2]);
-    if (!p1 && !p2) reporter.fail(node, `${name}<…> names at least one parameter`);
+    const p3 = one(args[3]);
+    if (!p1 && !p2 && !p3) reporter.fail(node, `${name}<…> names at least one parameter`);
     if (p1) out.hasOne.push(`${first}=${p1}`);
     if (p2) out.hasOne.push(`${second}=${p2}`);
+    if (p3) out.hasOne.push(`tokenProgram=${p3}`);
   }
   if (name === "CloseTo") out.closeTo = lit(args[1])[0];
   if (name === "Owner") {

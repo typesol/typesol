@@ -20,6 +20,7 @@ import {
   U64,
   U8,
   I64,
+  I32,
   BOOL,
   PUBKEY,
   STRING,
@@ -346,25 +347,26 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return { c: `ts_secp256k1_verify(${h.c}, (uint64_t)${id.c}, ${r.c}, ${sv.c}, ${eth.c})`, type: BOOL };
       }
       case "pythPrice": {
-        if (args.length !== 3) this.fail(node, "pythPrice(update, feedId, maxAgeSeconds) takes three arguments");
+        if (args.length !== 3 && args.length !== 4) this.fail(node, "pythPrice(update, feedId, maxAgeSeconds, exponent?) takes three or four arguments");
         const u = this.accountParam(args[0], "the price update");
         if (u.kind.kind !== "pyth") this.fail(args[0], "pass a PythPriceUpdate parameter");
-        const [feed, age] = this.lowerInOrder(args.slice(1), [HASH, U64]);
+        const [feed, age, expo] = this.lowerInOrder(args.slice(1), [HASH, U64, I32]);
         const t = this.tmp("px");
         this.line(`int64_t ${t};`);
-        this.line(`TS_TRY(ts_pyth_price(a_${u.name}, ${feed.c}, ${age.c}, &${t}));`);
+        this.line(`TS_TRY(ts_pyth_price(a_${u.name}, ${feed.c}, ${age.c}, ${expo ? `true, ${expo.c}` : "false, 0"}, &${t}));`);
         return { c: t, type: I64 };
       }
       case "switchboardValue": {
         // Anyone can create a Switchboard feed: like pythPrice's feed id, the expected feed address is required.
-        if (args.length !== 4) this.fail(node, "switchboardValue(feed, expectedFeed, maxStaleSlots, decimals) takes four arguments");
+        if (args.length !== 4 && args.length !== 5)
+          this.fail(node, "switchboardValue(feed, expectedFeed, maxStaleSlots, decimals, minSamples?) takes four or five arguments");
         const f = this.accountParam(args[0], "the feed");
         if (f.kind.kind !== "switchboard") this.fail(args[0], "pass a SwitchboardFeed parameter");
-        const [expected, stale, dec] = this.lowerInOrder(args.slice(1), [PUBKEY, U64, U8]);
+        const [expected, stale, dec, min] = this.lowerInOrder(args.slice(1), [PUBKEY, U64, U8, U8]);
         const t = this.tmp("sb");
         this.line(`int64_t ${t};`);
         this.line(`if (!ts_key_eq(&a_${f.name}->key, ${expected.c})) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: not the expected Switchboard feed");`);
-        this.line(`TS_TRY(ts_switchboard_value(a_${f.name}, ${stale.c}, ${dec.c}, &${t}));`);
+        this.line(`TS_TRY(ts_switchboard_value(a_${f.name}, ${stale.c}, ${dec.c}, ${min ? min.c : "1"}, &${t}));`);
         return { c: t, type: I64 };
       }
       case "associatedTokenAddress": {
@@ -906,7 +908,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (s.vec) for (const l of vecLenCheck(s, h, `((TSS_${s.name} *)(${h}->data + 8))`, "")) this.line(l);
     if (mut) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
-      this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+      this.line(`TS_TRY(ts_claim_mut(params, ${h}));`);
     }
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: mut } };
   }

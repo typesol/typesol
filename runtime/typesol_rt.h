@@ -18,6 +18,7 @@
 #define TS_ERR_INSTRUCTION_NOT_FOUND 101   /* InstructionFallbackNotFound */
 #define TS_ERR_INSTRUCTION_DATA 102        /* InstructionDidNotDeserialize */
 #define TS_ERR_NOT_WRITABLE 3006           /* AccountNotMutable */
+#define TS_ERR_CONSTRAINT_MUT 2000         /* ConstraintMut */
 #define TS_ERR_CONSTRAINT 2001             /* ConstraintHasOne */
 #define TS_ERR_NOT_RENT_EXEMPT 2005        /* ConstraintRentExempt */
 #define TS_ERR_CONSTRAINT_SIGNER 2002      /* ConstraintSigner */
@@ -31,6 +32,8 @@
 #define TS_ERR_MINT_AUTHORITY 2016         /* ConstraintMintMintAuthority */
 #define TS_ERR_FREEZE_AUTHORITY 2017       /* ConstraintMintFreezeAuthority */
 #define TS_ERR_MINT_DECIMALS 2018          /* ConstraintMintDecimals */
+#define TS_ERR_TOKEN_TOKEN_PROGRAM 2021    /* ConstraintTokenTokenProgram */
+#define TS_ERR_MINT_TOKEN_PROGRAM 2022     /* ConstraintMintTokenProgram */
 #define TS_ERR_DUPLICATE_MUT 2040          /* ConstraintDuplicateMutableAccount */
 #define TS_ERR_ALREADY_INITIALIZED 3000    /* AccountDiscriminatorAlreadySet */
 #define TS_ERR_DISCRIMINATOR 3002          /* AccountDiscriminatorMismatch */
@@ -275,6 +278,7 @@ typedef struct {
   const SolPubkey *program_id;
   TsAccount *ka[TS_MAX_ACCOUNTS];             /* ka_num entries */
   SolAccountInfo infos[TS_MAX_ACCOUNTS];      /* scratch for CPI account lists (ts_invoke) */
+  uint64_t loaded_mut;                        /* bit i: ka[i] loaded with loadAccountMut (zeroed by the entrypoint of a program that uses it) */
 } TsParams;
 
 /*
@@ -410,6 +414,12 @@ static inline uint64_t ts_check_writable(const TsAccount *a) {
   if (!a->is_writable) TS_FAIL(TS_ERR_NOT_WRITABLE, "TypeSOL: account must be writable");
   return SUCCESS;
 }
+/* A Mut<…> parameter passed read-only: Anchor's `#[account(mut)]` (ConstraintMut). ts_check_writable is for accounts
+   the program makes writable at runtime (remaining accounts, CPI metas). */
+static inline uint64_t ts_check_mut(const TsAccount *a) {
+  if (!a->is_writable) TS_FAIL(TS_ERR_CONSTRAINT_MUT, "TypeSOL: account must be writable (mut)");
+  return SUCCESS;
+}
 
 static inline uint64_t ts_check_program_account(const TsAccount *a, const SolPubkey *program_id,
                                                 const uint8_t disc[8], uint64_t size) {
@@ -428,12 +438,24 @@ static inline uint64_t ts_check_vec_len(const TsAccount *a, uint64_t fixed, uint
   return SUCCESS;
 }
 
-/* No other account in the instruction may be the same account (for loadAccountMut). */
+/* No other account in the instruction may be the same account (remaining accounts written in place). */
 static inline uint64_t ts_check_unaliased(const TsParams *params, const TsAccount *a) {
   /* The loader passes each account once and marks repeats as duplicates, which share its record. */
   uint64_t seen = 0;
   for (uint64_t i = 0; i < params->ka_num; i++) seen += params->ka[i] == a;
   if (seen > 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
+  return SUCCESS;
+}
+
+/* loadAccountMut: unaliased, and not already loaded mutably in this instruction. Two loads of the same slot would be
+   two writable views of one account, as two slots naming it would (read both, write both: the classic drain). */
+static inline uint64_t ts_claim_mut(TsParams *params, const TsAccount *a) {
+  uint64_t seen = 0, at = 0;
+  for (uint64_t i = 0; i < params->ka_num; i++)
+    if (params->ka[i] == a) seen++, at = i;
+  if (seen > 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
+  if (params->loaded_mut >> at & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
+  params->loaded_mut |= (uint64_t)1 << at;
   return SUCCESS;
 }
 
@@ -1466,7 +1488,8 @@ static inline int64_t ts_le_i64(const uint8_t *p) {
 }
 
 /* Like get_price_no_older_than: fully verified, matching feed id, publish_time + max_age >= now. */
-static inline uint64_t ts_pyth_price(const TsAccount *a, const SolPubkey *feed, uint64_t max_age, int64_t *out) {
+/* expo: the exponent the caller scales by; checked when check_expo (a feed's exponent can change). */
+static inline uint64_t ts_pyth_price(const TsAccount *a, const SolPubkey *feed, uint64_t max_age, bool check_expo, int32_t expo, int64_t *out) {
   uint64_t m;
   bool full;
   TS_TRY(ts_pyth_message(a, &m, &full));
@@ -1478,6 +1501,11 @@ static inline uint64_t ts_pyth_price(const TsAccount *a, const SolPubkey *feed, 
   int64_t deadline;
   if (__builtin_add_overflow(published, (int64_t)(max_age > INT64_MAX ? INT64_MAX : max_age), &deadline)) deadline = INT64_MAX;
   if (deadline < now) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Pyth price is too old");
+  if (check_expo) {
+    int32_t e;
+    ts_memcpy(&e, a->data + m + 48, 4);
+    if (e != expo) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Pyth exponent is not the expected one");
+  }
   *out = ts_le_i64(a->data + m + 32);
   return SUCCESS;
 }
@@ -1503,9 +1531,10 @@ static inline uint64_t ts_check_switchboard(const TsAccount *a, bool devnet) {
  * The feed's current result (an 18-decimal fixed-point i128) scaled to `decimals`, if it has samples
  * and was produced within `max_stale_slots` slots of now.
  */
-static inline uint64_t ts_switchboard_value(const TsAccount *a, uint64_t max_stale_slots, uint8_t decimals, int64_t *out) {
+static inline uint64_t ts_switchboard_value(const TsAccount *a, uint64_t max_stale_slots, uint8_t decimals, uint8_t min_samples, int64_t *out) {
   if (decimals > 18) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: at most 18 decimals");
-  if (a->data[TS_SB_RESULT_SAMPLES] == 0) TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Switchboard feed has no samples");
+  if (a->data[TS_SB_RESULT_SAMPLES] == 0 || a->data[TS_SB_RESULT_SAMPLES] < min_samples)
+    TS_FAIL(TS_ERR_ORACLE, "TypeSOL: Switchboard feed has too few samples");
   uint64_t clock[5] = {0};
   if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
   uint64_t slot = (uint64_t)ts_le_i64(a->data + TS_SB_RESULT_SLOT);

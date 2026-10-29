@@ -6,6 +6,29 @@ codes, and says so here.
 
 ## Unreleased
 
+Security review (October 2026) fixes, and error codes aligned with Anchor. Some refused transactions now report a
+different error code (below): a minor version.
+
+- Fixed: `loadAccountMut` on the same remaining account twice (`rest.get(i)`, `rest.get(j)` with `i == j`) gave two
+  writable views of one account; a program reading both before writing both could be made to create value. The second
+  load is now refused with 2040.
+- Fixed: a Vec element written with a right side that resizes the Vec (`book.bids.get(i).qty += settle(book)` where the
+  helper pops, a closure, or a `push` / `pop` / `clear` in the expression) wrote through the element's old position,
+  into the bytes of the next Vec. Such an assignment is now a compile error ("store its result in a local first"),
+  as it already was for a plain `=` with a helper.
+- Fixed: `Ata<Init<…>>` / `Ata<InitIfNeeded<…>>` creation and `Ata<AccountInfo, …>` with two token program parameters
+  used the first one; they now need exactly one (use `TokenInterface`).
+- New: `TokenOf<…, …, …, "tokenProgram">` / `MintOf<…, …, …, "tokenProgram">`, Anchor's `token::token_program` /
+  `mint::token_program` (2021 / 2022). The escrow port uses it.
+- New: `pythPrice(update, feedId, maxAge, exponent)` refuses a feed whose exponent is not the one given;
+  `switchboardValue(…, minSamples)` refuses a result resting on fewer oracle samples.
+- Changed: each account's constraints are checked in Anchor's order (seeds, associated token account, has_one, owner,
+  executable, address, token::, mint::), so a transaction breaking several fails with Anchor's code: e.g. a stranger's
+  call on a `Seeds<HasOne<…>>` account now fails with 2006 (ConstraintSeeds) instead of 2001, and an `Ata<…>` of
+  another wallet with 2015 instead of 2009. A `Mut<…>` account passed read-only fails with 2000 (ConstraintMut), as
+  Anchor's `#[account(mut)]`, instead of 3006. docs/errors.md lists the order and the differences left.
+- Docs: unchecked raw Pyth fields, `requirePda` with a bump from the arguments, Merkle leaves, and what
+  `createIfNeeded` leaves unchecked on an existing account.
 - Docs: [Case study: porting Anchor's escrow](docs/case-study-escrow.md), one Anchor program ported end to end, with the
   differences, the checks run against the original and the cost.
 - Releases: the release workflow checks that CHANGELOG.md has the version, and after publishing installs the package

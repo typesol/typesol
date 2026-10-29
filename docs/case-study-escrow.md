@@ -89,8 +89,8 @@ parameter's type:
 ```ts
 export function makeOffer(
   maker: Mut<Signer>,
-  tokenMintA: Mint,
-  tokenMintB: Mint,
+  tokenMintA: MintOf<Mint, never, never, "tokenProgram">,
+  tokenMintB: MintOf<Mint, never, never, "tokenProgram">,
   makerTokenAccountA: Ata<Mut<TokenAccount>, "maker", "tokenMintA">,
   offer: Init<Offer>,
   vault: Ata<Init<TokenAccount>, "offer", "tokenMintA">,
@@ -112,7 +112,8 @@ export function makeOffer(
 }
 ```
 
-`offer.create` finds the canonical bump, creates the PDA with the computed space and returns the bump, which Anchor
+`MintOf<Mint, never, never, "tokenProgram">` is `mint::token_program = token_program`: the mint must be owned by
+the token program passed (2022 otherwise). `offer.create` finds the canonical bump, creates the PDA with the computed space and returns the bump, which Anchor
 exposes as `context.bumps.offer`. `transferChecked` reads the mint's decimals itself.
 
 ### take_offer and refund_offer
@@ -147,8 +148,9 @@ tokenProgram.closeAccount(vault, maker, offer, ["offer", maker.key, offer.id, of
 
 | Anchor | Port |
 | --- | --- |
-| `Signer`, `SystemAccount` (`#[account(mut)]`) | `Mut<Signer>`, `Owner<Mut<AccountInfo>, "1111…">` (a System-owned account) |
+| `Signer`, `SystemAccount` (`#[account(mut)]`) | `Mut<Signer>`, `Mut<SystemAccount>` |
 | `InterfaceAccount<Mint>`, `InterfaceAccount<TokenAccount>` | `Mint`, `TokenAccount` |
+| `mint::token_program = token_program` | `MintOf<Mint, never, never, "tokenProgram">` |
 | `associated_token::mint = m, associated_token::authority = a` | `Ata<TokenAccount, "a", "m">` |
 | `init` / `init_if_needed` on an associated token account | `Ata<Init<…>>` + `vault.create(payer)` / `Ata<InitIfNeeded<…>>` + `createIfNeeded(payer)` |
 | `init, seeds, bump` + `context.bumps.offer` | `Init<Offer>` + `offer.bump = offer.create(maker, seeds)` |
@@ -157,16 +159,8 @@ tokenProgram.closeAccount(vault, maker, offer, ["offer", maker.key, offer.id, of
 | `transfer_checked(CpiContext::new_with_signer(…), amount, decimals)` | `tokenProgram.transferChecked(from, mint, to, authority, amount, seeds)` |
 | `ErrorCode::CustomError` (unused upstream) | `enum ErrorCode`, the same code 6000 |
 
-Nothing in the program needed a construct TypeSOL lacks; the port is marked PORTED in
-[the ports table](../test/ports/README.md). Two of Anchor's checks have no exact TypeSOL form and are covered
-differently:
-
-- `mint::token_program = token_program` on both mints. TypeSOL checks that each mint is an initialized mint owned by
-  SPL Token or Token-2022 and that `token_program` is one of the two. Mint A is then only used through
-  `token_program` (the vault's address is derived with it and the token program refuses a mint it does not own), so a
-  mismatch fails the transaction. Mint B is only recorded by `make_offer`: an offer naming a mint B of the other token
-  program is created, and fails when taken.
-- The order of the checks, and with it which error a refused transaction reports (next section).
+Nothing in the program needed a construct TypeSOL lacks, and every account constraint has its TypeSOL form; the port
+is marked PORTED in [the ports table](../test/ports/README.md).
 
 ## Same inputs, same results
 
@@ -181,27 +175,28 @@ Two independent checks run the original and the port against each other.
   open). The decoded open offer, every token balance, the vault's authority and which accounts were closed must be
   identical before any number is reported. They are.
 
-Both implementations refuse the hostile calls the comparison makes, with different error codes:
+Both implementations refuse the hostile calls the comparison makes:
 
 | Hostile call | Anchor | TypeSOL |
 | --- | --- | --- |
+| refund_offer signed by someone other than the maker | 2006 ConstraintSeeds | 2006 ConstraintSeeds |
 | take_offer naming the taker as the maker | 2015 ConstraintTokenOwner | 2040 ConstraintDuplicateMutableAccount |
-| refund_offer signed by someone other than the maker | 2006 ConstraintSeeds | 2001 ConstraintHasOne |
 
-In the first, taker and maker are the same writable account. TypeSOL refuses an account passed in two writable slots
-right after the per-account type checks, before the token account and `has_one` checks; Anchor accepts that pair and
-fails later, on the maker's token account. In the second, TypeSOL checks `has_one` before the seeds and Anchor the seeds first. A client
-that matches on these codes needs to accept either.
+TypeSOL checks each account's constraints in Anchor's order, so a refused transaction usually gets the same error
+code (see [which error a transaction gets](errors.md#which-error-a-transaction-gets)). The second call differs on
+purpose: taker and maker are then the same writable account, which TypeSOL refuses for any two writable parameters,
+where Anchor only compares program and token accounts and fails later, on the maker's token account. A client that
+matches on this code needs to accept either.
 
 ## Cost
 
 Mean compute units per instruction in LiteSVM (21 make_offer, 10 take_offer and 10 refund_offer calls), and the
-program size, from typesol/benchmarks (`@typesol/cli` 0.24.1; Anchor 1.0.2). Lower is better.
+program size, from typesol/benchmarks (TypeSOL at this version; Anchor 1.0.2). Lower is better.
 
 | | TypeSOL | Anchor | Native Rust | Pinocchio |
 | --- | ---: | ---: | ---: | ---: |
-| make_offer | **19,674** | 35,726 | 33,206 | 20,581 |
-| take_offer | **7,044** | 29,235 | 24,995 | 21,606 |
+| make_offer | **19,697** | 35,726 | 33,206 | 20,581 |
+| take_offer | **7,053** | 29,235 | 24,995 | 21,606 |
 | refund_offer | **4,271** | 15,326 | 12,477 | 8,137 |
 | Binary | 32.0 KB | 244.5 KB | 120.4 KB | **25.1 KB** |
 

@@ -5,6 +5,11 @@ export function pythUsd(update: PythPriceUpdate, feedId: Hash, maxAge: u64): i64
   return pythPrice(update, feedId, maxAge);
 }
 
+/** With the exponent the arithmetic assumes: a feed at another scale is refused. */
+export function pythUsdE8(update: PythPriceUpdate, feedId: Hash, maxAge: u64): i64 {
+  return pythPrice(update, feedId, maxAge, -8n);
+}
+
 export function pythRaw(update: PythPriceUpdate): i64 {
   require(update.exponent === -8n, "unexpected exponent");
   return update.price + update.publishTime * 0n;
@@ -12,4 +17,9 @@ export function pythRaw(update: PythPriceUpdate): i64 {
 
 export function sbValue(feed: SwitchboardFeed, expected: Pubkey, maxStaleSlots: u64): i64 {
   return switchboardValue(feed, expected, maxStaleSlots, 6n);
+}
+
+/** At least three oracle samples. */
+export function sbValue3(feed: SwitchboardFeed, expected: Pubkey, maxStaleSlots: u64): i64 {
+  return switchboardValue(feed, expected, maxStaleSlots, 6n, 3n);
 }

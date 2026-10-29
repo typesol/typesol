@@ -16,7 +16,6 @@ import {
 import { borshIdentical, borshMinSize } from "./borsh.js";
 import { MAX_ACCOUNTS, ATA_PROGRAM_BYTES, cBytes, cString, optC, fieldC, storageDecl, helperSignature, emptySizeC, vecLenCheck } from "./shared.js";
 import { StatementEmitter } from "./statements.js";
-
 /**
  * One instruction or helper as a C function: the instruction prologue (account checks, constraints and
  * argument decoding), the body, and the epilogue.
@@ -49,7 +48,9 @@ export class FunctionEmitter extends StatementEmitter {
       const start = head.length;
       const k = a.kind;
       if (k.kind === "signer") head.push(`  TS_TRY(ts_check_signer(${v}));`);
-      if (isWritable(k)) head.push(`  TS_TRY(ts_check_writable(${v}));`);
+      // Mut<…>: Anchor's `mut` (2000). Anchor checks it with the constraints, after seeds and associated token; here it
+      // sits with the type checks, which keeps binaries smaller (only a transaction breaking both sees the difference).
+      if (isWritable(k)) head.push(`  TS_TRY(ts_check_mut(${v}));`);
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       if (k.kind === "account")
         head.push(
@@ -156,7 +157,9 @@ export class FunctionEmitter extends StatementEmitter {
       }
     head.push(...pairs.map((p) => `  ${p}`));
 
-    // Arguments: Borsh, read sequentially (strings make later offsets dynamic).
+    // Arguments: Borsh, read sequentially (strings make later offsets dynamic). Anchor decodes them before the accounts;
+    // here they come after the account types (decoding first keeps them live across the checks: larger binaries), so
+    // only a transaction wrong in both ways sees a different error.
     if (ix.args.length) head.push(`  uint64_t off = ${ix.discriminator.length};`);
     const need = (bytes: string) =>
       head.push(`  if (params->data_len < off + ${bytes}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
@@ -375,6 +378,11 @@ export class FunctionEmitter extends StatementEmitter {
     ];
   }
 
+  /**
+   * Each account's constraints, account by account in parameter order and, within one account, in Anchor's order
+   * (anchor-syn's `linearize`): seeds, associated token, has_one, owner, executable, address, token::, mint::.
+   * A transaction that breaks several checks then fails with the same error code as under Anchor.
+   */
   protected constraintChecks(ix: Instruction): string[] {
     const out: string[] = [];
     // Bumps found by Seeds<…> checks, declared ahead of the (possibly optional-guarded) checks for `acct.pdaBump`.
@@ -385,11 +393,27 @@ export class FunctionEmitter extends StatementEmitter {
       const k = a.kind.kind;
       if (c.hasOne.length && k !== "account" && k !== "token" && k !== "mint")
         this.reporter.fail(a.node, "HasOne applies to existing accounts (Account<T> / Mut<T>), TokenAccount and Mint");
-      for (const entry of c.hasOne) {
+      if (c.closeTo) {
+        const dest = ix.accounts.find((o) => o.name === c.closeTo)!;
+        if (!isWritable(dest.kind)) this.reporter.fail(a.node, `CloseTo<…, "${c.closeTo}">: ${c.closeTo} must be writable (Mut<…>)`);
+      }
+      if (c.seeds) out.push(...this.seedsCheck(ix, a, bumpDecls));
+      if (c.ata) out.push(...this.ataCheck(ix, a));
+      // has_one on a program account; on a token account or mint the same entries are Anchor's token:: / mint::
+      // constraints, which come last.
+      const hasOne: string[] = [];
+      // Anchor's order inside token:: (authority, mint, token program) and mint:: (authorities, token program).
+      const rank = (e: string) => ["owner=", "mint=", "mintAuthority=", "freezeAuthority=", "tokenProgram="].findIndex((x) => e.startsWith(x));
+      const entries = k === "token" || k === "mint" ? [...c.hasOne].sort((x, y) => rank(x) - rank(y)) : c.hasOne;
+      for (const entry of entries) {
         // "field=param" (TokenOf / MintOf) or a field checked against the parameter of the same name (HasOne).
         const [f, p = f] = entry.split("=") as [string, string?];
-        if (k === "token")
-          out.push(
+        if (f === "tokenProgram")
+          hasOne.push(
+            `  if (!ts_key_eq(&a_${a.name}->owner, &a_${p}->key)) TS_FAIL(${k === "mint" ? "TS_ERR_MINT_TOKEN_PROGRAM" : "TS_ERR_TOKEN_TOKEN_PROGRAM"}, "TypeSOL: ${a.name} is not owned by ${p}");`,
+          );
+        else if (k === "token")
+          hasOne.push(
             f === "mint"
               ? `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${p}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${p}");`
               : `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${p}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${p}");`,
@@ -397,11 +421,13 @@ export class FunctionEmitter extends StatementEmitter {
         else if (k === "mint") {
           const at = f === "mintAuthority" ? 0 : 46;
           const code = f === "mintAuthority" ? "TS_ERR_MINT_AUTHORITY" : "TS_ERR_FREEZE_AUTHORITY";
-          out.push(
+          hasOne.push(
             `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), &a_${p}->key)) TS_FAIL(${code}, "TypeSOL: ${p} is not the ${f} of ${a.name}");`,
           );
-        } else out.push(`  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
+        } else
+          hasOne.push(`  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
       }
+      if (k === "account") out.push(...hasOne);
       if (c.owner) {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
@@ -413,127 +439,7 @@ export class FunctionEmitter extends StatementEmitter {
         out.push(`  static const SolPubkey ca_${a.name} = {${cBytes(c.address.bytes)}};`);
         out.push(`  if (!ts_key_eq(&a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not the expected address");`);
       }
-      if (c.ata && a.kind.kind === "token" && a.kind.init) {
-        // Created in the body: the ATA program checks the address when it creates it, and createIfNeeded checks an
-        // existing one there. Only the IDL entry is recorded here.
-        const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
-        if (tp && !ix.pdas.has(a.name)) {
-          ix.pdas.set(a.name, [
-            { kind: "account", path: snakeCase(c.ata.owner) },
-            { kind: "account", path: snakeCase(tp.name) },
-            { kind: "account", path: snakeCase(c.ata.mint) },
-          ]);
-          ix.pdaPrograms.set(a.name, { kind: "const", value: ATA_PROGRAM_BYTES });
-        }
-      } else if (c.ata) {
-        // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
-        let program = `&a_${a.name}->owner`;
-        if (k !== "token") {
-          const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
-          if (!tp) this.reporter.fail(a.node, "Ata<AccountInfo, …> needs a token program parameter to derive the address");
-          program = `&a_${tp.name}->key`;
-        }
-        out.push(`  { SolPubkey ata_${a.name};`);
-        out.push(`    TS_TRY(ts_ata_address(&a_${c.ata.owner}->key, &a_${c.ata.mint}->key, ${program}, &ata_${a.name}));`);
-        out.push(
-          `    if (!ts_key_eq(&ata_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${c.ata.owner} and ${c.ata.mint}"); }`,
-        );
-        // The address alone is not enough: legacy SPL Token lets an ATA's owner be reassigned.
-        if (k === "token") {
-          out.push(
-            `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${c.ata.mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${c.ata.mint}");`,
-          );
-          out.push(
-            `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${c.ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${c.ata.owner}");`,
-          );
-        }
-        const tp = ix.accounts.find((o) => o.kind.kind === "tokenProgram");
-        if (tp && !ix.pdas.has(a.name)) {
-          ix.pdas.set(a.name, [
-            { kind: "account", path: snakeCase(c.ata.owner) },
-            { kind: "account", path: snakeCase(tp.name) },
-            { kind: "account", path: snakeCase(c.ata.mint) },
-          ]);
-          ix.pdaPrograms.set(a.name, { kind: "const", value: ATA_PROGRAM_BYTES });
-        }
-      }
-      if (c.closeTo) {
-        const dest = ix.accounts.find((o) => o.name === c.closeTo)!;
-        if (!isWritable(dest.kind)) this.reporter.fail(a.node, `CloseTo<…, "${c.closeTo}">: ${c.closeTo} must be writable (Mut<…>)`);
-      }
-      if (c.seeds) {
-        const parts: string[] = [];
-        const idl: IdlSeed[] = [];
-        for (const raw of c.seeds.names) {
-          // "@name" refers to an account parameter (its key) or an argument (its bytes); anything else is a literal.
-          const ref = raw.startsWith("@") ? raw.slice(1) : undefined;
-          const n = ref ?? raw;
-          // "@acct.field": a field of a struct account parameter (its data was checked in the head), Anchor's
-          // `seeds = [pool.amm.as_ref()]`. The account may be this one (`seeds = [offer.id.to_le_bytes()]`).
-          if (ref?.includes(".")) {
-            const [owner, field, ...rest] = ref.split(".");
-            const o = ix.accounts.find((x) => x.name === owner);
-            if (!o || o.kind.kind !== "account" || rest.length)
-              this.reporter.fail(a.node, `Seeds: "@${ref}" must name a field of a struct account parameter ("@vault.owner")`);
-            const st = o.kind.struct;
-            const f = st.fields.find((x) => x.name === field);
-            if (!f) this.reporter.fail(a.node, `Seeds: ${st.name} has no field "${field}"`);
-            const t = f.type;
-            if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&d_${owner}->${field}, 32}`);
-            else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&d_${owner}->${field}, ${scalarSize(t)}}`);
-            else this.reporter.fail(a.node, `Seeds: field "${ref}" of type ${typeName(t)} cannot be a seed (use a Pubkey, an integer or a unit enum)`);
-            idl.push({ kind: "account", path: `${snakeCase(owner!)}.${snakeCase(field!)}`, account: st.name });
-            continue;
-          }
-          const acct = ref ? ix.accounts.find((o) => o.name === ref) : undefined;
-          const arg = ref ? ix.args.find((o) => o.name === ref) : undefined;
-          if (ref && !acct && !arg) this.reporter.fail(a.node, `Seeds: "@${ref}" is neither an account parameter nor an argument`);
-          if (acct) {
-            parts.push(`{(const uint8_t *)&a_${n}->key, 32}`);
-            idl.push({ kind: "account", path: snakeCase(n) });
-          } else if (arg) {
-            const t = arg.type;
-            if (t.kind === "string") parts.push(`{arg_${n}.ptr, arg_${n}.len}`);
-            else if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&arg_${n}, 32}`);
-            else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&arg_${n}, ${scalarSize(t)}}`);
-            else this.reporter.fail(a.node, `Seeds: argument "${n}" of type ${typeName(t)} cannot be a seed`);
-            idl.push({ kind: "arg", path: snakeCase(n) });
-          } else {
-            if (Buffer.byteLength(n, "utf8") > 32) this.reporter.fail(a.node, "a seed can be at most 32 bytes");
-            parts.push(`{(const uint8_t *)${cString(n)}, ${Buffer.byteLength(n, "utf8")}}`);
-            idl.push({ kind: "const", value: [...Buffer.from(n, "utf8")] });
-          }
-        }
-        if (!ix.pdas.has(a.name)) ix.pdas.set(a.name, idl);
-        // The deriving program: this one, another account parameter ("@name"), or a fixed address.
-        let program = "params->program_id";
-        const p = c.seeds.program;
-        if (p?.startsWith("@")) {
-          const pa = ix.accounts.find((o) => o.name === p.slice(1));
-          if (!pa) this.reporter.fail(a.node, `Seeds program: "${p}" is not an account parameter`);
-          program = `&a_${pa.name}->key`;
-          ix.pdaPrograms.set(a.name, { kind: "account", path: snakeCase(pa.name) });
-        } else if (p) {
-          const bytes = [...decodeAddress(p)!];
-          out.push(`  static const SolPubkey sp_${a.name} = {${cBytes(bytes)}};`);
-          program = `&sp_${a.name}`;
-          ix.pdaPrograms.set(a.name, { kind: "const", value: bytes });
-        }
-        const seeds = `cs_${a.name}`;
-        out.push(`  SolSignerSeed ${seeds}[${parts.length + 1}] = {${parts.join(", ")}};`);
-        if (c.seeds.bump) {
-          out.push(`  ${seeds}[${parts.length}] = (SolSignerSeed){&d_${a.name}->${c.seeds.bump}, 1};`);
-          out.push(`  TS_TRY(ts_require_pda(a_${a.name}, ${seeds}, ${parts.length + 1}, ${program}));`);
-          this.bumps.set(a.name, `d_${a.name}->${c.seeds.bump}`);
-        } else {
-          bumpDecls.push(`  uint8_t sb_${a.name}; (void)sb_${a.name};`);
-          out.push(`  { SolPubkey pda_${a.name};`);
-          out.push(
-            `    if (ts_find_pda(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &sb_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
-          );
-          this.bumps.set(a.name, `sb_${a.name}`);
-        }
-      }
+      if (k !== "account") out.push(...hasOne);
       // Constraints run only when every optional account they mention was passed.
       const lines = out.splice(start);
       const optional = this.optionalIn(lines.join("\n"));
@@ -541,6 +447,134 @@ export class FunctionEmitter extends StatementEmitter {
       else out.push(...lines);
     }
     return [...bumpDecls, ...out];
+  }
+
+  /** Ata<…>: the account's owner (2015) and address (2009) as Anchor checks them, then its mint. */
+  private ataCheck(ix: Instruction, a: Instruction["accounts"][number]): string[] {
+    const out: string[] = [];
+    const c = a.constraints;
+    const k = a.kind.kind;
+    const ata = c.ata!;
+    // With two token programs the address depends on which the mint uses: no IDL derivation, and an Ata<AccountInfo>
+    // (derived here) is refused.
+    const tps = ix.accounts.filter((o) => o.kind.kind === "tokenProgram");
+    const tp = tps.length === 1 ? tps[0] : undefined;
+    if (tp && !ix.pdas.has(a.name)) {
+      ix.pdas.set(a.name, [
+        { kind: "account", path: snakeCase(ata.owner) },
+        { kind: "account", path: snakeCase(tp.name) },
+        { kind: "account", path: snakeCase(ata.mint) },
+      ]);
+      ix.pdaPrograms.set(a.name, { kind: "const", value: ATA_PROGRAM_BYTES });
+    }
+    // Created in the body: the ATA program checks the address when it creates it, and createIfNeeded checks an
+    // existing one there. Only the IDL entry is recorded.
+    if (k === "token" && a.kind.init) return out;
+    // The address alone is not enough: legacy SPL Token lets an ATA's owner be reassigned.
+    if (k === "token")
+      out.push(
+        `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${ata.owner}");`,
+      );
+    // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
+    let program = `&a_${a.name}->owner`;
+    if (k !== "token") {
+      if (!tp)
+        this.reporter.fail(
+          a.node,
+          tps.length
+            ? "Ata<AccountInfo, …> needs exactly one token program parameter to derive the address; use TokenInterface"
+            : "Ata<AccountInfo, …> needs a token program parameter to derive the address",
+        );
+      program = `&a_${tp.name}->key`;
+    }
+    out.push(`  { SolPubkey ata_${a.name};`);
+    out.push(`    TS_TRY(ts_ata_address(&a_${ata.owner}->key, &a_${ata.mint}->key, ${program}, &ata_${a.name}));`);
+    out.push(
+      `    if (!ts_key_eq(&ata_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${ata.owner} and ${ata.mint}"); }`,
+    );
+    if (k === "token")
+      out.push(
+        `  if (!ts_key_eq(ts_token_mint(a_${a.name}), &a_${ata.mint}->key)) TS_FAIL(TS_ERR_TOKEN_MINT, "TypeSOL: ${a.name} is not a token account of ${ata.mint}");`,
+      );
+    return out;
+  }
+
+  /** Seeds<…>: the account is the PDA of its seeds (with the stored bump, or the canonical one found here). */
+  private seedsCheck(ix: Instruction, a: Instruction["accounts"][number], bumpDecls: string[]): string[] {
+    const out: string[] = [];
+    const c = a.constraints;
+    const parts: string[] = [];
+    const idl: IdlSeed[] = [];
+    for (const raw of c.seeds!.names) {
+      // "@name" refers to an account parameter (its key) or an argument (its bytes); anything else is a literal.
+      const ref = raw.startsWith("@") ? raw.slice(1) : undefined;
+      const n = ref ?? raw;
+      // "@acct.field": a field of a struct account parameter (its data was checked in the head), Anchor's
+      // `seeds = [pool.amm.as_ref()]`. The account may be this one (`seeds = [offer.id.to_le_bytes()]`).
+      if (ref?.includes(".")) {
+        const [owner, field, ...rest] = ref.split(".");
+        const o = ix.accounts.find((x) => x.name === owner);
+        if (!o || o.kind.kind !== "account" || rest.length)
+          this.reporter.fail(a.node, `Seeds: "@${ref}" must name a field of a struct account parameter ("@vault.owner")`);
+        const st = o.kind.struct;
+        const f = st.fields.find((x) => x.name === field);
+        if (!f) this.reporter.fail(a.node, `Seeds: ${st.name} has no field "${field}"`);
+        const t = f.type;
+        if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&d_${owner}->${field}, 32}`);
+        else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&d_${owner}->${field}, ${scalarSize(t)}}`);
+        else this.reporter.fail(a.node, `Seeds: field "${ref}" of type ${typeName(t)} cannot be a seed (use a Pubkey, an integer or a unit enum)`);
+        idl.push({ kind: "account", path: `${snakeCase(owner!)}.${snakeCase(field!)}`, account: st.name });
+        continue;
+      }
+      const acct = ref ? ix.accounts.find((o) => o.name === ref) : undefined;
+      const arg = ref ? ix.args.find((o) => o.name === ref) : undefined;
+      if (ref && !acct && !arg) this.reporter.fail(a.node, `Seeds: "@${ref}" is neither an account parameter nor an argument`);
+      if (acct) {
+        parts.push(`{(const uint8_t *)&a_${n}->key, 32}`);
+        idl.push({ kind: "account", path: snakeCase(n) });
+      } else if (arg) {
+        const t = arg.type;
+        if (t.kind === "string") parts.push(`{arg_${n}.ptr, arg_${n}.len}`);
+        else if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&arg_${n}, 32}`);
+        else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&arg_${n}, ${scalarSize(t)}}`);
+        else this.reporter.fail(a.node, `Seeds: argument "${n}" of type ${typeName(t)} cannot be a seed`);
+        idl.push({ kind: "arg", path: snakeCase(n) });
+      } else {
+        if (Buffer.byteLength(n, "utf8") > 32) this.reporter.fail(a.node, "a seed can be at most 32 bytes");
+        parts.push(`{(const uint8_t *)${cString(n)}, ${Buffer.byteLength(n, "utf8")}}`);
+        idl.push({ kind: "const", value: [...Buffer.from(n, "utf8")] });
+      }
+    }
+    if (!ix.pdas.has(a.name)) ix.pdas.set(a.name, idl);
+    // The deriving program: this one, another account parameter ("@name"), or a fixed address.
+    let program = "params->program_id";
+    const p = c.seeds!.program;
+    if (p?.startsWith("@")) {
+      const pa = ix.accounts.find((o) => o.name === p.slice(1));
+      if (!pa) this.reporter.fail(a.node, `Seeds program: "${p}" is not an account parameter`);
+      program = `&a_${pa.name}->key`;
+      ix.pdaPrograms.set(a.name, { kind: "account", path: snakeCase(pa.name) });
+    } else if (p) {
+      const bytes = [...decodeAddress(p)!];
+      out.push(`  static const SolPubkey sp_${a.name} = {${cBytes(bytes)}};`);
+      program = `&sp_${a.name}`;
+      ix.pdaPrograms.set(a.name, { kind: "const", value: bytes });
+    }
+    const seeds = `cs_${a.name}`;
+    out.push(`  SolSignerSeed ${seeds}[${parts.length + 1}] = {${parts.join(", ")}};`);
+    if (c.seeds!.bump) {
+      out.push(`  ${seeds}[${parts.length}] = (SolSignerSeed){&d_${a.name}->${c.seeds!.bump}, 1};`);
+      out.push(`  TS_TRY(ts_require_pda(a_${a.name}, ${seeds}, ${parts.length + 1}, ${program}));`);
+      this.bumps.set(a.name, `d_${a.name}->${c.seeds!.bump}`);
+    } else {
+      bumpDecls.push(`  uint8_t sb_${a.name}; (void)sb_${a.name};`);
+      out.push(`  { SolPubkey pda_${a.name};`);
+      out.push(
+        `    if (ts_find_pda(${seeds}, ${parts.length}, ${program}, &pda_${a.name}, &sb_${a.name}) != SUCCESS || !ts_key_eq(&pda_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: ${a.name} is not the expected PDA"); }`,
+      );
+      this.bumps.set(a.name, `sb_${a.name}`);
+    }
+    return out;
   }
 
   /** Optional account parameters a piece of generated C refers to (a_name / d_name). */

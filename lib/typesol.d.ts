@@ -162,7 +162,8 @@ export declare function remainingAccounts(): RemainingAccounts;
 
 /**
  * Read a struct of this program from a remaining account: owner, discriminator and size are checked.
- * `loadAccountMut` also requires it to be writable and not aliased by another writable account.
+ * `loadAccountMut` also requires it to be writable, not aliased by another writable account, and not already loaded
+ * with `loadAccountMut` in this instruction (2040).
  */
 export declare function loadAccount<T>(account: RemainingAccount): Readonly<T>;
 export declare function loadAccountMut<T>(account: RemainingAccount): T;
@@ -180,7 +181,8 @@ export declare function keccak256(...parts: (string | Pubkey | Hash | bigint | b
 
 /**
  * Verify a Merkle proof (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use).
- * `proof` must be a `Vec<Hash>` instruction argument.
+ * `proof` must be a `Vec<Hash>` instruction argument. Leaves and inner nodes hash alike: build the leaf in the program
+ * as OpenZeppelin does, `keccak256(keccak256(data))`, never take it from the arguments (an inner node would pass).
  */
 export declare function merkleVerify(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean;
 
@@ -211,7 +213,8 @@ export declare function ethMessageHash(message: string): Hash;
 
 /**
  * A Pyth `PriceUpdateV2` account (Pyth Solana Receiver, rec5EKMG…). Owner and discriminator are checked.
- * The fields are the raw update; use pythPrice() for a verified, fresh, feed-matched price.
+ * The fields are the raw update and are NOT checked: it may be only partially verified, for another feed, or stale.
+ * Use pythPrice() for a verified, fresh, feed-matched price (with `exponent` to pin the scale).
  */
 export interface PythPriceUpdate extends AccountMeta {
   readonly __pyth: void;
@@ -223,8 +226,12 @@ export interface PythPriceUpdate extends AccountMeta {
   readonly publishTime: i64;
   readonly fullyVerified: boolean;
 }
-/** Like Pyth's get_price_no_older_than: fully verified, `feedId` matches, published within `maxAgeSeconds`. */
-export declare function pythPrice(update: PythPriceUpdate, feedId: Hash, maxAgeSeconds: u64): i64;
+/**
+ * Like Pyth's get_price_no_older_than: fully verified, `feedId` matches, published within `maxAgeSeconds` (5111
+ * otherwise). The price is in units of 10^exponent: pass the `exponent` your arithmetic assumes and a feed whose
+ * exponent differs is refused, instead of read at the wrong scale.
+ */
+export declare function pythPrice(update: PythPriceUpdate, feedId: Hash, maxAgeSeconds: u64, exponent?: i32): i64;
 
 /**
  * A Switchboard On-Demand pull feed (PullFeedAccountData). Mainnet program unless `SwitchboardFeed<"devnet">`
@@ -237,7 +244,14 @@ export interface SwitchboardFeed<Cluster extends "mainnet" | "devnet" = "mainnet
  * The feed's current result scaled to `decimals` (from 18), if `feed` is `expectedFeed` (anyone can create feeds),
  * it has samples and it is at most `maxStaleSlots` old.
  */
-export declare function switchboardValue(feed: SwitchboardFeed<"mainnet" | "devnet">, expectedFeed: Pubkey, maxStaleSlots: u64, decimals: u8): i64;
+export declare function switchboardValue(
+  feed: SwitchboardFeed<"mainnet" | "devnet">,
+  expectedFeed: Pubkey,
+  maxStaleSlots: u64,
+  decimals: u8,
+  /** The fewest oracle samples the result may rest on (default 1). */
+  minSamples?: u8,
+): i64;
 
 /** The Associated Token Account program (ATokenGP…). Its address is checked. */
 export interface AssociatedTokenProgram extends AccountMeta {
@@ -570,13 +584,18 @@ export type InitIfNeeded<T> = T extends TokenAccount
  */
 export type HasOne<A, Field extends string> = A & { readonly __hasOne?: Field };
 /**
- * Anchor's `token::mint = mintParam, token::authority = authorityParam` on an existing token account, naming the
- * parameters (2014 / 2015); `never` leaves one out.
+ * Anchor's `token::mint = mintParam, token::authority = authorityParam, token::token_program = tokenProgramParam` on an
+ * existing token account, naming the parameters (2014 / 2015 / 2021: owned by that token program); `never` leaves one out.
  */
-export type TokenOf<A, MintParam extends string, AuthorityParam extends string = never> = A & { readonly __tokenOf?: [MintParam, AuthorityParam] };
-/** Anchor's `mint::authority = a, mint::freeze_authority = f` on an existing mint, naming the parameters (2016 / 2017). */
-export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extends string = never> = A & {
-  readonly __mintOf?: [AuthorityParam, FreezeAuthorityParam];
+export type TokenOf<A, MintParam extends string, AuthorityParam extends string = never, TokenProgramParam extends string = never> = A & {
+  readonly __tokenOf?: [MintParam, AuthorityParam, TokenProgramParam];
+};
+/**
+ * Anchor's `mint::authority = a, mint::freeze_authority = f, mint::token_program = tp` on an existing mint, naming the
+ * parameters (2016 / 2017 / 2022: owned by that token program); `never` leaves one out.
+ */
+export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extends string = never, TokenProgramParam extends string = never> = A & {
+  readonly __mintOf?: [AuthorityParam, FreezeAuthorityParam, TokenProgramParam];
 };
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
@@ -1642,7 +1661,10 @@ export declare function emit<T>(event: T): void;
  */
 export declare function returnData<T extends bigint | boolean | Pubkey | Hash>(program: AccountMeta): T;
 
-/** Verify `account.key` is the PDA for `seeds` + `bump` under this program. */
+/**
+ * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's
+ * `bump = expr`): use a stored bump, not one from the arguments, or the caller picks among up to 256 addresses.
+ */
 export declare function requirePda(account: AccountMeta, seeds: Seed[], bump: u8): void;
 
 /** Close a program-owned account: move all lamports to `destination` and wipe it. */

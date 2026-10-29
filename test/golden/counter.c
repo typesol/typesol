@@ -13,9 +13,9 @@ __attribute__((noinline)) static uint64_t ix_initialize(TsParams *params) {
   if (params->ka_num < 3) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");
   TsAccount *a_authority = params->ka[0];
   TS_TRY(ts_check_signer(a_authority));
-  TS_TRY(ts_check_writable(a_authority));
+  TS_TRY(ts_check_mut(a_authority));
   TsAccount *a_counter = params->ka[1];
-  TS_TRY(ts_check_writable(a_counter));
+  TS_TRY(ts_check_mut(a_counter));
   TSS_Counter *d_counter = (TSS_Counter *)(a_counter->data + 8);
   TsAccount *a_systemProgram = params->ka[2];
   TS_TRY(ts_check_address(a_systemProgram, &TS_SYSTEM_PROGRAM_ID));
@@ -34,7 +34,7 @@ __attribute__((noinline)) static uint64_t ix_increment(TsParams *params) {
   TsAccount *a_authority = params->ka[0];
   TS_TRY(ts_check_signer(a_authority));
   TsAccount *a_counter = params->ka[1];
-  TS_TRY(ts_check_writable(a_counter));
+  TS_TRY(ts_check_mut(a_counter));
   TS_TRY(ts_check_program_account(a_counter, params->program_id, TS_DISC_Counter, sizeof(TSS_Counter)));
   TSS_Counter *d_counter = (TSS_Counter *)(a_counter->data + 8);
   uint64_t off = 8;
