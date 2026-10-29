@@ -28,14 +28,15 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: '[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "not a version: $VERSION"; exit 1; }'
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: v${{ inputs.version }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false # no caches in the publishing job (see above)
       - name: npm with trusted publishing (11.5.1 or later)
         run: npm install -g npm@11.21.1 && npm --version
       - name: Install Agave CLI and platform-tools
@@ -70,9 +71,10 @@ jobs:
       matrix:
         template: [counter, vault, escrow]
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
       - name: Install Agave CLI and platform-tools
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
