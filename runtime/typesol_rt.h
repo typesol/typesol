@@ -268,8 +268,14 @@ _Static_assert(__builtin_offsetof(TsAccount, key) == 8 && __builtin_offsetof(TsA
                    __builtin_offsetof(TsAccount, data) == 88,
                "TsAccount layout");
 
-/* Accounts per instruction: the entry point refuses more (5113). */
+/* Accounts per instruction: the entry point refuses more (5113). 32 unless the program declares
+   `const MAX_ACCOUNTS = …n` (up to 255); above 32 the CPI scratch lists live on the heap (the frame stays small). */
+#ifndef TS_MAX_ACCOUNTS
 #define TS_MAX_ACCOUNTS 32
+#endif
+#if TS_MAX_ACCOUNTS > 32
+#define TS_SCRATCH_ON_HEAP 1
+#endif
 
 /* Lives in the entry point's frame; the arrays are inline so setting it up stores nothing. */
 typedef struct {
@@ -278,9 +284,42 @@ typedef struct {
   uint64_t data_len;
   const SolPubkey *program_id;
   TsAccount *ka[TS_MAX_ACCOUNTS];             /* ka_num entries */
+#ifdef TS_SCRATCH_ON_HEAP
+  SolAccountInfo *infos;                      /* scratch for CPI account lists, grown on the heap (ts_infos_reserve) */
+  uint64_t infos_cap;
+  SolAccountMeta *metas;                      /* scratch for CPI meta lists with remaining accounts (TS_METAS) */
+#else
   SolAccountInfo infos[TS_MAX_ACCOUNTS];      /* scratch for CPI account lists (ts_invoke) */
+#endif
+#if TS_MAX_ACCOUNTS > 64
+  uint64_t loaded_mut[(TS_MAX_ACCOUNTS + 63) / 64]; /* bit i: ka[i] loaded with loadAccountMut */
+#else
   uint64_t loaded_mut;                        /* bit i: ka[i] loaded with loadAccountMut (zeroed by the entrypoint of a program that uses it) */
+#endif
 } TsParams;
+
+#ifdef TS_SCRATCH_ON_HEAP
+static uint64_t ts_infos_reserve(TsParams *params, uint64_t n);
+static uint64_t ts_metas_scratch(TsParams *params, SolAccountMeta **out);
+#define TS_INFOS_RESERVE(params, n) TS_TRY(ts_infos_reserve(params, n))
+#define TS_METAS_ROOM(m)  \
+  SolAccountMeta *m;      \
+  TS_TRY(ts_metas_scratch(params, &m))
+/* A CPI's meta list with room for every account: on the heap, reused by each such CPI. */
+#define TS_METAS(m, ...)                                    \
+  SolAccountMeta *m;                                        \
+  TS_TRY(ts_metas_scratch(params, &m));                     \
+  {                                                         \
+    const SolAccountMeta m##_init[] = {__VA_ARGS__};        \
+    ts_memcpy(m, m##_init, sizeof(m##_init));               \
+  }
+#else
+#define TS_INFOS_RESERVE(params, n) \
+  do {                              \
+  } while (0)
+#define TS_METAS(m, ...) SolAccountMeta m[TS_MAX_ACCOUNTS] = {__VA_ARGS__}
+#define TS_METAS_ROOM(m) SolAccountMeta m[TS_MAX_ACCOUNTS]
+#endif
 
 /*
  * Same bounds as the SDK's sol_deserialize, minus its per-account "past the array" branch: the entry point has
@@ -331,6 +370,7 @@ static inline __attribute__((always_inline)) void ts_info(const TsAccount *a, So
 static inline __attribute__((always_inline)) uint64_t ts_invoke(TsParams *params, const SolInstruction *ix, const SolSignerSeeds *signers, int nsigners) {
   /* At most TS_MAX_ACCOUNTS metas (the compiler refuses longer lists), the size of `params->infos`. A repeated
      account gets a record per mention, which the runtime accepts. */
+  TS_INFOS_RESERVE(params, ix->account_len);
   SolAccountInfo *infos = params->infos;
   for (uint64_t i = 0; i < ix->account_len; i++) ts_info((const TsAccount *)((const uint8_t *)ix->accounts[i].pubkey - 8), &infos[i]);
   return sol_invoke_signed(ix, infos, ix->account_len, signers, nsigners);
@@ -455,8 +495,13 @@ static inline uint64_t ts_claim_mut(TsParams *params, const TsAccount *a) {
   for (uint64_t i = 0; i < params->ka_num; i++)
     if (params->ka[i] == a) seen++, at = i;
   if (seen > 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
+#if TS_MAX_ACCOUNTS > 64
+  if (params->loaded_mut[at >> 6] >> (at & 63) & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
+  params->loaded_mut[at >> 6] |= (uint64_t)1 << (at & 63);
+#else
   if (params->loaded_mut >> at & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
   params->loaded_mut |= (uint64_t)1 << at;
+#endif
   return SUCCESS;
 }
 
@@ -1293,6 +1338,23 @@ static uint64_t ts_hvec_reserve(void *vec, uint64_t need, uint64_t size) {
   v->cap = (uint32_t)cap;
   return SUCCESS;
 }
+
+#ifdef TS_SCRATCH_ON_HEAP
+/* Room for `n` SolAccountInfo records in the CPI scratch, doubling (the heap is never freed). */
+static uint64_t ts_infos_reserve(TsParams *params, uint64_t n) {
+  if (n <= params->infos_cap) return SUCCESS;
+  uint64_t cap = params->infos_cap ? params->infos_cap * 2 : 16;
+  if (cap < n) cap = n;
+  TS_TRY(ts_alloc(cap * sizeof(SolAccountInfo), (uint8_t **)&params->infos));
+  params->infos_cap = cap;
+  return SUCCESS;
+}
+static uint64_t ts_metas_scratch(TsParams *params, SolAccountMeta **out) {
+  if (!params->metas) TS_TRY(ts_alloc(TS_MAX_ACCOUNTS * sizeof(SolAccountMeta), (uint8_t **)&params->metas));
+  *out = params->metas;
+  return SUCCESS;
+}
+#endif
 
 /* Base58 text of a 32-byte value (a Pubkey or Hash in a template), on the heap. The value is eight big-endian u32
    limbs divided by 58^5 at a time, so each pass gives five digits with one 64-bit division per limb. */

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
-import { MAX_ACCOUNTS, MAX_SEEDS, U64, type Value, isStable, cString, scalarStorageC, optC } from "./shared.js";
+import { accountLimit, MAX_SEEDS, U64, type Value, isStable, cString, scalarStorageC, optC } from "./shared.js";
 import { CallEmitter } from "./calls.js";
 
 /** Seeds and signer seeds, the byte buffers and Borsh serialization every CPI builds on, remaining-account ranges. */
@@ -137,9 +137,9 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     const cnt = this.tmp("nmetas");
     const i = this.tmp("ri");
     this.line(
-      `if (${metas.length} + (${tail.to} - ${tail.from}) > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${MAX_ACCOUNTS} accounts");`,
+      `if (${metas.length} + (${tail.to} - ${tail.from}) > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${accountLimit(this.model)} accounts");`,
     );
-    this.line(`SolAccountMeta ${m}[TS_MAX_ACCOUNTS] = {${fixed}};`);
+    this.line(`TS_METAS(${m}, ${fixed});`);
     this.line(`uint64_t ${cnt} = ${metas.length};`);
     this.line(
       `for (uint64_t ${i} = ${n} + ${tail.from}; ${i} < ${n} + ${tail.to}; ${i}++) ${m}[${cnt}++] = (SolAccountMeta){&params->ka[${i}]->key, ${tail.asPassed ? `params->ka[${i}]->is_writable` : 0}, 0};`,

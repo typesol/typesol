@@ -24,7 +24,7 @@ Each holds for every instruction of every program the compiler accepts. A break 
 
 ### Before the body runs
 
-1. **Account count.** Fewer accounts than parameters fail (3005); more than 32 in total fail before parsing (5113).
+1. **Account count.** Fewer accounts than parameters fail (3005); more than the program takes (32, or its `MAX_ACCOUNTS`) fail before parsing (5113).
 2. **Account types.** Each parameter is checked for what its type says: `Signer` signed (3010); `Mut<…>` writable
    (2000); a program account (`Account<T>`, `Mut<T>`) owned by this program (3007), initialized (3012), with `T`'s
    discriminator (3002) and at least its size (3003); `TokenAccount` / `Mint` owned by SPL Token or Token-2022 and an
