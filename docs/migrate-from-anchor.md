@@ -57,6 +57,8 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `#[account(init, payer = p, seeds = […], bump, token::mint = m, token::authority = a)]` | `Init<TokenAccount>`, then `vault.create(p, […], m, a.key)` (`InitIfNeeded<TokenAccount>` + `createIfNeeded`) |
 | `associated_token::mint = m, associated_token::authority = a` | `Ata<TokenAccount, "a", "m">`; `Ata<Init<TokenAccount>, "a", "m">` creates it |
 | `ctx.remaining_accounts` | `remainingAccounts()` |
+| `#[account(mut, dup)]` | `Dup<Mut<T>>` (in-place accounts only) |
+| `sysvar::instructions` (`load_current_index_checked`, `load_instruction_at_checked`), `get_stack_height()` | `InstructionsSysvar`: `currentIndex()`, `get(i)`, `.length`; `stackHeight()` |
 | `ctx.bumps.vault` | the value `create` returns, or `acct.pdaBump` |
 
 ## Account data

@@ -1122,6 +1122,81 @@ static inline bool ts_merkle_verify(const SolPubkey *leaf, const uint8_t *proof,
 }
 
 /*
+ * The Instructions sysvar: u16 count, u16 offsets[count], then per instruction u16 num_accounts,
+ * num_accounts * (u8 flags: bit 0 signer, bit 1 writable; 32-byte key), 32-byte program id, u16 data_len, data; the
+ * last two bytes of the account are the index of the instruction being executed. Everything here is the transaction
+ * author's data: bounds-checked, never trusted for anything but what it says.
+ */
+typedef struct {
+  const uint8_t *accounts; /* num_accounts * 33 bytes */
+  const SolPubkey *program_id;
+  const uint8_t *data;
+  uint16_t num_accounts;
+  uint16_t data_len;
+} TsIx;
+
+/* Instruction `index` of the transaction; false when out of range or malformed. */
+static inline bool ts_ix_at(const TsAccount *ixs, uint64_t index, TsIx *out) {
+  const uint8_t *d = ixs->data;
+  uint64_t len = ixs->data_len;
+  if (len < 2) return false;
+  uint16_t count;
+  ts_memcpy(&count, d, 2);
+  if (index >= count || 2 + (uint64_t)count * 2 > len) return false;
+  uint16_t at;
+  ts_memcpy(&at, d + 2 + index * 2, 2);
+  uint64_t p = at;
+  if (p + 2 > len) return false;
+  ts_memcpy(&out->num_accounts, d + p, 2);
+  p += 2;
+  out->accounts = d + p;
+  p += (uint64_t)out->num_accounts * 33;
+  if (p + 34 > len) return false;
+  out->program_id = (const SolPubkey *)(d + p);
+  p += 32;
+  ts_memcpy(&out->data_len, d + p, 2);
+  p += 2;
+  if (p + out->data_len > len) return false;
+  out->data = d + p;
+  return true;
+}
+static inline uint64_t ts_ix_load(const TsAccount *ixs, uint64_t index, TsIx *out) {
+  if (!ts_ix_at(ixs, index, out)) TS_FAIL(TS_ERR_INDEX, "TypeSOL: no such instruction in the transaction");
+  return SUCCESS;
+}
+static inline uint64_t ts_ix_count(const TsAccount *ixs, uint64_t *out) {
+  if (ixs->data_len < 2) TS_FAIL(TS_ERR_INDEX, "TypeSOL: empty instructions sysvar");
+  uint16_t n;
+  ts_memcpy(&n, ixs->data, 2);
+  *out = n;
+  return SUCCESS;
+}
+static inline uint64_t ts_ix_current(const TsAccount *ixs, uint64_t *out) {
+  if (ixs->data_len < 4) TS_FAIL(TS_ERR_INDEX, "TypeSOL: empty instructions sysvar");
+  uint16_t i;
+  ts_memcpy(&i, ixs->data + ixs->data_len - 2, 2);
+  *out = i;
+  return SUCCESS;
+}
+static inline uint64_t ts_ix_account(const TsIx *ix, uint64_t i, const uint8_t **out) {
+  if (i >= ix->num_accounts) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the instruction has no account at that index");
+  *out = ix->accounts + i * 33;
+  return SUCCESS;
+}
+/* `n` bytes of the instruction's data at `off` (little-endian integers, keys). */
+static inline uint64_t ts_ix_read(const TsIx *ix, uint64_t off, uint64_t n, void *out) {
+  if (off > ix->data_len || n > ix->data_len - off) TS_FAIL(TS_ERR_INDEX, "TypeSOL: read past the end of the instruction's data");
+  ts_memcpy(out, ix->data + off, n);
+  return SUCCESS;
+}
+/* Is it `program`'s instruction with this 8-byte discriminator (Anchor's sha256("global:<name>")[..8])? */
+static inline bool ts_ix_is(const TsIx *ix, const SolPubkey *program, const uint8_t disc[8]) {
+  return ts_key_eq(ix->program_id, program) && ix->data_len >= 8 && ts_mem_eq(ix->data, disc, 8);
+}
+/* How deep in CPIs the program runs: 1 when the transaction calls it directly. */
+extern uint64_t sol_get_stack_height(void);
+
+/*
  * Did an Ed25519 precompile instruction in this transaction verify `message` signed by `signer`?
  * Reads the Instructions sysvar (data: u16 count, u16 offsets[count], then per instruction
  * u16 num_accounts, num_accounts * (u8 flags, 32-byte key), 32-byte program id, u16 data_len, data).
@@ -1129,29 +1204,15 @@ static inline bool ts_merkle_verify(const SolPubkey *leaf, const uint8_t *proof,
  * message, with offsets pointing into the precompile's own data (instruction index 0xFFFF).
  */
 static inline bool ts_ed25519_verified(const TsAccount *ixs, const SolPubkey *signer, TS_Str message) {
-  const uint8_t *d = ixs->data;
-  uint64_t len = ixs->data_len;
-  if (len < 2) return false;
+  if (ixs->data_len < 2) return false;
   uint16_t count;
-  ts_memcpy(&count, d, 2);
-  if (2 + (uint64_t)count * 2 > len) return false;
+  ts_memcpy(&count, ixs->data, 2);
   for (uint16_t i = 0; i < count; i++) {
-    uint16_t at;
-    ts_memcpy(&at, d + 2 + (uint64_t)i * 2, 2);
-    uint64_t p = at;
-    if (p + 2 > len) return false;
-    uint16_t nacc;
-    ts_memcpy(&nacc, d + p, 2);
-    p += 2 + (uint64_t)nacc * 33;
-    if (p + 34 > len) return false;
-    bool is_ed = ts_mem_eq(d + p, &TS_ED25519_PROGRAM_ID, 32);
-    p += 32;
-    uint16_t dlen;
-    ts_memcpy(&dlen, d + p, 2);
-    p += 2;
-    if (p + dlen > len) return false;
-    if (!is_ed || dlen < 2) continue;
-    const uint8_t *ix = d + p;
+    TsIx t;
+    if (!ts_ix_at(ixs, i, &t)) return false;
+    if (!ts_key_eq(t.program_id, &TS_ED25519_PROGRAM_ID) || t.data_len < 2) continue;
+    uint16_t dlen = t.data_len;
+    const uint8_t *ix = t.data;
     uint8_t nsig = ix[0];
     for (uint8_t k = 0; k < nsig; k++) {
       uint64_t o = 2 + (uint64_t)k * 14;

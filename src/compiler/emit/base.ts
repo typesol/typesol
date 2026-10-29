@@ -408,6 +408,8 @@ export abstract class EmitterBase {
   protected abstract call(node: ts.CallExpression, topLevel: boolean): Value | undefined;
   protected abstract isRemaining(node: ts.Expression): boolean;
   protected abstract handle(node: ts.Expression): string | undefined;
+  protected abstract instructionsParam(node: ts.Expression): AccountParam | undefined;
+  protected abstract isTxIx(node: ts.Expression): boolean;
   protected abstract seeds(node: ts.Expression, extra: number): { name: string; count: number; idl: IdlSeed[] | undefined };
   protected abstract recordPda(account: AccountParam, idl: IdlSeed[] | undefined): void;
   protected abstract create(node: ts.CallExpression, target: AccountParam, topLevel: boolean, ifNeeded?: boolean): Value;

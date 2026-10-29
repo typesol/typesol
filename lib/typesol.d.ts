@@ -186,10 +186,43 @@ export declare function keccak256(...parts: (string | Pubkey | Hash | bigint | b
  */
 export declare function merkleVerify(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean;
 
-/** The Instructions sysvar (Sysvar1nstructions…). Its address is checked. */
+/**
+ * The Instructions sysvar (Sysvar1nstructions…): every instruction of the transaction being executed. Its address is
+ * checked. What it holds is the transaction author's: use it to require something of the transaction (a repay
+ * instruction after a flash loan, a fee instruction before), never as proof of anything else.
+ */
 export interface InstructionsSysvar extends AccountMeta {
   readonly __instructions_sysvar: void;
+  /** How many instructions the transaction has. */
+  readonly length: u64;
+  /** The index of the top-level instruction being executed (this one, or the one that CPI'd into this program). */
+  currentIndex(): u64;
+  /** The transaction's instruction at `index` (5104 when there is none). */
+  get(index: u64): TransactionInstruction;
 }
+/** One instruction of the transaction, read from the Instructions sysvar. Reads past its end fail with 5104. */
+export interface TransactionInstruction {
+  readonly __transaction_instruction: void;
+  readonly programId: Pubkey;
+  readonly accountsLength: u64;
+  readonly dataLength: u64;
+  accountKey(i: u64): Pubkey;
+  accountIsSigner(i: u64): boolean;
+  accountIsWritable(i: u64): boolean;
+  /** Little-endian integers and keys from the instruction data. */
+  readU8(offset: u64): u8;
+  readU16(offset: u64): u16;
+  readU32(offset: u64): u32;
+  readU64(offset: u64): u64;
+  readPubkey(offset: u64): Pubkey;
+  /** `program`'s instruction `name` (snake_case or camelCase): its program id and 8-byte Anchor discriminator match. */
+  is(program: Pubkey, name: string): boolean;
+}
+/**
+ * How deep in cross-program calls this program runs: 1 when the transaction calls it directly, more when another
+ * program invoked it. `require(stackHeight() === 1n, …)` refuses CPI callers.
+ */
+export declare function stackHeight(): u64;
 
 /**
  * True when this transaction contains an Ed25519 precompile instruction that verified `message`
@@ -597,6 +630,12 @@ export type TokenOf<A, MintParam extends string, AuthorityParam extends string =
 export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extends string = never, TokenProgramParam extends string = never> = A & {
   readonly __mintOf?: [AuthorityParam, FreezeAuthorityParam, TokenProgramParam];
 };
+/**
+ * Anchor's `dup`: this writable account may be the same account as another writable parameter (TypeSOL refuses that
+ * otherwise, 2040). Both are read and written in place, so a write through one is seen through the other: read
+ * what you need before writing. Not for accounts that are created, closed, a close destination or `@layout borsh`.
+ */
+export type Dup<A> = A & { readonly __dup?: true };
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
   /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */

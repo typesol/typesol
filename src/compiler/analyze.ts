@@ -119,6 +119,7 @@ const TYPE_EXPORTS = new Set([
   "Ata",
   "Owner",
   "Executable",
+  "Dup",
   "Optional",
   "EventAuthority",
   "MplCoreProgram",
@@ -1575,7 +1576,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
 /** Peel HasOne / Seeds / CloseTo wrappers off a parameter type, recording what they ask for. */
 function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<string, string>, out: Constraints): ts.TypeNode {
   const name = typesolName(node, imports);
-  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable"].includes(name ?? "")) return node;
+  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable", "Dup"].includes(name ?? "")) return node;
   const args = (node as ts.TypeReferenceNode).typeArguments ?? [];
   const lit = (t: ts.TypeNode | undefined): string[] => {
     if (!t) return [];
@@ -1605,6 +1606,7 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     out.owner = { base58: text!, bytes: [...bytes] };
   }
   if (name === "Executable") out.executable = true;
+  if (name === "Dup") out.dup = true;
   if (name === "Address") {
     const text = lit(args[1])[0];
     const bytes = text === undefined ? undefined : decodeAddress(text);
