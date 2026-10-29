@@ -6,6 +6,23 @@ codes, and says so here.
 
 ## Unreleased
 
+The last two Anchor gaps the multisig port showed: declarative constraints in Anchor's order, and Anchor's unbounded
+`Vec` in Borsh accounts. Programs that use neither compile to the same C as in 0.28.0.
+
+- New: `constraint(account, condition, error?)`, Anchor's `constraint = condition @ error`: statements at the start of
+  an instruction that run with that account's checks (after its `has_one`), so a transaction breaking several checks
+  gets Anchor's code. The default error is ConstraintRaw (2003).
+- New: `Vec<T>` in a `@layout borsh` struct is Anchor's Vec: any field position, held on the heap while the instruction
+  runs (growing as Rust's does), bounded only by the account when it is written back (3004). Such a struct can be an
+  account or a whole argument (not return data or an event); `Init` of one takes its space. `typesol port` now writes
+  `Vec<T>` for Anchor's Vec fields instead of a `FixedVec` to size by hand.
+- Changed: `push(value, payer)`'s payer is optional in the types (the compiler still requires it for a Vec that grows
+  the account), so a `Vec` assigns to a `FixedVec` without the earlier type workaround.
+- Changed: examples/multisig.ts uses both; it now matches the mainnet program on 52 transactions, including one that
+  breaks two checks at once and an account holding 40 owners.
+- Internal: `cpi.ts` split into `cpi-core`, `create`, `token`, `metaplex` and `cpi`; aliasing rules in `alias.ts`;
+  `scripts/codegen-snapshot.ts`; the IR decision in docs/architecture.md.
+
 ## 0.28.0 — 2026-10-29
 
 A port of coral-xyz/multisig, checked against the program deployed on mainnet, and the features it needed. The

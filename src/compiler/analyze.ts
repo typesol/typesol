@@ -631,10 +631,13 @@ export function analyze(entry: string): Analysis {
       collectStructs(a.type, structs, dataEnums, seen);
       // A @layout borsh struct is decoded as a whole argument; inside lists or enums it would need a fixed size.
       const whole = a.type.kind === "structRef" ? a.type.struct : undefined;
-      for (const s of seen)
+      for (const s of seen) {
         if (structs.get(s)!.layout === "borsh" && s !== whole)
           reporter.error(fn.node.name ?? fn.node, `argument ${a.name}: ${s} is @layout borsh; pass it as a whole argument, not inside a list or enum`);
+      }
     }
+    if (ix.returns?.kind === "struct" && heapVecOf(structs.get(ix.returns.name)!))
+      reporter.error(fn.node.name ?? fn.node, `${ix.returns.name} holds a Vec<T>; return data takes a struct with FixedVec<T, N> instead`);
     // A returned struct goes out in its fixed layout, like an argument comes in: it cannot also be a Borsh event.
     if (ix.returns?.kind === "struct") collectStructs(ix.returns, structs, dataEnums, argStructs);
     for (const a of ix.accounts) {
@@ -983,14 +986,9 @@ function analyzeStructs(
       if (layoutTag && layoutText !== "borsh" && layoutText !== "fixed")
         reporter.fail(layoutTag, "@layout is borsh (Anchor's account bytes) or fixed (the default)");
       const growable = (f: StructField) => f.type.kind === "vec" && f.type.cap === undefined;
-      // Anchor's bytes keep the declared order, so there a growable Vec has to be last (the fields after it would move).
-      if (layoutText === "borsh")
-        for (const f of fields.slice(0, -1))
-          if (growable(f))
-            reporter.fail(
-              f.node ?? decl,
-              "in a @layout borsh struct a Vec<T> field must be the last field (Anchor's bytes keep the declared order); use FixedVec<T, N> for a list of at most N elsewhere",
-            );
+      // In a @layout borsh struct a Vec<T> is Anchor's: held on the heap while an instruction runs, any field, bounded
+      // only by the account when it is written back.
+      if (layoutText === "borsh") for (const f of fields) if (growable(f)) f.type = { ...(f.type as FieldType & { kind: "vec" }), heap: true };
       // The fixed layout stores the growable Vecs after the fixed-size fields, in the order declared, so every other
       // field keeps a fixed offset; the IDL lists the fields in this stored order.
       const stored = layoutText === "borsh" ? fields : [...fields.filter((f) => !growable(f)), ...fields.filter(growable)];
@@ -1092,6 +1090,7 @@ function analyzeStructs(
         return 1 + e.payload;
       }
       case "vec": {
+        if (t.heap) return 16; // TSH_*: u32 length, u32 capacity, a pointer to the elements on the heap
         if (t.cap === undefined) return 4; // the u32 length; elements live past the fixed part
         const e = sizeOf(t.elem, at);
         if (e === undefined) reporter.fail(at, "FixedVec elements must have a fixed size");
@@ -1134,7 +1133,7 @@ function analyzeStructs(
     // Growable Vecs (stored last, see above): the first one's length and elements end the C struct; the others follow
     // it in the account, each a u32 length and its elements.
     for (const f of s.fields)
-      if (f.type.kind === "vec" && f.type.cap === undefined) {
+      if (f.type.kind === "vec" && f.type.cap === undefined && !f.type.heap) {
         const elemSize = sizeOf(f.type.elem, s.node);
         if (elemSize === undefined) reporter.fail(s.node, "Vec elements must have a fixed size");
         (s.vecs ??= []).push({ name: f.name, elem: f.type.elem, elemSize });
@@ -1254,6 +1253,11 @@ function references(l: HelperSource, decls: Set<ts.Node>, checker: ts.TypeChecke
   return found;
 }
 
+/** The first heap Vec<T> field of a struct (a Vec in a `@layout borsh` struct), if it has one. */
+export function heapVecOf(s: StructDef): StructField | undefined {
+  return s.fields.find((f) => f.type.kind === "vec" && f.type.heap);
+}
+
 /**
  * A `@layout borsh` struct: its own fields may be FixedString (Borsh String), FixedVec (Borsh Vec) and Option; anything
  * nested must already be Borsh-identical (fixed-size scalars, Pubkeys, enums, arrays and structs of them).
@@ -1273,8 +1277,12 @@ function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, dataEnu
             reporter.fail(at, `${t.name}.${v.name}.${vf.name} in a @layout borsh struct: enum variants hold fixed-size values and strings`);
       continue;
     }
-    if (t.kind === "vec" && t.cap === undefined)
-      reporter.fail(at, "a @layout borsh struct cannot end in a growable Vec<T>; use FixedVec<T, N> (Anchor's #[max_len(N)] Vec)");
+    if (t.kind === "vec" && t.heap) {
+      const e = t.elem;
+      if (!fixed(e) || e.kind === "array")
+        reporter.fail(at, `${typeName(t)} in a @layout borsh struct: its elements are integers, booleans, Pubkeys, unit enums or fixed-size structs`);
+      continue;
+    }
     if (t.kind === "vec" && (fixed(t.elem) || t.elem.kind === "fstring")) continue;
     if (t.kind === "option" && fixed(t.inner as FieldType)) continue;
     if (t.kind === "struct" && structs.get(t.name)?.layout === "borsh")

@@ -1,7 +1,7 @@
 // examples/multisig.ts against the program it ports: coral-xyz/multisig as deployed on mainnet (test/programs). Both
 // run in their own LiteSVM under the same program id, fed the same transactions (the original's test flow, then
 // failures), and must agree on every outcome: success or the same error, and the same account bytes afterwards.
-import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, getAddressEncoder, lamports } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -240,6 +240,36 @@ describe("examples/multisig.ts against coral-xyz/multisig on mainnet", () => {
     expect(acct(d.svm, recipient).lamports).toBe(1_500_000_000n);
     // A meta claiming the recipient signed: neither the transaction nor the PDA seeds vouch for it.
     expect(await execute("forged signer", pay([recipient]))).not.toBe("ok");
+  });
+
+  it("reads and runs an account the original wrote with 40 owners (more than one transaction can carry)", async () => {
+    const owners = await Promise.all(Array.from({ length: 40 }, () => funded()));
+    const payer = await funded();
+    const multisig = await generateKeyPairSigner();
+    const [signer, nonce] = await pda(PROGRAM, [multisig.address]);
+    // The bytes the original would hold after set_owners calls grew the set: written into both VMs as they are.
+    // Borsh: discriminator, the owners (u32 count, keys), threshold u64, nonce u8, owner_set_seqno u32.
+    const disc = (d.idl.accounts ?? []).find((x) => x.name === "Multisig")!.discriminator;
+    const enc = getAddressEncoder();
+    const body = Buffer.concat([
+      Buffer.from(disc),
+      Buffer.from(Uint32Array.of(40).buffer),
+      ...owners.map((o) => Buffer.from(enc.encode(o.address))),
+      Buffer.from(BigUint64Array.of(2n).buffer),
+      Buffer.from([nonce]),
+      Buffer.from(Uint32Array.of(3).buffer),
+    ]);
+    const data = new Uint8Array(2000);
+    data.set(body);
+    for (const vm of vms())
+      vm.setAccount({ address: multisig.address, data, executable: false, lamports: lamports(vm.minimumBalanceForRentExemption(2000n)), programAddress: PROGRAM, space: 2000n });
+    const m = { payer, multisig: multisig.address, signer, nonce };
+    const last = owners[39]!;
+    const { tx } = await propose(m, last, selfCall("change_threshold", { threshold: new BN(40) }, m.multisig, m.signer), "40 owners: propose");
+    expect(await both("40 owners: approve", payer, [approveIx(m, tx, owners[0]!)], [tx])).toBe("ok");
+    expect(await both("40 owners: execute", payer, [executeIx(m, tx)], [m.multisig, tx])).toBe("ok");
+    const ms = d.coder.accounts.decode("Multisig", Buffer.from(acct(d.svm, m.multisig).data)) as { owners: unknown[]; threshold: BN };
+    expect([ms.owners.length, ms.threshold.toNumber()]).toEqual([40, 40]);
   });
 
   it("reports compute units side by side", () => {

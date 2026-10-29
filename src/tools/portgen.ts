@@ -247,6 +247,9 @@ export function generatePort(idl: PortIdl): PortResult {
       return `${use("FixedString")}<32> /* TODO: #[max_len] */`;
     }
     if (t === "bytes") return borshField({ vec: "u8" }, at);
+    // A Vec of fixed-size elements is Anchor's Vec as is (bounded by the account); of strings or arrays it needs a capacity.
+    if (typeof t === "object" && t.vec && t.vec !== "string" && !(typeof t.vec === "object" && t.vec.array) && fixedOk(t.vec))
+      return quiet ? "x" : `${use("Vec")}<${tsType(t.vec, "account", at)}>`;
     if (typeof t === "object" && t.vec) {
       const elem =
         t.vec === "string"

@@ -102,7 +102,9 @@ describe("several growable Vecs in one account", () => {
     expect(errors(ok)).toBe("");
     const moved = `${bag}export function f(p: Mut<Signer>, x: Mut<B>, s: SystemProgram): void { const e = x.b.get(0n); x.a.push(1n, p); e.v = 2n; }`;
     expect(errors(moved)).toMatch(/still refers to x\.b\[\]/);
-    const borsh = "/** @layout borsh */\nexport interface B { a: Vec<u64>; n: u64; }\nexport function f(x: Mut<B>): void {}";
-    expect(errors(borsh)).toMatch(/@layout borsh struct a Vec<T> field must be the last field/);
+    // In Anchor's layout a Vec may come first (it lives on the heap), and its elements move when it grows.
+    const borsh = "export interface E { v: u64; }\n/** @layout borsh */\nexport interface H { b: Vec<E>; n: u64; }\n";
+    expect(errors(`${borsh}export function f(x: Mut<H>): void { x.b.push({ v: 1n }); }`)).toBe("");
+    expect(errors(`${borsh}export function f(x: Mut<H>): void { const e = x.b.get(0n); x.b.push({ v: 1n }); e.v = 2n; }`)).toMatch(/still refers to x\.b\[\]/);
   });
 });

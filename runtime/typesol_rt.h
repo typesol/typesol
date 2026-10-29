@@ -1272,6 +1272,28 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
   return SUCCESS;
 }
 
+/* A heap Vec (a Vec<T> in a @layout borsh struct, held on the heap while the instruction runs): room for at least
+   `need` elements of `size` bytes, doubling as Rust's Vec does. Elements move when it grows (the compiler refuses
+   references into it that would outlive a push). Bounded by the heap; the account bounds it when it is packed (3004). */
+typedef struct __attribute__((packed)) {
+  uint32_t len;
+  uint32_t cap;
+  uint8_t *items;
+} TsHeapVec;
+static uint64_t ts_hvec_reserve(void *vec, uint64_t need, uint64_t size) {
+  TsHeapVec *v = (TsHeapVec *)vec;
+  if (need <= v->cap) return SUCCESS;
+  uint64_t cap = v->cap ? (uint64_t)v->cap * 2 : 4;
+  if (cap < need) cap = need;
+  if (cap > 0xffffffffULL) TS_FAIL(TS_ERR_HEAP, "TypeSOL: out of heap");
+  uint8_t *items;
+  TS_TRY(ts_alloc(cap * size, &items));
+  if (v->len) ts_memcpy(items, v->items, (uint64_t)v->len * size);
+  v->items = items;
+  v->cap = (uint32_t)cap;
+  return SUCCESS;
+}
+
 /* Base58 text of a 32-byte value (a Pubkey or Hash in a template), on the heap. The value is eight big-endian u32
    limbs divided by 58^5 at a time, so each pass gives five digits with one 64-bit division per limb. */
 static uint64_t ts_base58_32(const uint8_t *in, TS_Str *out) {

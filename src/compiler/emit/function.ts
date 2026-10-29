@@ -436,7 +436,8 @@ export class FunctionEmitter extends StatementEmitter {
       count++;
       this.reporter.guard(() => {
         const [acct, cond, error] = call.arguments;
-        if (!acct || !cond || call.arguments.length > 3) this.fail(call, "constraint(account, condition, error?) takes an account parameter, a condition and an optional error");
+        if (!acct || !cond || call.arguments.length > 3)
+          this.fail(call, "constraint(account, condition, error?) takes an account parameter, a condition and an optional error");
         const a = ts.isIdentifier(acct) ? ix.accounts.find((x) => x.name === acct.text) : undefined;
         if (!a) this.fail(acct, "constraint's first argument is the account parameter the check belongs to (it runs with that account's checks)");
         const mark = this.lines.length;

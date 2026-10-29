@@ -1062,7 +1062,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       (targetRef.type.kind === "array" ||
         targetRef.type.kind === "struct" ||
         targetRef.type.kind === "dataEnum" ||
-        (targetRef.type.kind === "vec" && targetRef.type.cap !== undefined) ||
+        (targetRef.type.kind === "vec" && (targetRef.type.cap !== undefined || !!targetRef.type.heap)) ||
         (targetRef.type.kind === "option" && targetRef.type.inner.kind === "struct"))
     ) {
       if (!targetRef.writable) this.fail(target, this.readOnly(targetRef));

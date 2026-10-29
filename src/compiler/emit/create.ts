@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { heapVecOf } from "../analyze.js";
 import { borshMinSize } from "./borsh.js";
 import { type AccountParam, type ScalarType, type StructDef, type ValueType, isWritable } from "../model.js";
 import { U64, U8, BOOL, PUBKEY, type Value, scalarStorageC, optC, emptySizeC } from "./shared.js";
@@ -21,14 +22,19 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     const b = this.tmp("bump");
     // The account's size: the struct's (8 + its fixed size, Anchor's InitSpace for @layout borsh), or Anchor's
     // `space = …` when given, which must hold the struct.
-    const need = s.layout === "borsh" ? `8 + sizeof(TSS_${s.name})` : `8 + ${emptySizeC(s)}`;
+    // A @layout borsh struct with a Vec<T> has no fixed size: like Anchor's `init`, it takes `space`, at least its
+    // smallest Borsh form.
+    const unbounded = !!heapVecOf(s);
+    const need = unbounded ? `${8 + borshMinSize(s, this.model)}` : s.layout === "borsh" ? `8 + sizeof(TSS_${s.name})` : `8 + ${emptySizeC(s)}`;
     let space = need;
     const spaceArg = node.arguments[2];
+    if (unbounded && !spaceArg)
+      this.fail(node, `${s.name} holds a Vec<T>, so it has no fixed size: pass the account's space, create(payer, seeds, space) (Anchor's space = …)`);
     if (spaceArg) {
       if (s.vec) this.fail(spaceArg, `${s.name} has a growable Vec: its size follows the Vec's length, so it takes no space argument`);
       const raw = this.expr(spaceArg);
       const v = this.expect(raw, U64, spaceArg);
-      const min = 8 + this.fieldBytes({ kind: "struct", name: s.name });
+      const min = unbounded ? 8 + borshMinSize(s, this.model) : 8 + this.fieldBytes({ kind: "struct", name: s.name });
       if (raw.literal !== undefined && raw.literal < BigInt(min)) this.fail(spaceArg, `${s.name} needs at least ${min} bytes (8 + its size)`);
       space = this.tmp("space");
       this.line(`uint64_t ${space} = ${v.c};`);

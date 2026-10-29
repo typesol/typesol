@@ -7,6 +7,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 100 / 101 / 102 | instruction data missing / unknown instruction / malformed arguments (InstructionMissing / FallbackNotFound / DidNotDeserialize) |
 | 2000 | a `Mut<…>` / `Init<…>` account passed read-only (ConstraintMut) |
 | 2001 | HasOne constraint failed (ConstraintHasOne) |
+| 2003 | a `constraint(acct, condition)` without its own error failed (ConstraintRaw) |
 | 2002 | a `Signed<…>` account (or the event authority) did not sign (ConstraintSigner) |
 | 2004 | Owner constraint failed (ConstraintOwner) |
 | 2005 | Zeroed account is not rent-exempt (ConstraintRentExempt) |
@@ -61,7 +62,7 @@ the order Anchor's generated code runs them, so a transaction gets the same code
 2. Two writable parameters naming one account (2040).
 3. The instruction's arguments (102).
 4. Each account in parameter order, its constraints in Anchor's order: seeds (2006), associated token account (owner
-   2015, then address 2009), `has_one` (2001), owner (2004), executable (2007), address (2012), then `TokenOf` /
+   2015, then address 2009), `has_one` (2001), `constraint(…)` (2003 or its error), owner (2004), executable (2007), address (2012), then `TokenOf` /
    `MintOf` (2015, 2014, 2021 / 2016, 2017, 2022).
 
 Where TypeSOL's order differs, only a transaction that breaks two of these checks at once sees it:

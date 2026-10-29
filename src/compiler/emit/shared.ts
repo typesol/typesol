@@ -10,6 +10,7 @@ import {
   type StructDef,
   type ValueType,
   fixedVecName,
+  heapVecName,
   isWritable,
   optionKey,
 } from "../model.js";
@@ -74,6 +75,8 @@ export interface Ref {
     elemSize: number;
     resizable: boolean;
     cap?: number;
+    /** A heap Vec (in a `@layout borsh` struct): `cap` is the C lvalue of its capacity, grown by ts_hvec_reserve. */
+    heap?: boolean;
     /** Growable Vecs stored after this one move when it grows or shrinks: where its elements end, and their paths. */
     tail?: { end: string; dataEnd: string; paths: string[] };
   };
@@ -193,6 +196,7 @@ export function fieldC(t: FieldType): string {
       return scalarStorageC(t);
     case "vec":
       if (t.cap !== undefined) return fixedVecC(t);
+      if (t.heap) return heapVecName(t);
       throw new Error("unreachable: a Vec is never an element");
     default:
       throw new Error(`unreachable: no element C type for ${t.kind}`);
@@ -222,6 +226,7 @@ export function storageDecl(t: FieldType, name: string): string {
       return storageDecl(t.elem, `${name}[${t.len}]`);
     case "vec":
       if (t.cap !== undefined) return `${fixedVecC(t)} ${name}`;
+      if (t.heap) return `${heapVecName(t)} ${name}`;
       // Borsh Vec as a trailing flexible array: u32 length, then the elements.
       return `uint32_t ${name}__len;
   ${storageDecl(t.elem, `${name}[]`)}`;
@@ -358,5 +363,5 @@ export function fixedVecC(t: FieldType & { kind: "vec" }): string {
 
 /** The element count of a Vec place to read: a FixedVec's stored length is clamped to its capacity. */
 export function vecCount(v: NonNullable<Ref["vec"]>): string {
-  return v.cap === undefined ? `((uint64_t)${v.len})` : `((uint64_t)(${v.len} < ${v.cap} ? ${v.len} : ${v.cap}))`;
+  return v.cap === undefined || v.heap ? `((uint64_t)${v.len})` : `((uint64_t)(${v.len} < ${v.cap} ? ${v.len} : ${v.cap}))`;
 }

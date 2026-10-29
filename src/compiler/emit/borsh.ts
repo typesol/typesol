@@ -112,10 +112,13 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
         }
         case "vec": {
           const l = tmp("n");
+          // A heap Vec (Anchor's Vec<T>) gets room on the heap for what the bytes hold; a FixedVec has its capacity.
           const head = [
             `${pad}uint32_t ${l} = (uint32_t)ts_read_le(src + at, 4);`,
             `${pad}at += 4;`,
-            `${pad}if (${l} > ${t.cap}) ${DESER};`,
+            ...(t.heap
+              ? [need(`(uint64_t)${l} * ${fixedBytes(t.elem, model)}`, rest, pad), `${pad}TS_TRY(ts_hvec_reserve(&${lv}, ${l}, ${fixedBytes(t.elem, model)}));`]
+              : [`${pad}if (${l} > ${t.cap}) ${DESER};`]),
             `${pad}${lv}.len = ${l};`,
           ];
           if (borshIdentical(t.elem, model)) {
@@ -219,7 +222,7 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
           if (borshIdentical(t.elem, model)) {
             const n = fixedBytes(t.elem, model);
             return [
-              `${pad}uint32_t ${l} = ${lv}.len > ${t.cap} ? ${t.cap} : ${lv}.len;`,
+              `${pad}uint32_t ${l} = ${t.heap ? `${lv}.len` : `${lv}.len > ${t.cap} ? ${t.cap} : ${lv}.len`};`,
               room(`4 + (uint64_t)${l} * ${n}`, rest, pad),
               `${pad}ts_write_le(dst + at, ${l}, 4);`,
               `${pad}ts_memcpy(dst + at + 4, ${lv}.items, (uint64_t)${l} * ${n});`,
@@ -228,7 +231,7 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
           }
           const i = tmp("i");
           return [
-            `${pad}uint32_t ${l} = ${lv}.len > ${t.cap} ? ${t.cap} : ${lv}.len;`,
+            `${pad}uint32_t ${l} = ${t.heap ? `${lv}.len` : `${lv}.len > ${t.cap} ? ${t.cap} : ${lv}.len`};`,
             room("4", rest, pad),
             `${pad}ts_write_le(dst + at, ${l}, 4);`,
             `${pad}at += 4;`,
