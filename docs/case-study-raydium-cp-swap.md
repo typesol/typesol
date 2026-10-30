@@ -113,25 +113,29 @@ Compute units per transaction, mainnet original against the port, from that test
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `initialize` | 83,474 | 39,512 | −53% |
-| `initialize`, Token-2022 transfer fees | 92,998 | 53,860 | −42% |
-| `swap_base_input` | 24,142 | 7,478 | −69% |
-| `swap_base_output` | 24,571 | 8,029 | −67% |
-| `deposit` | 25,004 | 6,594 | −74% |
-| `withdraw` | 25,211 | 6,451 | −74% |
-| `collect_protocol_fee` | 20,205 | 4,200 | −79% |
-| `swap_base_input`, Token-2022 transfer fees | 31,334 | 13,813 | −56% |
-| `swap_base_output`, Token-2022 transfer fees | 32,511 | 15,935 | −51% |
-| `deposit`, Token-2022 transfer fees | 33,206 | 14,834 | −55% |
+| `initialize` | 83,474 | 39,352 | −53% |
+| `initialize`, Token-2022 transfer fees | 101,962 | 55,795 | −45% |
+| `swap_base_input` | 24,142 | 5,734 | −76% |
+| `swap_base_output` | 24,571 | 5,941 | −76% |
+| `deposit` | 25,004 | 6,190 | −75% |
+| `withdraw` | 25,211 | 6,201 | −75% |
+| `collect_protocol_fee` | 20,205 | 4,189 | −79% |
+| `swap_base_input`, Token-2022 transfer fees | 31,365 | 12,083 | −61% |
+| `swap_base_output`, Token-2022 transfer fees | 32,542 | 14,101 | −57% |
+| `deposit`, Token-2022 transfer fees | 33,237 | 14,482 | −56% |
 
 The Token-2022 rows include the token program's own work, which is the same in both. Refusals cost far less. For
 example, a swap through the wrong config costs 17,190 against 1,628.
 
-On size, the port's binary is 137,856 bytes and the deployed original is 793,824 bytes. The original also contains the
+On size, the port's binary is 143,560 bytes and the deployed original is 793,824 bytes. The original also contains the
 14 instructions not ported here, so the size ratio overstates the gain for the same feature set.
 
 Pool creation is mostly the token programs' and the System Program's own work (account creation, initialization,
-transfers), which costs the same in both. The difference is the program's part.
+transfers), which costs the same in both. The difference is the program's part. Its cost also varies from run to run
+with the PDA bump searches of the random keys the test uses, in both programs alike.
+
+Two general optimizations came out of profiling this port. u128 arithmetic now takes the native 64-bit instructions
+when the values fit, and an instruction reads the Clock once. Together they took a swap from 7,478 to 5,734.
 
 ## Where they differ
 

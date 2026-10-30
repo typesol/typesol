@@ -178,7 +178,7 @@ starts from your program's IDL, and [docs/case-study-escrow.md](docs/case-study-
 program through the port; [docs/case-study-multisig.md](docs/case-study-multisig.md) ports coral-xyz/multisig and
 checks it against the binary deployed on mainnet (same outcomes and account bytes; 66–84% fewer compute units), and
 [docs/case-study-raydium-cp-swap.md](docs/case-study-raydium-cp-swap.md) does the same for Raydium CP-Swap's swaps and liquidity
-(pool creation included: same outcomes, account bytes and events on 70 transactions; 42–79% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+(pool creation included: same outcomes, account bytes and events on 70 transactions; 45–79% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
