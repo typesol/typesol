@@ -134,6 +134,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_minimum_balance(a_${a.name}->data_len, &${t}));`);
         return { c: t, type: U64 };
       }
+      case "slotsPerEpoch":
+      case "firstNormalEpoch":
+      case "firstNormalSlot":
+      case "epochWarmup":
+      case "lastRestartSlot": {
+        if (args.length !== 0) this.fail(node, `${builtin}() takes no arguments`);
+        const t = this.tmp();
+        this.line(`uint64_t ${t};`);
+        if (builtin === "lastRestartSlot") this.line(`TS_TRY(ts_last_restart_slot(&${t}));`);
+        else this.line(`TS_TRY(ts_epoch_schedule(${{ slotsPerEpoch: 0, epochWarmup: 2, firstNormalEpoch: 3, firstNormalSlot: 4 }[builtin]}, &${t}));`);
+        return builtin === "epochWarmup" ? { c: `(${t} != 0)`, type: BOOL } : { c: t, type: U64 };
+      }
       case "currentSlot":
       case "currentEpoch":
       case "now": {

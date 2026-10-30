@@ -201,10 +201,11 @@ export abstract class MetaplexEmitter extends TokenEmitter {
   protected metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
     if (method === "createMasterEditionV3" || method === "verifyCollection") return this.metadataCollectionOp(node, program, method);
     if (method === "updateMetadataAccountsV2") return this.metadataUpdate(node, program);
+    if (method === "burnV1") return this.metadataBurn(node, program);
     if (method !== "createV3")
       this.fail(
         node.expression,
-        `the Token Metadata program supports createV3, createMasterEditionV3, verifyCollection and updateMetadataAccountsV2, not ${method}`,
+        `the Token Metadata program supports createV3, createMasterEditionV3, verifyCollection, updateMetadataAccountsV2 and burnV1, not ${method}`,
       );
     const a = node.arguments;
     const usage =
@@ -355,6 +356,47 @@ export abstract class MetaplexEmitter extends TokenEmitter {
     this.line(
       `TS_TRY(ts_mpl_update_v2(params, a_${program.name}, a_${metadata.name}, a_${ua.name}, ${hasData}, ${name}, ${symbol}, ${uri}, ${fee}, ${creators}, ${ncreators}, ${collection}, ${next}, ${primary}, ${mutable}, ${seeds.name}, ${seeds.count}));`,
     );
+    return undefined;
+  }
+
+  /**
+   * burnV1(authority, metadata, edition | null, mint, token, collectionMetadata | null, systemProgram,
+   * instructionsSysvar, tokenProgram, amount, signerSeeds?): Token Metadata's Burn (41, BurnArgs::V1) of a
+   * non-fungible (its master edition) or fungible asset held in `token`. The holder signs and gets the rent back.
+   */
+  protected metadataBurn(node: ts.CallExpression, program: AccountParam): undefined {
+    const a = node.arguments;
+    if (a.length !== 10 && a.length !== 11)
+      this.fail(
+        node,
+        "burnV1(authority, metadata, edition | null, mint, token, collectionMetadata | null, systemProgram, instructionsSysvar, tokenProgram, amount, signerSeeds?)",
+      );
+    const p = `a_${program.name}`;
+    const none: [string, boolean, boolean] = [p, false, false];
+    const authority = this.accountParam(a[0]!, "the authority (the holder)");
+    if (!isWritable(authority.kind)) this.fail(a[0]!, "the authority must be writable (Mut<...>): it gets the rent back");
+    // Burn: authority, collection metadata, metadata, edition, mint, token, master edition, master edition mint,
+    // master edition token, edition marker, token record (optional ones: the program id), system program,
+    // instructions sysvar, token program.
+    const metas: [string, boolean, boolean][] = [
+      [`a_${authority.name}`, true, true],
+      this.mplMeta(a[5]!, program, "the collection metadata", true, false),
+      this.mplMeta(a[1]!, program, "the metadata", true, false),
+      this.mplMeta(a[2]!, program, "the edition", true, false),
+      this.mplMeta(a[3]!, program, "the mint", true, false),
+      this.mplMeta(a[4]!, program, "the token account", true, false),
+      none,
+      none,
+      none,
+      none,
+      none,
+      this.mplMeta(a[6]!, program, "the system program", false, false),
+      this.mplMeta(a[7]!, program, "the instructions sysvar", false, false),
+      this.mplMeta(a[8]!, program, "the token program", false, false),
+    ];
+    const data = this.mplData(node, 10, [{ bytes: [41, 0] }, { value: a[9]!, type: U64 }]);
+    const seeds = this.signerSeeds(a[10], authority, a[0]!);
+    this.cpi(p, metas, data.buf, data.len, seeds);
     return undefined;
   }
 

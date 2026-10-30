@@ -44,6 +44,15 @@ describe("memo, SlotHashes and token groups", () => {
     expect(await send(d.svm, payer, [ix(d, "recent", {}, [{ address: payer.address }])])).toBeInstanceOf(FailedTransactionMetadata);
   });
 
+  it("reads the EpochSchedule and LastRestartSlot sysvars", async () => {
+    const res = expectOk(await send(d.svm, payer, [ix(d, "schedule", {}, [])]));
+    const b = Buffer.from((d.svm.getAccount("SysvarEpochSchedu1e111111111111111111111111" as Address) as { data: Uint8Array }).data);
+    const [per, warmup, epoch, slot] = [b.readBigUInt64LE(0), b[16] === 1, b.readBigUInt64LE(17), b.readBigUInt64LE(25)];
+    expect(Buffer.from(res.returnData().data()).readBigUInt64LE()).toBe(per * 1_000_000n + (warmup ? 100_000n : 0n) + epoch * 1000n + (slot % 1000n));
+    const r = expectOk(await send(d.svm, payer, [ix(d, "restart", {}, [])]));
+    expect(Buffer.from(r.returnData().data()).readBigUInt64LE()).toBe(0n);
+  });
+
   it("makes a collection mint, adds members up to its size, resizes and hands it over", async () => {
     const groupSpace = t22.getMintSize([t22.extension("GroupPointer", { authority: payer.address, groupAddress: payer.address } as never)]);
     const groupFull = t22.getMintSize([

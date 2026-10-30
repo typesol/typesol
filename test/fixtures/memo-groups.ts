@@ -11,11 +11,16 @@ import {
   type SystemProgram,
   type Token2022Program,
   type u8,
+  epochWarmup,
+  firstNormalEpoch,
+  firstNormalSlot,
   instructionData,
+  lastRestartSlot,
   log,
   remainingAccounts,
   rentExempt,
   require,
+  slotsPerEpoch,
   u64,
 } from "typesol";
 
@@ -76,4 +81,14 @@ export function legacy(): void {
   log(data.length);
   log(u64(data.get(0n)));
   log(remainingAccounts().length);
+}
+
+/** The EpochSchedule sysvar, packed: slots per epoch, warmup, first normal epoch and slot. */
+export function schedule(): u64 {
+  require(firstNormalSlot() >= firstNormalEpoch(), "slots after epochs");
+  return slotsPerEpoch() * 1_000_000n + (epochWarmup() ? 100_000n : 0n) + firstNormalEpoch() * 1000n + (firstNormalSlot() % 1000n);
+}
+
+export function restart(): u64 {
+  return lastRestartSlot();
 }

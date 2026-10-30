@@ -458,6 +458,24 @@ export interface TokenMetadataProgram extends AccountMeta {
    * collection left out become none; a verified collection or creator cannot be changed this way, Metaplex refuses);
    * each `null` leaves that part as it is. The update authority signs (a PDA of this program with `signerSeeds`).
    */
+  /**
+   * Burn (BurnV1) a non-fungible asset (pass its master edition as `edition`) or a fungible one (`edition` null) held in
+   * `token`: the token account and edition close (the metadata is cleared to one byte, as Token Metadata does), the
+   * holder signs and gets the rent back. `collectionMetadata` is the collection's when the asset is a verified member, else null.
+   */
+  burnV1(
+    authority: AccountMeta,
+    metadata: AccountMeta,
+    edition: AccountMeta | null,
+    mint: AccountMeta,
+    token: AccountMeta,
+    collectionMetadata: AccountMeta | null,
+    systemProgram: SystemProgram,
+    instructionsSysvar: AccountMeta,
+    tokenProgram: TokenProgram | Token2022Program | TokenInterface,
+    amount: u64,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   updateMetadataAccountsV2(
     metadata: AccountMeta,
     updateAuthority: AccountMeta,
@@ -1444,6 +1462,13 @@ export interface CompressedLeaf {
 /** The current slot and epoch (Clock sysvar). */
 export declare function currentSlot(): u64;
 export declare function currentEpoch(): u64;
+/** The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. */
+export declare function slotsPerEpoch(): u64;
+export declare function epochWarmup(): boolean;
+export declare function firstNormalEpoch(): u64;
+export declare function firstNormalSlot(): u64;
+/** The LastRestartSlot sysvar: the last slot the cluster restarted at (0 if never). */
+export declare function lastRestartSlot(): u64;
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
 /** A program-owned account that this instruction creates as a PDA. */
