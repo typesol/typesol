@@ -19,4 +19,5 @@ dump ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S program_metadata.so
 [[ -f coral_multisig.so ]] || solana program dump -u mainnet-beta msigUdDBsR4zSUYqYEDrc1LcgtmuSDDM7KxpRUXNC6U coral_multisig.so
 # Raydium CP-Swap as deployed on mainnet (examples/raydium-cp-swap's differential test).
 [[ -f raydium_cp_swap.so ]] || solana program dump -u mainnet-beta CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C raydium_cp_swap.so
+[[ -f raydium_clmm.so ]] || solana program dump -u mainnet-beta CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK raydium_clmm.so
 ls -la *.so

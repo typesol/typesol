@@ -236,3 +236,33 @@ export interface ProtocolPositionState {
   recent_epoch: u64;
   padding: FixedArray<u64, 7>;
 }
+
+/** Marks a Token-2022 mint the admin lets pools use whatever its extensions (states/support_mint_associated.rs). */
+export interface SupportMintAssociated {
+  bump: u8;
+  mint: Pubkey;
+  padding: FixedArray<u64, 8>;
+}
+
+/** Emitted when a config is created or changed (states/config.rs). */
+export interface ConfigChangeEvent {
+  index: u16;
+  owner: Pubkey;
+  protocol_fee_rate: u32;
+  trade_fee_rate: u32;
+  tick_spacing: u16;
+  fund_fee_rate: u32;
+  fund_owner: Pubkey;
+}
+
+/** Emitted when a pool is created (states/pool.rs). */
+export interface PoolCreatedEvent {
+  token_mint_0: Pubkey;
+  token_mint_1: Pubkey;
+  tick_spacing: u16;
+  pool_state: Pubkey;
+  sqrt_price_x64: u128;
+  tick: i32;
+  token_vault_0: Pubkey;
+  token_vault_1: Pubkey;
+}
