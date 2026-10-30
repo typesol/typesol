@@ -828,6 +828,13 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       const fn = ts.isCallExpression(init) ? this.exportName(init.expression) : undefined;
+      // The instruction's data as sent, discriminator included (a @fallback's input): a list of u8.
+      if (fn === "instructionData") {
+        if ((init as ts.CallExpression).arguments.length) this.fail(init, "instructionData() takes no arguments");
+        this.line(`TS_VecArg ${c} = {params->data, (uint32_t)params->data_len};`);
+        this.scopes.at(-1)!.set(name, { c, type: { kind: "vecArg", elem: { kind: "int", name: "u8" } }, mutable: false });
+        continue;
+      }
       // A seed list to sign with more than once: `const vault = signer(["vault", owner.key, bump])`.
       if (fn === "signer") {
         if (mutable) this.fail(d, "bind seed lists with const");

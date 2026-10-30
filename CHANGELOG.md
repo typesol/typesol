@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `/** @fallback */` (Anchor's `fallback`): an instruction without parameters run when no other matches the data,
+  short data included, instead of 101; it reads `const data = instructionData()` and `remainingAccounts()`.
+- New: `MemoProgram`: `memoProgram.memo(text, [signers], signerSeeds?)`, SPL Memo v2 signed by wallets or this
+  program's PDAs.
+- New: `SlotHashesSysvar`, the SlotHashes sysvar read as an account: `count`, `latestSlot`, `latestHash`.
+- New: the Token Group interface on Token-2022: `initializeTokenGroup`, `initializeGroupMember`, `updateGroupMaxSize`,
+  `updateGroupAuthority`.
+
 ## 0.33.0 — 2026-10-30
 
 The rest of what large Anchor programs lean on: account groups (composite accounts), your errors on declarative

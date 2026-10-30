@@ -442,6 +442,7 @@ export abstract class EmitterBase {
   protected abstract allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined;
   protected abstract tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract ataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
+  protected abstract memoOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract coreOp(node: ts.CallExpression, core: AccountParam, method: string): undefined;
   protected abstract bubblegumOp(node: ts.CallExpression, bg: AccountParam, method: string): undefined;

@@ -83,6 +83,13 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "pyth") head.push(`  uint64_t pm_${a.name}; bool pf_${a.name};`, `  TS_TRY(ts_pyth_message(${v}, &pm_${a.name}, &pf_${a.name}));`);
       if (k.kind === "switchboard") head.push(`  TS_TRY(ts_check_switchboard(${v}, ${k.devnet}));`);
       if (k.kind === "ataProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_ATA_PROGRAM_ID));`);
+      if (k.kind === "memoProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_MEMO_PROGRAM_ID));`);
+      // SlotHashes: the address, and room for its length and one entry (u64 count, then (u64 slot, hash) newest first).
+      if (k.kind === "slotHashes")
+        head.push(
+          `  TS_TRY(ts_check_address(${v}, &TS_SLOT_HASHES_ID));`,
+          `  if (${v}->data_len < 48 || ts_read_le(${v}->data, 8) == 0) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: SlotHashes has no entries");`,
+        );
       if (k.kind === "metadataProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_MPL_METADATA_ID));`);
       if (k.kind === "coreProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_MPL_CORE_ID));`);
       if (k.kind === "bubblegumProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_BUBBLEGUM_ID));`);

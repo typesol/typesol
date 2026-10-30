@@ -294,6 +294,29 @@ export declare function switchboardValue(
 ): i64;
 
 /** The Associated Token Account program (ATokenGP…). Its address is checked. */
+/** The SPL Memo program (v2, `MemoSq4g…`). Its address is checked. */
+export interface MemoProgram extends AccountMeta {
+  readonly __memo_program: void;
+  /**
+   * Record a UTF-8 memo in the transaction (Anchor's `spl_memo::build_memo`). Each account in `signers` must sign it:
+   * a `Signer`, or a PDA of this program with `signerSeeds`.
+   */
+  memo(text: string, signers?: AccountMeta[], signerSeeds?: Seed[] | SignerSeeds): void;
+}
+
+/**
+ * The SlotHashes sysvar (`SysvarS1otHashes…`), read as an account: it is too large for the sysvar syscalls (Anchor's
+ * `Sysvar<SlotHashes>` cannot load it either). The address is checked, and that it holds an entry (5103).
+ */
+export interface SlotHashesSysvar extends AccountMeta {
+  readonly __slot_hashes: void;
+  /** How many recent slots it lists (up to 512). */
+  readonly count: u64;
+  /** The most recent slot it lists, and that slot's bank hash: known to everyone, so not a secret source of randomness. */
+  readonly latestSlot: u64;
+  readonly latestHash: Hash;
+}
+
 export interface AssociatedTokenProgram extends AccountMeta {
   readonly __ata_program: void;
   create(
@@ -1538,6 +1561,29 @@ interface Token2022Ops {
   initializeGroupPointer(mint: AccountMeta, authority: Pubkey | null, groupAddress: Pubkey | null): void;
   /** GroupMemberPointer: where the mint's group-member data lives. */
   initializeGroupMemberPointer(mint: AccountMeta, authority: Pubkey | null, memberAddress: Pubkey | null): void;
+  /**
+   * The Token Group interface on Token-2022 mints (a collection of mints): make `group` (usually the mint itself, with
+   * a GroupPointer to it, its space allocated) a group of at most `maxSize` members. The mint authority signs.
+   */
+  initializeTokenGroup(
+    group: AccountMeta,
+    mint: AccountMeta,
+    mintAuthority: AccountMeta,
+    updateAuthority: Pubkey | null,
+    maxSize: u64,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** Add `memberMint` to `group` (`member` holds the membership, usually the member mint itself). Both authorities sign. */
+  initializeGroupMember(
+    member: AccountMeta,
+    memberMint: AccountMeta,
+    memberMintAuthority: AccountMeta,
+    group: AccountMeta,
+    groupUpdateAuthority: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  updateGroupMaxSize(group: AccountMeta, updateAuthority: AccountMeta, maxSize: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  updateGroupAuthority(group: AccountMeta, updateAuthority: AccountMeta, next: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
   /** TransferHook: `programId` is invoked on every transfer of this mint. */
   initializeTransferHook(mint: AccountMeta, authority: Pubkey | null, programId: Pubkey | null): void;
   /** InterestBearingConfig: `rate` in basis points per year (UI amounts only; balances do not change). */
@@ -1791,6 +1837,13 @@ export declare function require(condition: boolean, error: string | AnchorError)
  * default error is `AnchorError.ConstraintRaw` (2003); `error` is an error-enum member, an `AnchorError` or a string.
  */
 export declare function constraint(account: AccountMeta | RemainingAccount | null, condition: boolean, error?: string | AnchorError): void;
+
+/**
+ * The instruction data as sent, discriminator included: `const data = instructionData()`, then `data.length`,
+ * `data.get(i)`, or pass it on to `invokeInstruction`. A `/** @fallback *\/` instruction (Anchor's fallback: no
+ * parameters, run when no instruction matches) reads its input this way, and its accounts with remainingAccounts().
+ */
+export declare function instructionData(): IndexedList<u8>;
 
 /** Write a string, integer or pubkey to the program log. */
 export declare function log(value: string | bigint | Pubkey | Hash): void;

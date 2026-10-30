@@ -128,6 +128,8 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
   if (k.kind === "system") entry.address = SYSTEM_PROGRAM;
   if (k.kind === "instructionsSysvar") entry.address = "Sysvar1nstructions1111111111111111111111111";
   if (k.kind === "ataProgram") entry.address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+  if (k.kind === "memoProgram") entry.address = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+  if (k.kind === "slotHashes") entry.address = "SysvarS1otHashes111111111111111111111111111";
   if (k.kind === "metadataProgram") entry.address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
   if (k.kind === "coreProgram") entry.address = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d";
   if (k.kind === "bubblegumProgram") entry.address = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
@@ -182,14 +184,16 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
   const idl = {
     address,
     metadata: { name: model.name, version, spec: "0.1.0", description: "Built with TypeSOL" },
-    instructions: model.instructions.map((ix) => ({
-      name: ix.name,
-      ...docsOf(ix.node),
-      discriminator: ix.discriminator,
-      accounts: nestGroups(ix, (a) => accountEntry(ix, a.name, a.kind, address)),
-      args: ix.args.map((a) => ({ name: snakeCase(a.name), ...paramDocs(a.node), type: idlType(a.type, true) })),
-      ...(ix.returns ? { returns: idlType(ix.returns) } : {}),
-    })),
+    instructions: model.instructions
+      .filter((ix) => !ix.fallback)
+      .map((ix) => ({
+        name: ix.name,
+        ...docsOf(ix.node),
+        discriminator: ix.discriminator,
+        accounts: nestGroups(ix, (a) => accountEntry(ix, a.name, a.kind, address)),
+        args: ix.args.map((a) => ({ name: snakeCase(a.name), ...paramDocs(a.node), type: idlType(a.type, true) })),
+        ...(ix.returns ? { returns: idlType(ix.returns) } : {}),
+      })),
     accounts: structs.filter((s) => model.accountStructs.has(s.name)).map((s) => ({ name: s.name, discriminator: s.accountDiscriminator })),
     events: structs.filter((s) => model.events.has(s.name)).map((s) => ({ name: s.name, discriminator: s.eventDiscriminator })),
     errors: model.errors.map((e) => ({ code: e.code, name: e.name, msg: e.msg })),

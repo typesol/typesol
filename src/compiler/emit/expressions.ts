@@ -323,6 +323,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           if (field === "closeAuthority") return this.coptionKey(`${v}->data + 129`);
           if (field === "tokenProgram") return { c: `&${v}->owner`, type: PUBKEY };
         }
+        if (k.kind === "slotHashes") {
+          // u64 count, then (u64 slot, 32-byte hash) entries, newest first; the entry check ran at entry.
+          if (field === "count") return { c: `ts_read_le(${v}->data, 8)`, type: U64 };
+          if (field === "latestSlot") return { c: `ts_read_le(${v}->data + 8, 8)`, type: U64 };
+          if (field === "latestHash") return { c: `((const SolPubkey *)(${v}->data + 16))`, type: HASH };
+          this.fail(node.name, "SlotHashesSysvar has count, latestSlot and latestHash");
+        }
         if (k.kind === "pyth") {
           // Raw fields of the update; pythPrice() is the checked read.
           const m = `${v}->data + pm_${a.name}`;
