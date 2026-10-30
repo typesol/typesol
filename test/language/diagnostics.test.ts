@@ -25,6 +25,12 @@ function errorsFor(body: string, name = "prog"): string[] {
 describe("subset enforcement", () => {
   const cases: [string, string, RegExp][] = [
     ["floating-point numbers", `export function f(b: Mut<Box>): void { b.value = 1; }`, /Type 'number' is not assignable|bigint literal/],
+    ["throw", `export function f(b: Mut<Box>): void { if (b.value > 0n) throw new Error("x"); }`, /throw is not supported: fail the instruction with require/],
+    ["try/catch", `export function f(b: Mut<Box>): void { try { b.value = 1n; } catch { b.value = 2n; } }`, /try\/catch is not supported/],
+    ["optional parameters", `export function f(b: Mut<Box>, x?: u64): void {}`, /optional parameters are not supported; use x: Option<T>/],
+    ["default parameters", `export function f(b: Mut<Box>, x: u64 = 1n): void {}`, /default values are not supported/],
+    ["optional fields", `export interface Opt { v?: u64 }\nexport function f(o: Mut<Account<Opt>>): void {}`, /use v: Option<T>/],
+    ["JavaScript library calls", `export function f(b: Mut<Box>): void { b.value = BigInt(Math.max(1, 2)); }`, /unsupported call: (BigInt|Math\.max); use/],
     ["for … in loops", `export function f(b: Mut<Box>): void { for (const k in b) b.value += 1n; }`, /for … in is not supported/],
     ["break outside a loop", `export function f(b: Mut<Box>): void { if (b.value > 0n) { break; } }`, /Jump target|outside a loop/],
     [

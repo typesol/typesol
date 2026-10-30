@@ -108,11 +108,14 @@ with `i == j`) is refused with 2040 too, since the two views would alias.
 
 ## Built-ins
 
-- `systemProgram.transfer(from: Mut<Signer>, to, lamports)`, `systemProgram.createAccount(payer, account, lamports, space, owner, signerSeeds?)`
+- `systemProgram.transfer(from, to, lamports, signerSeeds?)` (`from` is a `Mut<Signer>`, or a system-owned PDA of this
+  program, a SOL vault, with its seeds), `systemProgram.createAccount(payer, account, lamports, space, owner, signerSeeds?)`
   (the new account signs: a keypair `Mut<Signer>` or this program's PDA), `rentExempt(space)`, `MINT_SIZE`, `TOKEN_ACCOUNT_SIZE`
 - Token programs (`TokenProgram`, `Token2022Program`, `TokenInterface`) — pass `signerSeeds` (with the bump) when the authority is a PDA:
   `transfer`, `transferChecked(from, mint, to, authority, amount)` (required by Token-2022 mints with fees/hooks), `mintTo` (the mint may be one this instruction just created), `burn`, `closeAccount` (a token account, or a Token-2022 mint with a close authority),
-  `approve(source, delegate, owner, amount)`, `revoke`, `setAuthority(target, current, AuthorityType.MintTokens, next | null)`,
+  `approve(source, delegate, owner, amount)`, `revoke`, the checked forms `mintToChecked(mint, to, authority, amount)`,
+  `burnChecked(from, mint, authority, amount)` and `approveChecked(source, mint, delegate, owner, amount)` (the decimals
+  come from the mint), `setAuthority(target, current, AuthorityType.MintTokens, next | null)`,
   `freezeAccount` / `thawAccount(account, mint, freezeAuthority)`, `syncNative(account)`, `initializeMint2(mint, decimals, mintAuthority, freezeAuthority | null)`,
   `initializeAccount3(account, mint, owner)`, and on Token-2022 `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)` (metadata extension) and the extension initializers to call between `createAccount` and `initializeMint2` / `initializeAccount3`: `initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)`, `initializeMintCloseAuthority(mint, authority | null)`, `initializeNonTransferableMint(mint)`, `initializePermanentDelegate(mint, delegate)`, `initializeDefaultAccountState(mint, frozen)`, `initializeMetadataPointer` / `initializeGroupPointer` / `initializeGroupMemberPointer` / `initializeTransferHook(mint, authority | null, address | null)`, `initializeInterestBearingMint(mint, rateAuthority | null, rate)`, `initializeImmutableOwner(account)`; the extension instructions `updateDefaultAccountState(mint, freezeAuthority, frozen)`, `updateTransferHook(mint, authority, programId | null)`, `enableRequiredMemoTransfers` / `disableRequiredMemoTransfers(account, owner)`, `updateInterestRate(mint, rateAuthority, rate)`, `transferCheckedWithFee(from, mint, to, authority, amount, fee)`, `harvestWithheldTokensToMint(mint, remainingAccounts())`, `withdrawWithheldTokensFromMint(mint, destination, authority)`, `setTransferFee(mint, authority, basisPoints, maximumFee)`; and the Token Metadata interface `updateMetadataField(mint, updateAuthority, field, value)` ("name" / "symbol" / "uri" or any other key), `removeMetadataKey(mint, updateAuthority, key, idempotent)`, `updateMetadataAuthority(mint, updateAuthority, next | null)`, `emitMetadata(mint)`. Each takes optional signerSeeds
 - `account.lamports` read/write on `Mut` accounts, `close(account, destination)` for program accounts
@@ -151,7 +154,10 @@ export function payOut(admin: Signer, treasury: Mut<SystemAccount>, recipient: M
 - data (Borsh): integers little-endian at their declared width (`u32(2n)` is 4 bytes, a bare `5n` is a u64), booleans,
   Pubkeys, strings, Options, structs and FixedArrays (their fixed layout), data enums, `Vec` arguments,
   `sighash("name")` (Anchor discriminator), `hex("0a0b")`. Up to 1024 bytes.
-- `signerSeeds` (with the bump) signs for this program's PDA.
+- `signerSeeds` (with the bump) signs for this program's PDA. When several PDAs sign one call, pass a list of seed
+  lists: `[["vault", owner.key, vaultBump], ["fees", feesBump]]` (at most 16).
+- A seed list used more than once can be named: `const vault = signer(["vault", owner.key, bump])`, then pass `vault`
+  wherever signerSeeds go.
 - After the call, `returnData<u64>(program)` reads what the callee returned, checking the size and that it came from `program`.
 
 A call decided at run time, such as one a multisig stored in account data, is `invokeInstruction` (Rust's

@@ -164,6 +164,20 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     return this.seeds(node, 0);
   }
 
+  /**
+   * Several PDAs signing one CPI: `[["vault", owner.key, vaultBump], ["fees", feeBump]]` (or SignerSeeds parameters
+   * in the list). Undefined for a single seed list, which keeps the one-signer code.
+   */
+  protected signerSets(node: ts.Expression): { ptr: string; count: number } | undefined {
+    const isSet = (e: ts.Expression) => ts.isArrayLiteralExpression(e) || (ts.isIdentifier(e) && this.lookup(e.text)?.type.kind === "signerSeeds");
+    if (!ts.isArrayLiteralExpression(node) || node.elements.length === 0 || !node.elements.every(isSet)) return undefined;
+    if (node.elements.length > 16) this.fail(node, "at most 16 PDAs can sign one CPI");
+    const sets = node.elements.map((e) => this.signingSeeds(e));
+    const arr = this.tmp("signers");
+    this.line(`SolSignerSeeds ${arr}[${sets.length}] = {${sets.map((s) => `{${s.name}, ${s.count}}`).join(", ")}};`);
+    return { ptr: arr, count: sets.length };
+  }
+
   /** Object literal properties by name, refusing others. */
   protected literalProps(o: ts.ObjectLiteralExpression, allowed: string[], what: string): Map<string, ts.Expression> {
     const props = new Map<string, ts.Expression>();

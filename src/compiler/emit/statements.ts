@@ -58,6 +58,9 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     if (ts.isDoStatement(stmt)) return this.doLoop(stmt);
     if (ts.isForInStatement(stmt)) this.fail(stmt, "for … in is not supported: use for (init; cond; step), for (const x of list), while or do … while");
+    if (ts.isThrowStatement(stmt)) this.fail(stmt, 'throw is not supported: fail the instruction with require(false, ErrorCode.X) or require(cond, "message")');
+    if (ts.isTryStatement(stmt))
+      this.fail(stmt, "try/catch is not supported: a failed check or CPI aborts the whole instruction, so check first with require(…)");
     this.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported in TypeSOL`);
   }
 
@@ -823,6 +826,16 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       const fn = ts.isCallExpression(init) ? this.exportName(init.expression) : undefined;
+      // A seed list to sign with more than once: `const vault = signer(["vault", owner.key, bump])`.
+      if (fn === "signer") {
+        if (mutable) this.fail(d, "bind seed lists with const");
+        const s = this.signerSeedsArg(init);
+        this.line(`const SolSignerSeed *${c} = ${s.name};`);
+        this.line(`int ${c}__n = ${s.count};`);
+        this.line(`(void)${c}; (void)${c}__n;`);
+        this.scopes.at(-1)!.set(name, { c, type: { kind: "signerSeeds" }, mutable: false });
+        continue;
+      }
       if (fn === "fixedArray") {
         const t = this.localArray(init as ts.CallExpression, c);
         this.scopes.at(-1)!.set(name, { c, type: t, mutable });

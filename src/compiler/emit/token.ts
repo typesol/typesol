@@ -124,6 +124,7 @@ export abstract class TokenEmitter extends CreateEmitter {
     const optKey: ValueType = { kind: "option", inner: PUBKEY };
     const U16: ValueType = { kind: "int", name: "u16" };
     const I16: ValueType = { kind: "int", name: "i16" };
+    const decimals = (mint: AccountParam) => (put: Put) => put(`&a_${mint.name}->data[44]`, "1", 1);
     const byte = (k: number) => (put: Put) => {
       const t = this.tmp("b");
       this.line(`uint8_t ${t} = ${k};`);
@@ -444,6 +445,63 @@ export abstract class TokenEmitter extends CreateEmitter {
             [src, true, false],
             [delegate, false, false],
             [owner, false, true],
+          ],
+          s,
+        );
+        return undefined;
+      }
+      // The checked forms take the decimals from the mint, as transferChecked does.
+      case "approveChecked": {
+        arity(5);
+        const src = want(a[0], "token", true, "the source");
+        const mint = want(a[1], "mint", false, "the mint");
+        const delegate = this.accountParam(a[2], "the delegate");
+        const owner = this.accountParam(a[3], "the owner");
+        const s = this.signerSeeds(a[5], owner, a[3]);
+        simple(
+          13,
+          [value(a[4], U64), decimals(mint)],
+          [
+            [src, true, false],
+            [mint, false, false],
+            [delegate, false, false],
+            [owner, false, true],
+          ],
+          s,
+        );
+        return undefined;
+      }
+      case "mintToChecked": {
+        arity(4);
+        const mint = want(a[0], "mint", true, "the mint");
+        const to = want(a[1], "token", true, "the destination");
+        const auth = this.accountParam(a[2], "the mint authority");
+        const s = this.signerSeeds(a[4], auth, a[2]);
+        simple(
+          14,
+          [value(a[3], U64), decimals(mint)],
+          [
+            [mint, true, false],
+            [to, true, false],
+            [auth, false, true],
+          ],
+          s,
+        );
+        return undefined;
+      }
+      case "burnChecked": {
+        arity(4);
+        const from = want(a[0], "token", true, "the burned account");
+        const mint = want(a[1], "mint", true, "the mint");
+        const auth = this.accountParam(a[2], "the authority");
+        const s = this.signerSeeds(a[4], auth, a[2]);
+        simple(
+          15,
+          [value(a[3], U64), decimals(mint)],
+          [
+            [from, true, false],
+            [mint, true, false],
+            [auth, false, true],
           ],
           s,
         );

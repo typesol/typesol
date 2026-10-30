@@ -22,6 +22,14 @@ Raydium CP-Swap's pool creation, and what creating accounts by hand needs.
   reuses it (the Clock does not change within a transaction). With both, Raydium CP-Swap's swap drops from 7,478 to
   5,734 compute units.
 - Changed: examples/raydium-cp-swap ports `initialize` too (10 of 24 instructions; 70 transactions against mainnet).
+- New: several PDAs can sign one CPI: `invoke` / `invokeInstruction` take a list of seed lists (`[["vault", key, b1],
+  ["fees", b2]]`, at most 16). A seed list can be named once and reused: `const vault = signer([...])`.
+- New: `systemProgram.transfer(from, to, lamports, signerSeeds)` pays out of a system-owned PDA of the program (a SOL
+  vault).
+- New: `tokenProgram.mintToChecked`, `burnChecked` and `approveChecked`, which take the decimals from the mint.
+- Better errors: `throw`, `try`/`catch`, optional and default parameters, `...rest` parameters and optional fields now
+  say what to write instead; "unsupported call" names the callee and, for common JavaScript calls (`console.log`,
+  `Math.min`, `BigInt`, …), the TypeSOL form.
 
 ## 0.31.0 — 2026-10-30
 

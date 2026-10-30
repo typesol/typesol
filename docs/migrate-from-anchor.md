@@ -110,6 +110,9 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `Rent::get()?.minimum_balance(n)` | `rentExempt(n)`, `minimumBalance(acct)` |
 | `system_program::transfer(CpiContext::new(…), lamports)` | `systemProgram.transfer(from, to, lamports)` |
 | `token::transfer_checked(CpiContext::new_with_signer(…, seeds), amount, decimals)` | `tokenProgram.transferChecked(from, mint, to, authority, amount, ["seed", key, bump])` |
+| `token::mint_to_checked` / `burn_checked` / `approve_checked` | `tokenProgram.mintToChecked(mint, to, authority, amount)` / `burnChecked(from, mint, authority, amount)` / `approveChecked(source, mint, delegate, owner, amount)` |
+| `system_program::transfer(CpiContext::new_with_signer(…, &[vault_seeds]), lamports)` | `systemProgram.transfer(vault, to, lamports, ["vault", owner.key, bump])` |
+| `invoke_signed(&ix, infos, &[seeds_a, seeds_b])` | `invoke(program, accounts, data, [seedsA, seedsB])` |
 | `invoke_signed(&ix, &accounts, &[seeds])` | `invoke(program, [writable(a), readonly(b)], [data…], seeds)` |
 | `invoke_signed(&Instruction { program_id, accounts, data }, ctx.remaining_accounts, …)` built at run time | `invokeInstruction(programId, metas, data, remainingAccounts(), seeds)` |
 | `multisig.owners = owners` (a `Vec` argument into account data) | the same |

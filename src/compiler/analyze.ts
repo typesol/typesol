@@ -61,6 +61,14 @@ const C_RESERVED = new Set([
   ),
 ]);
 
+/** A parameter is a plain name with an explicit type; say what to write instead of the rest. */
+function paramShape(p: ts.ParameterDeclaration, reporter: Reporter): asserts p is ts.ParameterDeclaration & { name: ts.Identifier; type: ts.TypeNode } {
+  if (p.questionToken) reporter.fail(p, `optional parameters are not supported; use ${p.name.getText()}: Option<T> and pass null for none`);
+  if (p.initializer) reporter.fail(p, "default values are not supported; the client passes every argument");
+  if (p.dotDotDotToken) reporter.fail(p, "...rest parameters are not supported; take a Vec<T> argument, or remainingAccounts() for accounts");
+  if (!ts.isIdentifier(p.name) || !p.type) reporter.fail(p, "parameters need a plain name and an explicit type");
+}
+
 /** Why a name cannot be used as a C member, or undefined when it can. */
 export function cNameProblem(name: string): string | undefined {
   if (name.includes("__") || name.startsWith("_")) return `"${name}": names starting with "_" or containing "__" are reserved for generated code`;
@@ -995,7 +1003,7 @@ function analyzeStructs(
       const fields: StructField[] = [];
       for (const m of decl.members) {
         if (!ts.isPropertySignature(m) || !m.type || !ts.isIdentifier(m.name)) reporter.fail(m, "structs may only contain plain fields");
-        if (m.questionToken) reporter.fail(m, "optional fields are not supported");
+        if (m.questionToken) reporter.fail(m, `optional fields are not supported; use ${m.name.getText()}: Option<T> (null for none)`);
         const name = m.name.text;
         if (RESERVED_FIELDS.has(name)) reporter.fail(m.name, `"${name}" is reserved; pick another field name`);
         const problem = cNameProblem(name);
@@ -1358,8 +1366,7 @@ function analyzeHelper(
   const params = fn.parameters
     .filter((_, i) => !skip.has(i))
     .map((p) => {
-      if (!ts.isIdentifier(p.name) || !p.type || p.initializer || p.questionToken || p.dotDotDotToken)
-        reporter.fail(p, "parameters need a plain name and an explicit type");
+      paramShape(p, reporter);
       // `p_<name>__n` carries a SignerSeeds count: "__" in a name could collide with it.
       if (p.name.text.includes("__") || p.name.text.includes("$")) reporter.error(p.name, `"${p.name.text}": "__" and "$" are reserved in names`);
       const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
@@ -1464,8 +1471,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   let minArgsSize = 0;
   for (const p of fn.parameters) {
     reporter.guard(() => {
-      if (!ts.isIdentifier(p.name) || !p.type || p.initializer || p.questionToken || p.dotDotDotToken)
-        reporter.fail(p, "parameters need a plain name and an explicit type");
+      paramShape(p, reporter);
       const value = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
       if (value) {
         args.push({ name: p.name.text, type: value, node: p });
