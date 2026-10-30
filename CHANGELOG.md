@@ -6,17 +6,19 @@ codes, and says so here.
 
 ## Unreleased
 
-- Examples: examples/raydium-clmm, a port of Raydium CLMM in progress: its math (tick and sqrt-price math, liquidity
-  and token deltas, the swap step) in u256 and u128, checked on-chain against a BigInt model of the original and the
-  original's unit-test vectors; and its account layouts, checked against a pool's accounts cloned from mainnet (sizes,
-  discriminators, and fields as the program's on-chain IDL decodes them); and `create_amm_config` and `create_pool`,
-  checked against the mainnet binary (test/programs/raydium_clmm.so): the same outcomes, account bytes and events.
-  Positions: `open_position_with_token22_nft`, `increase_liquidity_v2` and `decrease_liquidity_v2` (tick arrays made on
-  demand, the tick array bitmap and its extension, fees and rewards owed, Token-2022 transfer fees, position NFTs with
-  metadata in the mint), checked the same way. Swaps: `swap_v2` (across tick arrays and into the bitmap extension,
-  dynamic fees, limit orders filled at a tick, fee modes, rewards, the oracle, Token-2022 transfer fees, and the
-  USDC/CC pool as cloned from mainnet) and `collect_protocol_fee` / `collect_fund_fee`. 166 transactions in all, 43–83%
-  fewer compute units; see docs/case-study-raydium-clmm.md.
+## 0.37.0 — 2026-10-31
+
+Raydium CLMM ported and checked against the mainnet binary, with what it needed: `u256`, big-endian seeds,
+accounts loaded in the body and seed lists picked at run time. Programs that use none of these compile to the same
+binaries as in 0.36.0.
+
+- Examples: examples/raydium-clmm, a port of Raydium CLMM's pools, positions and swaps: `create_amm_config`,
+  `create_pool`, `open_position_with_token22_nft`, `increase_liquidity_v2`, `decrease_liquidity_v2`, `swap_v2`,
+  `collect_protocol_fee` and `collect_fund_fee`, with its math in u256 and u128 and its account layouts byte for byte.
+  Swaps work on any pool the original runs (dynamic fees, limit orders filled at a tick, fee modes, rewards, the
+  tick array bitmap extension, Token-2022 transfer fees). Checked against the mainnet binary
+  (test/programs/raydium_clmm.so) on 166 transactions, including a pool cloned from mainnet: the same outcomes,
+  account bytes and events, with 43–83% fewer compute units. See docs/case-study-raydium-clmm.md.
 - New: big-endian integer seeds, Rust's `to_be_bytes()`: `"@start:be"` in `Seeds<…>` and `bigEndian(start)` in a seed
   list. The IDL records the argument, as Anchor's does.
 - New: `loadAccount<T>` / `loadAccountMut<T>` take an `AccountInfo` parameter too (Anchor's `AccountLoader::try_from` on
@@ -30,6 +32,7 @@ codes, and says so here.
   checked operators, comparisons, casts to and from it, and `mulDiv` / `mulDivCeil` through a 512-bit product. The
   runtime works on 32-bit limbs with 64-bit products and divides with Knuth's algorithm D; a fuzzer checks every
   operator against BigInt.
+
 ## 0.36.0 — 2026-10-30
 
 Verifiable randomness from Switchboard, Anchor's check order for instructions with account groups, and the
