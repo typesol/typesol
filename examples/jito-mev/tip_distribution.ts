@@ -1,8 +1,8 @@
 // A TypeSOL port of Jito's tip distribution program (jito-foundation/jito-programs mev-programs/programs/
-// tip-distribution @ ce1dfb6, Apache-2.0; mainnet 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7). Each epoch a
-// validator opens a TipDistributionAccount, the tips its leader slots earned are paid into it, and after the epoch an
-// uploaded Merkle root says who may claim how much. Names, argument order, errors, events and account bytes are the
-// original's. See docs/case-study-jito-mev.md.
+// tip-distribution @ ce1dfb6, Anchor 0.31.1, Apache-2.0; mainnet 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7). Each
+// epoch a validator opens a TipDistributionAccount, the tips its leader slots earned are paid into it, and after the
+// epoch an uploaded Merkle root says who may claim how much. Names, argument order, errors, events and account bytes
+// are the original's. See docs/case-study-jito-mev.md.
 import {
   AnchorError,
   type AccountInfo,

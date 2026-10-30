@@ -1,5 +1,5 @@
 // A TypeSOL port of Jito's tip payment program (jito-foundation/jito-programs mev-programs/programs/tip-payment @
-// ce1dfb6, the "payments patch" of #143, Anchor 0.31, Apache-2.0; on mainnet since slot 337435036 at
+// ce1dfb6, the "payments patch" of #143, Anchor 0.31.1, Apache-2.0; on mainnet since slot 337435036 at
 // T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt). Searchers tip into eight fixed accounts; when the leader changes, the
 // tips go to the tip receiver (a validator's tip distribution account) and the block builder its commission. Names,
 // argument order, errors, events, logs and account bytes are the original's. See docs/case-study-jito-mev.md.

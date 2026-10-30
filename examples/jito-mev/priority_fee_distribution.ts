@@ -1,8 +1,8 @@
 // A TypeSOL port of Jito's priority fee distribution program (jito-foundation/jito-programs mev-programs/programs/
-// priority-fee-distribution @ ce1dfb6, Apache-2.0; mainnet Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3): the tip
-// distribution program for the priority fees a validator shares. The validator transfers fees into its
-// PriorityFeeDistributionAccount during the epoch (`transfer_priority_fee_tips`); claims work as for tips. Names, argument order, errors, events and account bytes are the
-// original's. See docs/case-study-jito-mev.md.
+// priority-fee-distribution @ ce1dfb6, Anchor 0.31.1, Apache-2.0; mainnet Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3):
+// the tip distribution program for the priority fees a validator shares. The validator transfers fees into its
+// PriorityFeeDistributionAccount during the epoch (`transfer_priority_fee_tips`); claims work as for tips. Names,
+// argument order, errors, events, logs and account bytes are the original's. See docs/case-study-jito-mev.md.
 import {
   AnchorError,
   type AccountInfo,

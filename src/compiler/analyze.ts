@@ -1758,8 +1758,7 @@ function analyzeInstruction(
         const [owner, ...path] = c.seeds.bump.slice(1).split(".");
         const o = accounts.find((x) => x.name === owner);
         let os: StructDef | undefined = o?.kind.kind === "account" ? o.kind.struct : undefined;
-        if (!os || !path.length)
-          reporter.fail(a.node, `Seeds bump: "${c.seeds.bump}" must name a u8 field of a struct account parameter ("@config.bump")`);
+        if (!os || !path.length) reporter.fail(a.node, `Seeds bump: "${c.seeds.bump}" must name a u8 field of a struct account parameter ("@config.bump")`);
         for (let i = 0; i < path.length; i++) {
           const bf: StructField | undefined = os!.fields.find((x) => x.name === path[i]);
           if (i < path.length - 1) {

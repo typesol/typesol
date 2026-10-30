@@ -678,7 +678,13 @@ export class FunctionEmitter extends StatementEmitter {
         else if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&arg_${n}, 32}`);
         else if (t.kind === "enum") parts.push(`{(const uint8_t *)&arg_${n}, ${scalarSize(t)}}`);
         else this.reporter.fail(a.node, `Seeds: argument "${n}" of type ${typeName(t)} cannot be a seed`);
-        idl.push({ kind: "arg", path: argIdlName(n, ix.accounts.map((o) => o.name)) });
+        idl.push({
+          kind: "arg",
+          path: argIdlName(
+            n,
+            ix.accounts.map((o) => o.name),
+          ),
+        });
       } else {
         notInt();
         if (Buffer.byteLength(n, "utf8") > 32) this.reporter.fail(a.node, "a seed can be at most 32 bytes");

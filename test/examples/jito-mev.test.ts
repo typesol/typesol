@@ -29,7 +29,7 @@ const u64 = (n: bigint) => {
   b.writeBigUInt64LE(n);
   return b;
 };
-const sha = (...parts: Uint8Array[]) => {
+const sha = (...parts: Uint8Array[]): Buffer => {
   const h = createHash("sha256");
   for (const p of parts) h.update(p);
   return h.digest();
@@ -52,10 +52,10 @@ const errorsOf = (file: string) =>
 /** A Merkle tree of (claimant, amount) leaves as Jito's tooling hashes them; `proof(i)` for leaf i. */
 function merkle(leaves: [Address, bigint][]) {
   const level0 = leaves.map(([c, a]) => sha(Uint8Array.of(0), sha(key(c), u64(a))));
-  const levels = [level0];
+  const levels: Buffer[][] = [level0];
   while (levels.at(-1)!.length > 1) {
     const prev = levels.at(-1)!;
-    const next: Buffer[] = [];
+    const next = [] as Buffer[];
     for (let i = 0; i < prev.length; i += 2) {
       const [a, b] = [prev[i]!, prev[i + 1] ?? prev[i]!];
       next.push(Buffer.compare(a, b) <= 0 ? sha(Uint8Array.of(1), a, b) : sha(Uint8Array.of(1), b, a));

@@ -12,6 +12,18 @@ codes, and says so here.
   configs, support mints, pool status, `collect_excess_lamports`). The differential test runs the admin instructions
   too, with Raydium's admin key swapped for a test key in both programs: 300 transactions, the same outcomes, account
   bytes and events, 33–84% fewer compute units.
+- Examples: examples/jito-mev, ports of Jito's three MEV programs (tip payment, tip distribution, priority fee
+  distribution; all 24 instructions), checked against the mainnet binaries (test/programs/jito_*.so) on 149
+  transactions: the same outcomes, account bytes, events and log lines, with 58–95% fewer compute units. The tip
+  payment port follows the binary on mainnet, which is the program of Jito's #143 (no `claim_tips`). See
+  docs/case-study-jito-mev.md.
+- New: a `Seeds<…>` bump stored in a struct field of another account, `"@config.bumps.vault"` (Anchor's
+  `bump = config.bumps.vault`).
+- New: an error enum member with an empty message, `X = ""`, has no `msg` in the IDL (an Anchor variant without
+  `#[msg]`).
+- IDL: an instruction argument named like one of its accounts plus a trailing underscore (`authority_` next to an
+  `authority` account) keeps the account's name in the IDL, as Anchor names such an argument.
+- Typings: `Hash.compare(other)`, the byte order of two hashes (-1, 0 or 1), which the compiler already supported.
 
 ## 0.37.0 — 2026-10-31
 
