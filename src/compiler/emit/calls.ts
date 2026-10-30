@@ -671,6 +671,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
         if (target?.kind.kind === "memoProgram") return this.memoOp(node, target, method);
+        if (target?.kind.kind === "sbRandomness") {
+          if (method !== "value" && method !== "valueU64") this.fail(callee.name, "SwitchboardRandomness has value() and valueU64()");
+          if (args.length) this.fail(node, `${method}() takes no arguments`);
+          const t = this.tmp("rand");
+          this.line(`const uint8_t *${t};`);
+          this.line(`TS_TRY(ts_sb_randomness_value(a_${target.name}, &${t}));`);
+          return method === "value" ? { c: `((const SolPubkey *)${t})`, type: HASH } : { c: `ts_read_le(${t}, 8)`, type: U64 };
+        }
         if (target?.kind.kind === "stakeProgram") return this.stakeOp(node, target, method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
         // Each Metaplex CPI in its own C block: its data buffer's stack slot is reused by the next one.

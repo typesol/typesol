@@ -82,6 +82,7 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "programData") head.push(`  TS_TRY(ts_check_program_data(${v}, params->program_id));`);
       if (k.kind === "pyth") head.push(`  uint64_t pm_${a.name}; bool pf_${a.name};`, `  TS_TRY(ts_pyth_message(${v}, &pm_${a.name}, &pf_${a.name}));`);
       if (k.kind === "switchboard") head.push(`  TS_TRY(ts_check_switchboard(${v}, ${k.devnet}));`);
+      if (k.kind === "sbRandomness") head.push(`  TS_TRY(ts_check_sb_randomness(${v}, ${k.devnet}));`);
       if (k.kind === "ataProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_ATA_PROGRAM_ID));`);
       if (k.kind === "memoProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_MEMO_PROGRAM_ID));`);
       if (k.kind === "stakeProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_STAKE_PROGRAM_ID));`);

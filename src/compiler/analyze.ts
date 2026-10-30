@@ -129,6 +129,7 @@ const TYPE_EXPORTS = new Set([
   "StakeProgram",
   "SlotHashesSysvar",
   "SwitchboardFeed",
+  "SwitchboardRandomness",
   "HasOne",
   "TokenOf",
   "MintOf",
@@ -1490,6 +1491,7 @@ const ACCOUNT_TYPES = new Set([
   "StakeProgram",
   "SlotHashesSysvar",
   "SwitchboardFeed",
+  "SwitchboardRandomness",
   "HasOne",
   "TokenOf",
   "MintOf",
@@ -1964,6 +1966,12 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       return { kind: "slotHashes" };
     case "TokenMetadataProgram":
       return { kind: "metadataProgram" };
+    case "SwitchboardRandomness": {
+      const arg = ref.typeArguments?.[0];
+      const cluster = arg && ts.isLiteralTypeNode(arg) && ts.isStringLiteral(arg.literal) ? arg.literal.text : "mainnet";
+      if (cluster !== "mainnet" && cluster !== "devnet") reporter.fail(node, 'SwitchboardRandomness<"mainnet" | "devnet">');
+      return { kind: "sbRandomness", devnet: cluster === "devnet" };
+    }
     case "SwitchboardFeed": {
       const arg = ref.typeArguments?.[0];
       const cluster = arg && ts.isLiteralTypeNode(arg) && ts.isStringLiteral(arg.literal) ? arg.literal.text : "mainnet";

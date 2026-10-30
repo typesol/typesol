@@ -121,6 +121,7 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `anchor_spl::metadata::burn_nft` / mpl `BurnV1` | `metadataProgram.burnV1(…)` |
 | `EpochSchedule::get()?`, `LastRestartSlot::get()?` | `slotsPerEpoch()`, `epochWarmup()`, `firstNormalEpoch()`, `firstNormalSlot()`; `lastRestartSlot()` |
 | `anchor_spl::stake::{authorize, deactivate_stake, withdraw}`, `delegate_stake` | `stakeProgram.authorize / deactivate / withdraw / delegate(…)` |
+| `RandomnessAccountData::parse(…)?.get_value(&clock)?` (switchboard-on-demand) | `randomness: SwitchboardRandomness`, `randomness.value()` / `valueU64()`, `randomness.seedSlot` |
 | `pub fn fallback(program_id, accounts, data)` | `/** @fallback */ export function fallback(): void` with `instructionData()` and `remainingAccounts()` |
 | `#[access_control(check(&ctx))]` | call the check first in the body (`check(vault, owner)`), or `constraint(acct, …)` for one that belongs with an account's checks |
 | `spl_memo::build_memo` + `invoke` | `memoProgram.memo(text, [signers])` |

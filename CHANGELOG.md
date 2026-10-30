@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `SwitchboardRandomness`, Switchboard On-Demand's verifiable randomness (commit and reveal): `seedSlot`,
+  `revealSlot`, `value()` and `valueU64()`, which fail (5111) unless revealed in this slot, as `get_value` does.
+
 ## 0.35.0 — 2026-10-30
 
 Token Metadata's Burn and the EpochSchedule and LastRestartSlot sysvars. Existing programs compile to the same binaries

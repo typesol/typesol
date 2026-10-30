@@ -324,6 +324,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           if (field === "closeAuthority") return this.coptionKey(`${v}->data + 129`);
           if (field === "tokenProgram") return { c: `&${v}->owner`, type: PUBKEY };
         }
+        if (k.kind === "sbRandomness") {
+          if (field === "seedSlot") return { c: `ts_read_le(${v}->data + TS_SB_RAND_SEED_SLOT, 8)`, type: U64 };
+          if (field === "revealSlot") return { c: `ts_read_le(${v}->data + TS_SB_RAND_REVEAL_SLOT, 8)`, type: U64 };
+          this.fail(node.name, "SwitchboardRandomness has seedSlot, revealSlot, value() and valueU64()");
+        }
         if (k.kind === "slotHashes") {
           // u64 count, then (u64 slot, 32-byte hash) entries, newest first; the entry check ran at entry.
           if (field === "count") return { c: `ts_read_le(${v}->data, 8)`, type: U64 };
