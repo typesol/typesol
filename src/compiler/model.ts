@@ -156,6 +156,8 @@ export type ParamKind =
   | { kind: "slotHashes" }
   | { kind: "metadataProgram" }
   | { kind: "switchboard"; devnet: boolean }
+  /** A Switchboard On-Demand randomness account (RandomnessAccountData). */
+  | { kind: "sbRandomness"; devnet: boolean }
   | { kind: "tokenProgram"; flavor: TokenProgramKind }
   /** `address` is set for Program<"..."> and absent for UncheckedProgram. */
   | { kind: "program"; address?: { base58: string; bytes: number[] } };

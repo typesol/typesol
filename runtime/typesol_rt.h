@@ -1819,6 +1819,31 @@ static const uint8_t TS_SWITCHBOARD_FEED_DISC[8] = {196, 27, 108, 196, 10, 215, 
 #define TS_SB_RESULT_SAMPLES (8 + 2256 + 96)
 #define TS_SB_RESULT_SLOT (8 + 2256 + 104)
 
+/* RandomnessAccountData: discriminator, authority, queue, seed slot hash, seed_slot @104, oracle, reveal_slot @144,
+   value[32] @152, reserved; 384 bytes. */
+static const uint8_t TS_SWITCHBOARD_RANDOMNESS_DISC[8] = {10, 66, 229, 135, 220, 239, 217, 114};
+#define TS_SB_RAND_SEED_SLOT 104
+#define TS_SB_RAND_REVEAL_SLOT 144
+#define TS_SB_RAND_VALUE 152
+
+static inline uint64_t ts_check_sb_randomness(const TsAccount *a, bool devnet) {
+  if (!ts_key_eq(&a->owner, devnet ? &TS_SWITCHBOARD_DEVNET_ID : &TS_SWITCHBOARD_MAINNET_ID))
+    TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Switchboard randomness account (owner)");
+  if (a->data_len < 384 || !ts_mem_eq(a->data, TS_SWITCHBOARD_RANDOMNESS_DISC, 8))
+    TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: not a Switchboard RandomnessAccountData account");
+  return SUCCESS;
+}
+
+/* The revealed value, only in the slot it was revealed in (Switchboard's get_value). */
+static inline uint64_t ts_sb_randomness_value(const TsAccount *a, const uint8_t **out) {
+  uint64_t clock[5];
+  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
+  if (ts_read_le(a->data + TS_SB_RAND_REVEAL_SLOT, 8) != clock[0])
+    TS_FAIL(TS_ERR_ORACLE, "TypeSOL: the randomness was not revealed in this slot");
+  *out = a->data + TS_SB_RAND_VALUE;
+  return SUCCESS;
+}
+
 static inline uint64_t ts_check_switchboard(const TsAccount *a, bool devnet) {
   if (!ts_key_eq(&a->owner, devnet ? &TS_SWITCHBOARD_DEVNET_ID : &TS_SWITCHBOARD_MAINNET_ID))
     TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not a Switchboard feed (owner)");

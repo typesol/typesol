@@ -293,7 +293,27 @@ export declare function switchboardValue(
   minSamples?: u8,
 ): i64;
 
-/** The Associated Token Account program (ATokenGP…). Its address is checked. */
+/**
+ * A Switchboard On-Demand randomness account (RandomnessAccountData): verifiable randomness by commit and reveal.
+ * Blockchains have no secret randomness of their own (slot hashes and timestamps are known to, or chosen by, the
+ * block producer), so the value comes from an oracle that commits to a future slot hash and reveals the result in a
+ * later transaction. Mainnet program unless `SwitchboardRandomness<"devnet">`; owner, discriminator and size checked.
+ *
+ * The pattern: in a commit instruction, require `seedSlot === currentSlot() - 1n` (committed just now, not yet
+ * revealed) and store the account's key and seedSlot; in the settle instruction, check both again and read `value()`.
+ */
+export interface SwitchboardRandomness<Cluster extends "mainnet" | "devnet" = "mainnet"> extends AccountMeta {
+  readonly __switchboard_randomness: Cluster;
+  /** The slot whose hash seeds this randomness (set when it is committed). */
+  readonly seedSlot: u64;
+  /** The slot it was revealed in (0 before). */
+  readonly revealSlot: u64;
+  /** The revealed 32 bytes. Fails (5111) unless revealed in this slot, as Switchboard's `get_value`. */
+  value(): Hash;
+  /** The first 8 bytes of value() as a little-endian u64 (`value % 6n` for a die). */
+  valueU64(): u64;
+}
+
 /** The SPL Memo program (v2, `MemoSq4g…`). Its address is checked. */
 export interface MemoProgram extends AccountMeta {
   readonly __memo_program: void;
@@ -356,6 +376,7 @@ export interface SlotHashesSysvar extends AccountMeta {
   readonly latestHash: Hash;
 }
 
+/** The Associated Token Account program (ATokenGP…). Its address is checked. */
 export interface AssociatedTokenProgram extends AccountMeta {
   readonly __ata_program: void;
   create(

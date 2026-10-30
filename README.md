@@ -210,7 +210,7 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | **Control flow** | `if`, `for`, `for … of`, `while`, `switch` (with narrowing on data enums), ternaries, `??`, destructuring, helper functions (returning structs too, arrow functions, closures, function arguments, generics), list callbacks (`some`, `find`, `reduce`, …) across multiple files |
 | **CPIs** | System, SPL Token, Token-2022 (including extension reads, metadata and token groups), ATA, Memo, Stake, Metaplex Token Metadata, Core, Bubblegum. Generic `invoke` with PDA signing (one or several PDAs per call), return data, and typed bindings generated from any Anchor IDL (`typesol cpi`) |
 | **Events** | `emit` (log-based) and `emitCpi` (Anchor `emit_cpi!`, through a self-CPI) |
-| **Crypto & oracles** | `sha256`, `keccak256`, Merkle proofs, Ed25519 and secp256k1 signature checks, Pyth pull oracle, Switchboard |
+| **Crypto & oracles** | `sha256`, `keccak256`, Merkle proofs, Ed25519 and secp256k1 signature checks, Pyth pull oracle, Switchboard feeds and verifiable randomness |
 | **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook, with extra accounts (ExtraAccountMetaList) |
 
 The full reference, with every type, check and built-in, is in [docs/language.md](docs/language.md).
