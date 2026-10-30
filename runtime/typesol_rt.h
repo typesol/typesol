@@ -186,6 +186,219 @@ static inline __attribute__((always_inline)) unsigned __int128 ts_rem_u128(unsig
   return a % b;
 }
 
+/*
+ * u256: a computation type (locals, helper parameters and results; never stored), for math such as concentrated
+ * liquidity's sqrt-price formulas. Four little-endian 64-bit limbs. Additions, subtractions and comparisons work on
+ * the 64-bit limbs; multiplication and division on 32-bit limbs with 64-bit products (SBF has no 128-bit instructions,
+ * and the __int128 library routines cost hundreds of CU each). Division is Knuth's algorithm D, as Hacker's Delight
+ * writes it (divmnu), also used for mulDiv's 512-bit intermediate.
+ */
+typedef struct {
+  uint64_t w[4];
+} TsU256;
+
+static inline TsU256 ts_u256_lit(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+  TsU256 r = {{a, b, c, d}};
+  return r;
+}
+static inline TsU256 ts_u256_from_u128(unsigned __int128 v) { return ts_u256_lit((uint64_t)v, (uint64_t)(v >> 64), 0, 0); }
+static inline bool ts_u256_is_zero(TsU256 a) { return (a.w[0] | a.w[1] | a.w[2] | a.w[3]) == 0; }
+static inline int ts_u256_cmp(TsU256 a, TsU256 b) {
+  for (int i = 3; i >= 0; i--)
+    if (a.w[i] != b.w[i]) return a.w[i] < b.w[i] ? -1 : 1;
+  return 0;
+}
+/* Whether the value fits in `bits` (64 or 128) bits. */
+static inline bool ts_u256_fits(TsU256 a, int bits) { return bits >= 128 ? (a.w[2] | a.w[3]) == 0 : (a.w[1] | a.w[2] | a.w[3]) == 0; }
+static inline unsigned __int128 ts_u256_lo128(TsU256 a) { return ((unsigned __int128)a.w[1] << 64) | a.w[0]; }
+
+static inline bool ts_u256_add(TsU256 a, TsU256 b, TsU256 *out) {
+  uint64_t carry = 0;
+  for (int i = 0; i < 4; i++) {
+    uint64_t s = a.w[i] + b.w[i];
+    uint64_t c1 = s < a.w[i];
+    uint64_t s2 = s + carry;
+    carry = c1 | (s2 < s);
+    out->w[i] = s2;
+  }
+  return carry != 0;
+}
+static inline bool ts_u256_sub(TsU256 a, TsU256 b, TsU256 *out) {
+  uint64_t borrow = 0;
+  for (int i = 0; i < 4; i++) {
+    uint64_t d = a.w[i] - b.w[i];
+    uint64_t b1 = a.w[i] < b.w[i];
+    uint64_t d2 = d - borrow;
+    borrow = b1 | (d < borrow);
+    out->w[i] = d2;
+  }
+  return borrow != 0;
+}
+static inline TsU256 ts_u256_bit(TsU256 a, TsU256 b, int op) {
+  TsU256 r;
+  for (int i = 0; i < 4; i++) r.w[i] = op == 0 ? a.w[i] & b.w[i] : op == 1 ? a.w[i] | b.w[i] : a.w[i] ^ b.w[i];
+  return r;
+}
+static inline TsU256 ts_u256_shl(TsU256 a, uint64_t s) {
+  TsU256 r = {{0, 0, 0, 0}};
+  int limbs = (int)(s / 64), bits = (int)(s % 64);
+  for (int i = 3; i >= limbs; i--) {
+    r.w[i] = a.w[i - limbs] << bits;
+    if (bits && i - limbs - 1 >= 0) r.w[i] |= a.w[i - limbs - 1] >> (64 - bits);
+  }
+  return r;
+}
+static inline TsU256 ts_u256_shr(TsU256 a, uint64_t s) {
+  TsU256 r = {{0, 0, 0, 0}};
+  int limbs = (int)(s / 64), bits = (int)(s % 64);
+  for (int i = 0; i + limbs < 4; i++) {
+    r.w[i] = a.w[i + limbs] >> bits;
+    if (bits && i + limbs + 1 < 4) r.w[i] |= a.w[i + limbs + 1] << (64 - bits);
+  }
+  return r;
+}
+
+static inline void ts_u256_to32(TsU256 a, uint32_t *x) {
+  for (int i = 0; i < 4; i++) {
+    x[2 * i] = (uint32_t)a.w[i];
+    x[2 * i + 1] = (uint32_t)(a.w[i] >> 32);
+  }
+}
+static inline TsU256 ts_u256_from32(const uint32_t *x) {
+  TsU256 r;
+  for (int i = 0; i < 4; i++) r.w[i] = (uint64_t)x[2 * i] | ((uint64_t)x[2 * i + 1] << 32);
+  return r;
+}
+/* r[0 .. n+m) = a[0 .. n) * b[0 .. m), 32-bit limbs. */
+static __attribute__((noinline)) void ts_mul32(const uint32_t *a, int n, const uint32_t *b, int m, uint32_t *r) {
+  for (int i = 0; i < n + m; i++) r[i] = 0;
+  for (int j = 0; j < m; j++) {
+    uint64_t k = 0;
+    for (int i = 0; i < n; i++) {
+      uint64_t t = (uint64_t)a[i] * b[j] + r[i + j] + k;
+      r[i + j] = (uint32_t)t;
+      k = t >> 32;
+    }
+    r[j + n] = (uint32_t)k;
+  }
+}
+/*
+ * Knuth's algorithm D (Hacker's Delight, divmnu): q[0 .. m-n] = u / v and r[0 .. n) = u % v for an m-limb u and an
+ * n-limb v whose top limb is not zero, m >= n, 32-bit limbs, m <= 16.
+ */
+static __attribute__((noinline)) void ts_divmnu(uint32_t *q, uint32_t *r, const uint32_t *u, const uint32_t *v, int m, int n) {
+  const uint64_t b = 4294967296ULL;
+  if (n == 1) {
+    uint64_t k = 0;
+    for (int j = m - 1; j >= 0; j--) {
+      uint64_t cur = (k << 32) | u[j];
+      q[j] = (uint32_t)(cur / v[0]);
+      k = cur - (uint64_t)q[j] * v[0];
+    }
+    r[0] = (uint32_t)k;
+    return;
+  }
+  uint32_t vn[8], un[17];
+  int s = __builtin_clz(v[n - 1]);
+  for (int i = n - 1; i > 0; i--) vn[i] = (v[i] << s) | (s ? v[i - 1] >> (32 - s) : 0);
+  vn[0] = v[0] << s;
+  un[m] = s ? u[m - 1] >> (32 - s) : 0;
+  for (int i = m - 1; i > 0; i--) un[i] = (u[i] << s) | (s ? u[i - 1] >> (32 - s) : 0);
+  un[0] = u[0] << s;
+  for (int j = m - n; j >= 0; j--) {
+    uint64_t num = ((uint64_t)un[j + n] << 32) | un[j + n - 1];
+    uint64_t qhat = num / vn[n - 1];
+    uint64_t rhat = num - qhat * vn[n - 1];
+    while (qhat >= b || qhat * vn[n - 2] > ((rhat << 32) | un[j + n - 2])) {
+      qhat--;
+      rhat += vn[n - 1];
+      if (rhat >= b) break;
+    }
+    int64_t t;
+    int64_t k = 0;
+    for (int i = 0; i < n; i++) {
+      uint64_t p = qhat * vn[i];
+      t = (int64_t)un[i + j] - k - (int64_t)(p & 0xFFFFFFFFULL);
+      un[i + j] = (uint32_t)t;
+      k = (int64_t)(p >> 32) - (t >> 32);
+    }
+    t = (int64_t)un[j + n] - k;
+    un[j + n] = (uint32_t)t;
+    q[j] = (uint32_t)qhat;
+    if (t < 0) {
+      q[j]--;
+      uint64_t c = 0;
+      for (int i = 0; i < n; i++) {
+        uint64_t sum = (uint64_t)un[i + j] + vn[i] + c;
+        un[i + j] = (uint32_t)sum;
+        c = sum >> 32;
+      }
+      un[j + n] += (uint32_t)c;
+    }
+  }
+  for (int i = 0; i < n; i++) r[i] = (un[i] >> s) | (s ? un[i + 1] << (32 - s) : 0);
+}
+static inline int ts_len32(const uint32_t *x, int n) {
+  while (n > 0 && x[n - 1] == 0) n--;
+  return n;
+}
+/* u / v (div) or u % v (!div), for an m-limb u (up to 16 limbs) and a 256-bit v, not zero. */
+static __attribute__((noinline)) void ts_divmod32(const uint32_t *u, int mmax, TsU256 v, uint32_t *q, TsU256 *rem) {
+  uint32_t vv[8], r[8] = {0};
+  ts_u256_to32(v, vv);
+  int n = ts_len32(vv, 8), m = ts_len32(u, mmax);
+  for (int i = 0; i < mmax; i++) q[i] = 0;
+  if (m < n) {
+    for (int i = 0; i < 8 && i < mmax; i++) r[i] = u[i];
+  } else {
+    ts_divmnu(q, r, u, vv, m, n);
+  }
+  if (rem) *rem = ts_u256_from32(r);
+}
+static inline bool ts_u256_mul(TsU256 a, TsU256 b, TsU256 *out) {
+  if (ts_u256_fits(a, 128) && ts_u256_fits(b, 128) && ((a.w[1] | b.w[1]) == 0)) {
+    *out = ts_u256_from_u128((unsigned __int128)a.w[0] * b.w[0]);
+    return false;
+  }
+  uint32_t x[8], y[8], r[16];
+  ts_u256_to32(a, x);
+  ts_u256_to32(b, y);
+  ts_mul32(x, 8, y, 8, r);
+  *out = ts_u256_from32(r);
+  for (int i = 8; i < 16; i++)
+    if (r[i]) return true;
+  return false;
+}
+static inline TsU256 ts_u256_divmod(TsU256 a, TsU256 b, bool div) {
+  if (ts_u256_fits(a, 128) && ts_u256_fits(b, 128)) {
+    unsigned __int128 x = ts_u256_lo128(a), y = ts_u256_lo128(b);
+    return ts_u256_from_u128(div ? ts_div_u128(x, y) : ts_rem_u128(x, y));
+  }
+  uint32_t u[8], q[8];
+  TsU256 rem;
+  ts_u256_to32(a, u);
+  ts_divmod32(u, 8, b, q, &rem);
+  return div ? ts_u256_from32(q) : rem;
+}
+/* floor or ceil(a * b / c) with a 512-bit product; false when c is zero or the result needs more than 256 bits. */
+static __attribute__((noinline)) bool ts_u256_muldiv(TsU256 a, TsU256 b, TsU256 c, bool ceil, TsU256 *out) {
+  if (ts_u256_is_zero(c)) return false;
+  uint32_t x[8], y[8], p[16], q[16];
+  ts_u256_to32(a, x);
+  ts_u256_to32(b, y);
+  ts_mul32(x, 8, y, 8, p);
+  TsU256 rem;
+  ts_divmod32(p, 16, c, q, &rem);
+  for (int i = 8; i < 16; i++)
+    if (q[i]) return false;
+  *out = ts_u256_from32(q);
+  if (ceil && !ts_u256_is_zero(rem)) {
+    TsU256 one = {{1, 0, 0, 0}};
+    if (ts_u256_add(*out, one, out)) return false;
+  }
+  return true;
+}
+
 /* ---- Well-known program ids --------------------------------------------- */
 static const SolPubkey TS_SYSTEM_PROGRAM_ID = {{0}};
 /* TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA */

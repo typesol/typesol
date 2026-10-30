@@ -19,6 +19,12 @@ export type u16 = bigint;
 export type u32 = bigint;
 export type u64 = bigint;
 export type u128 = bigint;
+/**
+ * 256-bit unsigned integers for computation (sqrt-price and liquidity math): locals, helper parameters and results,
+ * `u256(x)` and back with `u128(x)` / `u64(x)` (checked). Not in account data, arguments, events or return data
+ * (the IDL has no 256-bit integer).
+ */
+export type u256 = bigint;
 export type i8 = bigint;
 export type i16 = bigint;
 export type i32 = bigint;
@@ -2009,12 +2015,13 @@ export declare function u32(value: bigint): u32;
 export declare function u64(value: bigint): u64;
 export declare function i64(value: bigint): i64;
 export declare function u128(value: bigint): u128;
+export declare function u256(value: bigint): u256;
 export declare function i8(value: bigint): i8;
 export declare function i16(value: bigint): i16;
 export declare function i32(value: bigint): i32;
 export declare function i128(value: bigint): i128;
 
-/** floor(a * b / c) with a double-width intermediate (all u64, or all u128); aborts if c is 0 or the result does not fit. */
+/** floor(a * b / c) with a double-width intermediate (all u64, all u128, or all u256); aborts if c is 0 or the result does not fit. */
 export declare function mulDiv(a: u64, b: u64, c: u64): u64;
 /** ceil(a * b / c), like mulDiv. */
 export declare function mulDivCeil(a: u64, b: u64, c: u64): u64;
