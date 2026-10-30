@@ -364,6 +364,24 @@ export interface StakeProgram extends AccountMeta {
 }
 
 /**
+ * The StakeHistory sysvar (`SysvarStakeHistory…`), read as an account: the cluster's stake per recent epoch (up to
+ * 512, newest first), as the Stake program uses it for warmup and cooldown. The address is checked.
+ */
+export interface StakeHistorySysvar extends AccountMeta {
+  readonly __stake_history: void;
+  /** How many epochs it lists. */
+  readonly count: u64;
+  /** The newest epoch it lists (0 when empty). */
+  readonly latestEpoch: u64;
+  /** Whether `epoch` is listed; the readers below give 0 for an epoch that is not. */
+  has(epoch: u64): boolean;
+  /** Lamports of effective, activating and deactivating stake in `epoch`. */
+  effective(epoch: u64): u64;
+  activating(epoch: u64): u64;
+  deactivating(epoch: u64): u64;
+}
+
+/**
  * The SlotHashes sysvar (`SysvarS1otHashes…`), read as an account: it is too large for the sysvar syscalls (Anchor's
  * `Sysvar<SlotHashes>` cannot load it either). The address is checked, and that it holds an entry (5103).
  */

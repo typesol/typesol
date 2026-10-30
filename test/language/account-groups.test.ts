@@ -94,6 +94,22 @@ describe("account groups (test/fixtures/account-groups.ts)", () => {
     expect(t.errorCode(await via(1n, { d_p_vault: await t.tokenAccount({ mint, owner: pool }) }))).toBe(2001);
   });
 
+  it("checks in Anchor's order: arguments first, a group's constraints before the accounts after it", async () => {
+    const to = await t.tokenAccount({ mint, owner: admin.address });
+    const otherVault = await t.tokenAccount({ mint, owner: pool });
+    const notToken = (await t.wallet()).address;
+    const withdraw = (accounts: Record<string, unknown>, data?: Uint8Array) => {
+      const ix = t.ix("withdraw", { amount: 1n }, { admin, pPool: pool, pMint: mint, pVault: vault, pTokenProgram: TOKEN, pMemo: null, to, ...accounts });
+      return t.send(admin, data ? ({ ...ix, data } as never) : ix);
+    };
+    // A vault the pool does not hold (the group's has_one, 2001) and `to`, after the group, not a token account:
+    // Anchor runs the group's constraints first.
+    expect(t.errorCode(await withdraw({ pVault: otherVault, to: notToken }))).toBe(2001);
+    // Data too short for the amount and the same wrong accounts: Anchor decodes the arguments first (102).
+    const short = t.ix("withdraw", { amount: 1n }, { admin, pPool: pool, pMint: mint, pVault: otherVault, pTokenProgram: TOKEN, pMemo: null, to: notToken });
+    expect(t.errorCode(await withdraw({ pVault: otherVault, to: notToken }, (short.data as Uint8Array).subarray(0, 12)))).toBe(102);
+  });
+
   it("generates a client whose input flattens the group", () => {
     const { source } = generateClient(d.idl as never);
     expect(source).toMatch(/pPool\??: /);

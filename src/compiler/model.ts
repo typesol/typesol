@@ -154,6 +154,8 @@ export type ParamKind =
   | { kind: "stakeProgram" }
   /** The SlotHashes sysvar account (too large for the sysvar syscalls, so read as an account). */
   | { kind: "slotHashes" }
+  /** The StakeHistory sysvar account. */
+  | { kind: "stakeHistory" }
   | { kind: "metadataProgram" }
   | { kind: "switchboard"; devnet: boolean }
   /** A Switchboard On-Demand randomness account (RandomnessAccountData). */

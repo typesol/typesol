@@ -671,6 +671,17 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
         if (target?.kind.kind === "memoProgram") return this.memoOp(node, target, method);
+        if (target?.kind.kind === "stakeHistory") {
+          const fields: Record<string, number> = { has: 0, effective: 1, activating: 2, deactivating: 3 };
+          if (!(method in fields)) this.fail(callee.name, "StakeHistorySysvar has has(epoch), effective(epoch), activating(epoch) and deactivating(epoch)");
+          if (args.length !== 1) this.fail(node, `${method}(epoch) takes the epoch`);
+          const epoch = this.expect(this.expr(args[0]!, U64), U64, args[0]!);
+          const f = this.tmp("shf");
+          const v = this.tmp("shv");
+          this.line(`bool ${f};`);
+          this.line(`uint64_t ${v} = ts_stake_history(a_${target.name}, ${epoch.c}, ${Math.max(1, fields[method]!)}, &${f});`);
+          return method === "has" ? { c: f, type: BOOL } : { c: v, type: U64 };
+        }
         if (target?.kind.kind === "sbRandomness") {
           if (method !== "value" && method !== "valueU64") this.fail(callee.name, "SwitchboardRandomness has value() and valueU64()");
           if (args.length) this.fail(node, `${method}() takes no arguments`);

@@ -128,6 +128,7 @@ const TYPE_EXPORTS = new Set([
   "MemoProgram",
   "StakeProgram",
   "SlotHashesSysvar",
+  "StakeHistorySysvar",
   "SwitchboardFeed",
   "SwitchboardRandomness",
   "HasOne",
@@ -1490,6 +1491,7 @@ const ACCOUNT_TYPES = new Set([
   "MemoProgram",
   "StakeProgram",
   "SlotHashesSysvar",
+  "StakeHistorySysvar",
   "SwitchboardFeed",
   "SwitchboardRandomness",
   "HasOne",
@@ -1964,6 +1966,8 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       return { kind: "stakeProgram" };
     case "SlotHashesSysvar":
       return { kind: "slotHashes" };
+    case "StakeHistorySysvar":
+      return { kind: "stakeHistory" };
     case "TokenMetadataProgram":
       return { kind: "metadataProgram" };
     case "SwitchboardRandomness": {
