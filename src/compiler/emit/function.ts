@@ -44,7 +44,11 @@ export class FunctionEmitter extends StatementEmitter {
     if (n > limit) this.reporter.fail(ix.node, `instructions may take at most ${limit} accounts (const MAX_ACCOUNTS = …n raises it, up to 255)`);
     head.push(`  if (params->ka_num < ${n}) TS_FAIL(TS_ERR_NOT_ENOUGH_ACCOUNTS, "TypeSOL: not enough accounts");`);
 
+    // Where each account's checks start in `head` (account groups move their constraints in between, below).
+    const loopStart = head.length;
+    const startOf = new Map<string, number>();
     for (const a of ix.accounts) {
+      startOf.set(a.name, head.length);
       const v = `a_${a.name}`;
       head.push(`  TsAccount *${v} = params->ka[${a.index}];`);
       const start = head.length;
@@ -158,6 +162,7 @@ export class FunctionEmitter extends StatementEmitter {
         if (inside.length) head.push(`  if (${v} != NULL) {`, ...inside, `  }`);
       }
     }
+    const loopEnd = head.length;
 
     // Writable accounts must be distinct: aliasing two mutable views of one account is the classic drain.
     // The loader passes each account once and marks repeats as duplicates, which share its record (ts_deserialize),
@@ -195,6 +200,7 @@ export class FunctionEmitter extends StatementEmitter {
     // Arguments: Borsh, read sequentially (strings make later offsets dynamic). Anchor decodes them before the accounts;
     // here they come after the account types (decoding first keeps them live across the checks: larger binaries), so
     // only a transaction wrong in both ways sees a different error.
+    const argsStart = head.length;
     if (ix.args.length) head.push(`  uint64_t off = ${ix.discriminator.length};`);
     const need = (bytes: string) =>
       head.push(`  if (params->data_len < off + ${bytes}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
@@ -363,9 +369,38 @@ export class FunctionEmitter extends StatementEmitter {
       }
     }
     if (ix.args.length) head.push(`  (void)off;`);
+    const argsEnd = head.length;
     this.scopes = [new Map()];
     const raw = this.rawConstraints(ix);
-    head.push(...this.constraintChecks(ix, raw.lines));
+    const grouped = ix.accounts.filter((a) => a.group);
+    if (!grouped.length) head.push(...this.constraintChecks(ix, raw.lines));
+    else {
+      // With account groups, Anchor's order: the arguments first, then each account in order, a group's constraints
+      // right after its accounts (a composite's try_accounts runs its own constraints), the others last.
+      const groups = [...new Set(grouped.map((a) => a.group!.path[0]!))];
+      const after = new Map<number, string[]>();
+      for (const g of groups) {
+        const members = ix.accounts.filter((a) => a.group?.path[0] === g);
+        const last = members[members.length - 1]!;
+        const next = ix.accounts[ix.accounts.indexOf(last) + 1];
+        const at = next ? startOf.get(next.name)! : loopEnd;
+        after.set(at, [...(after.get(at) ?? []), ...this.constraintChecks(ix, raw.lines, (a) => a.group?.path[0] === g)]);
+      }
+      const accountsPart: string[] = [];
+      for (let i = loopStart; i <= loopEnd; i++) {
+        accountsPart.push(...(after.get(i) ?? []));
+        if (i < loopEnd) accountsPart.push(head[i]!);
+      }
+      const rest = this.constraintChecks(ix, raw.lines, (a) => !a.group);
+      head.splice(
+        loopStart,
+        argsEnd - loopStart,
+        ...head.slice(argsStart, argsEnd),
+        ...accountsPart,
+        ...head.slice(loopEnd, argsStart),
+      );
+      head.push(...rest);
+    }
 
     this.scopes = [new Map()];
     // Two back-to-back markers measure what one marker costs, so the profiler can subtract it.
@@ -466,11 +501,11 @@ export class FunctionEmitter extends StatementEmitter {
     return { lines, count };
   }
 
-  protected constraintChecks(ix: Instruction, raw = new Map<string, string[]>()): string[] {
+  protected constraintChecks(ix: Instruction, raw = new Map<string, string[]>(), only: (a: AccountParam) => boolean = () => true): string[] {
     const out: string[] = [];
     // Bumps found by Seeds<…> checks, declared ahead of the (possibly optional-guarded) checks for `acct.pdaBump`.
     const bumpDecls: string[] = [];
-    for (const a of ix.accounts) {
+    for (const a of ix.accounts.filter(only)) {
       const start = out.length;
       const c = a.constraints;
       const k = a.kind.kind;

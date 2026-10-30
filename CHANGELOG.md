@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Changed: an instruction with an account group checks in Anchor's order: the arguments first, then the accounts in
+  order with each group's constraints right after its accounts, then the other constraints. A transaction failing
+  several checks gets Anchor's code. Instructions without groups are unchanged (decoding the arguments first would make
+  every binary larger).
 - New: `SwitchboardRandomness`, Switchboard On-Demand's verifiable randomness (commit and reveal): `seedSlot`,
   `revealSlot`, `value()` and `valueU64()`, which fail (5111) unless revealed in this slot, as `get_value` does.
 
