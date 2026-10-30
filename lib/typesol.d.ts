@@ -187,6 +187,8 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
 export interface Hash {
   readonly __hash: unique symbol;
   equals(other: Hash): boolean;
+  /** The order of the 32 bytes (lexicographic): -1, 0 or 1, as Rust compares `[u8; 32]`. */
+  compare(other: Hash): i64;
 }
 
 /** sha256 over the parts concatenated: strings (UTF-8), Pubkeys/Hashes (32 bytes), integers (LE), booleans (1 byte). */

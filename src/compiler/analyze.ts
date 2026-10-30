@@ -205,6 +205,17 @@ export function snakeCase(name: string): string {
 }
 
 /**
+ * An argument's IDL name. Anchor keeps arguments and accounts apart, so an instruction may take an account and an
+ * argument of one name (`authority`); TypeScript cannot, so the argument is written with a trailing underscore
+ * (`authority_`) and recorded without it.
+ */
+export function argIdlName(name: string, accountNames: readonly string[]): string {
+  const base = snakeCase(name);
+  if (base.length > 1 && base.endsWith("_") && !base.endsWith("__") && accountNames.some((a) => snakeCase(a) === base.slice(0, -1))) return base.slice(0, -1);
+  return base;
+}
+
+/**
  * An account struct's discriminator: Anchor's sha256("account:<Name>")[..8], or the one a `/** @discriminator … *\/` tag
  * gives (a sha256 preimage such as `account:Counter`, or 0x and 8 bytes), e.g. for an old version of a struct kept under
  * a new name for Migrate<From, To>.
@@ -1742,14 +1753,21 @@ function analyzeInstruction(
         if (!field || field.type.kind !== "pubkey" || field.type.hash) reporter.fail(a.node, `HasOne<…, "${f}">: ${struct.name} needs a Pubkey field "${f}"`);
       }
       if (c.seeds?.bump?.startsWith("@")) {
-        // "@acct.field": the bump stored in another struct account (Anchor `bump = multisig.nonce`).
-        const [owner, field, ...rest] = c.seeds.bump.slice(1).split(".");
+        // "@acct.field": the bump stored in another struct account (Anchor `bump = multisig.nonce`), or in a struct
+        // field of it ("@config.bumps.vault", Anchor `bump = config.bumps.vault`).
+        const [owner, ...path] = c.seeds.bump.slice(1).split(".");
         const o = accounts.find((x) => x.name === owner);
-        const os = o?.kind.kind === "account" ? o.kind.struct : undefined;
-        if (!os || !field || rest.length)
+        let os: StructDef | undefined = o?.kind.kind === "account" ? o.kind.struct : undefined;
+        if (!os || !path.length)
           reporter.fail(a.node, `Seeds bump: "${c.seeds.bump}" must name a u8 field of a struct account parameter ("@config.bump")`);
-        const bf = os.fields.find((x) => x.name === field);
-        if (!bf || bf.type.kind !== "int" || bf.type.name !== "u8") reporter.fail(a.node, `Seeds bump: ${os.name} needs a u8 field "${field}"`);
+        for (let i = 0; i < path.length; i++) {
+          const bf: StructField | undefined = os!.fields.find((x) => x.name === path[i]);
+          if (i < path.length - 1) {
+            const inner: StructDef | undefined = bf?.type.kind === "struct" ? structs.get(bf.type.name) : undefined;
+            if (!inner) reporter.fail(a.node, `Seeds bump: ${os!.name}.${path[i]} must be a struct field`);
+            os = inner;
+          } else if (!bf || bf.type.kind !== "int" || bf.type.name !== "u8") reporter.fail(a.node, `Seeds bump: ${os!.name} needs a u8 field "${path[i]}"`);
+        }
       } else if (c.seeds?.bump) {
         if (!struct) reporter.fail(a.node, `Seeds with a bump field needs a struct account; for a bump stored elsewhere name it "@acct.field"`);
         const bf = struct.fields.find((x) => x.name === c.seeds!.bump);
