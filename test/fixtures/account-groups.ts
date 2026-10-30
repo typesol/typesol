@@ -74,3 +74,16 @@ export function withdraw(admin: Signer, p: PoolAccounts, to: Mut<TokenAccount>, 
   p.tokenProgram.transferChecked(p.vault, p.mint, to, p.pool, amount, ["pool", p.mint.key, p.pool.bump]);
   p.pool.reserve -= amount;
 }
+
+/** A group inside a group: the pool's accounts, and who deposits from where. */
+export interface Depositor {
+  p: PoolAccounts;
+  user: Signer;
+  from: Mut<TokenAccount>;
+}
+
+export function depositVia(d: Depositor, amount: u64): void {
+  constraint(d.p.pool, amount > 0n, PoolError.ZeroAmount);
+  d.p.tokenProgram.transferChecked(d.from, d.p.mint, d.p.vault, d.user, amount);
+  credit(d.p.pool, amount);
+}

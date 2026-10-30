@@ -292,6 +292,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       this.fail(node.name, `remaining accounts expose key, owner, lamports, dataLen, isSigner and isWritable, not ${field}`);
     }
     if (this.accountAt(node)) this.fail(node, `"${node.getText()}" is an account; use ${node.getText()}.key for its address`);
+    if (this.isGroupValue(node)) this.fail(node, `"${node.getText()}" is a group of accounts; use one of its fields (${node.getText()}.…)`);
     if (ts.isIdentifier(node.expression) || this.accountAt(node.expression)) {
       const a = this.accountAt(node.expression);
       if (a) {

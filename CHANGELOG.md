@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: account groups inside account groups (Anchor's nested composite accounts): `d.p.vault`, nested in the IDL,
+  flattened by the client and `typesol/testing` (`dPVault` / `d_p_vault`).
 - New: Token Metadata `updateMetadataAccountsV2` (Anchor's `update_metadata_accounts_v2`): the whole DataV2 or null,
   a new update authority, primary sale and mutability, signed by the update authority (a PDA with seeds).
 - New: `StakeProgram`: `initialize`, `authorize`, `delegate`, `deactivate`, `withdraw`, with the sysvars passed in as

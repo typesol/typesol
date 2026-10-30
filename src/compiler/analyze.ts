@@ -1575,35 +1575,7 @@ function analyzeInstruction(
       const group = ts.isTypeReferenceNode(p.type) && ts.isIdentifier(p.type.typeName) ? groups.get(p.type.typeName.text) : undefined;
       if (group) {
         if ((p.type as ts.TypeReferenceNode).typeArguments) reporter.fail(p.type, "account groups take no type arguments");
-        const members: AccountParam[] = [];
-        for (const m of group.decl.members) {
-          if (!ts.isPropertySignature(m) || !m.type || !ts.isIdentifier(m.name)) reporter.fail(m, "account groups hold plain fields");
-          if (m.questionToken) reporter.fail(m, `optional accounts are written ${m.name.text}: A | null`);
-          if (ts.isTypeReferenceNode(m.type) && ts.isIdentifier(m.type.typeName) && groups.has(m.type.typeName.text))
-            reporter.fail(m.type, "account groups do not nest yet: list the inner group's accounts here");
-          if (!ACCOUNT_TYPES.has(typesolName(withoutNull(m.type), group.imports) ?? ""))
-            reporter.fail(m.type, `${group.decl.name.text} is an account group: every field is an account (pass values as instruction arguments)`);
-          const a = accountFrom(m.type, `${p.name.text}__${m.name.text}`, m, group.imports);
-          a.group = { param: p.name.text, field: m.name.text, type: group.decl.name.text };
-          members.push(a);
-        }
-        // Constraints in a group name its own fields (as in Anchor's composite accounts), then the instruction's.
-        const sibling = (n: string) => (members.some((x) => x.group!.field === n) ? `${p.name.text}__${n}` : n);
-        const at = (n: string) => (n.startsWith("@") ? `@${sibling(n.slice(1).split(".")[0]!)}${n.slice(1).includes(".") ? n.slice(n.indexOf(".")) : ""}` : n);
-        for (const a of members) {
-          const c = a.constraints;
-          c.hasOne = c.hasOne.map((e) => {
-            if (!e.includes("=")) {
-              if (sibling(e) !== e) (c.hasOneParams ??= new Map()).set(e, sibling(e));
-              return e;
-            }
-            const [f, param] = e.split("=") as [string, string];
-            return `${f}=${sibling(param)}`;
-          });
-          if (c.seeds)
-            c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
-          if (c.closeTo) c.closeTo = sibling(c.closeTo);
-          if (c.ata) c.ata = { owner: sibling(c.ata.owner), mint: sibling(c.ata.mint) };
+        for (const a of expandGroup(group, [p.name.text], new Set())) {
           a.index = accounts.length;
           accounts.push(a);
         }
@@ -1613,6 +1585,55 @@ function analyzeInstruction(
       a.index = accounts.length;
       accounts.push(a);
     });
+  }
+
+  /**
+   * A group's accounts, in field order, named by their path (`pool__vault`, `pool__fees__vault` for a group inside a
+   * group). Constraints in a group name its own fields first (as in Anchor's composite accounts), then the
+   * instruction's parameters.
+   */
+  function expandGroup(group: AccountGroups extends Map<string, infer G> ? G : never, path: string[], visiting: Set<string>): AccountParam[] {
+    const name = group.decl.name.text;
+    if (visiting.has(name)) reporter.fail(group.decl.name, `${name} contains itself`);
+    const prefix = path.join("__");
+    const all: AccountParam[] = [];
+    const own: AccountParam[] = [];
+    for (const m of group.decl.members) {
+      if (!ts.isPropertySignature(m) || !m.type || !ts.isIdentifier(m.name)) reporter.fail(m, "account groups hold plain fields");
+      if (m.questionToken) reporter.fail(m, `optional accounts are written ${m.name.text}: A | null`);
+      const inner = ts.isTypeReferenceNode(m.type) && ts.isIdentifier(m.type.typeName) ? groups.get(m.type.typeName.text) : undefined;
+      const innerBare = withoutNull(m.type);
+      if (innerBare !== m.type && ts.isTypeReferenceNode(innerBare) && ts.isIdentifier(innerBare.typeName) && groups.has(innerBare.typeName.text))
+        reporter.fail(m.type, "account groups cannot be optional; make the accounts inside it optional (field: A | null)");
+      if (inner) {
+        all.push(...expandGroup(inner, [...path, m.name.text], new Set([...visiting, name])));
+        continue;
+      }
+      if (!ACCOUNT_TYPES.has(typesolName(withoutNull(m.type), group.imports) ?? ""))
+        reporter.fail(m.type, `${name} is an account group: every field is an account (pass values as instruction arguments)`);
+      const a = accountFrom(m.type, `${prefix}__${m.name.text}`, m, group.imports);
+      a.group = { param: prefix, field: m.name.text, type: name, path };
+      own.push(a);
+      all.push(a);
+    }
+    const sibling = (n: string) => (own.some((x) => x.group!.field === n) ? `${prefix}__${n}` : n);
+    const at = (n: string) => (n.startsWith("@") ? `@${sibling(n.slice(1).split(".")[0]!)}${n.slice(1).includes(".") ? n.slice(n.indexOf(".")) : ""}` : n);
+    for (const a of own) {
+      const c = a.constraints;
+      c.hasOne = c.hasOne.map((e) => {
+        if (!e.includes("=")) {
+          if (sibling(e) !== e) (c.hasOneParams ??= new Map()).set(e, sibling(e));
+          return e;
+        }
+        const [f, param] = e.split("=") as [string, string];
+        return `${f}=${sibling(param)}`;
+      });
+      if (c.seeds)
+        c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
+      if (c.closeTo) c.closeTo = sibling(c.closeTo);
+      if (c.ata) c.ata = { owner: sibling(c.ata.owner), mint: sibling(c.ata.mint) };
+    }
+    return all;
   }
 
   /** An account parameter (or a group's field) of type `typeNode`. */
@@ -1655,8 +1676,8 @@ function analyzeInstruction(
   }
   // A group parameter's name is taken too: `pool.vault` reads its field, so no other parameter may be `pool`.
   for (const a of accounts)
-    if (a.group && [...args, ...accounts].some((o) => o.name === a.group!.param))
-      reporter.error(a.node, `"${a.group.param}" names both an account group and another parameter`);
+    if (a.group && [...args, ...accounts].some((o) => o.name === a.group!.path[0]))
+      reporter.error(a.node, `"${a.group.path[0]}" names both an account group and another parameter`);
   // Constraints refer to other parameters by name: check them now that all are known.
   for (const a of accounts) {
     const c = a.constraints;

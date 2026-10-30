@@ -380,14 +380,34 @@ export abstract class EmitterBase {
   /** The account an expression names: a parameter (`vault`) or a field of an account group (`pool.vault`). */
   protected accountAt(node: ts.Expression): AccountParam | undefined {
     if (ts.isIdentifier(node)) return this.accounts.get(node.text);
-    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && this.isGroup(node.expression.text))
-      return this.accounts.get(`${node.expression.text}__${node.name.text}`);
-    return undefined;
+    const path = this.groupPath(node);
+    return path && path.length > 1 ? this.accounts.get(path.join("__")) : undefined;
+  }
+
+  /** `pool.fees.vault` as ["pool", "fees", "vault"] when `pool` is an account group parameter. */
+  protected groupPath(node: ts.Expression): string[] | undefined {
+    const names: string[] = [];
+    let e: ts.Expression = node;
+    while (ts.isPropertyAccessExpression(e)) {
+      names.unshift(e.name.text);
+      e = e.expression;
+    }
+    if (!ts.isIdentifier(e) || !this.isGroup(e.text)) return undefined;
+    return [e.text, ...names];
   }
 
   /** An account group parameter's name. */
   protected isGroup(name: string): boolean {
-    for (const a of this.accounts.values()) if (a.group?.param === name) return true;
+    for (const a of this.accounts.values()) if (a.group?.path[0] === name) return true;
+    return false;
+  }
+
+  /** `pool` or `pool.fees`: a group (or a group inside one), not an account. */
+  protected isGroupValue(node: ts.Expression): boolean {
+    const path = ts.isIdentifier(node) ? (this.isGroup(node.text) ? [node.text] : undefined) : this.groupPath(node);
+    if (!path) return false;
+    const prefix = `${path.join("__")}__`;
+    for (const a of this.accounts.values()) if (a.name.startsWith(prefix)) return true;
     return false;
   }
 
@@ -396,8 +416,8 @@ export abstract class EmitterBase {
     if (ts.isNonNullExpression(node) && this.accountAt(node.expression)?.optional) return this.accountParam(node.expression, what);
     const a = this.accountAt(node);
     if (!a) {
-      if (ts.isIdentifier(node) && this.isGroup(node.text))
-        this.fail(node, `${what} must be an account; "${node.text}" is a group of accounts: pass one of its fields (${node.text}.…)`);
+      if (this.isGroupValue(node))
+        this.fail(node, `${what} must be an account; "${node.getText()}" is a group of accounts: pass one of its fields (${node.getText()}.…)`);
       if (!ts.isIdentifier(node)) this.fail(node, `${what} must be an account parameter`);
       this.fail(node, `${what} must be an account parameter, "${node.text}" is not one`);
     }
