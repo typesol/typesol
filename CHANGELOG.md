@@ -6,6 +6,23 @@ codes, and says so here.
 
 ## Unreleased
 
+Raydium CP-Swap's pool creation, and what creating accounts by hand needs.
+
+- New: `systemProgram.allocate(account, space, seeds?)` / `assign(account, owner, seeds?)`, `programId()`,
+  `findProgramAddressBump(seeds, program)`, `initAccount<T>(account)` (Anchor's `load_init` on an account the body
+  created: 3007 / 3006 / 3003 / 3000), `Pubkey.compare(other)` (Rust's byte order), and `ata.create(payer,
+  tokenProgram)` / `createIfNeeded(payer, tokenProgram)` to pick among several token programs.
+- Changed: an `Init` create on an address already in use now fails as Anchor's `init` does, with the System Program's
+  AccountAlreadyInUse (custom 0) instead of TypeSOL's 3000; a payer that is the account being created fails with 4101
+  (TryingToInitPayerAsProgramAccount). Programs creating accounts use 9–13 fewer compute units; binaries move by ±1%.
+- Faster: u128 multiplication, division and remainder take the native 64-bit instructions when the values fit in 64
+  bits (most amounts and rates) instead of the 128-bit library routines; results are unchanged (the arithmetic fuzzer
+  now samples such values a third of the time).
+- Faster: an instruction reads the Clock sysvar once, on its first `now()` / `currentSlot()` / `currentEpoch()`, and
+  reuses it (the Clock does not change within a transaction). With both, Raydium CP-Swap's swap drops from 7,478 to
+  5,734 compute units.
+- Changed: examples/raydium-cp-swap ports `initialize` too (10 of 24 instructions; 70 transactions against mainnet).
+
 ## 0.31.0 — 2026-10-30
 
 A second real program checked against its mainnet binary: Raydium CP-Swap's trading core, and the Token-2022 reads an

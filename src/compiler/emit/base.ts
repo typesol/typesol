@@ -422,6 +422,7 @@ export abstract class EmitterBase {
   protected abstract createToken(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value;
   protected abstract systemTransfer(node: ts.CallExpression): undefined;
   protected abstract createAccount(node: ts.CallExpression, system: AccountParam): undefined;
+  protected abstract allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined;
   protected abstract tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract ataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;

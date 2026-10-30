@@ -37,6 +37,7 @@
 #define TS_ERR_MINT_TOKEN_PROGRAM 2022     /* ConstraintMintTokenProgram */
 #define TS_ERR_DUPLICATE_MUT 2040          /* ConstraintDuplicateMutableAccount */
 #define TS_ERR_ALREADY_INITIALIZED 3000    /* AccountDiscriminatorAlreadySet */
+#define TS_ERR_INIT_PAYER 4101             /* TryingToInitPayerAsProgramAccount */
 #define TS_ERR_DISCRIMINATOR 3002          /* AccountDiscriminatorMismatch */
 #define TS_ERR_ACCOUNT_TOO_SMALL 3003      /* AccountDidNotDeserialize */
 #define TS_ERR_DID_NOT_SERIALIZE 3004      /* AccountDidNotSerialize */
@@ -158,6 +159,31 @@ static inline __attribute__((always_inline)) bool ts_mul_overflow_u64(uint64_t a
     return false;
   }
   return __builtin_mul_overflow(a, b, out);
+}
+
+/*
+ * u128 arithmetic: the 128-bit library routines (__muloti4, __udivti3) cost hundreds of CU on SBF. Values that fit in
+ * 64 bits (most amounts and rates) take the native 64-bit instructions instead; the results are the same.
+ */
+static inline __attribute__((always_inline)) bool ts_mul_overflow_u128(unsigned __int128 a, unsigned __int128 b, unsigned __int128 *out) {
+  if (((a | b) >> 32) == 0) {
+    const uint64_t product = (uint64_t)a * (uint64_t)b; /* both below 2^32: the product fits in 64 bits */
+    *out = product;
+    return false;
+  }
+  if (((a | b) >> 64) == 0) {
+    *out = (unsigned __int128)(uint64_t)a * (uint64_t)b; /* below 2^128: cannot overflow */
+    return false;
+  }
+  return __builtin_mul_overflow(a, b, out);
+}
+static inline __attribute__((always_inline)) unsigned __int128 ts_div_u128(unsigned __int128 a, unsigned __int128 b) {
+  if (((a | b) >> 64) == 0) return (uint64_t)a / (uint64_t)b;
+  return a / b;
+}
+static inline __attribute__((always_inline)) unsigned __int128 ts_rem_u128(unsigned __int128 a, unsigned __int128 b) {
+  if (((a | b) >> 64) == 0) return (uint64_t)a % (uint64_t)b;
+  return a % b;
 }
 
 /* ---- Well-known program ids --------------------------------------------- */
@@ -687,6 +713,12 @@ static inline uint64_t ts_event_dispatch(TsParams *params) {
   return ts_check_event_authority(params->ka[0], params->program_id, &bump);
 }
 
+/* The Clock sysvar into `clock` (an instruction keeps it: the Clock does not change within a transaction). */
+static inline uint64_t ts_read_clock(uint64_t clock[5]) {
+  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
+  return SUCCESS;
+}
+
 static inline uint64_t ts_now(int64_t *out) {
   /* Clock { slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp } */
   uint64_t clock[5] = {0};
@@ -714,6 +746,23 @@ static inline uint64_t ts_init_zeroed(TsAccount *a, const uint8_t disc[8]) {
   if (a->lamports < need) TS_FAIL(TS_ERR_NOT_RENT_EXEMPT, "TypeSOL: account is not rent-exempt");
   ts_memcpy(a->data, disc, 8);
   return SUCCESS;
+}
+
+/* initAccount<T>: Anchor's AccountLoader::load_init on an account the body created. */
+static inline uint64_t ts_init_account(TsAccount *a, const SolPubkey *program_id, const uint8_t disc[8], uint64_t size) {
+  if (!ts_key_eq(&a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
+  if (!a->is_writable) TS_FAIL(TS_ERR_NOT_WRITABLE, "TypeSOL: account is not writable");
+  if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
+  if (ts_ld64(a->data) != 0) TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already initialized");
+  ts_memcpy(a->data, disc, 8);
+  return SUCCESS;
+}
+
+/* Pubkey order: Rust's Ord on [u8; 32], lexicographic. */
+static inline int64_t ts_key_cmp(const SolPubkey *a, const SolPubkey *b) {
+  for (int i = 0; i < 32; i++)
+    if (a->x[i] != b->x[i]) return a->x[i] < b->x[i] ? -1 : 1;
+  return 0;
 }
 
 /* ---- PDA ----------------------------------------------------------------- */
@@ -749,8 +798,8 @@ static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccou
   if (ts_find_pda(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
       !ts_key_eq(&derived, &acct->key))
     TS_FAIL(TS_ERR_SEEDS, "TypeSOL: PDA seeds do not match account");
-  if (acct->data_len != 0 || !ts_key_eq(&acct->owner, &TS_SYSTEM_PROGRAM_ID))
-    TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already exists");
+  /* No check that the address is free: as Anchor's init, the System Program refuses one in use (AccountAlreadyInUse,
+     custom 0), so a second create fails with the same error under both. */
   uint64_t lamports;
   TS_TRY(ts_minimum_balance(space, &lamports));
   seeds[n].addr = &bump;
@@ -769,6 +818,7 @@ static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccou
     TS_TRY(ts_invoke(params, &ix, &signer, 1));
   } else {
     /* Someone pre-funded the address (CreateAccount would fail): top up, allocate, assign. */
+    if (ts_key_eq(&payer->key, &acct->key)) TS_FAIL(TS_ERR_INIT_PAYER, "TypeSOL: the payer cannot be the account created");
     if (acct->lamports < lamports) TS_TRY(ts_system_transfer(params, payer, acct, lamports - acct->lamports));
     uint8_t alloc[12];
     uint32_t alloc_tag = 8; /* Allocate */
@@ -808,8 +858,8 @@ static inline uint64_t ts_create_owned(TsParams *params, TsAccount *payer, TsAcc
   } else if (!acct->is_signer) {
     TS_FAIL(TS_ERR_NOT_SIGNER, "TypeSOL: a new keypair account must sign");
   }
-  if (acct->data_len != 0 || !ts_key_eq(&acct->owner, &TS_SYSTEM_PROGRAM_ID))
-    TS_FAIL(TS_ERR_ALREADY_INITIALIZED, "TypeSOL: account already exists");
+  /* No check that the address is free: as Anchor's init, the System Program refuses one in use (AccountAlreadyInUse,
+     custom 0), so a second create fails with the same error under both. */
   uint64_t lamports;
   TS_TRY(ts_minimum_balance(space, &lamports));
   SolSignerSeeds signer = {seeds, (uint64_t)(n + 1)};
@@ -826,6 +876,7 @@ static inline uint64_t ts_create_owned(TsParams *params, TsAccount *payer, TsAcc
     SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
     TS_TRY(ts_invoke(params, &ix, signers, nsigners));
   } else {
+    if (ts_key_eq(&payer->key, &acct->key)) TS_FAIL(TS_ERR_INIT_PAYER, "TypeSOL: the payer cannot be the account created");
     if (acct->lamports < lamports) TS_TRY(ts_system_transfer(params, payer, acct, lamports - acct->lamports));
     uint8_t alloc[12];
     uint32_t alloc_tag = 8; /* Allocate */

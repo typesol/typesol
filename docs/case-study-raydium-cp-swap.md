@@ -8,8 +8,9 @@ against the binary that runs on mainnet, not a rebuild.
 
 ## What is ported
 
-The port covers 9 of the original's 24 instructions:
+The port covers 10 of the original's 24 instructions:
 
+- `initialize`, which creates a pool with its first liquidity;
 - the four trading instructions: `swap_base_input`, `swap_base_output`, `deposit` and `withdraw`;
 - `collect_protocol_fee` and `collect_fund_fee`;
 - the admin instructions `create_amm_config`, `update_amm_config` and `update_pool_status`.
@@ -24,9 +25,7 @@ It also keeps the original's names, argument order and error codes, and emits th
 
 These are not ported yet:
 
-- **`initialize` and `initialize_with_permission`.** They create a pool at either a PDA or a signer keypair, chosen at
-  run time, and allocate a program account by hand: transfer, allocate and assign when the address was pre-funded.
-  TypeSOL's `Init<T>` fixes the choice at compile time and reports an existing account with its own error.
+- **`initialize_with_permission`.** It is `initialize` for a creator the admin authorized, with the creator fee on.
 - **The creator-fee instructions**: `collect_creator_fee`, `collect_creator_fee_permissionless`,
   `create_creator_fee_share` and `close_creator_fee_share`.
 - **The permission instructions**: `create_permission_pda` and `close_permission_pda`.
@@ -38,7 +37,19 @@ the creator fee on), so a pool the original created and configured is traded the
 
 ## What it needed
 
-Four Token-2022 reads, added to the compiler for this port (`test/integrations/t22ext.test.ts`):
+Creating the pool by hand, as the original does, needed a few general features (`test/language/manual-init.test.ts`):
+
+- `systemProgram.allocate` and `assign`, for an address someone pre-funded;
+- `programId()` and `findProgramAddressBump(seeds, program)`, to sign as the pool PDA;
+- `initAccount<T>(account)`, Anchor's `load_init`: a program account the body created becomes a struct to fill;
+- `Pubkey.compare`, for the original's `token_0_mint < token_1_mint`;
+- `ata.create(payer, tokenProgram)`, an associated token account under one of several token programs.
+
+`Init` accounts also now fail on an address already in use as Anchor's do. TypeSOL used to check first and fail with
+3000; now the System Program refuses the address (`AccountAlreadyInUse`, custom 0). It also checks that the payer is
+not the account being created (4101).
+
+Four Token-2022 reads were added to the compiler for this port (`test/integrations/t22ext.test.ts`):
 
 - `transferFeeInverse(mint, amountReceived)`: spl-token-2022's `calculate_inverse_epoch_fee`, used for deposits and
   exact-output swaps.
@@ -67,8 +78,18 @@ LiteSVM and the port into another. Both use the same program id and the same clo
 **Comparison.** For each transaction, the test requires the same outcome (success, or the same error down to the
 code), the same lamports, owner and data for every account involved, and the same events byte for byte.
 
-There are 59 transactions:
+There are 70 transactions:
 
+- **Pool creation.** These cases are covered:
+  - a pool at its PDA, at a signing keypair, and at a pre-funded address;
+  - a pool with the creation fee, paid in wrapped SOL;
+  - a pool of Token-2022 fee mints;
+  - creating the same pool twice;
+  - an address that did not sign (2501);
+  - mints in the wrong order (2003);
+  - an unsupported extension (6007);
+  - a disabled config (6000);
+  - too little liquidity (6009).
 - **Swaps.** Both directions, by input and by output; the observation ring advancing as the clock moves; slippage
   (6005); zero amounts.
 - **Liquidity.** Deposit, a partial withdrawal, slippage both ways, withdrawing more LP than held, zero.
@@ -92,20 +113,29 @@ Compute units per transaction, mainnet original against the port, from that test
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `swap_base_input` | 24,142 | 7,478 | −69% |
-| `swap_base_output` | 24,571 | 8,029 | −67% |
-| `deposit` | 25,004 | 6,594 | −74% |
-| `withdraw` | 25,211 | 6,451 | −74% |
-| `collect_protocol_fee` | 20,205 | 4,200 | −79% |
-| `swap_base_input`, Token-2022 transfer fees | 31,334 | 13,813 | −56% |
-| `swap_base_output`, Token-2022 transfer fees | 32,511 | 15,935 | −51% |
-| `deposit`, Token-2022 transfer fees | 33,206 | 14,834 | −55% |
+| `initialize` | 83,474 | 39,352 | −53% |
+| `initialize`, Token-2022 transfer fees | 101,962 | 55,795 | −45% |
+| `swap_base_input` | 24,142 | 5,734 | −76% |
+| `swap_base_output` | 24,571 | 5,941 | −76% |
+| `deposit` | 25,004 | 6,190 | −75% |
+| `withdraw` | 25,211 | 6,201 | −75% |
+| `collect_protocol_fee` | 20,205 | 4,189 | −79% |
+| `swap_base_input`, Token-2022 transfer fees | 31,365 | 12,083 | −61% |
+| `swap_base_output`, Token-2022 transfer fees | 32,542 | 14,101 | −57% |
+| `deposit`, Token-2022 transfer fees | 33,237 | 14,482 | −56% |
 
 The Token-2022 rows include the token program's own work, which is the same in both. Refusals cost far less. For
-example, a swap through the wrong config costs 17,190 against 1,628.
+example, a swap through the wrong config costs 17,190 against 1,656.
 
-On size, the port's binary is 105,952 bytes and the deployed original is 793,824 bytes. The original also contains the
-15 instructions not ported here, so the size ratio overstates the gain for the same feature set.
+On size, the port's binary is 143,560 bytes and the deployed original is 793,824 bytes. The original also contains the
+14 instructions not ported here, so the size ratio overstates the gain for the same feature set.
+
+Pool creation is mostly the token programs' and the System Program's own work (account creation, initialization,
+transfers), which costs the same in both. The difference is the program's part. Its cost also varies from run to run
+with the PDA bump searches of the random keys the test uses, in both programs alike.
+
+Two general optimizations came out of profiling this port. u128 arithmetic now takes the native 64-bit instructions
+when the values fit, and an instruction reads the Clock once. Together they took a swap from 7,478 to 5,734.
 
 ## Where they differ
 

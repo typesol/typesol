@@ -21,7 +21,8 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 2021 / 2022 | token account / mint not owned by the token program `TokenOf` / `MintOf` names (ConstraintTokenTokenProgram / ConstraintMintTokenProgram) |
 | 2024–2039 | an existing mint `createIfNeeded` found lacks a Token-2022 extension it was given, or holds other keys in it: group pointer 2024–2026, group member pointer 2027–2029, metadata pointer 2030–2032, close authority 2033–2034, permanent delegate 2035–2036, transfer hook 2037–2039 (the first code of each: the extension is missing; the next: the authority / address differs) (ConstraintMint…Extension…) |
 | 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount) |
-| 3000 | account already exists (AccountDiscriminatorAlreadySet; an `Init` account) |
+| 0 (from the System Program) | an `Init` / `create` on an address already in use (AccountAlreadyInUse): the System Program refuses it, as under Anchor's `init` |
+| 3000 | `initAccount<T>` on an account whose discriminator is already set (AccountDiscriminatorAlreadySet) |
 | 3002 | discriminator mismatch (AccountDiscriminatorMismatch) |
 | 3003 | data too small, not an initialized token account / mint, a read past the end, or a `@layout borsh` account whose bytes are not a valid Borsh value (AccountDidNotDeserialize) |
 | 3004 | a `@layout borsh` account too small for the value it would now hold (AccountDidNotSerialize) |
@@ -33,6 +34,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 3011 | a `SystemAccount` owned by another program (AccountNotSystemOwned) |
 | 3012 | account not initialized: empty system account where a program account was expected (AccountNotInitialized) |
 | 3016 | account would grow more than 10 KiB in one instruction, or grow without a payer (AccountReallocExceedsLimit) |
+| 4101 | an `Init` / `create` whose payer is the account being created (TryingToInitPayerAsProgramAccount) |
 | 4102 | cast overflow (InvalidNumericConversion) |
 | 5100 / 5101 | arithmetic overflow (including shifts) / division by zero |
 | 5103 | sysvar unavailable |

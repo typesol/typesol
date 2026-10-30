@@ -6,7 +6,7 @@
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as token from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
-import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, generateKeyPairSigner, getAddressEncoder, lamports } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, generateKeyPairSigner, getAddressEncoder, lamports, none, some } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -460,11 +460,119 @@ describe("examples/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
     expect(await both("plain t22 zero out", t.signer, [swap("swap_base_output", p, t, true, 1_000n, 0n)], watchAll(p, t))).toBe(custom(2505));
   });
 
+  /** A config written in both VMs (creating one needs Raydium's admin), with a pool creation fee. */
+  async function configWith(createPoolFee: bigint, disabled = false) {
+    const index = Math.floor(Math.random() * 60_000);
+    const [config, bump] = await pda(PROGRAM, ["amm_config", u16(index).reverse()]);
+    const owner = (await generateKeyPairSigner()).address;
+    write(
+      config,
+      Buffer.concat([disc("AmmConfig"), u8(bump), u8(disabled ? 1 : 0), u16(index), u64(2500n), u64(120_000n), u64(40_000n), u64(createPoolFee), key(owner), key(owner), u64(0n), u64(0n), Buffer.alloc(8 * 14)]),
+    );
+    return config;
+  }
+  /** The pool creation fee account (Raydium's, a wrapped-SOL account) in both VMs. */
+  const FEE_ACCOUNT = address("DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8");
+  const NATIVE = address("So11111111111111111111111111111111111111112");
+  beforeAll(async () => {
+    const rent = original.minimumBalanceForRentExemption(165n);
+    const data = token.getTokenEncoder().encode({
+      mint: NATIVE,
+      owner: (await generateKeyPairSigner()).address,
+      amount: 0n,
+      delegate: none(),
+      state: token.AccountState.Initialized,
+      isNative: some(rent),
+      delegatedAmount: 0n,
+      closeAuthority: none(),
+    });
+    for (const vm of vms()) vm.setAccount({ address: FEE_ACCOUNT, data: new Uint8Array(data), executable: false, lamports: lamports(rent), programAddress: TOKEN, space: 165n });
+  });
+  async function createPool(opts: { createPoolFee?: bigint; fee0?: { bps: number; max: bigint }; fee1?: { bps: number; max: bigint }; keypair?: boolean; unsigned?: boolean; swapOrder?: boolean; extra?: "delegate"; disabled?: boolean; amounts?: [bigint, bigint] }) {
+    const creator = await funded();
+    const config = await configWith(opts.createPoolFee ?? 0n, opts.disabled);
+    let m0 = await mint(creator, opts.fee0 ? TOKEN_2022 : TOKEN, 6, opts.fee0);
+    let m1 = await mint(creator, opts.fee1 || opts.extra ? TOKEN_2022 : TOKEN, 9, opts.fee1);
+    if (opts.extra === "delegate") {
+      // A Token-2022 mint with a permanent delegate: not on the pool's list.
+      const m = await generateKeyPairSigner();
+      const space = t22.getMintSize([{ __kind: "PermanentDelegate", delegate: creator.address }]);
+      await setup(creator, [
+        getCreateAccountInstruction({ payer: creator, newAccount: m, lamports: original.minimumBalanceForRentExemption(BigInt(space)), space, programAddress: TOKEN_2022 }),
+        t22.getInitializePermanentDelegateInstruction({ mint: m.address, delegate: creator.address }),
+        t22.getInitializeMint2Instruction({ mint: m.address, decimals: 9, mintAuthority: creator.address }),
+      ]);
+      m1 = { address: m.address, program: TOKEN_2022, decimals: 9, fee: undefined };
+    }
+    if ((Buffer.compare(key(m0.address), key(m1.address)) > 0) !== !!opts.swapOrder) [m0, m1] = [m1, m0];
+    const [authority] = await pda(PROGRAM, ["vault_and_lp_mint_auth_seed"]);
+    const kp = opts.keypair || opts.unsigned ? await generateKeyPairSigner() : undefined;
+    const poolKey = kp ? kp.address : (await pda(PROGRAM, ["pool", config, m0.address, m1.address]))[0];
+    const [lp] = await pda(PROGRAM, ["pool_lp_mint", poolKey]);
+    const [vault0] = await pda(PROGRAM, ["pool_vault", poolKey, m0.address]);
+    const [vault1] = await pda(PROGRAM, ["pool_vault", poolKey, m1.address]);
+    const [observation] = await pda(PROGRAM, ["observation", poolKey]);
+    const [creatorLp] = await pda(address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"), [creator.address, TOKEN, lp]);
+    const c0 = await account(creator, m0, creator.address, 10n ** 13n);
+    const c1 = await account(creator, m1, creator.address, 10n ** 13n);
+    const [a0, a1] = opts.amounts ?? [1_000_000_000n, 4_000_000_000_000n];
+    const init = ix("initialize", { init_amount_0: new BN(a0.toString()), init_amount_1: new BN(a1.toString()), open_time: new BN(0) }, [
+      { address: creator.address, signer: creator, writable: true },
+      { address: config },
+      { address: authority },
+      kp && !opts.unsigned ? { address: poolKey, signer: kp, writable: true } : { address: poolKey, writable: true },
+      { address: m0.address },
+      { address: m1.address },
+      { address: lp, writable: true },
+      { address: c0, writable: true },
+      { address: c1, writable: true },
+      { address: creatorLp, writable: true },
+      { address: vault0, writable: true },
+      { address: vault1, writable: true },
+      { address: FEE_ACCOUNT, writable: true },
+      { address: observation, writable: true },
+      { address: TOKEN },
+      { address: m0.program },
+      { address: m1.program },
+      { address: address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL") },
+      { address: address("11111111111111111111111111111111") },
+      { address: address("SysvarRent111111111111111111111111111111111") },
+    ]);
+    return { creator, init, watch: [poolKey, lp, vault0, vault1, observation, c0, c1, creatorLp, FEE_ACCOUNT] };
+  }
+
+  it("creates pools as the original: at the PDA or a signing keypair, with a creation fee, with Token-2022 fees", async () => {
+    const a = await createPool({});
+    expect(await both("initialize", a.creator, [a.init], a.watch)).toBe("ok");
+    expect(await both("initialize again", a.creator, [a.init], a.watch)).not.toBe("ok");
+    const fee = await createPool({ createPoolFee: 150_000_000n });
+    expect(await both("initialize with a creation fee", fee.creator, [fee.init], fee.watch)).toBe("ok");
+    const t = await createPool({ fee0: { bps: 150, max: 1_000_000n }, fee1: { bps: 37, max: 10n ** 12n } });
+    expect(await both("initialize Token-2022 fee mints", t.creator, [t.init], t.watch)).toBe("ok");
+    const k = await createPool({ keypair: true });
+    expect(await both("initialize at a keypair", k.creator, [k.init], k.watch)).toBe("ok");
+    const u = await createPool({ unsigned: true });
+    expect(await both("initialize at an address that did not sign", u.creator, [u.init], u.watch)).toBe(custom(2501));
+    const o = await createPool({ swapOrder: true });
+    expect(await both("initialize with the mints swapped", o.creator, [o.init], o.watch)).toBe(custom(2003));
+    const x = await createPool({ extra: "delegate" });
+    expect(await both("initialize with an unsupported extension", x.creator, [x.init], x.watch)).toBe(custom(6007));
+    const off = await createPool({ disabled: true });
+    expect(await both("initialize under a disabled config", off.creator, [off.init], off.watch)).toBe(custom(6000));
+    // Someone sent SOL to the pool's address first: the original tops it up, allocates and assigns.
+    const pre = await createPool({});
+    const poolAddr = pre.watch[0]!;
+    for (const vm of vms()) vm.airdrop(poolAddr, lamports(1_000_000n));
+    expect(await both("initialize at a pre-funded address", pre.creator, [pre.init], pre.watch)).toBe("ok");
+    const tiny = await createPool({ amounts: [10n, 10n] });
+    expect(await both("initialize with too little liquidity", tiny.creator, [tiny.init], tiny.watch)).toBe(custom(6009));
+  });
+
   it("reports compute units side by side", () => {
     const rows = Object.entries(cu).map(([k, [o, t]]) => `${k.padEnd(40)} ${String(o).padStart(8)} ${String(t).padStart(8)}`);
     console.log(["instruction".padEnd(40) + " original  TypeSOL", ...rows].join("\n"));
     expect(rows.length).toBeGreaterThan(0);
-    expect(compared).toBe(59); // as docs/case-study-raydium-cp-swap.md says
+    expect(compared).toBe(59 + 11); // as docs/case-study-raydium-cp-swap.md says
     expect(eventsCompared).toBe(13 + 4 + 12 + 2); // one per successful swap, deposit and withdrawal, byte for byte
   });
 });

@@ -48,10 +48,10 @@ describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
       expect(decodedMint.decimals).toBe(6);
       expect(decodedMint.mintAuthority).toEqual({ __option: "Some", value: auth });
       expect(decodedMint.freezeAuthority).toEqual({ __option: "None" });
-      // A second create fails: the account exists (3000).
+      // A second create fails: the System Program refuses an address in use (custom 0), as under Anchor.
       expect(
         customError(await send(d.svm, payer, [ix(d, "make_mint", { decimals: 6 }, [P, { address: mint, writable: true }, { address: auth }, ...tail])])),
-      ).toBe(3000);
+      ).toBe(0);
 
       expectOk(await send(d.svm, payer, [ix(d, "make_vault", {}, [P, { address: mint }, { address: vault, writable: true }, ...tail])]));
       const v = (program === TOKEN_PROGRAM ? spl.getTokenDecoder() : t22.getTokenDecoder()).decode(acct(d.svm, vault).data);

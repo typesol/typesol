@@ -41,9 +41,11 @@ type Width = { bits: number; signed: boolean };
 const range = (w: Width) =>
   w.signed ? { min: -(1n << BigInt(w.bits - 1)), max: (1n << BigInt(w.bits - 1)) - 1n } : { min: 0n, max: (1n << BigInt(w.bits)) - 1n };
 
-/** Edge values (0, ±1, extremes, powers of two ± 1) half the time, uniform random otherwise. */
+/** Edge values (0, ±1, extremes, powers of two ± 1) half the time, uniform random otherwise (128-bit: often 64-bit). */
 function sample(rng: Rng, w: Width): bigint {
   const { min, max } = range(w);
+  // 128-bit values that fit in 64 bits a third of the time: the runtime's fast paths (ts_mul_overflow_u128, ts_div_u128).
+  if (w.bits === 128 && rng.next() % 3n === 0n) return w.signed && rng.next() % 2n === 0n ? -rng.next() : rng.next();
   if (rng.next() % 2n === 0n) {
     const edges = [0n, 1n, 2n, max, max - 1n, min, min + 1n, max / 2n, max / 2n + 1n];
     if (w.signed) edges.push(-1n, -2n);

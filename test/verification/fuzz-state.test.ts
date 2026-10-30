@@ -69,7 +69,7 @@ describe(`model-based fuzzing (seed ${SEED}, ${STEPS} steps)`, () => {
       const owner = actor === target;
       if (action === "open") {
         res = await send(svm, users[actor], [ix(d, "open", {}, [me, { address: vaults[actor], writable: true }, { address: SYSTEM_PROGRAM }])]);
-        want = model[actor] === undefined ? "ok" : 3000;
+        want = model[actor] === undefined ? "ok" : 0; // AccountAlreadyInUse from the System Program, as under Anchor
         if (want === "ok") {
           model[actor] = 0n;
           stats.opens++;

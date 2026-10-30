@@ -134,19 +134,28 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return { c: t, type: U64 };
       }
       case "currentSlot":
-      case "currentEpoch": {
-        if (args.length !== 0) this.fail(node, `${builtin}() takes no arguments`);
-        const t = this.tmp();
-        this.line(`uint64_t ${t};`);
-        this.line(`TS_TRY(ts_clock_u64(${builtin === "currentSlot" ? 0 : 2}, &${t}));`);
-        return { c: t, type: U64 };
-      }
+      case "currentEpoch":
       case "now": {
-        if (args.length !== 0) this.fail(node, "now() takes no arguments");
+        if (args.length !== 0) this.fail(node, `${builtin}() takes no arguments`);
+        // Clock { slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp }
+        const field = builtin === "currentSlot" ? 0 : builtin === "currentEpoch" ? 2 : 4;
         const t = this.tmp();
-        this.line(`int64_t ${t};`);
-        this.line(`TS_TRY(ts_now(&${t}));`);
-        return { c: t, type: I64 };
+        if (this.ix) {
+          // The Clock does not change within a transaction: an instruction reads it once, on first use.
+          if (!this.hoisted.some((l) => l.includes("ts_clk_ok"))) this.hoisted.push(`  uint64_t ts_clk[5]; bool ts_clk_ok = false;`);
+          this.line(`if (!ts_clk_ok) { TS_TRY(ts_read_clock(ts_clk)); ts_clk_ok = true; }`);
+          if (builtin === "now") return { c: `((int64_t)ts_clk[4])`, type: I64 };
+          this.line(`uint64_t ${t} = ts_clk[${field}];`);
+          return { c: t, type: U64 };
+        }
+        if (builtin === "now") {
+          this.line(`int64_t ${t};`);
+          this.line(`TS_TRY(ts_now(&${t}));`);
+          return { c: t, type: I64 };
+        }
+        this.line(`uint64_t ${t};`);
+        this.line(`TS_TRY(ts_clock_u64(${field}, &${t}));`);
+        return { c: t, type: U64 };
       }
       case "pubkey": {
         const lit = args[0];
@@ -417,6 +426,41 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_ata_address(${o.c}, ${m.c}, ${tp.c}, &${t}));`);
         return { c: `(&${t})`, type: PUBKEY };
       }
+      case "programId":
+        if (args.length !== 0) this.fail(node, "programId() takes no arguments");
+        return { c: `params->program_id`, type: PUBKEY };
+      case "findProgramAddressBump": {
+        // Pubkey::find_program_address(seeds, program).1: the bump of the canonical PDA.
+        if (args.length !== 2) this.fail(node, "findProgramAddressBump(seeds, program) takes the seeds and the program's address");
+        const seeds = this.seeds(args[0]!, 0);
+        const program = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        const t = this.tmp("pda");
+        const b = this.tmp("bump");
+        this.line(`SolPubkey ${t}; uint8_t ${b};`);
+        this.line(
+          `if (ts_find_pda(${seeds.name}, ${seeds.count}, ${program.c}, &${t}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
+        );
+        return { c: `((uint64_t)${b})`, type: { kind: "int", name: "u8" } };
+      }
+      case "initAccount": {
+        // Anchor's AccountLoader::load_init on an account created in the body (system createAccount / allocate +
+        // assign): owned by this program (3007), writable (3006), large enough (3003), discriminator still zero
+        // (3000); then the discriminator is written and the struct is a mutable view of the data.
+        const targ = node.typeArguments?.[0];
+        const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
+        if (!s || s.size === undefined || s.vec || s.layout === "borsh")
+          this.fail(node, "initAccount<T>(account) takes a fixed-layout account struct of this program (no growable Vec, not @layout borsh)");
+        if (args.length !== 1) this.fail(node, "initAccount<T>(account) takes one account");
+        let h = this.handle(args[0]);
+        if (!h) {
+          const acct = this.accountParam(args[0], "the account");
+          if (acct.kind.kind !== "info") this.fail(args[0], "initAccount<T>(account) takes a Mut<AccountInfo> parameter or a remaining account");
+          h = `a_${acct.name}`;
+        }
+        this.model.accountStructs.add(s.name);
+        this.line(`TS_TRY(ts_init_account(${h}, params->program_id, TS_DISC_${s.name}, sizeof(TSS_${s.name})));`);
+        return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: true } };
+      }
       case "findProgramAddress": {
         // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
         if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
@@ -575,6 +619,15 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         if (method !== "get") this.fail(node, `arrays support get(i), set(i, v) and .length, not ${method}()`);
       }
+      if (method === "compare") {
+        // Pubkey.compare: Rust's Ord on [u8; 32] (lexicographic bytes), as -1, 0 or 1.
+        if (args.length !== 1) this.fail(node, "compare() takes one argument");
+        const left = this.expr(callee.expression);
+        if (left.type.kind !== "pubkey") this.fail(callee.expression, "compare() orders Pubkeys or Hashes");
+        const mark = this.lines.length;
+        const right = this.expect(this.expr(args[0], left.type), left.type, args[0]);
+        return { c: `ts_key_cmp(${this.settle(left, mark).c}, ${right.c})`, type: { kind: "int", name: "i64" } };
+      }
       if (method === "equals") {
         if (args.length !== 1) this.fail(node, "equals() takes one argument");
         // Pubkey.equals and Hash.equals (both 32 bytes, but not interchangeable).
@@ -599,6 +652,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);
         if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, target);
+        if (target?.kind.kind === "system" && (method === "allocate" || method === "assign")) return this.allocateOrAssign(node, target, method);
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
