@@ -13,7 +13,10 @@ codes, and says so here.
   checked against the mainnet binary (test/programs/raydium_clmm.so): the same outcomes, account bytes and events.
   Positions: `open_position_with_token22_nft`, `increase_liquidity_v2` and `decrease_liquidity_v2` (tick arrays made on
   demand, the tick array bitmap and its extension, fees and rewards owed, Token-2022 transfer fees, position NFTs with
-  metadata in the mint), checked the same way.
+  metadata in the mint), checked the same way. Swaps: `swap_v2` (across tick arrays and into the bitmap extension,
+  dynamic fees, limit orders filled at a tick, fee modes, rewards, the oracle, Token-2022 transfer fees, and the
+  USDC/CC pool as cloned from mainnet) and `collect_protocol_fee` / `collect_fund_fee`. 161 transactions in all, 43–83%
+  fewer compute units; see docs/case-study-raydium-clmm.md.
 - New: big-endian integer seeds, Rust's `to_be_bytes()`: `"@start:be"` in `Seeds<…>` and `bigEndian(start)` in a seed
   list. The IDL records the argument, as Anchor's does.
 - New: `loadAccount<T>` / `loadAccountMut<T>` take an `AccountInfo` parameter too (Anchor's `AccountLoader::try_from` on
