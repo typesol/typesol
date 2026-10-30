@@ -568,7 +568,7 @@ export type Account<T> = Readonly<T> & AccountMeta;
  * Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. A second
  * argument fails with one of your errors when the account is not writable (Anchor's `mut @ ErrorCode.X`; else 2000).
  */
-export type Mut<T, E = never> = T & AccountMeta & { readonly __mutError?: E };
+export type Mut<T, E = never> = T & AccountMeta;
 
 /** A PDA seed: a string, a Pubkey, an integer (at its width) or a unit enum value (one byte). */
 export type Seed = string | Pubkey | bigint | number;

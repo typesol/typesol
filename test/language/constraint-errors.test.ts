@@ -34,6 +34,19 @@ export function touch(
   vault.n += 1n;
 }
 
+function bump(vault: Mut<Vault>): void {
+  vault.n += 1n;
+}
+/** The accounts pass to helpers that take the plain types. */
+export function touchTwice(
+  vault: HasOne<HasOne<Mut<Vault, VaultError.ReadOnly>, "owner", VaultError.NotOwner>, "admin", VaultError.NotAdmin>,
+  owner: Signer,
+  admin: AccountInfo,
+): void {
+  bump(vault);
+  bump(vault);
+}
+
 export function pinned(
   treasury: Address<AccountInfo, "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T", VaultError.WrongTreasury>,
   wallet: Owner<AccountInfo, "11111111111111111111111111111111", VaultError.NotSystemOwned>,
@@ -71,6 +84,11 @@ describe("custom errors on declarative constraints", () => {
     const touch = (signer: KeyPairSigner, adminKey: Address, writable = true) =>
       send(d.svm, signer, [ix(d, "touch", {}, [{ address: vault, writable }, { address: signer.address, signer }, { address: adminKey }])]);
     expectOk(await touch(owner, admin.address));
+    expectOk(
+      await send(d.svm, owner, [
+        ix(d, "touch_twice", {}, [{ address: vault, writable: true }, { address: owner.address, signer: owner }, { address: admin.address }]),
+      ]),
+    );
     const stranger = await fundedSigner(d.svm);
     expect(customError(await touch(stranger, admin.address))).toBe(6000); // NotOwner
     expect(customError(await touch(owner, stranger.address))).toBe(6001); // NotAdmin

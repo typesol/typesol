@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: your errors on declarative constraints, as Anchor's `has_one = owner @ ErrorCode.NotOwner`:
+  `HasOne<A, "owner", ErrorCode.NotOwner>`, `Address<A, "…", E.X>`, `Owner<A, "…", E.X>`, `Signed<A, E.X>` and
+  `Mut<T, E.X>` (the constraints Anchor names errors for; `constraint(…)` already took one). Nest `HasOne` for an error
+  per field.
+- New: structs as CPI return data: `const quote = returnData<Quote>(amm)` after the call. A fixed layout of integers,
+  booleans, Pubkeys, unit enums and arrays is read as its bytes; a `@layout borsh` struct (Options, strings, Vecs) is
+  Borsh-decoded; anything else fails with 5106.
+
 ## 0.32.0 — 2026-10-30
 
 Anchor parity and usability: Raydium CP-Swap's pool creation and what creating accounts by hand needs, several PDAs
