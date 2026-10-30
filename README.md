@@ -178,7 +178,10 @@ starts from your program's IDL, and [docs/case-study-escrow.md](docs/case-study-
 program through the port; [docs/case-study-multisig.md](docs/case-study-multisig.md) ports coral-xyz/multisig and
 checks it against the binary deployed on mainnet (same outcomes and account bytes; 66–84% fewer compute units), and
 [docs/case-study-raydium-cp-swap.md](docs/case-study-raydium-cp-swap.md) does the same for Raydium CP-Swap's swaps and liquidity
-(pool creation included: same outcomes, account bytes and events on 70 transactions; 45–79% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+(pool creation included: same outcomes, account bytes and events on 70 transactions; 45–79% fewer compute units), and
+[docs/case-study-raydium-clmm.md](docs/case-study-raydium-clmm.md) for Raydium CLMM's pools, positions and swaps
+(dynamic fees, limit orders and the tick array bitmap extension included: the same on 166 transactions; 43–83% fewer
+compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
@@ -329,6 +332,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`profiles.ts`](examples/profiles.ts) | nested structs, FixedString, events |
 | [`orderbook/`](examples/orderbook) | a three-file, 28 KiB zero-copy limit order book |
 | [`raydium-cp-swap/`](examples/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
+| [`raydium-clmm/`](examples/raydium-clmm) | Raydium CLMM: concentrated-liquidity positions as Token-2022 NFTs, swaps across tick arrays, u256 math, rewards, dynamic fees |
 | [`multisig.ts`](examples/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

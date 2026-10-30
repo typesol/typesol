@@ -108,7 +108,7 @@ export function getSqrtPriceAtTick(tick: i32): u128 {
 }
 
 /** The index of the highest set bit of a non-zero u128. */
-function msb128(x: u128): u64 {
+export function msb128(x: u128): u64 {
   let n: u64 = 0n;
   let v = x;
   if (v >> 64n !== 0n) {

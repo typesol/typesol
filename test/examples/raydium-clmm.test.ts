@@ -6,10 +6,10 @@
 import { getCreateAccountInstruction, getTransferSolInstruction } from "@solana-program/system";
 import * as token from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
-import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, generateKeyPairSigner, getAddressEncoder, lamports } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, generateKeyPairSigner, getAddressDecoder, getAddressEncoder, lamports } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, acct, deployFile, pda, send, type Deployed } from "../harness.js";
@@ -155,19 +155,19 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
   }
 
   /** An AmmConfig laid out as the original lays it out (Borsh), at its PDA ["amm_config", index BE]. */
-  async function config(index: number, tickSpacing: number, tradeFee: number) {
+  async function config(index: number, tickSpacing: number, tradeFee: number, owner?: Address) {
     const [at, bump] = await pda(PROGRAM, ["amm_config", be16(index)]);
     const data = Buffer.concat([
       disc("AmmConfig"),
       Buffer.from([bump]),
       u16(index),
-      key(address("projjosVCPQH49d5em7VYS7fJZzaqKixqKtus7yk416")),
+      key(owner ?? address("projjosVCPQH49d5em7VYS7fJZzaqKixqKtus7yk416")),
       u32(120_000),
       u32(tradeFee),
       u16(tickSpacing),
       u32(40_000),
       u32(0),
-      key(address("FundHfY8oo8J9KYGyfXFFuQCHe7Z1VBNmsj84eMcdYs4")),
+      key(owner ?? address("FundHfY8oo8J9KYGyfXFFuQCHe7Z1VBNmsj84eMcdYs4")),
       Buffer.alloc(24),
     ]);
     for (const vm of vms())
@@ -294,7 +294,7 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
   /** A pool with a price, and a funded user holding both tokens (in associated token accounts). */
   async function poolWith(spacing: number, index: number, sqrt: bigint, programs: [Address, Address] = [TOKEN, TOKEN], ext1?: "fee", freeze1?: Address) {
     const user = await funded();
-    const cfg = await config(index, spacing, 2500);
+    const cfg = await config(index, spacing, 2500, user.address);
     const [m0, m1] = await pair(user, programs[0], programs[1], ext1, freeze1);
     const p = await poolAccounts(cfg, m0, m1);
     expect(await both(`create_pool, spacing ${spacing}`, user, [createPool(user, cfg, m0, m1, p, sqrt)], watchPool(p))).toBe("ok");
@@ -645,8 +645,318 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     expect(await both("open_position, pre-funded tick array", pool.user, [pos.instruction], pos.watch)).toBe("ok");
   });
 
+  // ---- swaps --------------------------------------------------------------------------------------------------
+
+  /** Every tick array of a pool that exists, ordered for a swap in this direction. */
+  const arraysFor = async (pool: Pool, zeroForOne: boolean) => {
+    const found: [number, Address][] = [];
+    const span = 60 * pool.spacing;
+    for (let start = Math.floor(-443_636 / span) * span; start <= 443_636; start += span) {
+      const a = await tickArray(pool.p.pool, start);
+      if (original.getAccount(a).exists) found.push([start, a]);
+    }
+    found.sort((x, y) => (zeroForOne ? y[0] - x[0] : x[0] - y[0]));
+    return found.map(([, a]) => a);
+  };
+  const swap = async (
+    pool: Pool,
+    zeroForOne: boolean,
+    amount: bigint,
+    opts: { exactOut?: boolean; threshold?: bigint; limit?: bigint; arrays?: Address[]; ext?: boolean; payer?: KeyPairSigner } = {},
+  ) => {
+    const payer = opts.payer ?? pool.user;
+    const [inMint, outMint] = zeroForOne ? [pool.m0, pool.m1] : [pool.m1, pool.m0];
+    const [inAcct, outAcct] = zeroForOne ? [pool.acct0, pool.acct1] : [pool.acct1, pool.acct0];
+    const [inVault, outVault] = zeroForOne ? [pool.p.vault0, pool.p.vault1] : [pool.p.vault1, pool.p.vault0];
+    const arrays = opts.arrays ?? (await arraysFor(pool, zeroForOne));
+    const instruction = ix(
+      "swap_v2",
+      {
+        amount: new BN(amount.toString()),
+        other_amount_threshold: new BN((opts.threshold ?? (opts.exactOut ? 2n ** 64n - 1n : 0n)).toString()),
+        sqrt_price_limit_x64: new BN((opts.limit ?? 0n).toString()),
+        is_base_input: !opts.exactOut,
+      },
+      [
+        { address: payer.address, signer: payer },
+        { address: pool.cfg },
+        { address: pool.p.pool, writable: true },
+        { address: inAcct, writable: true },
+        { address: outAcct, writable: true },
+        { address: inVault, writable: true },
+        { address: outVault, writable: true },
+        { address: pool.p.observation, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: MEMO },
+        { address: inMint.address },
+        { address: outMint.address },
+        ...(opts.ext ? [{ address: pool.p.bitmap }] : []),
+        ...arrays.map((a) => ({ address: a, writable: true })),
+      ],
+    );
+    return { instruction, watch: [pool.p.pool, pool.p.vault0, pool.p.vault1, pool.acct0, pool.acct1, pool.p.observation, pool.p.bitmap, ...arrays] };
+  };
+  const swapBoth = async (label: string, pool: Pool, zeroForOne: boolean, amount: bigint, opts: Parameters<typeof swap>[3] = {}) => {
+    const s = await swap(pool, zeroForOne, amount, opts);
+    return both(label, opts.payer ?? pool.user, [s.instruction], s.watch);
+  };
+  const tickOf = (pool: Pool) => Buffer.from(acct(original, pool.p.pool).data).readInt32LE(269);
+  /** A pool with positions around tick 1234 (spacing 60): in range, wide, and on both sides. */
+  async function liquidPool(index: number, programs: [Address, Address] = [TOKEN, TOKEN], ext1?: "fee") {
+    const pool = await poolWith(60, index, 19_574_085_512_633_416_581n, programs, ext1);
+    for (const [lower, upper, liquidity] of [
+      [-600, 1800, 10n ** 12n],
+      [-7200, 9000, 5n * 10n ** 11n],
+      [1800, 5400, 3n * 10n ** 11n],
+      [-3600, -1200, 4n * 10n ** 11n],
+      [-30000, 30000, 10n ** 11n],
+    ] as const) {
+      const pos = await openPosition(pool, lower, upper, liquidity);
+      expect(await both("open_position", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    }
+    return pool;
+  }
+
+  it("swaps both ways, exact input and exact output, across ticks and tick arrays", async () => {
+    const pool = await liquidPool(30);
+    const steps: [string, boolean, bigint, Parameters<typeof swap>[3]][] = [
+      ["0 for 1, small", true, 1_000_000n, {}],
+      ["0 for 1, across ticks", true, 30_000_000_000n, {}],
+      ["1 for 0, exact output", false, 5_000_000_000n, { exactOut: true }],
+      ["1 for 0, across arrays", false, 120_000_000_000n, {}],
+      ["0 for 1, to a price limit", true, 10n ** 13n, { limit: 18_000_000_000_000_000_000n }],
+      ["0 for 1, exact output", true, 2_000_000_000n, { exactOut: true }],
+      ["1 for 0, tiny", false, 3n, {}],
+    ];
+    for (const [label, zeroForOne, amount, opts] of steps) {
+      expect(await swapBoth(`swap, ${label}`, pool, zeroForOne, amount, opts)).toBe("ok");
+      setTime(1_800_000_000n + BigInt(compared) * 20n);
+    }
+    expect(tickOf(pool)).not.toBe(1234);
+    setTime(1_800_000_000n);
+  });
+
+  it("refuses bad swaps as the original does", async () => {
+    const pool = await liquidPool(31);
+    expect(await swapBoth("swap, too little out", pool, true, 1_000_000n, { threshold: 10n ** 12n })).toBe(custom(errors.TooLittleOutputReceived!));
+    expect(await swapBoth("swap, too much in", pool, true, 1_000_000n, { exactOut: true, threshold: 1n })).toBe(custom(errors.TooMuchInputPaid!));
+    expect(await swapBoth("swap, nothing", pool, true, 0n)).toBe(custom(errors.ZeroAmountSpecified!));
+    expect(await swapBoth("swap, limit on the wrong side", pool, true, 1_000n, { limit: 30_000_000_000_000_000_000n })).toBe(custom(errors.SqrtPriceLimitOverflow!));
+    expect(await swapBoth("swap, no tick arrays", pool, true, 1_000n, { arrays: [] })).toBe(custom(errors.NotEnoughTickArrayAccount!));
+    const arrays = await arraysFor(pool, true);
+    expect(await swapBoth("swap, wrong first array", pool, true, 1_000n, { arrays: arrays.slice(-1) })).toBe(custom(errors.InvalidFirstTickArrayAccount!));
+    expect(await swapBoth("swap, arrays run out", pool, true, 10n ** 14n, { arrays: arrays.slice(0, 2) })).not.toBe("ok");
+    expect(await swapBoth("swap, all liquidity and beyond", pool, true, 10n ** 16n)).not.toBe("ok");
+    // The vaults the other way round.
+    const s = await swap(pool, true, 1_000n);
+    const flipped = { ...s.instruction, accounts: s.instruction.accounts!.map((m, i) => (i === 5 ? s.instruction.accounts![6]! : i === 6 ? s.instruction.accounts![5]! : m)) };
+    expect(await both("swap, vaults swapped", pool.user, [flipped as Instruction], s.watch)).not.toBe("ok");
+    patchPool(pool, (b) => (b[POOL_STATUS] = 16));
+    expect(await swapBoth("swap, swaps off", pool, true, 1_000n)).toBe(custom(errors.NotApproved!));
+    patchPool(pool, (b) => (b[POOL_STATUS] = 0));
+  });
+
+  it("charges fees on token 0 only or token 1 only, and pays protocol and fund fees out", async () => {
+    const pool = await liquidPool(32);
+    for (const feeOn of [1, 2]) {
+      patchPool(pool, (b) => (b[POOL_STATUS + 1] = feeOn));
+      expect(await swapBoth(`swap, fee on token ${feeOn - 1}, 0 for 1`, pool, true, 5_000_000_000n)).toBe("ok");
+      expect(await swapBoth(`swap, fee on token ${feeOn - 1}, 1 for 0, exact output`, pool, false, 1_000_000_000n, { exactOut: true })).toBe("ok");
+    }
+    patchPool(pool, (b) => (b[POOL_STATUS + 1] = 0));
+    const collect = (name: string, owner: KeyPairSigner, a0: bigint, a1: bigint) =>
+      ix(name, { amount_0_requested: new BN(a0.toString()), amount_1_requested: new BN(a1.toString()) }, [
+        { address: owner.address, signer: owner },
+        { address: pool.p.pool, writable: true },
+        { address: pool.cfg },
+        { address: pool.p.vault0, writable: true },
+        { address: pool.p.vault1, writable: true },
+        { address: pool.m0.address },
+        { address: pool.m1.address },
+        { address: pool.acct0, writable: true },
+        { address: pool.acct1, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+      ]);
+    const watch = [pool.p.pool, pool.p.vault0, pool.p.vault1, pool.acct0, pool.acct1];
+    const someone = await funded();
+    for (const name of ["collect_protocol_fee", "collect_fund_fee"]) {
+      expect(await both(`${name}, not the owner`, someone, [collect(name, someone, 1n, 1n)], watch)).toBe(custom(errors.NotApproved!));
+      expect(await both(`${name}, some`, pool.user, [collect(name, pool.user, 1_000n, 0n)], watch)).toBe("ok");
+      expect(await both(`${name}, the rest`, pool.user, [collect(name, pool.user, 2n ** 64n - 1n, 2n ** 64n - 1n)], watch)).toBe("ok");
+    }
+  });
+
+  it("swaps with a dynamic fee, limit orders at a tick, rewards and the oracle", async () => {
+    const pool = await liquidPool(33);
+    // DynamicFeeInfo at 8 + 1 + 32 * 7 + 1 + 1 + 2 + 16 + 16 + 4 + 2 + 2 + 16 + 16 + 8 + 8 + 64 + 1 + 1 + 2 + 4 + 507 + 128 + 32 + 8 * 4.
+    const DYNAMIC = 1096;
+    patchPool(pool, (b) => {
+      b.writeUInt16LE(10, DYNAMIC); // filter period
+      b.writeUInt16LE(60, DYNAMIC + 2); // decay period
+      b.writeUInt16LE(5000, DYNAMIC + 4); // reduction factor
+      b.writeUInt32LE(80_000, DYNAMIC + 6); // dynamic fee control
+      b.writeUInt32LE(350_000, DYNAMIC + 10); // max volatility accumulator
+      b.writeInt32LE(20, DYNAMIC + 14); // tick spacing index reference (tick 1234 / 60)
+    });
+    for (const [label, zeroForOne, amount, t] of [
+      ["dynamic fee, 0 for 1", true, 4_000_000_000n, 5n],
+      ["dynamic fee, 1 for 0, soon after", false, 6_000_000_000n, 30n],
+      ["dynamic fee, 0 for 1, after decay", true, 2_000_000_000n, 200n],
+    ] as const) {
+      setTime(1_800_000_000n + t);
+      expect(await swapBoth(`swap, ${label}`, pool, zeroForOne, amount)).toBe("ok");
+    }
+    // The swaps moved the volatility accumulator (at +22) and stamped the update time (at +26).
+    const dyn = Buffer.from(acct(original, pool.p.pool).data).subarray(DYNAMIC);
+    expect(dyn.readUInt32LE(22)).toBeGreaterThan(0);
+    expect(dyn.readBigUInt64LE(26)).toBeGreaterThan(0n);
+    // The dynamic fee off again (it steps one tick spacing group at a time, too slow for the long swaps below).
+    patchPool(pool, (b) => b.fill(0, DYNAMIC, DYNAMIC + 80));
+    // Limit orders on a used tick below the price: 2,000,000 of token 1 for sale at tick -600.
+    const below = await tickArray(pool.p.pool, -3600);
+    for (const vm of vms()) {
+      const a = vm.getAccount(below);
+      if (!a.exists) throw new Error("no array");
+      const b = Buffer.from(a.data);
+      const slot = 8 + 32 + 4 + ((-600 - -3600) / 60) * 168;
+      b.writeBigUInt64LE(2_000_000n, slot + 4 + 16 * 7 + 8);
+      vm.setAccount({ ...a, address: below, data: new Uint8Array(b) } as never);
+    }
+    // A reward stream running since t+250 (only its mint is needed to accrue), so crossing ticks moves reward growth too.
+    const rewardMint = await mint(pool.user, TOKEN, 6);
+    patchPool(pool, (b) => {
+      b[POOL_REWARDS] = 1;
+      b.writeBigUInt64LE(1_800_000_250n, POOL_REWARDS + 1);
+      b.writeBigUInt64LE(1_900_000_000n, POOL_REWARDS + 9);
+      b.writeBigUInt64LE(1_800_000_250n, POOL_REWARDS + 17);
+      writeU128(b, POOL_REWARDS + 25, 777n << 64n);
+      key(rewardMint.address).copy(b, POOL_REWARDS + 57);
+    });
+    setTime(1_800_000_300n);
+    expect(await swapBoth("swap, through limit orders", pool, true, 200_000_000_000n)).toBe("ok");
+    // The orders were filled: none left unfilled, a new order phase.
+    const slotAt = 8 + 32 + 4 + ((-600 - -3600) / 60) * 168;
+    const filled = Buffer.from(acct(original, below).data).subarray(slotAt);
+    expect([filled.readBigUInt64LE(124), filled.readBigUInt64LE(132), filled.readBigUInt64LE(116)]).toEqual([0n, 0n, 1n]);
+    expect(await swapBoth("swap, back up", pool, false, 300_000_000_000n)).toBe("ok");
+    // Orders alone on a fresh tick (-1800, no liquidity): filled in full, the tick is no longer in use, its array counts one less.
+    const fresh = 8 + 32 + 4 + ((-1800 - -3600) / 60) * 168;
+    const countAt = 8 + 32 + 4 + 60 * 168;
+    let countBefore = 0;
+    for (const vm of vms()) {
+      const a = vm.getAccount(below);
+      if (!a.exists) throw new Error("no array");
+      const b = Buffer.from(a.data);
+      b.writeInt32LE(-1800, fresh);
+      b.writeBigUInt64LE(500_000n, fresh + 124);
+      b[countAt] += 1;
+      countBefore = b[countAt]!;
+      vm.setAccount({ ...a, address: below, data: new Uint8Array(b) } as never);
+    }
+    expect(await swapBoth("swap, orders alone on a tick", pool, true, 300_000_000_000n)).toBe("ok");
+    expect(tickOf(pool)).toBeLessThan(-1800);
+    const after = Buffer.from(acct(original, below).data);
+    expect([after.readBigUInt64LE(fresh + 124), after.readBigUInt64LE(fresh + 132), after[countAt]]).toEqual([0n, 0n, countBefore - 1]);
+    setTime(1_800_000_000n);
+  });
+
+  it("swaps into tick arrays marked in the bitmap extension", async () => {
+    // Spacing 1, price at tick 0; positions far above, so the swap leaves the pool's own bitmap.
+    const pool = await poolWith(1, 34, 18_446_744_073_709_551_616n);
+    for (const [lower, upper] of [
+      [-60, 60],
+      [-60, 40_000],
+      [39_000, 41_000],
+    ] as const) {
+      const pos = await openPosition(pool, lower, upper, 10n ** 11n, { rest: [{ address: pool.p.bitmap, writable: true }] });
+      expect(await both("open_position", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    }
+    // Up to about tick 40,500 (1.0001^(40500/2) * 2^64).
+    const limit = BigInt(Math.floor(Math.sqrt(1.0001 ** 40_500) * 2 ** 32)) << 32n;
+    expect(await swapBoth("swap, up into the extension", pool, false, 10n ** 13n, { ext: true, limit })).toBe("ok");
+    expect(tickOf(pool)).toBeGreaterThan(30_720);
+    expect(await swapBoth("swap, extension missing", pool, true, 1_000_000n)).toBe(custom(errors.MissingTickArrayBitmapExtensionAccount!));
+    expect(await swapBoth("swap, back down", pool, true, 10n ** 13n, { ext: true, limit: 18_446_744_073_709_551_616n })).toBe("ok");
+    expect(tickOf(pool)).toBeLessThan(30_720);
+    // The negative side: positions past -30,720, and a swap down into them and back.
+    for (const [lower, upper] of [
+      [-41_000, -39_000],
+      [-40_000, 60],
+    ] as const) {
+      const pos = await openPosition(pool, lower, upper, 10n ** 11n, { rest: [{ address: pool.p.bitmap, writable: true }] });
+      expect(await both("open_position, negative side", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    }
+    const down = BigInt(Math.floor(Math.sqrt(1.0001 ** -40_500) * 2 ** 32)) << 32n;
+    expect(await swapBoth("swap, down into the extension", pool, true, 10n ** 13n, { ext: true, limit: down })).toBe("ok");
+    expect(tickOf(pool)).toBeLessThan(-30_720);
+    expect(await swapBoth("swap, back up from below", pool, false, 10n ** 13n, { ext: true, limit: 18_446_744_073_709_551_616n })).toBe("ok");
+  });
+
+  it("swaps in a Token-2022 transfer-fee pool", async () => {
+    const pool = await liquidPool(35, [TOKEN, TOKEN_2022], "fee");
+    expect(await swapBoth("swap, transfer-fee mint in", pool, false, 3_000_000_000n)).toBe("ok");
+    expect(await swapBoth("swap, transfer-fee mint out", pool, true, 3_000_000_000n)).toBe("ok");
+    expect(await swapBoth("swap, transfer-fee mint out, exact output", pool, true, 1_000_000_000n, { exactOut: true })).toBe("ok");
+    expect(await swapBoth("swap, transfer-fee mint in, exact output", pool, false, 1_000_000_000n, { exactOut: true })).toBe("ok");
+  });
+
+  it("swaps in the USDC/CC pool as cloned from mainnet", async () => {
+    const dir = fileURLToPath(new URL("../fixtures/clmm/mainnet/", import.meta.url));
+    for (const f of readdirSync(dir)) {
+      const j = JSON.parse(readFileSync(dir + f, "utf8")) as { address: string; data: string; lamports: string; owner?: string; programAddress?: string };
+      const data = Buffer.from(j.data, "base64");
+      for (const vm of vms())
+        vm.setAccount({
+          address: address(j.address),
+          data: new Uint8Array(data),
+          executable: false,
+          lamports: lamports(BigInt(j.lamports)),
+          programAddress: address((j.owner ?? j.programAddress)!),
+          space: BigInt(data.length),
+        });
+    }
+    const POOL = address("774uZXEhCJGqDYrZLLh3EUV6QDsBkeDzGp2gVhpdd9RU");
+    const p = Buffer.from(acct(original, POOL).data);
+    const at = (o: number) => address(getAddressDecoder().decode(p.subarray(o, o + 32)));
+    const [cfg, m0, m1, v0, v1, obs] = [at(9), at(73), at(105), at(137), at(169), at(201)];
+    // Token accounts holding both tokens, written as SPL Token lays them out.
+    const user = await funded();
+    const holding = async (m: Address) => {
+      const k = (await generateKeyPairSigner()).address;
+      const b = Buffer.alloc(165);
+      key(m).copy(b, 0);
+      key(user.address).copy(b, 32);
+      b.writeBigUInt64LE(10n ** 12n, 64);
+      b[108] = 1;
+      for (const vm of vms())
+        vm.setAccount({ address: k, data: new Uint8Array(b), executable: false, lamports: lamports(2_039_280n), programAddress: TOKEN, space: 165n });
+      return k;
+    };
+    const [a0, a1] = [await holding(m0), await holding(m1)];
+    const cloned = {
+      user,
+      cfg,
+      m0: { address: m0, program: TOKEN },
+      m1: { address: m1, program: TOKEN },
+      p: { pool: POOL, vault0: v0, vault1: v1, observation: obs, bitmap: address("2Qd5cDYWSDJayz6MpQbPL8GGReFJYBv2sAzbXKkgqdNa") },
+      acct0: a0,
+      acct1: a1,
+      spacing: p.readUInt16LE(235),
+    } as unknown as Pool;
+    const arrays = [address("Ew3kDkV2BBsPQHWzZUB627fWJr8K5jNVKKD2PpPJAsYG"), address("JzimDKzjjLujrUZk2CvF5EmbYa5komZsLeNbjb8NPNo")];
+    for (const [label, zeroForOne, amount, exactOut] of [
+      ["0 for 1", true, 1_000_000n, false],
+      ["1 for 0", false, 1_000_000n, false],
+      ["0 for 1, exact output", true, 500_000n, true],
+    ] as const)
+      expect(await swapBoth(`swap, mainnet USDC/CC pool, ${label}`, cloned, zeroForOne, amount, { arrays: zeroForOne ? arrays : [...arrays].reverse(), ext: true, exactOut })).toBe("ok");
+  });
+
   it("reports compute units", () => {
     expect(compared).toBeGreaterThan(5);
+    console.log(`${compared} transactions compared`);
     console.log(Object.entries(cu).map(([k, [a, b]]) => `${k}: ${a} → ${b}`).join("\n"));
   });
 });

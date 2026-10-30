@@ -1,5 +1,6 @@
 // The Raydium CLMM port's account layouts (examples/raydium-clmm/state.ts) against mainnet: a pool's accounts cloned
-// on 2026-10-30 (test/fixtures/clmm/mainnet, USDC/CC pool 774uZX…, slot ~463.2M) are read by the port and compared,
+// on 2026-10-30 (test/fixtures/clmm/mainnet, USDC/CC pool 774uZX… with both of its tick arrays, cloned together with
+// `typesol clone`) are read by the port and compared,
 // field by field, with the same bytes decoded by the program's on-chain IDL; and each struct's size is the accounts'.
 import { BorshCoder, type Idl } from "@anchor-lang/core";
 import { type Address, getAddressDecoder } from "@solana/kit";

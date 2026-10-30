@@ -10,6 +10,7 @@ import {
   type AssociatedTokenProgram,
   type Dup,
   type Init,
+  type MemoProgram,
   type Mint,
   type MintOf,
   type Mut,
@@ -23,10 +24,11 @@ import {
   type TokenInterface,
   type TokenProgram,
   type AccountMeta,
-  type i32,
-  type u32,
+  i32,
+  i64,
   type u128,
   type Pubkey,
+  u32,
   bigEndian,
   byteLength,
   constraint,
@@ -61,6 +63,7 @@ import { ErrorCode } from "./errors";
 import {
   type LiquidityChange,
   addLiquidityToTicks,
+  arrayStartIndex,
   burnLiquidityFromTicks,
   checkTickArrayStartIndex,
   flipBitDefault,
@@ -70,10 +73,36 @@ import {
   isValidStartIndex,
   overflowsDefaultBitmap,
   updatePosition,
+  updateRewardInfos,
 } from "./liquidity";
-import { FEE_RATE_DENOMINATOR_VALUE, getTickAtSqrtPrice } from "./math";
+import { FEE_RATE_DENOMINATOR_VALUE, MAX_SQRT_PRICE_X64, MAX_TICK, MIN_SQRT_PRICE_X64, MIN_TICK, addDelta, computeSwap, getSqrtPriceAtTick, getTickAtSqrtPrice } from "./math";
+import {
+  arrayInExtension,
+  crossTick,
+  currentArrayInBitmap,
+  dynamicFeeEnabled,
+  feeOnInput,
+  feeOnToken0,
+  firstInitializedOffset,
+  matchLimitOrder,
+  newSwapState,
+  nextArrayInBitmap,
+  nextArrayInExtension,
+  nextInitializedOffset,
+  spacingBound,
+  splitFees,
+  tickInitialized,
+  tickSpacingIndex,
+  totalFeeRate,
+  unfilledAmount,
+  updateObservation,
+  updatePoolFees,
+  updateReference,
+  updateVolatilityAccumulator,
+} from "./swap";
 import {
   type AmmConfig,
+  type CollectProtocolFeeEvent,
   type ConfigChangeEvent,
   type CreatePersonalPositionEvent,
   type DecreaseLiquidityEvent,
@@ -85,6 +114,7 @@ import {
   type PoolCreatedEvent,
   type PoolState,
   type SupportMintAssociated,
+  type SwapEvent,
   type TickArrayBitmapExtension,
   type TickArrayState,
 } from "./state";
@@ -92,6 +122,7 @@ import {
 const PROTOCOL_FEE_OWNER = pubkey("projjosVCPQH49d5em7VYS7fJZzaqKixqKtus7yk416");
 const FUND_FEE_OWNER = pubkey("FundHfY8oo8J9KYGyfXFFuQCHe7Z1VBNmsj84eMcdYs4");
 const SPL_TOKEN = pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ADMIN = pubkey("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
 const SPL_TOKEN_2022 = pubkey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 const SYSTEM = pubkey("11111111111111111111111111111111");
 const MAX_TICK_SPACING = 1000n;
@@ -801,4 +832,517 @@ export function decreaseLiquidityV2(
     transfer_fee_0: transferFee0,
     transfer_fee_1: transferFee1,
   });
+}
+
+
+// ---- swaps -------------------------------------------------------------------------------------------------------
+
+/** A search through the tick array bitmap that found nothing. */
+const NO_ARRAY: i64 = 4294967296n;
+
+/**
+ * Swap `amount` of one token of the pool (or, with `is_base_input` false, for exactly `amount` of the other), across
+ * as many ticks as it takes, down (or up) to `sqrt_price_limit_x64` (0: no limit). The tick arrays it may cross, in
+ * order, and the TickArrayBitmapExtension when the price may leave the pool's own bitmap, are the remaining accounts.
+ */
+export function swapV2(
+  payer: Signer,
+  amm_config: Account<AmmConfig>,
+  pool_state: Mut<PoolState>,
+  input_token_account: Mut<TokenAccount>,
+  output_token_account: Mut<TokenAccount>,
+  input_vault: Mut<TokenAccount>,
+  output_vault: Mut<TokenAccount>,
+  observation_state: Mut<ObservationState>,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  memo_program: MemoProgram,
+  input_vault_mint: Mint,
+  output_vault_mint: Mint,
+  amount: u64,
+  other_amount_threshold: u64,
+  sqrt_price_limit_x64: u128,
+  is_base_input: boolean,
+): void {
+  constraint(amm_config, amm_config.key === pool_state.amm_config, AnchorError.ConstraintAddress);
+  constraint(input_token_account, input_token_account.mint === input_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(input_token_account, input_token_account.owner === payer.key, AnchorError.ConstraintTokenOwner);
+  constraint(output_token_account, output_token_account.mint === output_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(observation_state, observation_state.key === pool_state.observation_key, AnchorError.ConstraintAddress);
+  constraint(input_vault_mint, input_vault_mint.key === input_vault.mint, AnchorError.ConstraintAddress);
+  constraint(output_vault_mint, output_vault_mint.key === output_vault.mint, AnchorError.ConstraintAddress);
+
+  // exact_internal_v2: the transfer fee comes off an exact input, or on top of an exact output.
+  const timestamp = u64(now());
+  const inputBefore = input_token_account.amount;
+  const outputBefore = output_token_account.amount;
+  let specifiedFee: u64 = 0n;
+  let specified: u64 = 0n;
+  if (is_base_input) {
+    specifiedFee = transferFee(input_vault_mint, amount);
+    specified = amount - specifiedFee;
+  } else {
+    specifiedFee = inverseTransferFee(output_vault_mint, amount);
+    specified = amount + specifiedFee;
+  }
+  const priceBefore = pool_state.sqrt_price_x64;
+  const zeroForOne = input_vault.mint === pool_state.token_mint_0;
+  require(timestamp > pool_state.open_time, AnchorError.RequireGtViolated);
+  require(
+    zeroForOne
+      ? input_vault.key === pool_state.token_vault_0 && output_vault.key === pool_state.token_vault_1
+      : input_vault.key === pool_state.token_vault_1 && output_vault.key === pool_state.token_vault_0,
+    ErrorCode.InvalidInputPoolVault,
+  );
+  // The remaining accounts: tick arrays and the bitmap extension, told apart by size, up to the first that is neither.
+  const rest = remainingAccounts();
+  let scanEnd = rest.length;
+  let extAt = rest.length;
+  for (let i = 0n; i < rest.length && scanEnd === rest.length; i++) {
+    const a = rest.get(i);
+    if (a.dataLen === 10240n) {
+      // AccountLoad::load_data_mut
+      require(a.owner === programId(), AnchorError.AccountOwnedByWrongProgram);
+      require(a.isWritable, AnchorError.AccountNotMutable);
+      // Its discriminator (the view itself is taken when the swap reaches it).
+      const array = loadAccount<TickArrayState>(a);
+    } else if (a.dataLen === 1832n) {
+      // TickArrayBitmapExtension::validate_belongs_to_pool
+      const ext = loadAccount<TickArrayBitmapExtension>(a);
+      require(ext.pool_id === pool_state.key, ErrorCode.InvalidTickArrayBitmapExtensionAccount);
+      extAt = i;
+    } else scanEnd = i;
+  }
+  /** The next tick array after remaining account `from` (-1: the first), or -1. */
+  const nextTickArray = (from: i64): i64 => {
+    for (let i = from + 1n; i < i64(scanEnd); i++) if (rest.get(u64(i)).dataLen === 10240n) return i;
+    return -1n;
+  };
+  const spacing = pool_state.tick_spacing;
+  /** PoolState::next_tick_array_index_with_extension_info: the next marked array, or NO_ARRAY. */
+  const nextArrayStart = (from: i32): i64 => {
+    let last = arrayStartIndex(from, spacing);
+    for (;;) {
+      const inPool = nextArrayInBitmap(pool_state, last, zeroForOne);
+      if (inPool.found) return i64(inPool.start);
+      if (spacing >= 15n) return NO_ARRAY;
+      last = inPool.start;
+      require(extAt < rest.length, ErrorCode.MissingTickArrayBitmapExtensionAccount);
+      const ext = loadAccount<TickArrayBitmapExtension>(rest.get(extAt));
+      const inExt = nextArrayInExtension(ext, last, spacing, zeroForOne);
+      if (inExt.found) return i64(inExt.start);
+      last = inExt.start;
+      if (last < MIN_TICK || last > MAX_TICK) return NO_ARRAY;
+    }
+  };
+  const limit = sqrt_price_limit_x64 !== 0n ? sqrt_price_limit_x64 : zeroForOne ? MIN_SQRT_PRICE_X64 + 1n : MAX_SQRT_PRICE_X64 - 1n;
+  const blockTimestamp = u32(timestamp & 0xffffffffn);
+
+  // swap_internal
+  require(specified !== 0n, ErrorCode.ZeroAmountSpecified);
+  require((pool_state.status & 16n) === 0n, ErrorCode.NotApproved);
+  require(
+    zeroForOne
+      ? limit < pool_state.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
+      : limit > pool_state.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64,
+    ErrorCode.SqrtPriceLimitOverflow,
+  );
+  updateRewardInfos(pool_state, u64(blockTimestamp));
+  require(observation_state.pool_id === pool_state.key, AnchorError.RequireKeysEqViolated);
+  // first_tick_array_index_with_extension_info
+  let firstHasPoolTick = false;
+  let validStart: i32 = 0n;
+  let current = arrayStartIndex(pool_state.tick_current, spacing);
+  let marked = false;
+  if (overflowsDefaultBitmap(pool_state.tick_current, spacing)) {
+    require(extAt < rest.length, ErrorCode.MissingTickArrayBitmapExtensionAccount);
+    const ext = loadAccount<TickArrayBitmapExtension>(rest.get(extAt));
+    const found = arrayInExtension(ext, current, spacing);
+    marked = found.found;
+    current = found.start;
+  } else {
+    const found = currentArrayInBitmap(pool_state);
+    marked = found.found;
+    current = found.start;
+  }
+  if (marked) {
+    firstHasPoolTick = true;
+    validStart = current;
+  } else {
+    const next = nextArrayStart(arrayStartIndex(pool_state.tick_current, spacing));
+    require(next !== NO_ARRAY, ErrorCode.InsufficientLiquidityForDirection);
+    validStart = i32(next);
+  }
+  // The first tick array passed that is that one (the ones before it are skipped).
+  let at = nextTickArray(-1n);
+  require(at >= 0n, ErrorCode.NotEnoughTickArrayAccount);
+  for (;;) {
+    if (readData<i32>(rest.get(u64(at)), 40n) === validStart) break;
+    const next = nextTickArray(at);
+    if (next < 0n) break;
+    at = next;
+  }
+  require(readData<Pubkey>(rest.get(u64(at)), 8n) === pool_state.key, AnchorError.RequireKeysEqViolated);
+  require(readData<i32>(rest.get(u64(at)), 40n) === validStart, ErrorCode.InvalidFirstTickArrayAccount);
+
+  const isFeeOnInput = feeOnInput(pool_state, zeroForOne);
+  const dynamic = dynamicFeeEnabled(pool_state);
+  const st = newSwapState(pool_state, specified, zeroForOne);
+  if (dynamic) {
+    st.tick_spacing_index = tickSpacingIndex(st.tick, spacing);
+    updateReference(pool_state, st.tick_spacing_index, u64(blockTimestamp));
+  }
+  /** SwapState::apply_swap_amounts. */
+  const apply = (amountIn: u64, amountOut: u64, fee: u64): void => {
+    let consumed = amountIn;
+    if (isFeeOnInput) {
+      require(amountIn <= 18446744073709551615n - fee, ErrorCode.CalculateOverflow);
+      consumed = amountIn + fee;
+    }
+    const spent = is_base_input ? consumed : amountOut;
+    const got = is_base_input ? amountOut : consumed;
+    require(st.amount_specified_remaining >= spent, ErrorCode.CalculateOverflow);
+    st.amount_specified_remaining -= spent;
+    require(st.amount_calculated <= 18446744073709551615n - got, ErrorCode.CalculateOverflow);
+    st.amount_calculated += got;
+    const split = splitFees(st, fee, amm_config);
+    st.fee_growth_global_x64 = split.fee_growth_global_x64;
+    st.lp_fee = split.lp_fee;
+    st.protocol_fee = split.protocol_fee;
+    st.fund_fee = split.fund_fee;
+  };
+
+  // The swap, one tick array at a time.
+  let takeFirst = false;
+  let finished = false;
+  while (!finished) {
+    const array = loadAccountMut<TickArrayState>(rest.get(u64(at)));
+    let moveOn = false;
+    while (st.amount_specified_remaining !== 0n && st.sqrt_price_x64 !== limit && !moveOn) {
+      // The next tick with liquidity or orders: in this array, the first of it, or the next marked array's.
+      let offset: i64 = -1n;
+      if (takeFirst) {
+        offset = i64(firstInitializedOffset(array, zeroForOne));
+        takeFirst = false;
+      } else {
+        offset = nextInitializedOffset(array, st.tick, spacing, zeroForOne);
+        if (offset < 0n) {
+          if (!firstHasPoolTick) {
+            firstHasPoolTick = true;
+            offset = i64(firstInitializedOffset(array, zeroForOne));
+          } else moveOn = true;
+        }
+      }
+      if (moveOn) break;
+      const slot = u64(offset);
+      require(tickInitialized(array.ticks.get(slot)), AnchorError.RequireEqViolated);
+      // get_target_price_based_on_next_tick
+      const tickNext = array.ticks.get(slot).tick;
+      st.tick_next = tickNext < MIN_TICK ? MIN_TICK : tickNext > MAX_TICK ? MAX_TICK : tickNext;
+      st.sqrt_price_next_x64 = getSqrtPriceAtTick(st.tick_next);
+      const target = (zeroForOne && st.sqrt_price_next_x64 < limit) || (!zeroForOne && st.sqrt_price_next_x64 > limit) ? limit : st.sqrt_price_next_x64;
+      if (zeroForOne) {
+        require(st.tick >= st.tick_next, AnchorError.RequireGteViolated);
+        require(st.sqrt_price_x64 >= st.sqrt_price_next_x64, AnchorError.RequireGteViolated);
+        require(st.sqrt_price_x64 >= target, AnchorError.RequireGteViolated);
+      } else {
+        require(st.tick_next > st.tick, AnchorError.RequireGtViolated);
+        require(st.sqrt_price_next_x64 >= st.sqrt_price_x64, AnchorError.RequireGteViolated);
+        require(target >= st.sqrt_price_x64, AnchorError.RequireGteViolated);
+      }
+      let liquidityNext = st.liquidity;
+      let stepDone = false;
+      while (!stepDone) {
+        if (dynamic) updateVolatilityAccumulator(pool_state, st.tick_spacing_index);
+        const feeRate = totalFeeRate(pool_state, dynamic, amm_config.trade_fee_rate);
+        // get_spacing_bounded_price: with a dynamic fee, one tick spacing group at a time.
+        let skipped = true;
+        let bounded = target;
+        let boundedTick: i64 = NO_ARRAY;
+        if (dynamic && st.liquidity !== 0n && pool_state.dynamic_fee_info.volatility_accumulator !== pool_state.dynamic_fee_info.max_volatility_accumulator) {
+          skipped = false;
+          const edge = spacingBound(pool_state, st, zeroForOne);
+          const edgePrice = getSqrtPriceAtTick(edge);
+          if (zeroForOne ? target <= edgePrice : target >= edgePrice) {
+            bounded = edgePrice;
+            boundedTick = i64(edge);
+          }
+        }
+        let reached = bounded;
+        if (st.sqrt_price_x64 !== bounded) {
+          const step = computeSwap(st.sqrt_price_x64, bounded, st.liquidity, st.amount_specified_remaining, feeRate, is_base_input, zeroForOne, isFeeOnInput);
+          reached = step.sqrtPriceNextX64;
+          apply(step.amountIn, step.amountOut, step.feeAmount);
+        }
+        const unfilledBefore = unfilledAmount(array.ticks.get(slot));
+        if (st.sqrt_price_next_x64 === reached) {
+          // At the tick: its limit orders, then crossing it.
+          const filled = matchLimitOrder(array, slot, st.amount_specified_remaining, zeroForOne, is_base_input, feeRate, isFeeOnInput, st.sqrt_price_next_x64);
+          if (filled.amount_in !== 0n || filled.amount_out !== 0n || filled.amm_fee_amount !== 0n) apply(filled.amount_in, filled.amount_out, filled.amm_fee_amount);
+          if (!tickInitialized(array.ticks.get(slot))) {
+            require(array.initialized_tick_count > 0n, ErrorCode.CalculateOverflow);
+            array.initialized_tick_count -= 1n;
+            if (array.initialized_tick_count === 0n) {
+              if (overflowsDefaultBitmap(array.start_tick_index, spacing)) {
+                require(extAt < rest.length, ErrorCode.MissingTickArrayBitmapExtensionAccount);
+                const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(extAt));
+                flipBitExtension(ext, array.start_tick_index, spacing);
+              } else flipBitDefault(pool_state, array.start_tick_index);
+            }
+          }
+          const t = array.ticks.get(slot);
+          const hasOrders = t.orders_amount > 0n || t.part_filled_orders_remaining > 0n;
+          if (t.liquidity_gross > 0n && !hasOrders) {
+            const onToken0 = feeOnToken0(pool_state, zeroForOne);
+            const net = crossTick(
+              array,
+              slot,
+              pool_state,
+              onToken0 ? st.fee_growth_global_x64 : pool_state.fee_growth_global_0_x64,
+              onToken0 ? pool_state.fee_growth_global_1_x64 : st.fee_growth_global_x64,
+            );
+            liquidityNext = addDelta(st.liquidity, zeroForOne ? -net : net);
+          }
+          array.recent_epoch = currentEpoch();
+          st.tick = (zeroForOne && !hasOrders) || (!zeroForOne && hasOrders) ? st.tick_next - 1n : st.tick_next;
+        } else if (st.sqrt_price_x64 !== reached) {
+          st.tick = boundedTick !== NO_ARRAY && reached === bounded ? i32(boundedTick) : getTickAtSqrtPrice(reached);
+        }
+        st.sqrt_price_x64 = reached;
+        // update_dynamic_fee_index
+        if (dynamic) {
+          if (skipped) {
+            const tickIndex = st.sqrt_price_x64 === st.sqrt_price_next_x64 ? st.tick_next : st.tick;
+            let index = tickSpacingIndex(tickIndex, spacing);
+            if (!zeroForOne && tickIndex % i32(spacing) === 0n) index = index - 1n;
+            st.tick_spacing_index = index;
+            if (pool_state.dynamic_fee_info.volatility_accumulator !== pool_state.dynamic_fee_info.max_volatility_accumulator)
+              updateVolatilityAccumulator(pool_state, st.tick_spacing_index);
+          }
+          st.tick_spacing_index = zeroForOne ? st.tick_spacing_index - 1n : st.tick_spacing_index + 1n;
+        }
+        if (st.amount_specified_remaining === 0n || st.sqrt_price_x64 === target) {
+          const unfilledAfter = unfilledAmount(array.ticks.get(slot));
+          if (st.amount_specified_remaining !== 0n && unfilledAfter !== unfilledBefore) require(unfilledAfter === 0n, AnchorError.RequireEqViolated);
+          stepDone = true;
+        }
+      }
+      st.liquidity = liquidityNext;
+    }
+    if (moveOn) {
+      // Past this array: the next marked one, among the tick arrays passed after it.
+      const next = nextArrayStart(validStart);
+      require(next !== NO_ARRAY, ErrorCode.LiquidityInsufficient);
+      while (readData<i32>(rest.get(u64(at)), 40n) !== i32(next)) {
+        at = nextTickArray(at);
+        require(at >= 0n, ErrorCode.NotEnoughTickArrayAccount);
+        require(readData<Pubkey>(rest.get(u64(at)), 8n) === pool_state.key, AnchorError.RequireKeysEqViolated);
+      }
+      validStart = i32(next);
+      takeFirst = true;
+    } else finished = true;
+  }
+
+  if (st.tick !== pool_state.tick_current) updateObservation(observation_state, blockTimestamp, pool_state.tick_current);
+  // settle_amounts
+  require(specified >= st.amount_specified_remaining, ErrorCode.CalculateOverflow);
+  const consumed = specified - st.amount_specified_remaining;
+  const amount0 = zeroForOne === is_base_input ? consumed : st.amount_calculated;
+  const amount1 = zeroForOne === is_base_input ? st.amount_calculated : consumed;
+  require(st.lp_fee <= 18446744073709551615n - st.protocol_fee, ErrorCode.CalculateOverflow);
+  require(st.lp_fee + st.protocol_fee <= 18446744073709551615n - st.fund_fee, ErrorCode.CalculateOverflow);
+  const tradeFee = st.lp_fee + st.protocol_fee + st.fund_fee;
+  const onToken0 = feeOnToken0(pool_state, zeroForOne);
+  // update_after_swap
+  pool_state.tick_current = st.tick;
+  pool_state.sqrt_price_x64 = st.sqrt_price_x64;
+  pool_state.liquidity = st.liquidity;
+  updatePoolFees(pool_state, st, zeroForOne);
+
+  log(`exact_swap_internal, is_base_input:${is_base_input}, amount_0: ${amount0}, amount_1: ${amount1}`);
+  require(amount0 !== 0n && amount1 !== 0n, ErrorCode.TooSmallInputOrOutputAmount);
+  // The transfer fees: the input's on top of what the pool takes in, the output's out of what it pays.
+  let fee0: u64 = 0n;
+  let fee1: u64 = 0n;
+  let net0 = amount0;
+  let net1 = amount1;
+  let send0 = amount0;
+  let send1 = amount1;
+  if (zeroForOne) {
+    fee0 = is_base_input && amount0 === specified ? specifiedFee : inverseTransferFee(input_vault_mint, amount0);
+    fee1 = transferFee(output_vault_mint, amount1);
+    require(amount1 >= fee1, ErrorCode.CalculateOverflow);
+    net1 = amount1 - fee1;
+    require(amount0 <= 18446744073709551615n - fee0, ErrorCode.CalculateOverflow);
+    send0 = amount0 + fee0;
+  } else {
+    fee0 = transferFee(output_vault_mint, amount0);
+    fee1 = is_base_input && amount1 === specified ? specifiedFee : inverseTransferFee(input_vault_mint, amount1);
+    require(amount0 >= fee0, ErrorCode.CalculateOverflow);
+    net0 = amount0 - fee0;
+    require(amount1 <= 18446744073709551615n - fee1, ErrorCode.CalculateOverflow);
+    send1 = amount1 + fee1;
+  }
+  log(`amount_0:${amount0}, transfer_fee_0:${fee0}, amount_1:${amount1}, transfer_fee_1:${fee1}`);
+  emit<SwapEvent>({
+    pool_state: pool_state.key,
+    sender: payer.key,
+    token_account_0: zeroForOne ? input_token_account.key : output_token_account.key,
+    token_account_1: zeroForOne ? output_token_account.key : input_token_account.key,
+    amount_0: net0,
+    transfer_fee_0: fee0,
+    amount_1: net1,
+    transfer_fee_1: fee1,
+    zero_for_one: zeroForOne,
+    sqrt_price_x64: pool_state.sqrt_price_x64,
+    liquidity: pool_state.liquidity,
+    tick: pool_state.tick_current,
+    trade_fee_0: onToken0 ? tradeFee : 0n,
+    trade_fee_1: onToken0 ? 0n : tradeFee,
+  });
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  transferIn(payer, input_token_account, input_vault, input_vault_mint, token_program, token_program_2022, zeroForOne ? send0 : send1);
+  transferOut(pool_state, output_vault, output_token_account, output_vault_mint, token_program, token_program_2022, zeroForOne ? send1 : send0, poolSigner);
+
+  if (zeroForOne) require(priceBefore >= pool_state.sqrt_price_x64, AnchorError.RequireGteViolated);
+  else require(pool_state.sqrt_price_x64 >= priceBefore, AnchorError.RequireGteViolated);
+  if (sqrt_price_limit_x64 === 0n) {
+    // Without a price limit the whole amount must have been swapped.
+    if (is_base_input) require(amount === (zeroForOne ? send0 : send1), AnchorError.RequireEqViolated);
+    else require(specified === (zeroForOne ? send1 : send0), AnchorError.RequireEqViolated);
+  }
+  if (is_base_input) {
+    require(output_token_account.amount >= outputBefore, ErrorCode.CalculateOverflow);
+    require(output_token_account.amount - outputBefore >= other_amount_threshold, ErrorCode.TooLittleOutputReceived);
+  } else {
+    require(inputBefore >= input_token_account.amount, ErrorCode.CalculateOverflow);
+    require(other_amount_threshold >= inputBefore - input_token_account.amount, ErrorCode.TooMuchInputPaid);
+  }
+}
+
+/** Pay out protocol fees (`fund`: fund fees) the pool holds, up to the amounts asked for. */
+function collectFees(
+  pool_state: Mut<PoolState>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  vault_0_mint: Mint,
+  vault_1_mint: Mint,
+  recipient_token_account_0: Mut<TokenAccount>,
+  recipient_token_account_1: Mut<TokenAccount>,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  amount_0_requested: u64,
+  amount_1_requested: u64,
+  fund: boolean,
+  seeds: SignerSeeds,
+): void {
+  const owed0 = fund ? pool_state.fund_fees_token_0 : pool_state.protocol_fees_token_0;
+  const owed1 = fund ? pool_state.fund_fees_token_1 : pool_state.protocol_fees_token_1;
+  const amount0 = amount_0_requested < owed0 ? amount_0_requested : owed0;
+  const amount1 = amount_1_requested < owed1 ? amount_1_requested : owed1;
+  if (fund) {
+    pool_state.fund_fees_token_0 = owed0 - amount0;
+    pool_state.fund_fees_token_1 = owed1 - amount1;
+  } else {
+    pool_state.protocol_fees_token_0 = owed0 - amount0;
+    pool_state.protocol_fees_token_1 = owed1 - amount1;
+  }
+  transferOut(pool_state, token_vault_0, recipient_token_account_0, vault_0_mint, token_program, token_program_2022, amount0, seeds);
+  transferOut(pool_state, token_vault_1, recipient_token_account_1, vault_1_mint, token_program, token_program_2022, amount1, seeds);
+  emit<CollectProtocolFeeEvent>({
+    pool_state: pool_state.key,
+    recipient_token_account_0: recipient_token_account_0.key,
+    recipient_token_account_1: recipient_token_account_1.key,
+    amount_0: amount0,
+    amount_1: amount1,
+  });
+}
+
+/** Collect the protocol fees (the config's owner or Raydium's admin). */
+export function collectProtocolFee(
+  owner: Signer,
+  pool_state: Mut<PoolState>,
+  amm_config: Account<AmmConfig>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  vault_0_mint: Mint,
+  vault_1_mint: Mint,
+  recipient_token_account_0: Mut<TokenAccount>,
+  recipient_token_account_1: Mut<TokenAccount>,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  amount_0_requested: u64,
+  amount_1_requested: u64,
+): void {
+  constraint(owner, owner.key === amm_config.owner || owner.key === ADMIN, ErrorCode.NotApproved);
+  constraint(amm_config, amm_config.key === pool_state.amm_config, AnchorError.ConstraintAddress);
+  constraint(token_vault_0, token_vault_0.key === pool_state.token_vault_0);
+  constraint(token_vault_1, token_vault_1.key === pool_state.token_vault_1);
+  constraint(vault_0_mint, vault_0_mint.key === token_vault_0.mint, AnchorError.ConstraintAddress);
+  constraint(vault_1_mint, vault_1_mint.key === token_vault_1.mint, AnchorError.ConstraintAddress);
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  collectFees(
+    pool_state,
+    token_vault_0,
+    token_vault_1,
+    vault_0_mint,
+    vault_1_mint,
+    recipient_token_account_0,
+    recipient_token_account_1,
+    token_program,
+    token_program_2022,
+    amount_0_requested,
+    amount_1_requested,
+    false,
+    poolSigner,
+  );
+}
+
+/** Collect the fund fees (the config's fund owner or Raydium's admin). */
+export function collectFundFee(
+  owner: Signer,
+  pool_state: Mut<PoolState>,
+  amm_config: Account<AmmConfig>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  vault_0_mint: Mint,
+  vault_1_mint: Mint,
+  recipient_token_account_0: Mut<TokenAccount>,
+  recipient_token_account_1: Mut<TokenAccount>,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  amount_0_requested: u64,
+  amount_1_requested: u64,
+): void {
+  constraint(owner, owner.key === amm_config.fund_owner || owner.key === ADMIN, ErrorCode.NotApproved);
+  constraint(amm_config, amm_config.key === pool_state.amm_config, AnchorError.ConstraintAddress);
+  constraint(token_vault_0, token_vault_0.key === pool_state.token_vault_0);
+  constraint(token_vault_1, token_vault_1.key === pool_state.token_vault_1);
+  constraint(vault_0_mint, vault_0_mint.key === token_vault_0.mint, AnchorError.ConstraintAddress);
+  constraint(vault_1_mint, vault_1_mint.key === token_vault_1.mint, AnchorError.ConstraintAddress);
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  collectFees(
+    pool_state,
+    token_vault_0,
+    token_vault_1,
+    vault_0_mint,
+    vault_1_mint,
+    recipient_token_account_0,
+    recipient_token_account_1,
+    token_program,
+    token_program_2022,
+    amount_0_requested,
+    amount_1_requested,
+    true,
+    poolSigner,
+  );
 }

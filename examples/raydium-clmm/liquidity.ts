@@ -33,7 +33,7 @@ const MAX_U64: u64 = 18446744073709551615n;
 const MAX_U128: u128 = 340282366920938463463374607431768211455n;
 const MAX_I128: i128 = 170141183460469231731687303715884105727n;
 const MIN_I128: i128 = -170141183460469231731687303715884105728n;
-const NO_KEY = pubkey("11111111111111111111111111111111");
+export const NO_KEY = pubkey("11111111111111111111111111111111");
 /** tick_array_bit_map::TICK_ARRAY_BITMAP_SIZE: the default bitmap's tick arrays on each side of 0. */
 const TICK_ARRAY_BITMAP_SIZE: i32 = 512n;
 
@@ -75,7 +75,7 @@ function mulDivCeilOr0(a: u128, b: u128, c: u128): u128 {
 function underflowU64(x: u128): u64 {
   return x < u128(MAX_U64) ? u64(x) : 0n;
 }
-function abs32(x: i32): i32 {
+export function abs32(x: i32): i32 {
   return x < 0n ? -x : x;
 }
 
@@ -122,7 +122,7 @@ export function initTickArray(array: Mut<TickArrayState>, start: i32, pool: Acco
 // ---- the tick array bitmap (states/pool.rs, libraries/tick_array_bit_map.rs, states/tickarray_bitmap_extension.rs) ---
 
 /** tick_array_bit_map::max_tick_in_tickarray_bitmap. */
-function maxTickInBitmap(spacing: u16): i32 {
+export function maxTickInBitmap(spacing: u16): i32 {
   return i32(spacing) * 60n * TICK_ARRAY_BITMAP_SIZE;
 }
 /**

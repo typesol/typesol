@@ -326,3 +326,30 @@ export interface LiquidityChangeEvent {
   liquidity_before: u128;
   liquidity_after: u128;
 }
+
+/** Emitted by every swap (states/pool.rs). */
+export interface SwapEvent {
+  pool_state: Pubkey;
+  sender: Pubkey;
+  token_account_0: Pubkey;
+  token_account_1: Pubkey;
+  amount_0: u64;
+  transfer_fee_0: u64;
+  amount_1: u64;
+  transfer_fee_1: u64;
+  zero_for_one: boolean;
+  sqrt_price_x64: u128;
+  liquidity: u128;
+  tick: i32;
+  trade_fee_0: u64;
+  trade_fee_1: u64;
+}
+
+/** Emitted when protocol or fund fees are collected (states/pool.rs). */
+export interface CollectProtocolFeeEvent {
+  pool_state: Pubkey;
+  recipient_token_account_0: Pubkey;
+  recipient_token_account_1: Pubkey;
+  amount_0: u64;
+  amount_1: u64;
+}
