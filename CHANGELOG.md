@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.33.0 — 2026-10-30
+
+The rest of what large Anchor programs lean on: account groups (composite accounts), your errors on declarative
+constraints, and structs as CPI return data. Existing programs compile to the same binaries as in 0.32.0.
+
 - New: account groups, Anchor's composite accounts. An interface whose fields are accounts is one parameter
   (`p: PoolAccounts`): the body uses `p.pool.reserve` and `p.vault`, constraints inside name the group's own fields,
   the IDL nests the group as Anchor's does, and the client and `typesol/testing` flatten it (`pPool`).
