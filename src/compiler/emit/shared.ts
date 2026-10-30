@@ -129,6 +129,10 @@ export const cString = (s: string) =>
   `"${[...Buffer.from(s, "utf8")].map((b) => (b >= 0x20 && b < 0x7f && b !== 0x22 && b !== 0x5c && b !== 0x3f ? String.fromCharCode(b) : `\\${b.toString(8).padStart(3, "0")}`)).join("")}"`;
 
 export function intLiteral(value: bigint, name: IntName): string {
+  if (name === "u256") {
+    const w = [0n, 1n, 2n, 3n].map((i) => (value >> (64n * i)) & (2n ** 64n - 1n));
+    return `ts_u256_lit(${w.map((x) => `${x}ULL`).join(", ")})`;
+  }
   if (name === "i64") {
     if (value === INT_INFO.i64.min) return "(-9223372036854775807LL - 1)";
     return value < 0n ? `(${value}LL)` : `${value}LL`;

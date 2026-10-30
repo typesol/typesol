@@ -492,6 +492,10 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
     });
   }
   const structs = analyzeStructs(interfaces, aliases, dataEnums, reporter, scopeFor, fstrings, fixedVecs);
+  // u256 is a computation type: nothing stores, sends or returns it (the IDL has no 256-bit integer).
+  for (const s of structs.values())
+    for (const f of s.fields)
+      if (hasU256(f.type)) reporter.error(s.node ?? interfaces[0]!.decl, `${s.name}.${f.name}: u256 is for computation; store a u128 (or two u128s)`);
 
   const checker = program.getTypeChecker();
   // Local `const f = (…) => …` in any function body (and in those local functions): lifted to helpers.
@@ -677,6 +681,8 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       if (instructions.some((o) => o.fallback)) reporter.error(fn.node.name ?? fn.node, "a program has at most one @fallback");
       ix.fallback = true;
     }
+    for (const a of ix.args) if (hasU256(a.type)) reporter.error(a.node, `${a.name}: u256 is for computation; take a u128 (or two) and convert with u256(…)`);
+    if (ix.returns && hasU256(ix.returns as never)) reporter.error(fn.node.type ?? fn.node, "u256 is for computation; return a u128 (or a struct of them)");
     instructions.push(ix);
     for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
     for (const a of ix.args) {
@@ -1461,6 +1467,14 @@ function checkRecursion(sources: HelperSource[], decls: Map<ts.Node, string>, ch
     state.set(name, "done");
   };
   for (const name of byName.keys()) walk(name, []);
+}
+
+/** Whether a stored, sent or returned type contains a u256. */
+function hasU256(t: unknown): boolean {
+  if (!t || typeof t !== "object") return false;
+  const x = t as Record<string, unknown>;
+  if (x.kind === "int") return x.name === "u256";
+  return ["elem", "inner", "array"].some((k) => hasU256(x[k]));
 }
 
 /** Account groups by interface name: interfaces whose fields are accounts (Anchor's composite accounts). */

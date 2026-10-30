@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `u256`, a 256-bit unsigned integer for computation (locals, helpers; never stored, sent or returned), with the
+  checked operators, comparisons, casts to and from it, and `mulDiv` / `mulDivCeil` through a 512-bit product. The
+  runtime works on 32-bit limbs with 64-bit products and divides with Knuth's algorithm D; a fuzzer checks every
+  operator against BigInt.
 ## 0.36.0 — 2026-10-30
 
 Verifiable randomness from Switchboard, Anchor's check order for instructions with account groups, and the

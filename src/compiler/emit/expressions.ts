@@ -215,6 +215,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const v = this.expr(node.operand, hint);
         const typed = v.literal !== undefined ? this.literal(v.literal, hint?.kind === "int" ? hint : U64, node) : v;
         if (typed.type.kind !== "int") this.fail(node, "~ needs an integer");
+        if (typed.type.name === "u256") return { c: `ts_u256_bit(${typed.c}, ts_u256_lit(~0ULL, ~0ULL, ~0ULL, ~0ULL), 2)`, type: typed.type };
         return { c: `((${INT_INFO[typed.type.name].c})~${typed.c})`, type: typed.type };
       }
       this.fail(node, "this operator is not supported");
@@ -509,6 +510,9 @@ export abstract class ExpressionEmitter extends StorageEmitter {
   /** C statement writing the decimal text of an integer into the TS_Str `out`. */
   protected textOfInt(name: IntName, c: string, out: string): string {
     const info = INT_INFO[name];
+    // u256 prints as text when it fits in 128 bits (logs of larger values are refused at run time: 5100).
+    if (name === "u256")
+      return `if (!ts_u256_fits(${c}, 128)) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: u256 too large to print"); TS_TRY(ts_str_u128(ts_u256_lo128(${c}), false, &${out}));`;
     if (info.bytes === 16) return info.signed ? `TS_TRY(ts_str_i128(${c}, &${out}));` : `TS_TRY(ts_str_u128(${c}, false, &${out}));`;
     return info.signed ? `TS_TRY(ts_str_i64((int64_t)(${c}), &${out}));` : `TS_TRY(ts_str_u64((uint64_t)(${c}), false, &${out}));`;
   }
@@ -775,10 +779,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           ? `ts_key_eq(${left.c}, ${right.c})`
           : left.type.kind === "string"
             ? `ts_str_eq(${left.c}, ${right.c})`
-            : `(${left.c} == ${right.c})`;
+            : left.type.kind === "int" && left.type.name === "u256"
+              ? `(ts_u256_cmp(${left.c}, ${right.c}) == 0)`
+              : `(${left.c} == ${right.c})`;
       return { c: neg ? `(!${c})` : c, type: BOOL };
     }
     if (left.type.kind !== "int") this.fail(node, `${node.operatorToken.getText()} needs integer operands`);
+    if (isCmp && left.type.name === "u256") return { c: `(ts_u256_cmp(${left.c}, ${right.c}) ${node.operatorToken.getText()} 0)`, type: BOOL };
     if (isCmp) return { c: `(${left.c} ${node.operatorToken.getText()} ${right.c})`, type: BOOL };
     return this.arith(op as ts.BinaryOperator, left, right, node);
   }
@@ -792,6 +799,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const K = ts.SyntaxKind;
     this.line(`${ct} ${t};`);
     const overflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow")`;
+    if (type.name === "u256") return this.arith256(op, left, right, node, t, overflow);
     switch (op) {
       case K.PlusToken:
         // u64 through the runtime helpers: one compare instead of a materialized carry flag on SBF.
@@ -843,6 +851,48 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     return { c: t, type };
   }
 
+  /** u256 arithmetic through the runtime's limb routines (checked like the other integers). */
+  private arith256(op: ts.BinaryOperator, left: Value, right: Value, node: ts.Node, t: string, overflow: string): Value {
+    const K = ts.SyntaxKind;
+    const type = left.type;
+    switch (op) {
+      case K.PlusToken:
+      case K.MinusToken:
+      case K.AsteriskToken:
+        this.line(`if (ts_u256_${op === K.PlusToken ? "add" : op === K.MinusToken ? "sub" : "mul"}(${left.c}, ${right.c}, &${t})) ${overflow};`);
+        break;
+      case K.SlashToken:
+      case K.PercentToken:
+        this.line(`if (ts_u256_is_zero(${right.c})) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");`);
+        this.line(`${t} = ts_u256_divmod(${left.c}, ${right.c}, ${op === K.SlashToken});`);
+        break;
+      case K.AmpersandToken:
+      case K.BarToken:
+      case K.CaretToken:
+        this.line(`${t} = ts_u256_bit(${left.c}, ${right.c}, ${op === K.AmpersandToken ? 0 : op === K.BarToken ? 1 : 2});`);
+        break;
+      case K.LessThanLessThanToken:
+      case K.GreaterThanGreaterThanToken: {
+        if (right.type.kind !== "int") this.fail(node, "shift amounts must be integers");
+        if (right.type.name === "u256") this.fail(node, "shift by a u64 (or smaller) amount");
+        const sh = this.tmp("sh");
+        this.line(
+          `if (${INT_INFO[right.type.name].signed ? `${right.c} < 0 || ` : ""}${right.c} >= 256) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range");`,
+        );
+        this.line(`uint64_t ${sh} = (uint64_t)(${right.c});`);
+        if (op === K.GreaterThanGreaterThanToken) this.line(`${t} = ts_u256_shr(${left.c}, ${sh});`);
+        else {
+          this.line(`${t} = ts_u256_shl(${left.c}, ${sh});`);
+          this.line(`if (ts_u256_cmp(ts_u256_shr(${t}, ${sh}), ${left.c}) != 0) ${overflow};`);
+        }
+        break;
+      }
+      default:
+        this.fail(node, "unsupported arithmetic operator");
+    }
+    return { c: t, type };
+  }
+
   protected cast(arg: ts.Expression, to: ScalarType & { kind: "int" }): Value {
     const v = this.expr(arg);
     if (v.literal !== undefined) return this.literal(v.literal, to, arg);
@@ -850,6 +900,24 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (v.type.name === to.name) return v;
     const from = INT_INFO[v.type.name];
     const target = INT_INFO[to.name];
+    if (to.name === "u256") {
+      // Widen: any unsigned value, or a signed one that is not negative.
+      if (from.signed) this.line(`if (${v.c} < 0) TS_FAIL(TS_ERR_CAST, "TypeSOL: value does not fit in u256");`);
+      const t = this.tmp();
+      this.line(`TsU256 ${t} = ts_u256_from_u128((unsigned __int128)${v.c});`);
+      return { c: t, type: to };
+    }
+    if (v.type.name === "u256") {
+      // Narrow: the value must fit the target (checked on the limbs, then on the low 128 bits).
+      const t = this.tmp();
+      const lo = this.tmp("lo");
+      this.line(`if (!ts_u256_fits(${v.c}, 128)) TS_FAIL(TS_ERR_CAST, "TypeSOL: value does not fit in ${to.name}");`);
+      this.line(`unsigned __int128 ${lo} = ts_u256_lo128(${v.c});`);
+      if (target.max < 2n ** 128n - 1n)
+        this.line(`if (${lo} > ${intLiteral(target.max, "u128")}) TS_FAIL(TS_ERR_CAST, "TypeSOL: value does not fit in ${to.name}");`);
+      this.line(`${target.c} ${t} = (${target.c})${lo};`);
+      return { c: t, type: to };
+    }
     const conds: string[] = [];
     if (from.min < target.min) conds.push(`${v.c} < ${intLiteral(target.min, v.type.name)}`);
     if (from.max > target.max) conds.push(`${v.c} > ${intLiteral(target.max, v.type.name)}`);

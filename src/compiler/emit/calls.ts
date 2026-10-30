@@ -183,7 +183,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "mulDivCeil": {
         // a * b / c with a double-width intermediate (128-bit for u64, 256-bit for u128), rounding down or up;
         // aborts if the result does not fit. All three are u64, or all u128 (literals take the others' type).
-        if (args.length !== 3) this.fail(node, `${builtin}(a, b, c) takes three u64 or three u128 values`);
+        if (args.length !== 3) this.fail(node, `${builtin}(a, b, c) takes three u64, u128 or u256 values`);
         const vals: Value[] = [];
         for (const a of args) {
           const mark = this.lines.length;
@@ -192,6 +192,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
           vals.push(v);
         }
         const typed = vals.find((v) => v.literal === undefined);
+        if (typed?.type.kind === "int" && typed.type.name === "u256") {
+          // u256: a 512-bit product in the runtime.
+          const ty: Value["type"] = typed.type;
+          const [x, y, z] = vals.map((v, i) => this.expect(v.literal !== undefined ? this.literal(v.literal, ty, args[i]) : v, ty, args[i]));
+          const t = this.tmp("md");
+          this.line(`TsU256 ${t};`);
+          this.line(`if (ts_u256_is_zero(${z.c})) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");`);
+          this.line(
+            `if (!ts_u256_muldiv(${x.c}, ${y.c}, ${z.c}, ${builtin === "mulDivCeil"}, &${t})) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");`,
+          );
+          return { c: t, type: ty };
+        }
         const wide = typed?.type.kind === "int" && typed.type.name === "u128";
         const ty: Value["type"] = wide ? { kind: "int", name: "u128" } : U64;
         const [x, y, z] = vals.map((v, i) => this.expect(v.literal !== undefined ? this.literal(v.literal, ty, args[i]) : v, ty, args[i]));

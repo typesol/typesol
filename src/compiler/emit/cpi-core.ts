@@ -249,6 +249,7 @@ export abstract class CpiCoreEmitter extends CallEmitter {
   protected serialize(v: Value, node: ts.Node, put: (src: string, n: string, bytes?: number) => void) {
     if (v.isNull) this.fail(node, "a bare null has no type here; pass an Option value (e.g. a local declared `const x: u64 | null = null`)");
     const typed = v.literal !== undefined ? this.literal(v.literal, U64, node) : v;
+    if (typed.type.kind === "int" && typed.type.name === "u256") this.fail(node, "u256 is for computation: convert to u128 (or smaller) to send it");
     if (typed.type.kind === "pubkey") {
       put(`(${typed.c})`, "32", 32);
     } else if (typed.type.kind === "string") {

@@ -1,7 +1,7 @@
 import type ts from "typescript";
 
-export type IntName = "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128";
-export const INT_NAMES: readonly IntName[] = ["u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128"];
+export type IntName = "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "i8" | "i16" | "i32" | "i64" | "i128";
+export const INT_NAMES: readonly IntName[] = ["u8", "u16", "u32", "u64", "u128", "u256", "i8", "i16", "i32", "i64", "i128"];
 
 export const INT_INFO: Record<IntName, { bytes: number; signed: boolean; c: string; min: bigint; max: bigint }> = {
   u8: { bytes: 1, signed: false, c: "uint8_t", min: 0n, max: 0xffn },
@@ -9,6 +9,8 @@ export const INT_INFO: Record<IntName, { bytes: number; signed: boolean; c: stri
   u32: { bytes: 4, signed: false, c: "uint32_t", min: 0n, max: 0xffff_ffffn },
   u64: { bytes: 8, signed: false, c: "uint64_t", min: 0n, max: 2n ** 64n - 1n },
   u128: { bytes: 16, signed: false, c: "unsigned __int128", min: 0n, max: 2n ** 128n - 1n },
+  /** A computation type (locals, helpers): no C integer, runtime limbs (TsU256); never stored, sent or returned. */
+  u256: { bytes: 32, signed: false, c: "TsU256", min: 0n, max: 2n ** 256n - 1n },
   i8: { bytes: 1, signed: true, c: "int8_t", min: -(2n ** 7n), max: 2n ** 7n - 1n },
   i16: { bytes: 2, signed: true, c: "int16_t", min: -(2n ** 15n), max: 2n ** 15n - 1n },
   i32: { bytes: 4, signed: true, c: "int32_t", min: -(2n ** 31n), max: 2n ** 31n - 1n },
