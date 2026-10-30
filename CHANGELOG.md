@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.34.0 — 2026-10-30
+
+More of anchor-spl and Anchor's tooling: Memo and Stake CPIs, Token Metadata updates, Token-2022 token groups, the
+SlotHashes sysvar, `@fallback`, account groups inside account groups, and `typesol clone` for tests against cluster
+accounts. Existing programs compile to the same binaries as in 0.33.0.
+
 - New: account groups inside account groups (Anchor's nested composite accounts): `d.p.vault`, nested in the IDL,
   flattened by the client and `typesol/testing` (`dPVault` / `d_p_vault`).
 - New: Token Metadata `updateMetadataAccountsV2` (Anchor's `update_metadata_accounts_v2`): the whole DataV2 or null,
