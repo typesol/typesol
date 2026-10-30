@@ -597,6 +597,21 @@ static inline void ts_write_le(uint8_t *p, uint64_t v, int n) { ts_memcpy(p, &v,
 /* ---- Sysvars --------------------------------------------------------------- */
 uint64_t sol_get_rent_sysvar(void *ret);
 uint64_t sol_get_clock_sysvar(void *ret);
+uint64_t sol_get_epoch_schedule_sysvar(void *ret);
+uint64_t sol_get_last_restart_slot(void *ret);
+
+/* EpochSchedule { slots_per_epoch, leader_schedule_slot_offset, warmup (bool, padded), first_normal_epoch,
+   first_normal_slot }: one u64 of it by index (2 is warmup's word, whose first byte is the bool). */
+static inline uint64_t ts_epoch_schedule(int field, uint64_t *out) {
+  uint64_t es[5];
+  if (sol_get_epoch_schedule_sysvar(es) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: epoch schedule sysvar unavailable");
+  *out = field == 2 ? (es[2] & 0xff) : es[field];
+  return SUCCESS;
+}
+static inline uint64_t ts_last_restart_slot(uint64_t *out) {
+  if (sol_get_last_restart_slot(out) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: last restart slot sysvar unavailable");
+  return SUCCESS;
+}
 
 /* The general case, in integers: exactly (uint64_t)((double)per_year * threshold) as soft-float computes it (the
    conversion and the product rounded to nearest, ties to even; NaN, negative and < 1 give 0), or UINT64_MAX when that

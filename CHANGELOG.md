@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: Token Metadata `burnV1` (Burn), for an NFT (with its master edition) or fungible asset held by a wallet or this
+  program's PDA.
+- New: the EpochSchedule and LastRestartSlot sysvars: `slotsPerEpoch()`, `epochWarmup()`, `firstNormalEpoch()`,
+  `firstNormalSlot()`, `lastRestartSlot()`.
 ## 0.34.0 — 2026-10-30
 
 More of anchor-spl and Anchor's tooling: Memo and Stake CPIs, Token Metadata updates, Token-2022 token groups, the
