@@ -2,7 +2,7 @@
 
 This page ports the trading core of a production AMM: [Raydium CP-Swap](https://github.com/raydium-io/raydium-cp-swap)
 (`programs/cp-swap`, Anchor 1.0.2, Apache-2.0). It is deployed on mainnet at
-`CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C`. The port is [`examples/raydium-cp-swap/`](../examples/raydium-cp-swap)
+`CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C`. The port is [`examples/raydium-cp-swap/`](https://github.com/typesol/typesol/blob/main/examples/raydium-cp-swap)
 (`state.ts`, `curve.ts`, `raydium_cp_swap.ts`). As with [coral-xyz/multisig](case-study-multisig.md), it is checked
 against the binary that runs on mainnet, not a rebuild.
 
@@ -65,8 +65,8 @@ The rest uses features TypeSOL already had:
 
 ## How it was checked
 
-[`test/examples/raydium-cp-swap.test.ts`](../test/examples/raydium-cp-swap.test.ts) loads the binary dumped from
-mainnet on 2026-10-30 (slot 452376460; sha256 in [`test/programs/SOURCES.md`](../test/programs/SOURCES.md)) into one
+[`test/examples/raydium-cp-swap.test.ts`](https://github.com/typesol/typesol/blob/main/test/examples/raydium-cp-swap.test.ts) loads the binary dumped from
+mainnet on 2026-10-30 (slot 452376460; sha256 in [`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)) into one
 LiteSVM and the port into another. Both use the same program id and the same clock.
 
 **Setup.**

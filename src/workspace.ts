@@ -86,10 +86,13 @@ export function programForEntry(ws: Workspace, file: string): string | undefined
 /**
  * The program's keypair (created on first use) checked against the address recorded in typesol.json, which is
  * recorded on first build. A mismatch means the keypair was lost or replaced: deploying would create a new program.
+ * Building and testing only need the address: without the keypair (a fresh clone, CI) they use the recorded one,
+ * and only deploying (`needKeypair`) refuses.
  */
-export function programAddress(ws: Workspace, name: string): { address: string; created: boolean } {
+export function programAddress(ws: Workspace, name: string, opts: { needKeypair?: boolean } = {}): { address: string; created: boolean; keyless?: boolean } {
   const paths = programPaths(ws, name);
   const recorded = ws.programs[name].address;
+  if (recorded && !existsSync(paths.keypair) && !opts.needKeypair) return { address: recorded, created: false, keyless: true };
   if (recorded && !existsSync(paths.keypair))
     throw new Error(
       `${name}: ${path.relative(ws.root, paths.keypair)} is missing, but ${CONFIG} records ${recorded}. Restore the keypair (it is the program's address); removing "address" from ${CONFIG} would give the program a new address.`,
@@ -111,15 +114,15 @@ export function programAddress(ws: Workspace, name: string): { address: string; 
 export function buildWorkspace(
   ws: Workspace,
   names = Object.keys(ws.programs),
-  opts: { sbpf?: Sbpf; profile?: boolean } = {},
-): { paths: ProgramPaths; address: string; created: boolean; result: BuildResult; clientPath: string }[] {
+  opts: { sbpf?: Sbpf; profile?: boolean; needKeypair?: boolean } = {},
+): { paths: ProgramPaths; address: string; created: boolean; keyless?: boolean; result: BuildResult; clientPath: string }[] {
   return names.map((name) => {
     const paths = programPaths(ws, name);
-    const { address, created } = programAddress(ws, name);
+    const { address, created, keyless } = programAddress(ws, name, { needKeypair: opts.needKeypair });
     const result = build(paths.entry, paths.outDir, address, { sbpf: opts.sbpf ?? ws.sbpf, profile: opts.profile });
     // The TypeScript client (docs/client.md) is written with the build, from the same IDL.
     const clientPath = writeClient(result.idl, path.join(paths.outDir, `${result.model.name}.client.ts`)).path;
-    return { paths, address, created, result, clientPath };
+    return { paths, address, created, keyless, result, clientPath };
   });
 }
 
@@ -165,7 +168,15 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
           name,
           private: true,
           type: "module",
-          scripts: { build: "typesol build", test: "vitest run", typecheck: "tsc -p tsconfig.json", deploy: "typesol deploy" },
+          scripts: {
+            build: "typesol build",
+            // The tests and the typecheck import the client the build writes: build first.
+            pretest: "typesol build --quiet",
+            test: "vitest run",
+            pretypecheck: "typesol build --quiet",
+            typecheck: "tsc -p tsconfig.json",
+            deploy: "typesol deploy",
+          },
           engines: { node: ">=22.12" },
           devDependencies: {
             // Published as @typesol/cli, installed under the name programs import ("typesol", "typesol/workspace").
@@ -187,7 +198,7 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
       JSON.stringify({ "typescript.tsdk": "node_modules/typescript/lib", "typescript.enablePromptUseWorkspaceTsdk": true }, null, 2) + "\n",
     // target/deploy/*-keypair.json are the programs' addresses: never commit them, but keep a backup.
     ".gitignore":
-      "node_modules/\n# target/deploy/*-keypair.json are the programs' addresses (and upgrade keys): never commit them, but BACK THEM UP.\n# A fresh clone cannot build or deploy a program whose address is recorded in typesol.json without its keypair.\ntarget/\n",
+      "node_modules/\n# target/deploy/*-keypair.json are the programs' addresses (and upgrade keys): never commit them, but BACK THEM UP.\n# Without it, a fresh clone still builds and tests at the address recorded in typesol.json, but cannot deploy.\ntarget/\n",
     "tsconfig.json":
       JSON.stringify(
         {
@@ -213,4 +224,34 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
     writeFileSync(path.join(dir, file), text);
   }
   return Object.keys(files);
+}
+
+/**
+ * Add a program to an existing project: programs/<name>.ts and tests/<name>.test.ts from a template, and its entry in
+ * typesol.json. Returns the files written and the template's extra devDependencies the package.json lacks.
+ */
+export function addProgram(ws: Workspace, name: string, template: TemplateName = "counter"): { files: string[]; missing: string[] } {
+  if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`program name "${name}" must be snake_case`);
+  if (ws.programs[name]) throw new Error(`${CONFIG} already has a program "${name}"`);
+  const t = TEMPLATES[template];
+  const files: Record<string, string> = { [`programs/${name}.ts`]: t.program, [`tests/${name}.test.ts`]: t.test(name) };
+  const existing = Object.keys(files).filter((f) => existsSync(path.join(ws.root, f)));
+  if (existing.length) throw new Error(`refusing to overwrite: ${existing.join(", ")}`);
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(ws.root, file)), { recursive: true });
+    writeFileSync(path.join(ws.root, file), text);
+  }
+  const raw = JSON.parse(readFileSync(ws.file, "utf8")) as { programs: Record<string, string | ProgramEntry> };
+  raw.programs[name] = { path: `programs/${name}.ts` };
+  writeFileSync(ws.file, JSON.stringify(raw, null, 2) + "\n");
+  ws.programs[name] = { path: `programs/${name}.ts` };
+  const pkgFile = path.join(ws.root, "package.json");
+  const pkg = existsSync(pkgFile)
+    ? (JSON.parse(readFileSync(pkgFile, "utf8")) as { devDependencies?: Record<string, string>; dependencies?: Record<string, string> })
+    : {};
+  const have = { ...pkg.dependencies, ...pkg.devDependencies };
+  const missing = Object.entries(t.devDependencies ?? {})
+    .filter(([dep]) => !(dep in have))
+    .map(([dep, v]) => `${dep}@${v}`);
+  return { files: [...Object.keys(files), CONFIG], missing };
 }

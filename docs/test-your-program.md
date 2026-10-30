@@ -43,15 +43,24 @@ instruction that takes the bump as an argument.
 
 | Helper | Gives |
 | --- | --- |
-| `t.ok(res)` | the successful result, or throws with the program's logs |
+| `t.ok(res)` | the successful result, or throws with the error, its name (`NotAdmin`) and the program's logs |
 | `t.errorCode(res)` | the custom error code of a failed transaction: 6000 + the member's index in your error enum, or a framework code ([errors.md](errors.md)) |
 | `t.account(type, address)` | the account decoded by its IDL type (bigints, address strings), or `null` once closed. TypeSOL fixed layouts come back as their IDL structs: a `FixedString<N>` as `{ len, bytes }`, a `FixedVec<T, N>` as `{ len, items }` (the generated client gives strings and arrays) |
 | `t.returned(instruction, res)` | the instruction's return data: an integer, boolean, Pubkey or struct |
 | `t.balance(address)` | lamports |
+| `t.errorName(code)` | the name of an error code: your program's, TypeSOL's or Anchor's |
 | `t.connection` | `{ rpc, rpcSubscriptions }` answered by this LiteSVM, for the generated client: `counter.sendInstructions(t.connection, alice, [ix])`, `counter.accounts.Counter.fetch(t.connection.rpc, address)`, views, `resolve`, `watch` and `watchEvents` (as on a cluster: `watch` yields when a later transaction changes the account, not at once; `watchEvents` gets transactions sent after it subscribed, failed ones included in the stream and skipped by the client) |
 
-`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else, e.g. writing a mint straight into the VM
-with `t.svm.setAccount` (see the escrow template). `programHarness(svm, programId, idl)` gives the same helpers for a
+## Tokens and time
+
+| Helper | Does |
+| --- | --- |
+| `t.mint({ authority, decimals?, supply?, freezeAuthority?, tokenProgram?, address? })` | writes a mint straight into the VM, as CreateAccount + InitializeMint2 leave it (SPL Token unless `tokenProgram` is Token-2022; no extensions), and returns its address |
+| `t.tokenAccount({ mint, owner, amount?, tokenProgram?, address? })` | writes a token account holding `amount`; pass `address` for an associated token account |
+| `t.tokenBalance(address)` | the amount a token account holds, or `null` when it does not exist |
+| `t.warp({ unixTimestamp?, slot?, seconds? })` | moves the Clock: to a timestamp or slot, or forward by `seconds` |
+
+`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
 program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
 program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
 transactions named, plus any you `track(...)`.

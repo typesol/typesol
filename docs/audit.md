@@ -67,7 +67,7 @@ Internal reviews, by the maintainers, in October 2026. Their findings and fixes 
   sequences against state models with value conservation; account layout with two growable Vecs and aliasing through
   remaining accounts. Each run prints its seed (`FUZZ_SEED`), `pnpm fuzz` runs them wide.
 - **Ported programs**: all 46 programs of solana-developers/program-examples, run through their original tests' flows
-  and failure paths ([test/ports/README.md](../test/ports/README.md)).
+  and failure paths ([test/ports/README.md](https://github.com/typesol/typesol/blob/main/test/ports/README.md)).
 - **Four-way comparison**: [typesol/benchmarks](https://github.com/typesol/benchmarks) runs 17 of those programs in
   TypeSOL, Anchor, native Rust and Pinocchio, requires the same outcome, and records how each refuses the hostile calls
   and with which error.
