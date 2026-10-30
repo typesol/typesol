@@ -167,7 +167,8 @@ static inline __attribute__((always_inline)) bool ts_mul_overflow_u64(uint64_t a
  */
 static inline __attribute__((always_inline)) bool ts_mul_overflow_u128(unsigned __int128 a, unsigned __int128 b, unsigned __int128 *out) {
   if (((a | b) >> 32) == 0) {
-    *out = (uint64_t)a * (uint64_t)b;
+    const uint64_t product = (uint64_t)a * (uint64_t)b; /* both below 2^32: the product fits in 64 bits */
+    *out = product;
     return false;
   }
   if (((a | b) >> 64) == 0) {
