@@ -90,6 +90,11 @@ export class FunctionEmitter extends StatementEmitter {
       if (k.kind === "ataProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_ATA_PROGRAM_ID));`);
       if (k.kind === "memoProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_MEMO_PROGRAM_ID));`);
       if (k.kind === "stakeProgram") head.push(`  TS_TRY(ts_check_address(${v}, &TS_STAKE_PROGRAM_ID));`);
+      if (k.kind === "stakeHistory")
+        head.push(
+          `  TS_TRY(ts_check_address(${v}, &TS_STAKE_HISTORY_ID));`,
+          `  if (${v}->data_len < 8) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: not the StakeHistory sysvar's data");`,
+        );
       // SlotHashes: the address, and room for its length and one entry (u64 count, then (u64 slot, hash) newest first).
       if (k.kind === "slotHashes")
         head.push(
@@ -392,13 +397,7 @@ export class FunctionEmitter extends StatementEmitter {
         if (i < loopEnd) accountsPart.push(head[i]!);
       }
       const rest = this.constraintChecks(ix, raw.lines, (a) => !a.group);
-      head.splice(
-        loopStart,
-        argsEnd - loopStart,
-        ...head.slice(argsStart, argsEnd),
-        ...accountsPart,
-        ...head.slice(loopEnd, argsStart),
-      );
+      head.splice(loopStart, argsEnd - loopStart, ...head.slice(argsStart, argsEnd), ...accountsPart, ...head.slice(loopEnd, argsStart));
       head.push(...rest);
     }
 

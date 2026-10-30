@@ -121,4 +121,33 @@ describe("Stake program CPIs (test/fixtures/staking.ts)", () => {
     expect([...meta(stake).staker]).toEqual([...enc.encode(next)]);
     expect([...meta(stake).withdrawer]).toEqual([...enc.encode(authority)]);
   });
+  it("reads the StakeHistory sysvar by epoch", async () => {
+    // Entries newest first: (epoch, effective, activating, deactivating).
+    const entries = [
+      [12n, 9n, 2n, 1n],
+      [11n, 7n, 3n, 0n],
+    ];
+    const data = Buffer.alloc(8 + 32 * entries.length);
+    data.writeBigUInt64LE(BigInt(entries.length), 0);
+    entries.forEach((e, i) => e.forEach((v, j) => data.writeBigUInt64LE(v, 8 + 32 * i + 8 * j)));
+    d.svm.setAccount({
+      address: HISTORY,
+      data: new Uint8Array(data),
+      executable: false,
+      lamports: 1_000_000n as never,
+      programAddress: "Sysvar1111111111111111111111111111111111111" as Address,
+      space: BigInt(data.length),
+    });
+    const read = async (epoch: bigint) =>
+      Buffer.from(
+        expectOk(await send(d.svm, payer, [ix(d, "history", { epoch: new BN(epoch.toString()) }, [{ address: HISTORY }])]))
+          .returnData()
+          .data(),
+      ).readBigUInt64LE();
+    expect(await read(11n)).toBe(100_000_000_000n + 70_000_000n + 300_000n + 0n + 200n + 12n);
+    expect(await read(12n)).toBe(100_000_000_000n + 90_000_000n + 200_000n + 1000n + 200n + 12n);
+    expect(await read(5n)).toBe(200n + 12n); // not listed
+    // Another account in the sysvar's slot.
+    expect(await send(d.svm, payer, [ix(d, "history", { epoch: new BN(1) }, [{ address: CLOCK }])])).toBeInstanceOf(FailedTransactionMetadata);
+  });
 });

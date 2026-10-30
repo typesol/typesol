@@ -1879,6 +1879,22 @@ static inline uint64_t ts_switchboard_value(const TsAccount *a, uint64_t max_sta
 /* ---- Associated token accounts, token metadata, transfer hooks ------------------- */
 static const SolPubkey TS_STAKE_PROGRAM_ID = {{6,161,216,23,145,55,84,42,152,52,55,189,254,42,122,178,85,127,83,92,138,120,114,43,104,164,157,192,0,0,0,0}};
 static const SolPubkey TS_MEMO_PROGRAM_ID = {{5,74,83,90,153,41,33,6,77,36,232,113,96,218,56,124,124,53,181,221,188,146,187,129,228,31,168,64,65,5,68,141}};
+static const SolPubkey TS_STAKE_HISTORY_ID = {{6,167,213,23,25,53,132,208,254,237,155,179,67,29,19,32,107,229,68,40,27,87,184,86,108,197,55,95,244,0,0,0}};
+/* StakeHistory: u64 count, then (epoch, effective, activating, deactivating) u64 entries, newest first. The entry for
+   `epoch` (field 1..3 of it), or 0 when it is not listed; `found` says which. */
+static inline uint64_t ts_stake_history(const TsAccount *a, uint64_t epoch, int field, bool *found) {
+  uint64_t n = ts_read_le(a->data, 8);
+  if (n > (a->data_len - 8) / 32) n = (a->data_len - 8) / 32;
+  for (uint64_t i = 0; i < n; i++) {
+    const uint8_t *e = a->data + 8 + 32 * i;
+    if (ts_read_le(e, 8) == epoch) {
+      *found = true;
+      return ts_read_le(e + 8 * field, 8);
+    }
+  }
+  *found = false;
+  return 0;
+}
 static const SolPubkey TS_SLOT_HASHES_ID = {{6,167,213,23,25,47,10,175,198,242,101,227,251,119,204,122,218,130,197,41,208,190,59,19,110,45,0,85,32,0,0,0}};
 static const SolPubkey TS_ATA_PROGRAM_ID = {{140,151,37,143,78,36,137,241,187,61,16,41,20,142,13,131,11,90,19,153,218,255,16,132,4,142,123,216,219,233,248,89}};
 static const SolPubkey TS_MPL_METADATA_ID = {{11,112,101,177,227,209,124,69,56,157,82,127,107,4,195,205,88,184,108,115,26,160,253,181,73,182,209,188,3,248,41,70}};

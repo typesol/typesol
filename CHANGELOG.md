@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `StakeHistorySysvar`, the StakeHistory sysvar read as an account: `count`, `latestEpoch`, `has(epoch)`,
+  `effective(epoch)`, `activating(epoch)`, `deactivating(epoch)`.
 - Changed: an instruction with an account group checks in Anchor's order: the arguments first, then the accounts in
   order with each group's constraints right after its accounts, then the other constraints. A transaction failing
   several checks gets Anchor's code. Instructions without groups are unchanged (decoding the arguments first would make

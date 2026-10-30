@@ -138,6 +138,7 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
   if (k.kind === "memoProgram") entry.address = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
   if (k.kind === "stakeProgram") entry.address = "Stake11111111111111111111111111111111111111";
   if (k.kind === "slotHashes") entry.address = "SysvarS1otHashes111111111111111111111111111";
+  if (k.kind === "stakeHistory") entry.address = "SysvarStakeHistory1111111111111111111111111";
   if (k.kind === "metadataProgram") entry.address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
   if (k.kind === "coreProgram") entry.address = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d";
   if (k.kind === "bubblegumProgram") entry.address = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
