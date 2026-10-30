@@ -91,11 +91,12 @@ For each transaction, the test requires the same outcome (success, or the same e
 requires the same lamports, owner and data for every account involved, the same events byte for byte, and the same
 log lines the programs write themselves (the `WARN` lines and the not-live message).
 
-There are 149 transactions:
+There are 150 transactions:
 
-- **Tip payment (25).**
+- **Tip payment (26).**
   - `initialize`; refused at the wrong PDA, over a tip account that already holds lamports, and a second time.
-  - Receivers and block builders changed, with tips paid out at commissions of 0, 7, 50 and 100%.
+  - Receivers and block builders changed, with tips paid out at commissions of 0, 7, 50 and 100%, including to one
+    account that is both receiver and builder.
   - Refusals: the wrong old receiver or builder, a commission over 100%, a new receiver or builder that is a program,
     a loader's account, a sysvar or a Config program account.
   - A payout to an empty account that would stay below rent: its share goes back into tip account 0, with the
@@ -123,13 +124,13 @@ Compute units per transaction, mainnet original against the port, from one run o
 | Instruction | Jito (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
 | tip payment `initialize` | 60,085 | 23,628 | −61% |
-| `change_tip_receiver`, tips paid out | 29,453 | 7,474 | −75% |
+| `change_tip_receiver`, the receiver also the builder (both shares to one account) | 29,889 | 7,723 | −74% |
 | `change_block_builder`, a 7% commission paid first | 29,911 | 7,736 | −74% |
-| `change_tip_receiver`, a share kept in tip account 0 | 41,394 | 9,192 | −78% |
+| `change_tip_receiver`, a share kept in tip account 0 | 41,355 | 9,192 | −78% |
 | tip distribution `initialize` | 7,284 | 1,946 | −73% |
 | `initialize_tip_distribution_account` | 10,007 | 2,624 | −74% |
 | `upload_merkle_root` | 3,943 | 977 | −75% |
-| `claim` | 14,567 | 4,282 | −71% |
+| `claim` | 13,067 | 3,940 | −70% |
 | `close_claim_status` | 4,302 | 1,036 | −76% |
 | `close_tip_distribution_account` | 5,735 | 1,561 | −73% |
 | `update_config` | 2,850 | 645 | −77% |
@@ -154,9 +155,9 @@ in both programs alike.
 - **Check order on double faults.** Anchor checks the accounts one at a time, in their order. The port checks every
   account's owner, discriminator, signer and seeds first, then the constraints. A transaction that breaks one check
   gets the same code. One that breaks two at once can be reported differently.
-- **Other accounts passed twice.** Only the accounts listed above may be the same account in two writable slots.
-  Anything else passed twice is refused (2040) where the original would run it: for example, the config as a new tip
-  receiver.
+- **Other accounts passed twice.** `Dup<…>` lifts the check only for the accounts listed above, and only against
+  accounts read and written in place. Any other account passed twice is refused (2040) where the original would run
+  it: for example, a tip distribution account (a Borsh account, copied out and back) as its own claimant.
 - **IDL.**
   - `ValidatorCommissionBpsUpdatedEvent` and `MerkleRootUploadAuthorityUpdatedEvent`, which no instruction emits, are
     not in the distribution ports' IDLs.

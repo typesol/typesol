@@ -182,7 +182,7 @@ checks it against the binary deployed on mainnet (same outcomes and account byte
 [docs/case-study-raydium-clmm.md](docs/case-study-raydium-clmm.md) for all 37 instructions of Raydium CLMM
 (pools, positions, swaps and routes, limit orders, rewards, admin: the same on 300 transactions; 33–84% fewer
 compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) for Jito's three MEV programs (tip
-payment, tip distribution with Merkle claims, priority fee distribution: the same on 149 transactions; 58–95% fewer
+payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–95% fewer
 compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 

@@ -249,13 +249,16 @@ describe.skipIf(!existsSync(program("jito_tip_payment.so")))("examples/jito-mev 
       expect(await s.both(`change_tip_receiver: to ${what}`, payer, [toReceiver(firstReceiver, await s.ownedBy(address(owner)), firstBuilder)], watch())).toBe(
         custom(errors.InvalidTipReceiver!),
       );
-    expect(await s.both("change_tip_receiver (receiver = builder; 3.3M paid out)", payer, [toReceiver(firstReceiver, receiver.address, firstBuilder)], watch())).toBe("ok");
+    // One account as receiver and builder (and the new builder): both shares credited to it in one instruction.
+    expect(await s.both("change_block_builder: 7%, the same builder (3.3M paid out at 0%)", payer, [toBuilder(firstReceiver, firstBuilder, firstBuilder, 7n)], watch())).toBe("ok");
+    s.tip(tips[2]!, 5_000_017n);
+    expect(await s.both("change_tip_receiver (receiver = builder: 93% and 7% to one account)", payer, [toReceiver(firstReceiver, receiver.address, firstBuilder)], watch())).toBe("ok");
 
     expect(await s.both("change_block_builder: 101%", payer, [toBuilder(receiver.address, firstBuilder, builder.address, 101n)], watch())).toBe(custom(errors.InvalidFee!));
     expect(await s.both("change_block_builder: to a Sysvar-owned account", payer, [toBuilder(receiver.address, firstBuilder, await s.ownedBy(address("Sysvar1111111111111111111111111111111111111")), 7n)], watch())).toBe(
       custom(errors.InvalidBlockBuilder!),
     );
-    expect(await s.both("change_block_builder: 7% (no tips)", payer, [toBuilder(receiver.address, firstBuilder, builder.address, 7n)], watch())).toBe("ok");
+    expect(await s.both("change_block_builder: to a new builder (no tips)", payer, [toBuilder(receiver.address, firstBuilder, builder.address, 7n)], watch())).toBe("ok");
     for (let i = 0; i < 8; i++) s.tip(tips[i]!, 1_000_003n * BigInt(i + 1));
     expect(await s.both("change_block_builder: pays 7% (rounded down) first", payer, [toBuilder(receiver.address, builder.address, builder.address, 7n)], watch())).toBe("ok");
     expect(await s.both("change_tip_receiver: nothing to pay (no event)", payer, [toReceiver(receiver.address, receiver.address, builder.address)], watch())).toBe("ok");
