@@ -835,6 +835,25 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.scopes.at(-1)!.set(name, { c, type: { kind: "vecArg", elem: { kind: "int", name: "u8" } }, mutable: false });
         continue;
       }
+      // One of two seed lists, picked at run time: `const pool = indexed ? signer([…, index, bump]) : signer([…, bump])`.
+      // Both lists are built (seeds have no side effects to skip), then one is chosen.
+      if (
+        init &&
+        ts.isConditionalExpression(init) &&
+        [init.whenTrue, init.whenFalse].every((b) => ts.isCallExpression(b) && this.exportName(b.expression) === "signer")
+      ) {
+        if (mutable) this.fail(d, "bind seed lists with const");
+        const cond = this.expect(this.expr(init.condition, BOOL), BOOL, init.condition);
+        const flag = this.tmp("which");
+        this.line(`bool ${flag} = ${cond.c};`);
+        const a = this.signerSeedsArg(init.whenTrue);
+        const b = this.signerSeedsArg(init.whenFalse);
+        this.line(`const SolSignerSeed *${c} = ${flag} ? ${a.name} : ${b.name};`);
+        this.line(`int ${c}__n = ${flag} ? ${a.count} : ${b.count};`);
+        this.line(`(void)${c}; (void)${c}__n;`);
+        this.scopes.at(-1)!.set(name, { c, type: { kind: "signerSeeds" }, mutable: false });
+        continue;
+      }
       // A seed list to sign with more than once: `const vault = signer(["vault", owner.key, bump])`.
       if (fn === "signer") {
         if (mutable) this.fail(d, "bind seed lists with const");
@@ -859,7 +878,14 @@ export abstract class StatementEmitter extends CpiEmitter {
         if (mutable) this.fail(d, "bind loaded accounts with const");
         const t = fn === "loadForeign" ? this.loadForeign(init as ts.CallExpression) : this.loadAccount(init as ts.CallExpression, fn === "loadAccountMut");
         this.line(`${valueC(t.type)}${c} = ${t.c};`);
-        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d });
+        // The account it views, kept to pass the struct on to a helper that takes Account<T> / Mut<T>.
+        let loaded: Local["loaded"];
+        if (fn !== "loadForeign" && t.type.kind === "structRef") {
+          // The view is `((TSS_T *)(h->data + 8))` over a `TsAccount *h` that stays in scope with it.
+          const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
+          if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };
+        }
+        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded });
         continue;
       }
       // A struct another program returned: `const q = returnData<Quote>(amm)` (Anchor's `get_return_data` + deserialize).

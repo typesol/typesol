@@ -630,10 +630,20 @@ export class FunctionEmitter extends StatementEmitter {
     const c = a.constraints;
     const parts: string[] = [];
     const idl: IdlSeed[] = [];
-    for (const raw of c.seeds!.names) {
+    for (const named of c.seeds!.names) {
       // "@name" refers to an account parameter (its key) or an argument (its bytes); anything else is a literal.
+      // "@name:be" takes an integer's bytes most significant first (Rust's `to_be_bytes()`).
+      const be = named.startsWith("@") && named.endsWith(":be");
+      const raw = be ? named.slice(0, -3) : named;
       const ref = raw.startsWith("@") ? raw.slice(1) : undefined;
       const n = ref ?? raw;
+      const intSeed = (place: string, size: number) => {
+        if (!be) return `{(const uint8_t *)&${place}, ${size}}`;
+        const t = `sbe_${a.name}_${parts.length}`;
+        out.push(`  uint8_t ${t}[${size}]; for (int i = 0; i < ${size}; i++) ${t}[i] = ((const uint8_t *)&${place})[${size - 1} - i];`);
+        return `{${t}, ${size}}`;
+      };
+      const notInt = () => be && this.reporter.fail(a.node, `Seeds: "${named}": only integers have a byte order`);
       // "@acct.field": a field of a struct account parameter (its data was checked in the head), Anchor's
       // `seeds = [pool.amm.as_ref()]`. The account may be this one (`seeds = [offer.id.to_le_bytes()]`).
       if (ref?.includes(".")) {
@@ -645,8 +655,10 @@ export class FunctionEmitter extends StatementEmitter {
         const f = st.fields.find((x) => x.name === field);
         if (!f) this.reporter.fail(a.node, `Seeds: ${st.name} has no field "${field}"`);
         const t = f.type;
-        if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&d_${owner}->${field}, 32}`);
-        else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&d_${owner}->${field}, ${scalarSize(t)}}`);
+        if (t.kind === "int") parts.push(intSeed(`d_${owner}->${field}`, scalarSize(t)));
+        else if (notInt()) return out;
+        else if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&d_${owner}->${field}, 32}`);
+        else if (t.kind === "enum") parts.push(`{(const uint8_t *)&d_${owner}->${field}, ${scalarSize(t)}}`);
         else this.reporter.fail(a.node, `Seeds: field "${ref}" of type ${typeName(t)} cannot be a seed (use a Pubkey, an integer or a unit enum)`);
         idl.push({ kind: "account", path: `${snakeCase(owner!)}.${snakeCase(field!)}`, account: st.name });
         continue;
@@ -655,16 +667,20 @@ export class FunctionEmitter extends StatementEmitter {
       const arg = ref ? ix.args.find((o) => o.name === ref) : undefined;
       if (ref && !acct && !arg) this.reporter.fail(a.node, `Seeds: "@${ref}" is neither an account parameter nor an argument`);
       if (acct) {
+        notInt();
         parts.push(`{(const uint8_t *)&a_${n}->key, 32}`);
         idl.push({ kind: "account", path: snakeCase(n) });
       } else if (arg) {
         const t = arg.type;
-        if (t.kind === "string") parts.push(`{arg_${n}.ptr, arg_${n}.len}`);
+        if (t.kind === "int") parts.push(intSeed(`arg_${n}`, scalarSize(t)));
+        else if (notInt()) return out;
+        else if (t.kind === "string") parts.push(`{arg_${n}.ptr, arg_${n}.len}`);
         else if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&arg_${n}, 32}`);
-        else if (t.kind === "int" || t.kind === "enum") parts.push(`{(const uint8_t *)&arg_${n}, ${scalarSize(t)}}`);
+        else if (t.kind === "enum") parts.push(`{(const uint8_t *)&arg_${n}, ${scalarSize(t)}}`);
         else this.reporter.fail(a.node, `Seeds: argument "${n}" of type ${typeName(t)} cannot be a seed`);
         idl.push({ kind: "arg", path: snakeCase(n) });
       } else {
+        notInt();
         if (Buffer.byteLength(n, "utf8") > 32) this.reporter.fail(a.node, "a seed can be at most 32 bytes");
         parts.push(`{(const uint8_t *)${cString(n)}, ${Buffer.byteLength(n, "utf8")}}`);
         idl.push({ kind: "const", value: [...Buffer.from(n, "utf8")] });

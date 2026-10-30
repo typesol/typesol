@@ -11,6 +11,18 @@ codes, and says so here.
   original's unit-test vectors; and its account layouts, checked against a pool's accounts cloned from mainnet (sizes,
   discriminators, and fields as the program's on-chain IDL decodes them); and `create_amm_config` and `create_pool`,
   checked against the mainnet binary (test/programs/raydium_clmm.so): the same outcomes, account bytes and events.
+  Positions: `open_position_with_token22_nft`, `increase_liquidity_v2` and `decrease_liquidity_v2` (tick arrays made on
+  demand, the tick array bitmap and its extension, fees and rewards owed, Token-2022 transfer fees, position NFTs with
+  metadata in the mint), checked the same way.
+- New: big-endian integer seeds, Rust's `to_be_bytes()`: `"@start:be"` in `Seeds<…>` and `bigEndian(start)` in a seed
+  list. The IDL records the argument, as Anchor's does.
+- New: `loadAccount<T>` / `loadAccountMut<T>` take an `AccountInfo` parameter too (Anchor's `AccountLoader::try_from` on
+  an `UncheckedAccount`, for accounts an instruction may create first); a second `loadAccountMut` of one parameter is
+  refused (2040), two `Dup<…>` parameters that are one account may each be loaded. A loaded struct is also its account
+  (`.key`, `.lamports`) and passes to helpers taking `Account<T>` / `Mut<T>`.
+- New: one of two seed lists picked at run time, `const s = cond ? signer([…]) : signer([…])`.
+- New: `mintTo` and `freezeAccount` take a `Mut<AccountInfo>` token account the instruction created (an associated
+  token account made with `ata.create`).
 - New: `u256`, a 256-bit unsigned integer for computation (locals, helpers; never stored, sent or returned), with the
   checked operators, comparisons, casts to and from it, and `mulDiv` / `mulDivCeil` through a 512-bit product. The
   runtime works on 32-bit limbs with 64-bit products and divides with Knuth's algorithm D; a fuzzer checks every

@@ -8,10 +8,15 @@ export abstract class TokenEmitter extends CreateEmitter {
   protected tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
     const a = node.arguments;
     const p = `a_${program.name}`;
-    const want = (n: ts.Expression, kind: "token" | "mint", mut: boolean, what: string) => {
+    // `created`: also a Mut<AccountInfo> token account this instruction created (an associated token account).
+    const want = (n: ts.Expression, kind: "token" | "mint", mut: boolean, what: string, created = false) => {
       const acct = this.accountParam(n, what);
+      if (created && acct.kind.kind === "info" && isWritable(acct.kind)) return acct;
       if (acct.kind.kind !== kind || (mut && !(acct.kind as { mut: boolean }).mut))
-        this.fail(n, `${what} must be a ${mut ? "Mut<" : ""}${kind === "token" ? "TokenAccount" : "Mint"}${mut ? ">" : ""}`);
+        this.fail(
+          n,
+          `${what} must be a ${mut ? "Mut<" : ""}${kind === "token" ? "TokenAccount" : "Mint"}${mut ? ">" : ""}${created ? ", or a Mut<AccountInfo> token account this instruction created" : ""}`,
+        );
       return acct;
     };
     const arity = (fixed: number) => {
@@ -48,7 +53,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const mint = this.accountParam(a[0], "the mint");
         if (!isWritable(mint.kind) || (mint.kind.kind !== "mint" && mint.kind.kind !== "signer" && mint.kind.kind !== "info"))
           this.fail(a[0], "the mint must be a Mut<Mint>, or a Mut<Signer> / Mut<AccountInfo> mint this instruction created");
-        const to = want(a[1], "token", true, "the destination");
+        const to = want(a[1], "token", true, "the destination", true);
         const auth = this.accountParam(a[2], "the mint authority");
         const amt = amount(a[3]);
         const s = this.signerSeeds(a[4], auth, a[2]);
@@ -569,7 +574,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "mintToChecked": {
         arity(4);
         const mint = want(a[0], "mint", true, "the mint");
-        const to = want(a[1], "token", true, "the destination");
+        const to = want(a[1], "token", true, "the destination", true);
         const auth = this.accountParam(a[2], "the mint authority");
         const s = this.signerSeeds(a[4], auth, a[2]);
         simple(
@@ -637,7 +642,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "freezeAccount":
       case "thawAccount": {
         arity(3);
-        const acct = want(a[0], "token", true, "the token account");
+        const acct = want(a[0], "token", true, "the token account", true);
         const mint = this.accountParam(a[1], "the mint");
         const auth = this.accountParam(a[2], "the freeze authority");
         simple(

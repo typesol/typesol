@@ -744,6 +744,18 @@ static inline uint64_t ts_claim_mut(TsParams *params, const TsAccount *a) {
   return SUCCESS;
 }
 
+/* loadAccountMut of the account parameter at index `at`: its aliasing was checked on entry, a second load is refused. */
+static inline uint64_t ts_claim_mut_at(TsParams *params, uint64_t at) {
+#if TS_MAX_ACCOUNTS > 64
+  if (params->loaded_mut[at >> 6] >> (at & 63) & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
+  params->loaded_mut[at >> 6] |= (uint64_t)1 << (at & 63);
+#else
+  if (params->loaded_mut >> at & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
+  params->loaded_mut |= (uint64_t)1 << at;
+#endif
+  return SUCCESS;
+}
+
 static inline uint64_t ts_check_address(const TsAccount *a, const SolPubkey *expected) {
   if (!ts_key_eq(&a->key, expected)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: unexpected program address");
   return SUCCESS;

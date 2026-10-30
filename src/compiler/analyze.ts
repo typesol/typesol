@@ -1776,7 +1776,7 @@ function analyzeInstruction(
     const c = a.constraints;
     const refs = [
       ...c.hasOne.map((e) => (e.includes("=") ? e.split("=").at(-1)! : (c.hasOneParams?.get(e) ?? e))),
-      ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1).split(".")[0]!),
+      ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1).replace(/:be$/, "").split(".")[0]!),
       ...(c.seeds?.program?.startsWith("@") ? [c.seeds.program.slice(1)] : []),
       ...(c.seeds?.bump?.startsWith("@") ? [c.seeds.bump.slice(1).split(".")[0]!] : []),
       ...(c.closeTo ? [c.closeTo] : []),
