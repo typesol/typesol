@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.35.0 — 2026-10-30
+
+Token Metadata's Burn and the EpochSchedule and LastRestartSlot sysvars. Existing programs compile to the same binaries
+as in 0.34.0.
+
 - New: Token Metadata `burnV1` (Burn), for an NFT (with its master edition) or fungible asset held by a wallet or this
   program's PDA.
 - New: the EpochSchedule and LastRestartSlot sysvars: `slotsPerEpoch()`, `epochWarmup()`, `firstNormalEpoch()`,
