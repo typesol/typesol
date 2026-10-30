@@ -7,6 +7,7 @@ import {
   type Account,
   type AccountInfo,
   type Address,
+  type Ata,
   type AssociatedTokenProgram,
   type CloseTo,
   type Dup,
@@ -25,6 +26,7 @@ import {
   type TokenAccount,
   type TokenInterface,
   type TokenProgram,
+  type TokenMetadataProgram,
   type AccountMeta,
   i32,
   i64,
@@ -68,6 +70,7 @@ import { ErrorCode } from "./errors";
 import {
   type LiquidityChange,
   addLiquidityToTicks,
+  liquidityFromOneAmount,
   arrayStartIndex,
   burnLiquidityFromTicks,
   checkTickArrayStartIndex,
@@ -487,20 +490,11 @@ export function openPositionWithToken22Nft(
   const rest = remainingAccounts();
   if (useExtension) require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
 
-  const change = addLiquidityToTicks(
-    pool_state,
-    lower,
-    upper,
-    vault_0_mint,
-    vault_1_mint,
-    liquidity,
-    base_flag,
-    amount_0_max,
-    amount_1_max,
-    tick_lower_index,
-    tick_upper_index,
-    u64(now()),
-  );
+  const resolved =
+    liquidity === 0n && base_flag !== null
+      ? liquidityFromOneAmount(pool_state, vault_0_mint, vault_1_mint, base_flag, amount_0_max, amount_1_max, tick_lower_index, tick_upper_index)
+      : liquidity;
+  const change = addLiquidityToTicks(pool_state, lower, upper, resolved, liquidity === 0n && base_flag === null, tick_lower_index, tick_upper_index, u64(now()));
   let fee0: u64 = 0n;
   let fee1: u64 = 0n;
   if (!change.skipped) {
@@ -610,20 +604,11 @@ export function increaseLiquidityV2(
   const rest = remainingAccounts();
   if (useExtension) require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
 
-  const change = addLiquidityToTicks(
-    pool_state,
-    tick_array_lower,
-    tick_array_upper,
-    vault_0_mint,
-    vault_1_mint,
-    liquidity,
-    base_flag,
-    amount_0_max,
-    amount_1_max,
-    tickLower,
-    tickUpper,
-    u64(now()),
-  );
+  const resolved =
+    liquidity === 0n && base_flag !== null
+      ? liquidityFromOneAmount(pool_state, vault_0_mint, vault_1_mint, base_flag, amount_0_max, amount_1_max, tickLower, tickUpper)
+      : liquidity;
+  const change = addLiquidityToTicks(pool_state, tick_array_lower, tick_array_upper, resolved, liquidity === 0n && base_flag === null, tickLower, tickUpper, u64(now()));
   let fee0: u64 = 0n;
   let fee1: u64 = 0n;
   if (!change.skipped) {
@@ -2123,4 +2108,641 @@ export function setRewardParams(
       invoke(token_program_2022, [writable(from), readonly(mint), writable(vault), readonlySigner(authority)], [u8(12n), amount + fee, decimals]);
     else invoke(token_program, [writable(from), readonly(mint), writable(vault), readonlySigner(authority)], [u8(12n), amount + fee, decimals]);
   }
+}
+
+
+/** finishAddLiquidity for the v1 instructions: no transfer fees, plain SPL Token transfers. */
+function finishAddLiquidityLegacy(
+  payer: Signer,
+  token_account_0: Mut<TokenAccount>,
+  token_account_1: Mut<TokenAccount>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  token_program: TokenProgram,
+  pool: Account<PoolState>,
+  change: LiquidityChange,
+  amount_0_max: u64,
+  amount_1_max: u64,
+  tick_lower: i32,
+  tick_upper: i32,
+): TransferFees {
+  require(change.amount_0 > 0n || change.amount_1 > 0n, ErrorCode.ForbidBothZeroForSupplyLiquidity);
+  emit<LiquidityCalculateEvent>({
+    pool_liquidity: change.liquidity_before,
+    pool_sqrt_price_x64: pool.sqrt_price_x64,
+    pool_tick: pool.tick_current,
+    calc_amount_0: change.amount_0,
+    calc_amount_1: change.amount_1,
+    trade_fee_owed_0: 0n,
+    trade_fee_owed_1: 0n,
+    transfer_fee_0: 0n,
+    transfer_fee_1: 0n,
+  });
+  require(amount_0_max >= change.amount_0, ErrorCode.PriceSlippageCheck);
+  require(amount_1_max >= change.amount_1, ErrorCode.PriceSlippageCheck);
+  if (change.amount_0 > 0n) token_program.transfer(token_account_0, token_vault_0, payer, change.amount_0);
+  if (change.amount_1 > 0n) token_program.transfer(token_account_1, token_vault_1, payer, change.amount_1);
+  emit<LiquidityChangeEvent>({
+    pool_state: pool.key,
+    tick: pool.tick_current,
+    tick_lower,
+    tick_upper,
+    liquidity_before: change.liquidity_before,
+    liquidity_after: pool.liquidity,
+  });
+  return { fee_0: 0n, fee_1: 0n };
+}
+
+
+/** Open a position as a Metaplex NFT (SPL Token, metadata always), adding `liquidity` between two ticks. */
+export function openPosition(
+  payer: Mut<Signer>,
+  position_nft_owner: AccountInfo,
+  position_nft_mint: Init<Mint>,
+  position_nft_account: Ata<Init<TokenAccount>, "position_nft_owner", "position_nft_mint">,
+  metadata_account: Mut<AccountInfo>,
+  pool_state: Mut<PoolState>,
+  protocol_position: AccountInfo,
+  tick_array_lower: Seeds<Mut<AccountInfo>, ["tick_array", "@pool_state", "@tick_array_lower_start_index:be"]>,
+  tick_array_upper: Dup<Seeds<Mut<AccountInfo>, ["tick_array", "@pool_state", "@tick_array_upper_start_index:be"]>>,
+  personal_position: Init<PersonalPositionState>,
+  token_account_0: Mut<TokenAccount>,
+  token_account_1: Mut<TokenAccount>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  rent: Address<AccountInfo, "SysvarRent111111111111111111111111111111111">,
+  system_program: SystemProgram,
+  token_program: TokenProgram,
+  associated_token_program: AssociatedTokenProgram,
+  metadata_program: TokenMetadataProgram,
+  tick_lower_index: i32,
+  tick_upper_index: i32,
+  tick_array_lower_start_index: i32,
+  tick_array_upper_start_index: i32,
+  liquidity: u128,
+  amount_0_max: u64,
+  amount_1_max: u64,
+): void {
+  // Account<TokenAccount> of anchor_spl::token: SPL Token accounts only.
+  constraint(token_account_0, token_account_0.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_account_1, token_account_1.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_vault_0, token_vault_0.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_vault_1, token_vault_1.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_account_0, token_account_0.mint === token_vault_0.mint, AnchorError.ConstraintTokenMint);
+  constraint(token_account_1, token_account_1.mint === token_vault_1.mint, AnchorError.ConstraintTokenMint);
+  constraint(token_vault_0, token_vault_0.key === pool_state.token_vault_0);
+  constraint(token_vault_1, token_vault_1.key === pool_state.token_vault_1);
+  // Anchor's init accounts: the NFT mint (the pool its mint and freeze authority), its associated account, the position.
+  position_nft_mint.create(payer, null, 0n, pool_state.key, pool_state.key, token_program);
+  position_nft_account.create(payer, token_program);
+  const positionBump = personal_position.create(payer, ["position", position_nft_mint.key]);
+  require(!token_account_0.isFrozen && !token_account_1.isFrozen, ErrorCode.NotApproved);
+
+  // open_position
+  require((pool_state.status & 1n) === 0n, ErrorCode.NotApproved);
+  require(tick_lower_index < tick_upper_index, ErrorCode.TickInvalidOrder);
+  const spacing = pool_state.tick_spacing;
+  checkTickArrayStartIndex(tick_array_lower_start_index, tick_lower_index, spacing);
+  checkTickArrayStartIndex(tick_array_upper_start_index, tick_upper_index, spacing);
+  require(isValidStartIndex(tick_array_lower_start_index, spacing), ErrorCode.InvalidTickIndex);
+  if (tick_array_lower.owner === SYSTEM)
+    createTickArray(payer, tick_array_lower, pool_state, system_program, tick_array_lower_start_index, tick_array_lower.pdaBump);
+  if (tick_array_lower_start_index !== tick_array_upper_start_index) {
+    require(isValidStartIndex(tick_array_upper_start_index, spacing), ErrorCode.InvalidTickIndex);
+    if (tick_array_upper.owner === SYSTEM)
+      createTickArray(payer, tick_array_upper, pool_state, system_program, tick_array_upper_start_index, tick_array_upper.pdaBump);
+  }
+  const lower = loadAccountMut<TickArrayState>(tick_array_lower);
+  const upper = loadAccountMut<TickArrayState>(tick_array_upper);
+  const useExtension = overflowsDefaultBitmap(tick_array_lower_start_index, spacing) || overflowsDefaultBitmap(tick_array_upper_start_index, spacing);
+  const rest = remainingAccounts();
+  if (useExtension) require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
+
+  const change = addLiquidityToTicks(pool_state, lower, upper, liquidity, liquidity === 0n, tick_lower_index, tick_upper_index, u64(now()));
+  let fee0: u64 = 0n;
+  let fee1: u64 = 0n;
+  if (!change.skipped) {
+    const extLower = change.flip_lower && overflowsDefaultBitmap(lower.start_tick_index, spacing);
+    const extUpper = change.flip_upper && overflowsDefaultBitmap(upper.start_tick_index, spacing);
+    if (change.flip_lower && !extLower) flipBitDefault(pool_state, lower.start_tick_index);
+    if (change.flip_upper && !extUpper) flipBitDefault(pool_state, upper.start_tick_index);
+    if (extLower || extUpper) {
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(0n));
+      if (extLower) flipBitExtension(ext, lower.start_tick_index, spacing);
+      if (extUpper) flipBitExtension(ext, upper.start_tick_index, spacing);
+    }
+    const fees = finishAddLiquidityLegacy(
+      payer,
+      token_account_0,
+      token_account_1,
+      token_vault_0,
+      token_vault_1,
+      token_program,
+      pool_state,
+      change,
+      amount_0_max,
+      amount_1_max,
+      tick_lower_index,
+      tick_upper_index,
+    );
+    fee0 = fees.fee_0;
+    fee1 = fees.fee_1;
+  }
+
+  initPosition(personal_position, positionBump, position_nft_mint.key, pool_state.key, tick_lower_index, tick_upper_index, change);
+  emit<CreatePersonalPositionEvent>({
+    pool_state: pool_state.key,
+    minter: payer.key,
+    nft_owner: position_nft_owner.key,
+    tick_lower_index,
+    tick_upper_index,
+    liquidity: change.liquidity,
+    deposit_amount_0: change.amount_0,
+    deposit_amount_1: change.amount_1,
+    deposit_amount_0_transfer_fee: fee0,
+    deposit_amount_1_transfer_fee: fee1,
+  });
+
+  // mint_nft_and_remove_mint_authority, a Metaplex NFT: the metadata (the pool the verified creator), the token, no more minting.
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  if (true) {
+    const uri = `https://dynamic-ipfs.raydium.io/clmm/position?id=${personal_position.key}`;
+    metadata_program.createV3(
+      metadata_account,
+      position_nft_mint,
+      pool_state,
+      payer,
+      pool_state,
+      system_program,
+      "Raydium Concentrated Liquidity",
+      "RCL",
+      uri,
+      0n,
+      false,
+      { creators: [{ address: pool_state.key, verified: true, share: 100n }] },
+      poolSigner,
+    );
+  }
+  token_program.mintTo(position_nft_mint, position_nft_account, pool_state, 1n, poolSigner);
+  token_program.setAuthority(position_nft_mint, pool_state, AuthorityType.MintTokens, null, poolSigner);
+}
+
+
+/** open_position with Token-2022 pool tokens and a choice of metadata: the NFT is still a Metaplex one (SPL Token). */
+export function openPositionV2(
+  payer: Mut<Signer>,
+  position_nft_owner: AccountInfo,
+  position_nft_mint: Init<Mint>,
+  position_nft_account: Ata<Init<TokenAccount>, "position_nft_owner", "position_nft_mint">,
+  metadata_account: Mut<AccountInfo>,
+  pool_state: Mut<PoolState>,
+  protocol_position: AccountInfo,
+  tick_array_lower: Seeds<Mut<AccountInfo>, ["tick_array", "@pool_state", "@tick_array_lower_start_index:be"]>,
+  tick_array_upper: Dup<Seeds<Mut<AccountInfo>, ["tick_array", "@pool_state", "@tick_array_upper_start_index:be"]>>,
+  personal_position: Init<PersonalPositionState>,
+  token_account_0: Mut<TokenAccount>,
+  token_account_1: Mut<TokenAccount>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  rent: Address<AccountInfo, "SysvarRent111111111111111111111111111111111">,
+  system_program: SystemProgram,
+  token_program: TokenProgram,
+  associated_token_program: AssociatedTokenProgram,
+  metadata_program: TokenMetadataProgram,
+  token_program_2022: Token2022Program,
+  vault_0_mint: Mint,
+  vault_1_mint: Mint,
+  tick_lower_index: i32,
+  tick_upper_index: i32,
+  tick_array_lower_start_index: i32,
+  tick_array_upper_start_index: i32,
+  liquidity: u128,
+  amount_0_max: u64,
+  amount_1_max: u64,
+  with_metadata: boolean,
+  base_flag: Option<boolean>,
+): void {
+  constraint(token_account_0, token_account_0.mint === token_vault_0.mint, AnchorError.ConstraintTokenMint);
+  constraint(token_account_1, token_account_1.mint === token_vault_1.mint, AnchorError.ConstraintTokenMint);
+  constraint(token_vault_0, token_vault_0.key === pool_state.token_vault_0);
+  constraint(token_vault_1, token_vault_1.key === pool_state.token_vault_1);
+  constraint(vault_0_mint, vault_0_mint.key === token_vault_0.mint, AnchorError.ConstraintAddress);
+  constraint(vault_1_mint, vault_1_mint.key === token_vault_1.mint, AnchorError.ConstraintAddress);
+  // Anchor's init accounts: the NFT mint (the pool its mint and freeze authority), its associated account, the position.
+  position_nft_mint.create(payer, null, 0n, pool_state.key, pool_state.key, token_program);
+  position_nft_account.create(payer, token_program);
+  const positionBump = personal_position.create(payer, ["position", position_nft_mint.key]);
+  require(!token_account_0.isFrozen && !token_account_1.isFrozen, ErrorCode.NotApproved);
+
+  // open_position
+  const frozen = restrictedMint(vault_0_mint) || restrictedMint(vault_1_mint);
+  require((pool_state.status & 1n) === 0n, ErrorCode.NotApproved);
+  require(tick_lower_index < tick_upper_index, ErrorCode.TickInvalidOrder);
+  const spacing = pool_state.tick_spacing;
+  checkTickArrayStartIndex(tick_array_lower_start_index, tick_lower_index, spacing);
+  checkTickArrayStartIndex(tick_array_upper_start_index, tick_upper_index, spacing);
+  require(isValidStartIndex(tick_array_lower_start_index, spacing), ErrorCode.InvalidTickIndex);
+  if (tick_array_lower.owner === SYSTEM)
+    createTickArray(payer, tick_array_lower, pool_state, system_program, tick_array_lower_start_index, tick_array_lower.pdaBump);
+  if (tick_array_lower_start_index !== tick_array_upper_start_index) {
+    require(isValidStartIndex(tick_array_upper_start_index, spacing), ErrorCode.InvalidTickIndex);
+    if (tick_array_upper.owner === SYSTEM)
+      createTickArray(payer, tick_array_upper, pool_state, system_program, tick_array_upper_start_index, tick_array_upper.pdaBump);
+  }
+  const lower = loadAccountMut<TickArrayState>(tick_array_lower);
+  const upper = loadAccountMut<TickArrayState>(tick_array_upper);
+  const useExtension = overflowsDefaultBitmap(tick_array_lower_start_index, spacing) || overflowsDefaultBitmap(tick_array_upper_start_index, spacing);
+  const rest = remainingAccounts();
+  if (useExtension) require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
+
+  const resolved =
+    liquidity === 0n && base_flag !== null
+      ? liquidityFromOneAmount(pool_state, vault_0_mint, vault_1_mint, base_flag, amount_0_max, amount_1_max, tick_lower_index, tick_upper_index)
+      : liquidity;
+  const change = addLiquidityToTicks(pool_state, lower, upper, resolved, liquidity === 0n && base_flag === null, tick_lower_index, tick_upper_index, u64(now()));
+  let fee0: u64 = 0n;
+  let fee1: u64 = 0n;
+  if (!change.skipped) {
+    const extLower = change.flip_lower && overflowsDefaultBitmap(lower.start_tick_index, spacing);
+    const extUpper = change.flip_upper && overflowsDefaultBitmap(upper.start_tick_index, spacing);
+    if (change.flip_lower && !extLower) flipBitDefault(pool_state, lower.start_tick_index);
+    if (change.flip_upper && !extUpper) flipBitDefault(pool_state, upper.start_tick_index);
+    if (extLower || extUpper) {
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(0n));
+      if (extLower) flipBitExtension(ext, lower.start_tick_index, spacing);
+      if (extUpper) flipBitExtension(ext, upper.start_tick_index, spacing);
+    }
+    const fees = finishAddLiquidity(
+      payer,
+      token_account_0,
+      token_account_1,
+      token_vault_0,
+      token_vault_1,
+      vault_0_mint,
+      vault_1_mint,
+      token_program,
+      token_program_2022,
+      pool_state,
+      change,
+      amount_0_max,
+      amount_1_max,
+      tick_lower_index,
+      tick_upper_index,
+    );
+    fee0 = fees.fee_0;
+    fee1 = fees.fee_1;
+  }
+
+  initPosition(personal_position, positionBump, position_nft_mint.key, pool_state.key, tick_lower_index, tick_upper_index, change);
+  emit<CreatePersonalPositionEvent>({
+    pool_state: pool_state.key,
+    minter: payer.key,
+    nft_owner: position_nft_owner.key,
+    tick_lower_index,
+    tick_upper_index,
+    liquidity: change.liquidity,
+    deposit_amount_0: change.amount_0,
+    deposit_amount_1: change.amount_1,
+    deposit_amount_0_transfer_fee: fee0,
+    deposit_amount_1_transfer_fee: fee1,
+  });
+
+  // mint_nft_and_remove_mint_authority, a Metaplex NFT: the metadata (the pool the verified creator), the token, no more minting.
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  if (with_metadata) {
+    const uri = `https://dynamic-ipfs.raydium.io/clmm/position?id=${personal_position.key}`;
+    metadata_program.createV3(
+      metadata_account,
+      position_nft_mint,
+      pool_state,
+      payer,
+      pool_state,
+      system_program,
+      "Raydium Concentrated Liquidity",
+      "RCL",
+      uri,
+      0n,
+      false,
+      { creators: [{ address: pool_state.key, verified: true, share: 100n }] },
+      poolSigner,
+    );
+  }
+  token_program.mintTo(position_nft_mint, position_nft_account, pool_state, 1n, poolSigner);
+  if (frozen) token_program.freezeAccount(position_nft_account, position_nft_mint, pool_state, poolSigner);
+  token_program.setAuthority(position_nft_mint, pool_state, AuthorityType.MintTokens, null, poolSigner);
+}
+
+/** increase_liquidity_v2 for SPL Token pools (no transfer fees, no base_flag). */
+export function increaseLiquidity(
+  nft_owner: Signer,
+  nft_account: TokenAccount,
+  pool_state: Mut<PoolState>,
+  protocol_position: AccountInfo,
+  personal_position: Mut<PersonalPositionState>,
+  tick_array_lower: Mut<TickArrayState>,
+  tick_array_upper: Dup<Mut<TickArrayState>>,
+  token_account_0: Mut<TokenAccount>,
+  token_account_1: Mut<TokenAccount>,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  token_program: TokenProgram,
+  liquidity: u128,
+  amount_0_max: u64,
+  amount_1_max: u64,
+): void {
+  constraint(nft_account, nft_account.mint === personal_position.nft_mint);
+  constraint(nft_account, nft_account.amount === 1n);
+  constraint(nft_account, nft_account.owner === nft_owner.key, AnchorError.ConstraintTokenOwner);
+  constraint(personal_position, personal_position.pool_id === pool_state.key);
+  constraint(tick_array_lower, tick_array_lower.pool_id === pool_state.key);
+  constraint(tick_array_upper, tick_array_upper.pool_id === pool_state.key);
+  constraint(token_account_0, token_account_0.mint === token_vault_0.mint, AnchorError.ConstraintTokenMint);
+  constraint(token_account_1, token_account_1.mint === token_vault_1.mint, AnchorError.ConstraintTokenMint);
+  constraint(token_vault_0, token_vault_0.key === pool_state.token_vault_0);
+  constraint(token_vault_1, token_vault_1.key === pool_state.token_vault_1);
+  constraint(nft_account, nft_account.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_account_0, token_account_0.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_account_1, token_account_1.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_vault_0, token_vault_0.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_vault_1, token_vault_1.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  // lib.rs
+  require(liquidity > 0n, AnchorError.RequireGtViolated);
+
+  require((pool_state.status & 1n) === 0n, ErrorCode.NotApproved);
+  const tickLower = personal_position.tick_lower_index;
+  const tickUpper = personal_position.tick_upper_index;
+  const spacing = pool_state.tick_spacing;
+  const useExtension = overflowsDefaultBitmap(tickLower, spacing) || overflowsDefaultBitmap(tickUpper, spacing);
+  const rest = remainingAccounts();
+  if (useExtension) require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
+
+  const change = addLiquidityToTicks(pool_state, tick_array_lower, tick_array_upper, liquidity, false, tickLower, tickUpper, u64(now()));
+  let fee0: u64 = 0n;
+  let fee1: u64 = 0n;
+  if (!change.skipped) {
+    const extLower = change.flip_lower && overflowsDefaultBitmap(tick_array_lower.start_tick_index, spacing);
+    const extUpper = change.flip_upper && overflowsDefaultBitmap(tick_array_upper.start_tick_index, spacing);
+    if (change.flip_lower && !extLower) flipBitDefault(pool_state, tick_array_lower.start_tick_index);
+    if (change.flip_upper && !extUpper) flipBitDefault(pool_state, tick_array_upper.start_tick_index);
+    if (extLower || extUpper) {
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(0n));
+      if (extLower) flipBitExtension(ext, tick_array_lower.start_tick_index, spacing);
+      if (extUpper) flipBitExtension(ext, tick_array_upper.start_tick_index, spacing);
+    }
+    const fees = finishAddLiquidityLegacy(
+      nft_owner,
+      token_account_0,
+      token_account_1,
+      token_vault_0,
+      token_vault_1,
+      token_program,
+      pool_state,
+      change,
+      amount_0_max,
+      amount_1_max,
+      tickLower,
+      tickUpper,
+    );
+    fee0 = fees.fee_0;
+    fee1 = fees.fee_1;
+  }
+  updatePosition(personal_position, change, true);
+  emit<IncreaseLiquidityEvent>({
+    position_nft_mint: personal_position.nft_mint,
+    liquidity: change.liquidity,
+    amount_0: change.amount_0,
+    amount_1: change.amount_1,
+    amount_0_transfer_fee: fee0,
+    amount_1_transfer_fee: fee1,
+  });
+}
+
+/**
+ * decrease_liquidity_v2 for SPL Token pools: no transfer fees; per reward set up, the reward vault and the
+ * recipient's token account (no mint) as remaining accounts.
+ */
+export function decreaseLiquidity(
+  nft_owner: Signer,
+  nft_account: TokenAccount,
+  personal_position: Mut<PersonalPositionState>,
+  pool_state: Mut<PoolState>,
+  protocol_position: AccountInfo,
+  token_vault_0: Mut<TokenAccount>,
+  token_vault_1: Mut<TokenAccount>,
+  tick_array_lower: Mut<TickArrayState>,
+  tick_array_upper: Dup<Mut<TickArrayState>>,
+  recipient_token_account_0: Mut<TokenAccount>,
+  recipient_token_account_1: Mut<TokenAccount>,
+  token_program: TokenProgram,
+  liquidity: u128,
+  amount_0_min: u64,
+  amount_1_min: u64,
+): void {
+  constraint(nft_account, nft_account.mint === personal_position.nft_mint);
+  constraint(nft_account, nft_account.amount === 1n);
+  constraint(nft_account, nft_account.owner === nft_owner.key, AnchorError.ConstraintTokenOwner);
+  constraint(personal_position, personal_position.pool_id === pool_state.key);
+  constraint(token_vault_0, token_vault_0.key === pool_state.token_vault_0);
+  constraint(token_vault_1, token_vault_1.key === pool_state.token_vault_1);
+  constraint(tick_array_lower, tick_array_lower.pool_id === pool_state.key);
+  constraint(tick_array_upper, tick_array_upper.pool_id === pool_state.key);
+  constraint(recipient_token_account_0, recipient_token_account_0.mint === token_vault_0.mint, AnchorError.ConstraintTokenMint);
+  constraint(recipient_token_account_1, recipient_token_account_1.mint === token_vault_1.mint, AnchorError.ConstraintTokenMint);
+  constraint(nft_account, nft_account.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_vault_0, token_vault_0.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(token_vault_1, token_vault_1.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(recipient_token_account_0, recipient_token_account_0.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+  constraint(recipient_token_account_1, recipient_token_account_1.tokenProgram === SPL_TOKEN, AnchorError.AccountOwnedByWrongProgram);
+
+  require(personal_position.liquidity >= liquidity, AnchorError.RequireGteViolated);
+  // Status bits 1, 2, 3: decrease liquidity, collect fees, collect rewards. Any of them lets this through.
+  require((pool_state.status & 14n) !== 14n, ErrorCode.NotApproved);
+  const liquidityBefore = pool_state.liquidity;
+  const sqrtPrice = pool_state.sqrt_price_x64;
+  const tickCurrent = pool_state.tick_current;
+  const spacing = pool_state.tick_spacing;
+  const useExtension = overflowsDefaultBitmap(tick_array_lower.start_tick_index, spacing) || overflowsDefaultBitmap(tick_array_upper.start_tick_index, spacing);
+  // The bitmap extension, wherever it is among the remaining accounts; the others are the reward accounts.
+  const rest = remainingAccounts();
+  const extKey = extensionKey(pool_state);
+  let extAt = rest.length;
+  for (let i = 0n; i < rest.length; i++) if (rest.get(i).key === extKey) extAt = i;
+  require(!useExtension || extAt < rest.length, ErrorCode.MissingTickArrayBitmapExtensionAccount);
+
+  // decrease_liquidity_and_update_position
+  let decrease0: u64 = 0n;
+  let decrease1: u64 = 0n;
+  if ((pool_state.status & 2n) === 0n) {
+    const change = burnLiquidityFromTicks(
+      pool_state,
+      tick_array_lower,
+      tick_array_upper,
+      personal_position.tick_lower_index,
+      personal_position.tick_upper_index,
+      liquidity,
+      u64(now()),
+    );
+    const extLower = change.flip_lower && overflowsDefaultBitmap(tick_array_lower.start_tick_index, spacing);
+    const extUpper = change.flip_upper && overflowsDefaultBitmap(tick_array_upper.start_tick_index, spacing);
+    if (change.flip_lower && !extLower) flipBitDefault(pool_state, tick_array_lower.start_tick_index);
+    if (change.flip_upper && !extUpper) flipBitDefault(pool_state, tick_array_upper.start_tick_index);
+    if (extLower || extUpper) {
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(extAt));
+      if (extLower) flipBitExtension(ext, tick_array_lower.start_tick_index, spacing);
+      if (extUpper) flipBitExtension(ext, tick_array_upper.start_tick_index, spacing);
+    }
+    emit<LiquidityChangeEvent>({
+      pool_state: pool_state.key,
+      tick: pool_state.tick_current,
+      tick_lower: personal_position.tick_lower_index,
+      tick_upper: personal_position.tick_upper_index,
+      liquidity_before: change.liquidity_before,
+      liquidity_after: pool_state.liquidity,
+    });
+    updatePosition(personal_position, change, false);
+    decrease0 = change.amount_0;
+    decrease1 = change.amount_1;
+  }
+  let fees0: u64 = 0n;
+  let fees1: u64 = 0n;
+  if ((pool_state.status & 4n) === 0n) {
+    fees0 = personal_position.token_fees_owed_0;
+    fees1 = personal_position.token_fees_owed_1;
+    personal_position.token_fees_owed_0 = 0n;
+    personal_position.token_fees_owed_1 = 0n;
+  }
+
+  const transferFee0: u64 = 0n;
+  const transferFee1: u64 = 0n;
+  emit<LiquidityCalculateEvent>({
+    pool_liquidity: liquidityBefore,
+    pool_sqrt_price_x64: sqrtPrice,
+    pool_tick: tickCurrent,
+    calc_amount_0: decrease0,
+    calc_amount_1: decrease1,
+    trade_fee_owed_0: fees0,
+    trade_fee_owed_1: fees1,
+    transfer_fee_0: transferFee0,
+    transfer_fee_1: transferFee1,
+  });
+  if (liquidity > 0n) {
+    require(decrease0 - transferFee0 >= amount_0_min, ErrorCode.PriceSlippageCheck);
+    require(decrease1 - transferFee1 >= amount_1_min, ErrorCode.PriceSlippageCheck);
+  }
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  if (decrease0 + fees0 > 0n) token_program.transfer(token_vault_0, recipient_token_account_0, pool_state, decrease0 + fees0, poolSigner);
+  if (decrease1 + fees1 > 0n) token_program.transfer(token_vault_1, recipient_token_account_1, pool_state, decrease1 + fees1, poolSigner);
+
+  // collect_rewards: groups of (reward vault, recipient, reward mint), one per reward set up.
+  const rewards = fixedArray<u64, 3>(0n);
+  if ((pool_state.status & 8n) === 0n) {
+    let valid = 0n;
+    for (let i = 0n; i < 3n; i++) if (pool_state.reward_infos.get(i).token_mint !== SYSTEM) valid += 1n;
+    const count = extAt < rest.length ? rest.length - 1n : rest.length;
+    require(count === valid * 2n, ErrorCode.InvalidRewardInputAccountNumber);
+    for (let i = 0n; i < count / 2n; i++) {
+      // The i-th group among the accounts other than the extension.
+      const at = 2n * i;
+      const v = at < extAt ? at : at + 1n;
+      const r = at + 1n < extAt ? at + 1n : at + 2n;
+      const vault = rest.get(v);
+      const recipient = rest.get(r);
+      // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program and holding one.
+      require(vault.owner === SPL_TOKEN || vault.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
+      require(vault.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
+      require(recipient.owner === SPL_TOKEN || recipient.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
+      require(recipient.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
+      require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(recipient, 0n), AnchorError.RequireKeysEqViolated);
+      const info = pool_state.reward_infos.get(i);
+      require(vault.key === info.token_vault, AnchorError.RequireKeysEqViolated);
+      const owed = personal_position.reward_infos.get(i).reward_amount_owed;
+      if (owed === 0n) continue;
+      // check_unclaimed_reward
+      require(info.reward_total_emitted >= info.reward_claimed, ErrorCode.CalculateOverflow);
+      require(info.reward_total_emitted - info.reward_claimed >= owed, AnchorError.RequireGteViolated);
+      const balance = readData<u64>(vault, 64n);
+      const amount = owed > balance ? balance : owed;
+      if (amount > 0n) {
+        log(`collect reward index: ${i}, transfer_amount: ${amount}, reward_amount_owed:${owed} `);
+        personal_position.reward_infos.get(i).reward_amount_owed = owed - amount;
+        require(info.reward_claimed <= 18446744073709551615n - amount, ErrorCode.CalculateOverflow);
+        info.reward_claimed += amount;
+        // token::transfer under the SPL Token program, whatever owns the vault.
+        invoke(token_program, [writable(vault), writable(recipient), readonlySigner(pool_state)], [u8(3n), amount], poolSigner);
+      }
+      rewards.set(i, amount);
+    }
+  }
+  emit<DecreaseLiquidityEvent>({
+    position_nft_mint: personal_position.nft_mint,
+    liquidity,
+    decrease_amount_0: decrease0,
+    decrease_amount_1: decrease1,
+    fee_amount_0: fees0,
+    fee_amount_1: fees1,
+    reward_amounts: rewards,
+    transfer_fee_0: transferFee0,
+    transfer_fee_1: transferFee1,
+  });
+}
+
+
+
+/**
+ * Close an empty position (no liquidity, fees or rewards owed): the NFT burned, its account and (Token-2022) its mint
+ * closed, the position's rent to the owner. A frozen NFT account (a restricted-asset pool) is thawed by the pool, the
+ * first remaining account.
+ */
+export function closePosition(
+  nft_owner: Mut<Signer>,
+  position_nft_mint: Mut<Mint>,
+  position_nft_account: Mut<TokenAccount>,
+  personal_position: Seeds<CloseTo<Mut<PersonalPositionState>, "nft_owner">, ["position", "@position_nft_mint"]>,
+  system_program: SystemProgram,
+  token_program: TokenInterface,
+): void {
+  constraint(position_nft_mint, position_nft_mint.key === personal_position.nft_mint, AnchorError.ConstraintAddress);
+  constraint(position_nft_mint, position_nft_mint.tokenProgram === token_program.key, AnchorError.ConstraintMintTokenProgram);
+  constraint(position_nft_account, position_nft_account.amount === 1n);
+  constraint(position_nft_account, position_nft_account.mint === position_nft_mint.key, AnchorError.ConstraintTokenMint);
+  constraint(position_nft_account, position_nft_account.owner === nft_owner.key, AnchorError.ConstraintTokenOwner);
+  constraint(position_nft_account, position_nft_account.tokenProgram === token_program.key, AnchorError.ConstraintTokenTokenProgram);
+  if (personal_position.liquidity !== 0n || personal_position.token_fees_owed_0 !== 0n || personal_position.token_fees_owed_1 !== 0n) {
+    log(`remaing liquidity:${personal_position.liquidity},token_fees_owed_0:${personal_position.token_fees_owed_0},token_fees_owed_1:${personal_position.token_fees_owed_1}`);
+    require(false, ErrorCode.ClosePositionErr);
+  }
+  for (let i = 0n; i < 3n; i++) {
+    const owed = personal_position.reward_infos.get(i).reward_amount_owed;
+    if (owed !== 0n) {
+      log(`remaing reward index:${i},amount:${owed}`);
+      require(false, ErrorCode.ClosePositionErr);
+    }
+  }
+  if (position_nft_account.isFrozen) {
+    const rest = remainingAccounts();
+    require(rest.length > 0n, ErrorCode.AccountLack);
+    const info = rest.get(0n);
+    require(info.key === personal_position.pool_id, ErrorCode.NotApproved);
+    const pool = loadAccount<PoolState>(info);
+    const seedIndex = u16(pool.seed_index.get(0n)) | (u16(pool.seed_index.get(1n)) << 8n);
+    const poolSigner = poolIsIndexed(pool)
+      ? signer(["pool", pool.amm_config, pool.token_mint_0, pool.token_mint_1, seedIndex, pool.bump.get(0n)])
+      : signer(["pool", pool.amm_config, pool.token_mint_0, pool.token_mint_1, pool.bump.get(0n)]);
+    // ThawAccount, the pool the freeze authority.
+    invoke(token_program, [writable(position_nft_account), readonly(position_nft_mint), readonlySigner(info)], [u8(11n)], poolSigner);
+  }
+  token_program.burn(position_nft_account, position_nft_mint, nft_owner, 1n);
+  token_program.closeAccount(position_nft_account, nft_owner, nft_owner);
+  // A Token-2022 NFT's mint closes too; the position is its close authority.
+  if (position_nft_mint.tokenProgram === SPL_TOKEN_2022)
+    token_program.closeAccount(position_nft_mint, nft_owner, personal_position, ["position", position_nft_mint.key, personal_position.bump.get(0n)]);
 }

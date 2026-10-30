@@ -26,6 +26,7 @@ const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 const SYSTEM = address("11111111111111111111111111111111");
 const RENT = address("SysvarRent111111111111111111111111111111111");
 const ADMIN = address("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
+const METADATA = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 type Result = TransactionMetadata | FailedTransactionMetadata;
 type Meta = { address: Address; signer?: KeyPairSigner; writable?: boolean };
@@ -76,6 +77,8 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     d = await deployFile(path.join(source, path.basename(PORT)), { programId: PROGRAM });
     original = new LiteSVM();
     original.addProgram(PROGRAM, new Uint8Array(so));
+    // Metaplex Token Metadata, for the v1 / v2 position NFTs.
+    for (const vm of [original, d.svm]) vm.addProgramFromFile(METADATA, fileURLToPath(new URL("../programs/mpl_token_metadata.so", import.meta.url)));
     for (const vm of [original, d.svm]) {
       const clock = vm.getClock();
       clock.unixTimestamp = 1_800_000_000n;
@@ -1284,6 +1287,130 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     setTime(start + 10n + 4n * week);
     expect(await both("collect_remaining_rewards", pool.user, [collect], watch)).toBe("ok");
     setTime(start);
+  });
+
+  // ---- v1 / v2 positions, closing ------------------------------------------------------------------------------
+
+  /** open_position (v1) or open_position_v2: a Metaplex NFT. */
+  async function openMetaplex(pool: Pool, lower: number, upper: number, liquidity: bigint, v2?: { metadata: boolean; base: boolean | null; max0?: bigint; max1?: bigint }) {
+    const nft = await generateKeyPairSigner();
+    const [ls, us] = [startOf(lower, pool.spacing), startOf(upper, pool.spacing)];
+    pool.starts.add(ls).add(us);
+    const arrays = [await tickArray(pool.p.pool, ls), await tickArray(pool.p.pool, us)] as const;
+    const [position] = await pda(PROGRAM, ["position", nft.address]);
+    const nftAccount = await ata(pool.user.address, nft.address, TOKEN);
+    const [metadata] = await pda(METADATA, ["metadata", METADATA, nft.address]);
+    const args = {
+      tick_lower_index: lower,
+      tick_upper_index: upper,
+      tick_array_lower_start_index: ls,
+      tick_array_upper_start_index: us,
+      liquidity: new BN(liquidity.toString()),
+      amount_0_max: new BN((v2?.max0 ?? 10n ** 14n).toString()),
+      amount_1_max: new BN((v2?.max1 ?? 10n ** 14n).toString()),
+      ...(v2 ? { with_metadata: v2.metadata, base_flag: v2.base } : {}),
+    };
+    const instruction = ix(v2 ? "open_position_v2" : "open_position", args, [
+      { address: pool.user.address, signer: pool.user, writable: true },
+      { address: pool.user.address },
+      { address: nft.address, signer: nft, writable: true },
+      { address: nftAccount, writable: true },
+      { address: metadata, writable: true },
+      { address: pool.p.pool, writable: true },
+      { address: PROGRAM },
+      { address: arrays[0], writable: true },
+      { address: arrays[1], writable: true },
+      { address: position, writable: true },
+      { address: pool.acct0, writable: true },
+      { address: pool.acct1, writable: true },
+      { address: pool.p.vault0, writable: true },
+      { address: pool.p.vault1, writable: true },
+      { address: RENT },
+      { address: SYSTEM },
+      { address: TOKEN },
+      { address: ATA },
+      { address: METADATA },
+      ...(v2 ? [{ address: TOKEN_2022 }, { address: pool.m0.address }, { address: pool.m1.address }] : []),
+    ]);
+    const watch = [pool.p.pool, pool.p.vault0, pool.p.vault1, pool.acct0, pool.acct1, ...arrays, position, nft.address, nftAccount, metadata];
+    return { instruction, nft: nft.address, nftAccount, position, arrays, watch, lower, upper };
+  }
+  const v1Accounts = (pool: Pool, pos: Position, decrease: boolean) =>
+    decrease
+      ? [
+          { address: pool.user.address, signer: pool.user },
+          { address: pos.nftAccount },
+          { address: pos.position, writable: true },
+          { address: pool.p.pool, writable: true },
+          { address: PROGRAM },
+          { address: pool.p.vault0, writable: true },
+          { address: pool.p.vault1, writable: true },
+          { address: pos.arrays[0], writable: true },
+          { address: pos.arrays[1], writable: true },
+          { address: pool.acct0, writable: true },
+          { address: pool.acct1, writable: true },
+          { address: TOKEN },
+        ]
+      : [
+          { address: pool.user.address, signer: pool.user },
+          { address: pos.nftAccount },
+          { address: pool.p.pool, writable: true },
+          { address: PROGRAM },
+          { address: pos.position, writable: true },
+          { address: pos.arrays[0], writable: true },
+          { address: pos.arrays[1], writable: true },
+          { address: pool.acct0, writable: true },
+          { address: pool.acct1, writable: true },
+          { address: pool.p.vault0, writable: true },
+          { address: pool.p.vault1, writable: true },
+          { address: TOKEN },
+        ];
+  const closePosition = (pool: Pool, pos: Position, program: Address, rest: Meta[] = []) =>
+    ix("close_position", {}, [
+      { address: pool.user.address, signer: pool.user, writable: true },
+      { address: pos.nft, writable: true },
+      { address: pos.nftAccount, writable: true },
+      { address: pos.position, writable: true },
+      { address: SYSTEM },
+      { address: program },
+      ...rest,
+    ]);
+
+  it("opens Metaplex-NFT positions (v1, v2), changes them with the v1 instructions, and closes positions", async () => {
+    const pool = await liquidPool(40);
+    const v1 = await openMetaplex(pool, -600, 1800, 10n ** 11n);
+    expect(await both("open_position (v1, Metaplex)", pool.user, [v1.instruction], v1.watch)).toBe("ok");
+    const v2a = await openMetaplex(pool, -1200, 1200, 10n ** 11n, { metadata: true, base: null });
+    expect(await both("open_position_v2, metadata", pool.user, [v2a.instruction], v2a.watch)).toBe("ok");
+    const v2b = await openMetaplex(pool, -1200, 2400, 0n, { metadata: false, base: true, max0: 5_000_000n });
+    expect(await both("open_position_v2, no metadata, from amount_0", pool.user, [v2b.instruction], v2b.watch)).toBe("ok");
+    const w = (pos: Position) => [...pos.watch, pool.acct0, pool.acct1];
+    const inc = (pos: Position, liquidity: bigint, max = 10n ** 12n) =>
+      ix("increase_liquidity", { liquidity: new BN(liquidity.toString()), amount_0_max: new BN(max.toString()), amount_1_max: new BN(max.toString()) }, v1Accounts(pool, pos, false));
+    expect(await both("increase_liquidity (v1)", pool.user, [inc(v1, 5n * 10n ** 10n)], w(v1))).toBe("ok");
+    expect(await both("increase_liquidity (v1), nothing", pool.user, [inc(v1, 0n)], w(v1))).toBe(custom(2505));
+    expect(await both("increase_liquidity (v1), slippage", pool.user, [inc(v1, 5n * 10n ** 10n, 10n)], w(v1))).toBe(custom(errors.PriceSlippageCheck!));
+    const dec = (pos: Position, liquidity: bigint) =>
+      ix("decrease_liquidity", { liquidity: new BN(liquidity.toString()), amount_0_min: new BN(0), amount_1_min: new BN(0) }, v1Accounts(pool, pos, true));
+    expect(await both("decrease_liquidity (v1), half", pool.user, [dec(v1, positionLiquidity(v1) / 2n)], w(v1))).toBe("ok");
+    // Swaps earn the position fees; it cannot close until they are paid out with its liquidity.
+    expect(await swapBoth("swap", pool, true, 20_000_000_000n)).toBe("ok");
+    expect(await swapBoth("swap back", pool, false, 25_000_000_000n)).toBe("ok");
+    expect(await both("close_position, liquidity left", pool.user, [closePosition(pool, v1, TOKEN)], w(v1))).toBe(custom(errors.ClosePositionErr!));
+    expect(await both("decrease_liquidity (v1), all", pool.user, [dec(v1, positionLiquidity(v1))], w(v1))).toBe("ok");
+    expect(await both("close_position, a Metaplex NFT", pool.user, [closePosition(pool, v1, TOKEN)], [...w(v1), pool.user.address])).toBe("ok");
+    // A Token-2022 NFT: its mint is closed too.
+    const t22 = await openPosition(pool, -600, 600, 10n ** 10n);
+    expect(await both("open_position", pool.user, [t22.instruction], t22.watch)).toBe("ok");
+    expect(await both("decrease_liquidity, all", pool.user, [decrease(pool, t22, positionLiquidity(t22))], t22.watch)).toBe("ok");
+    expect(await both("close_position, the wrong token program", pool.user, [closePosition(pool, t22, TOKEN)], t22.watch)).not.toBe("ok");
+    expect(await both("close_position, a Token-2022 NFT", pool.user, [closePosition(pool, t22, TOKEN_2022)], [...t22.watch, pool.user.address])).toBe("ok");
+    // A frozen NFT (a restricted-asset pool) is thawed by the pool, passed after the accounts.
+    const restricted = await poolWith(60, 41, 19_574_085_512_633_416_581n, [TOKEN, TOKEN], undefined, address("2Yq4T3mPNfjtEyTxSbRjRKqLf1pwbTasuCQrWe6QpM7x"));
+    const frozen = await openPosition(restricted, -600, 1800, 0n);
+    expect(await both("open_position, restricted, empty", restricted.user, [frozen.instruction], frozen.watch)).toBe("ok");
+    expect(await both("close_position, frozen, no pool", restricted.user, [closePosition(restricted, frozen, TOKEN_2022)], frozen.watch)).toBe(custom(errors.AccountLack!));
+    expect(await both("close_position, frozen", restricted.user, [closePosition(restricted, frozen, TOKEN_2022, [{ address: restricted.p.pool }])], frozen.watch)).toBe("ok");
   });
 
   it("reports compute units", () => {

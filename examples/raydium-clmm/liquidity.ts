@@ -309,34 +309,33 @@ function signed(liquidity: u128): i128 {
 }
 
 /**
- * add_liquidity up to the bitmap: the liquidity (worked out from one amount when it is 0 and base_flag says which),
- * the two ticks and the pool. `flip_lower` / `flip_upper` say which arrays just got their first used tick, whose bit
+ * add_liquidity's liquidity from one amount (liquidity 0, base_flag true: amount_0_max, false: amount_1_max). The
+ * transfer fee comes off the amount first: the pool gets only what is left of it.
+ */
+export function liquidityFromOneAmount(pool: Account<PoolState>, mint0: Mint, mint1: Mint, base0: boolean, amount0Max: u64, amount1Max: u64, tickLower: i32, tickUpper: i32): u128 {
+  const sqrtLower = getSqrtPriceAtTick(tickLower);
+  const sqrtUpper = getSqrtPriceAtTick(tickUpper);
+  if (base0) return liquidityFromSingleAmount0(pool.sqrt_price_x64, sqrtLower, sqrtUpper, amount0Max - transferFee(mint0, amount0Max));
+  return liquidityFromSingleAmount1(pool.sqrt_price_x64, sqrtLower, sqrtUpper, amount1Max - transferFee(mint1, amount1Max));
+}
+
+/**
+ * add_liquidity up to the bitmap (`skip`: no liquidity and no base_flag, add_liquidity's early return): the two
+ * ticks and the pool. `flip_lower` / `flip_upper` say which arrays just got their first used tick, whose bit
  * the caller flips; the rest is finishAddLiquidity.
  */
 export function addLiquidityToTicks(
   pool: Mut<PoolState>,
   lowerArray: Mut<TickArrayState>,
   upperArray: Mut<TickArrayState>,
-  vault0Mint: Mint,
-  vault1Mint: Mint,
-  requested: u128,
-  baseFlag: Option<boolean>,
-  amount0Max: u64,
-  amount1Max: u64,
+  liquidity: u128,
+  skip: boolean,
   tickLower: i32,
   tickUpper: i32,
   timestamp: u64,
 ): LiquidityChange {
-  let liquidity = requested;
-  if (liquidity === 0n) {
-    // Opening a position with no liquidity (added later) does nothing here.
-    if (baseFlag === null) return skippedChange();
-    // The transfer fee comes off the amount first: the pool gets only what is left of it.
-    const sqrtLower = getSqrtPriceAtTick(tickLower);
-    const sqrtUpper = getSqrtPriceAtTick(tickUpper);
-    if (baseFlag) liquidity = liquidityFromSingleAmount0(pool.sqrt_price_x64, sqrtLower, sqrtUpper, amount0Max - transferFee(vault0Mint, amount0Max));
-    else liquidity = liquidityFromSingleAmount1(pool.sqrt_price_x64, sqrtLower, sqrtUpper, amount1Max - transferFee(vault1Mint, amount1Max));
-  }
+  // Opening a position with no liquidity (added later) does nothing here.
+  if (skip) return skippedChange();
   require(liquidity > 0n, ErrorCode.ZeroLiquidity);
   const before = pool.liquidity;
   require(lowerArray.pool_id === pool.key, AnchorError.RequireKeysEqViolated);
