@@ -169,8 +169,8 @@ export abstract class StorageEmitter extends AliasEmitter {
     if (ts.isPropertyAccessExpression(node)) {
       const field = node.name.text;
       // Migrate<From, To>: acct.from (the old data, read-only, until migrate()) and acct.to (after it).
-      if (ts.isIdentifier(node.expression)) {
-        const m = this.accounts.get(node.expression.text);
+      if (this.accountAt(node.expression)) {
+        const m = this.accountAt(node.expression);
         if (m?.kind.kind === "migrate") {
           const migrated = this.created.has(m.name);
           if (field === "from") {
@@ -185,8 +185,8 @@ export abstract class StorageEmitter extends AliasEmitter {
         }
       }
       // acct.field on a struct account
-      if (ts.isIdentifier(node.expression)) {
-        const a = this.accounts.get(node.expression.text);
+      if (this.accountAt(node.expression)) {
+        const a = this.accountAt(node.expression);
         if (a && (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded")) {
           const f = a.kind.struct.fields.find((x) => x.name === field);
           if (!f) return undefined;
@@ -418,8 +418,8 @@ export abstract class StorageEmitter extends AliasEmitter {
    */
   /** A whole struct account copied as a value (`return vault`, `info = vault`): fixed-size structs only. */
   private wholeAccount(node: ts.Expression): Ref | undefined {
-    if (!ts.isIdentifier(node) || this.lookup(node.text)) return undefined;
-    const a = this.accounts.get(node.text);
+    if (ts.isIdentifier(node) && this.lookup(node.text)) return undefined;
+    const a = this.accountAt(node);
     if (!a || !(a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "initIfNeeded") || a.kind.struct.size === undefined || a.kind.struct.vec)
       return undefined;
     this.assertUsable(a, node);
@@ -633,8 +633,8 @@ export abstract class StorageEmitter extends AliasEmitter {
       if (l.type.kind === "pubkey") return { type: l.type, read: `(&${l.c})`, write: (c) => `${l.c} = *(${c})` };
       return { type: l.type, read: l.c, write: (c) => `${l.c} = ${c}` };
     }
-    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.name.text === "lamports") {
-      const a = this.accounts.get(node.expression.text);
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "lamports" && this.accountAt(node.expression)) {
+      const a = this.accountAt(node.expression);
       if (a) {
         this.assertUsable(a, node);
         if (!isWritable(a.kind)) this.fail(node, `"${a.name}" is read-only; declare it Mut<...> to change lamports`);

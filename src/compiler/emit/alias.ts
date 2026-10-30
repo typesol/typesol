@@ -32,7 +32,11 @@ export abstract class AliasEmitter extends EmitterBase {
       if (l) return l.paths ?? (l.type.kind === "array" ? [`@${l.c}`] : undefined);
       return this.accounts.has(node.text) ? [node.text] : undefined;
     }
-    if (ts.isPropertyAccessExpression(node)) return this.pathsOf(node.expression)?.map((p) => `${p}.${node.name.text}`);
+    if (ts.isPropertyAccessExpression(node)) {
+      const field = this.accountAt(node);
+      if (field && !ts.isIdentifier(node)) return [field.name];
+      return this.pathsOf(node.expression)?.map((p) => `${p}.${node.name.text}`);
+    }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "get")
       return this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`);
     if (ts.isConditionalExpression(node)) {

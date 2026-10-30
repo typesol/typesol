@@ -53,7 +53,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
    */
   protected optionalChain(node: ts.PropertyAccessExpression): Value {
     const base = node.expression;
-    const optAccount = ts.isIdentifier(base) ? this.accounts.get(base.text) : undefined;
+    const optAccount = this.accountAt(base);
     let present: string;
     if (optAccount?.optional) present = `a_${optAccount.name} != NULL`;
     else {
@@ -187,6 +187,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         return hint?.kind === "int" ? this.literal(v, hint, node) : { c: intLiteral(v, "u64"), type: U64, literal: v };
       }
       if (this.accounts.has(node.text)) this.fail(node, `"${node.text}" is an account; use ${node.text}.key for its address`);
+      if (this.isGroup(node.text)) this.fail(node, `"${node.text}" is a group of accounts; use one of its fields (${node.text}.…)`);
       if (calleeName(node, this.model.helperDecls, this.checker) || this.model.helpers.has(node.text))
         this.fail(
           node,
@@ -290,8 +291,9 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       }
       this.fail(node.name, `remaining accounts expose key, owner, lamports, dataLen, isSigner and isWritable, not ${field}`);
     }
-    if (ts.isIdentifier(node.expression)) {
-      const a = this.accounts.get(node.expression.text);
+    if (this.accountAt(node)) this.fail(node, `"${node.getText()}" is an account; use ${node.getText()}.key for its address`);
+    if (ts.isIdentifier(node.expression) || this.accountAt(node.expression)) {
+      const a = this.accountAt(node.expression);
       if (a) {
         const v = `a_${a.name}`;
         // The address is known before an Init account is created (Anchor seeds use `mint.key()` that way).
@@ -360,6 +362,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         if (r) return this.readStorage(r, node);
         this.fail(node.name, `"${field}" is not available on ${a.name}`);
       }
+      if (!ts.isIdentifier(node.expression)) this.fail(node, "unreachable: an account group's field");
       if (this.model.errorEnums.has(node.expression.text)) this.fail(node, "error enum members can only be used as the second argument of require()");
       if (this.exportName(node.expression) === "AuthorityType") {
         const i = ["MintTokens", "FreezeAccount", "AccountOwner", "CloseAccount"].indexOf(field);
@@ -666,7 +669,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const isNullNode = (n: ts.Expression) => n.kind === ts.SyntaxKind.NullKeyword;
     if (isEq && (isNullNode(node.left) || isNullNode(node.right))) {
       const other = isNullNode(node.left) ? node.right : node.left;
-      const optionalAccount = ts.isIdentifier(other) ? this.accounts.get(other.text) : undefined;
+      const optionalAccount = this.accountAt(other);
       if (optionalAccount?.optional) {
         const neg = op === K.ExclamationEqualsEqualsToken || op === K.ExclamationEqualsToken;
         return { c: `(a_${optionalAccount.name} ${neg ? "!=" : "=="} NULL)`, type: BOOL };

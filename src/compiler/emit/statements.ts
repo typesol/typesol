@@ -507,8 +507,9 @@ export abstract class StatementEmitter extends CpiEmitter {
         params.set(name, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
         return;
       }
-      if (p.type && ts.isIdentifier(arg) && !this.lookup(arg.text) && this.accounts.has(arg.text) && !resolveValueType(p.type, calleeScope)) {
-        aliases.set(name, this.accounts.get(arg.text)!);
+      const passed = ts.isIdentifier(arg) && this.lookup(arg.text) ? undefined : this.accountAt(arg);
+      if (p.type && passed && !resolveValueType(p.type, calleeScope)) {
+        aliases.set(name, passed);
         return;
       }
       const c2 = `l_${name}_${this.temp++}`;
@@ -813,7 +814,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       const name = d.name.text;
       if (this.scopes.at(-1)!.has(name)) this.fail(d.name, `"${name}" is already declared`);
       // Account lookups go by name, so a local must not hide a parameter (it would read the parameter instead).
-      if (this.accounts.has(name) || this.args.has(name)) this.fail(d.name, `"${name}" shadows the parameter "${name}"; use another name`);
+      if (this.accounts.has(name) || this.args.has(name) || this.isGroup(name))
+        this.fail(d.name, `"${name}" shadows the parameter "${name}"; use another name`);
       const c = `l_${name}_${this.temp++}`;
 
       const init = d.initializer;

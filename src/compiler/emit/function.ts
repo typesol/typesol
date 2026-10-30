@@ -125,14 +125,7 @@ export class FunctionEmitter extends StatementEmitter {
       const reallocated = (() => {
         let found = false;
         const visit = (nd: ts.Node) => {
-          if (
-            ts.isCallExpression(nd) &&
-            this.exportName(nd.expression) === "realloc" &&
-            nd.arguments[0] &&
-            ts.isIdentifier(nd.arguments[0]) &&
-            nd.arguments[0].text === a.name
-          )
-            found = true;
+          if (ts.isCallExpression(nd) && this.exportName(nd.expression) === "realloc" && nd.arguments[0] && this.accountAt(nd.arguments[0]) === a) found = true;
           ts.forEachChild(nd, visit);
         };
         visit(ix.node.body!);
@@ -450,7 +443,7 @@ export class FunctionEmitter extends StatementEmitter {
         const [acct, cond, error] = call.arguments;
         if (!acct || !cond || call.arguments.length > 3)
           this.fail(call, "constraint(account, condition, error?) takes an account parameter, a condition and an optional error");
-        const a = ts.isIdentifier(acct) ? ix.accounts.find((x) => x.name === acct.text) : undefined;
+        const a = this.accountAt(acct);
         if (!a) this.fail(acct, "constraint's first argument is the account parameter the check belongs to (it runs with that account's checks)");
         const mark = this.lines.length;
         const hoistMark = this.hoisted.length;
@@ -505,10 +498,13 @@ export class FunctionEmitter extends StatementEmitter {
           hasOne.push(
             `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), &a_${p}->key)) TS_FAIL(${code}, "TypeSOL: ${p} is not the ${f} of ${a.name}");`,
           );
-        } else
+        } else {
+          // A field of the same account group, or the parameter of the same name.
+          const target = c.hasOneParams?.get(f) ?? f;
           hasOne.push(
-            `  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) ${this.checkFail(a, `hasOne:${f}`, "TS_ERR_CONSTRAINT", `${a.name}.${f} must be the ${f} account`)};`,
+            `  if (!ts_key_eq(&d_${a.name}->${f}, &a_${target}->key)) ${this.checkFail(a, `hasOne:${f}`, "TS_ERR_CONSTRAINT", `${a.name}.${f} must be the ${f} account`)};`,
           );
+        }
       }
       if (k === "account") out.push(...hasOne);
       out.push(...(raw.get(a.name) ?? []));

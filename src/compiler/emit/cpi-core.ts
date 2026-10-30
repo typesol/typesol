@@ -99,8 +99,8 @@ export abstract class CpiCoreEmitter extends CallEmitter {
         return { kind: "const", value: Array.from({ length: bytes }, (_, i) => Number((v >> BigInt(8 * i)) & 0xffn)) };
       }
     }
-    if (ts.isPropertyAccessExpression(el) && ts.isIdentifier(el.expression)) {
-      const a = this.accounts.get(el.expression.text);
+    if (ts.isPropertyAccessExpression(el) && this.accountAt(el.expression)) {
+      const a = this.accountAt(el.expression);
       if (a && el.name.text === "key") return { kind: "account", path: snakeCase(a.name) };
       if (a && (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded")) {
         const f = a.kind.struct.fields.find((x) => x.name === el.name.text);

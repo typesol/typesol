@@ -68,6 +68,28 @@ interface IdlAccountItem {
   optional?: boolean;
   address?: string;
   pda?: { seeds: IdlSeed[]; program?: IdlSeed };
+  /** An account group (Anchor's composite accounts): its fields. */
+  accounts?: IdlAccountItem[];
+}
+
+/**
+ * An instruction's accounts with groups flattened as the generated client does: `pool.vault` becomes `pool_vault`
+ * (`poolVault` in `t.ix`), and a seed naming a field of the same group names its flattened account.
+ */
+function flattenAccounts(items: IdlAccountItem[], prefix = ""): IdlAccountItem[] {
+  const out: IdlAccountItem[] = [];
+  for (const it of items) {
+    if (it.accounts) {
+      const group = `${prefix}${it.name}_`;
+      const fields = new Set(it.accounts.filter((f) => !f.accounts).map((f) => f.name));
+      const local = (sd: IdlSeed): IdlSeed => (sd.kind === "account" && fields.has(sd.path.split(".")[0]!) ? { ...sd, path: `${group}${sd.path}` } : sd);
+      for (const f of flattenAccounts(it.accounts, group))
+        out.push(f.pda ? { ...f, pda: { seeds: f.pda.seeds.map(local), ...(f.pda.program ? { program: local(f.pda.program) } : {}) } } : f);
+      continue;
+    }
+    out.push({ ...it, name: `${prefix}${it.name}` });
+  }
+  return out;
 }
 interface ProgramIdl {
   address: string;
@@ -153,7 +175,8 @@ export async function testProgram(program: string, from: string | URL): Promise<
 /** The same helpers for a program already loaded into `svm` at `programId` with this IDL. */
 export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): TestProgram {
   const coder = new BorshCoder(idl);
-  const pidl = idl as unknown as ProgramIdl;
+  const source = idl as unknown as ProgramIdl;
+  const pidl: ProgramIdl = { ...source, instructions: source.instructions.map((ix) => ({ ...ix, accounts: flattenAccounts(ix.accounts) })) };
   const types = new Map((pidl.types ?? []).map((t) => [t.name, t]));
   const enc = getAddressEncoder();
 

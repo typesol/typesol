@@ -370,20 +370,37 @@ export abstract class EmitterBase {
   protected withoutBang(node: ts.Expression): ts.PropertyAccessExpression | undefined {
     if (!ts.isPropertyAccessExpression(node) || !ts.isNonNullExpression(node.expression)) return undefined;
     const inner = node.expression.expression;
-    if (!ts.isIdentifier(inner) || !this.accounts.get(inner.text)?.optional) return undefined;
+    if (!this.accountAt(inner)?.optional) return undefined;
     const plain = ts.factory.createPropertyAccessExpression(inner, node.name);
     ts.setTextRange(plain, node);
     (plain as { parent?: ts.Node }).parent = node.parent;
     return plain;
   }
 
+  /** The account an expression names: a parameter (`vault`) or a field of an account group (`pool.vault`). */
+  protected accountAt(node: ts.Expression): AccountParam | undefined {
+    if (ts.isIdentifier(node)) return this.accounts.get(node.text);
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && this.isGroup(node.expression.text))
+      return this.accounts.get(`${node.expression.text}__${node.name.text}`);
+    return undefined;
+  }
+
+  /** An account group parameter's name. */
+  protected isGroup(name: string): boolean {
+    for (const a of this.accounts.values()) if (a.group?.param === name) return true;
+    return false;
+  }
+
   protected accountParam(node: ts.Expression, what: string): AccountParam {
     // `acct!` on an optional account: the account (its use checks it was passed).
-    if (ts.isNonNullExpression(node) && ts.isIdentifier(node.expression) && this.accounts.get(node.expression.text)?.optional)
-      return this.accountParam(node.expression, what);
-    if (!ts.isIdentifier(node)) this.fail(node, `${what} must be an account parameter`);
-    const a = this.accounts.get(node.text);
-    if (!a) this.fail(node, `${what} must be an account parameter, "${node.text}" is not one`);
+    if (ts.isNonNullExpression(node) && this.accountAt(node.expression)?.optional) return this.accountParam(node.expression, what);
+    const a = this.accountAt(node);
+    if (!a) {
+      if (ts.isIdentifier(node) && this.isGroup(node.text))
+        this.fail(node, `${what} must be an account; "${node.text}" is a group of accounts: pass one of its fields (${node.text}.…)`);
+      if (!ts.isIdentifier(node)) this.fail(node, `${what} must be an account parameter`);
+      this.fail(node, `${what} must be an account parameter, "${node.text}" is not one`);
+    }
     this.assertUsable(a, node);
     return a;
   }

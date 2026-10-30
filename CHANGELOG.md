@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: account groups, Anchor's composite accounts. An interface whose fields are accounts is one parameter
+  (`p: PoolAccounts`): the body uses `p.pool.reserve` and `p.vault`, constraints inside name the group's own fields,
+  the IDL nests the group as Anchor's does, and the client and `typesol/testing` flatten it (`pPool`).
 - New: your errors on declarative constraints, as Anchor's `has_one = owner @ ErrorCode.NotOwner`:
   `HasOne<A, "owner", ErrorCode.NotOwner>`, `Address<A, "…", E.X>`, `Owner<A, "…", E.X>`, `Signed<A, E.X>` and
   `Mut<T, E.X>` (the constraints Anchor names errors for; `constraint(…)` already took one). Nest `HasOne` for an error

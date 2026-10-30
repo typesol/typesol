@@ -180,6 +180,8 @@ export interface Constraints {
    * "hasOne:<field>"; the enum and member named in the type, looked up among the program's error enums.
    */
   errors?: Map<string, { enumName: string; member: string; node: ts.Node }>;
+  /** HasOne fields checked against another parameter than the one of the same name (a field of the same group). */
+  hasOneParams?: Map<string, string>;
 }
 
 export interface AccountParam {
@@ -188,8 +190,11 @@ export interface AccountParam {
   kind: ParamKind;
   /** `A | null` / `Optional<A>`: the client passes this program's id instead of an account to leave it out. */
   optional?: boolean;
-  node: ts.ParameterDeclaration;
+  /** The parameter, or the field of an account group. */
+  node: ts.ParameterDeclaration | ts.PropertySignature;
   constraints: Constraints;
+  /** A field of an account group: the group parameter, the field, and the group's interface. `name` is `<param>__<field>`. */
+  group?: { param: string; field: string; type: string };
   /** Created in the body as a new keypair account (`create(payer, null, …)`), so it signs: the IDL says so. */
   signsInit?: boolean;
 }
