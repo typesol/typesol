@@ -9,7 +9,8 @@ codes, and says so here.
 - Examples: examples/raydium-clmm, a port of Raydium CLMM in progress: its math (tick and sqrt-price math, liquidity
   and token deltas, the swap step) in u256 and u128, checked on-chain against a BigInt model of the original and the
   original's unit-test vectors; and its account layouts, checked against a pool's accounts cloned from mainnet (sizes,
-  discriminators, and fields as the program's on-chain IDL decodes them).
+  discriminators, and fields as the program's on-chain IDL decodes them); and `create_amm_config` and `create_pool`,
+  checked against the mainnet binary (test/programs/raydium_clmm.so): the same outcomes, account bytes and events.
 - New: `u256`, a 256-bit unsigned integer for computation (locals, helpers; never stored, sent or returned), with the
   checked operators, comparisons, casts to and from it, and `mulDiv` / `mulDivCeil` through a 512-bit product. The
   runtime works on 32-bit limbs with 64-bit products and divides with Knuth's algorithm D; a fuzzer checks every
