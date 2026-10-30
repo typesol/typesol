@@ -325,6 +325,31 @@ const COMMANDS: Record<string, Command> = {
       return 0;
     },
   },
+  clone: {
+    usage: "typesol clone [<address>…] [--url <rpc>] [--config <solana cli config>] [--out <dir>]",
+    help: [
+      "Copy accounts and programs from a cluster for the tests (Anchor's [test.validator.clone]): each account to",
+      '<address>.json, each program to <address>.so (its ELF), in the project\'s tests/accounts ("accounts" in typesol.json)',
+      'or --out. Without addresses, the project\'s "clone" list. testProgram loads that directory into its LiteSVM.',
+      "The RPC is --url, a cluster moniker, or the Solana CLI config.",
+    ].join("\n  "),
+    options: { url: { type: "string" }, config: { type: "string" }, out: { type: "string" } },
+    async run(v, args) {
+      const ws = findWorkspace(process.cwd());
+      const addresses = args.length ? args : (ws?.clone ?? []);
+      if (!addresses.length) throw new UsageError(`name the accounts to clone, or list them in ${CONFIG} as "clone": ["…"]`);
+      for (const a of addresses) if (!decodeAddress(a)) throw new UsageError(`"${a}" is not a base58 Solana address`);
+      const dir = path.resolve((v.out as string | undefined) ?? ws?.accounts ?? "accounts");
+      const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
+      if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
+      const kit = await import("@solana/kit");
+      const { cloneAccounts } = await import("./tools/clone.js");
+      const lines = await cloneAccounts(kit.createSolanaRpc(clusterUrl(rpcUrl)) as never, [...new Set(addresses)], dir);
+      for (const l of lines) log(`  ${l}`);
+      log(`  ${lines.length} written to ${path.relative(process.cwd(), dir) || "."}`);
+      return 0;
+    },
+  },
   cpi: {
     usage: "typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]",
     help: "Generate TypeSOL helpers that call another program's instructions, from its Anchor IDL (0.30+/1.x or TypeSOL).",

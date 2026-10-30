@@ -32,6 +32,10 @@ export interface Workspace {
   programs: Record<string, ProgramEntry>;
   out: string;
   sbpf: Sbpf;
+  /** Cluster accounts `typesol clone` copies for the tests (Anchor's `[test.validator.clone]`). */
+  clone: string[];
+  /** Where cloned accounts are kept and testProgram loads them from (default tests/accounts). */
+  accounts: string;
 }
 
 export function findWorkspace(dir: string): Workspace | undefined {
@@ -43,7 +47,7 @@ export function findWorkspace(dir: string): Workspace | undefined {
 }
 
 function readWorkspace(file: string): Workspace {
-  let raw: { programs?: Record<string, string | ProgramEntry>; out?: string; sbpf?: Sbpf };
+  let raw: { programs?: Record<string, string | ProgramEntry>; out?: string; sbpf?: Sbpf; clone?: unknown; accounts?: unknown };
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
   } catch (e) {
@@ -60,7 +64,18 @@ function readWorkspace(file: string): Workspace {
       throw new Error(`${file}: program "${name}" needs a snake_case name and { "path": "…", "address"?: "…" } (or just the path)`);
     programs[name] = e;
   }
-  return { root: path.dirname(file), file, programs, out: raw.out ?? "target", sbpf: raw.sbpf ?? "v0" };
+  if (raw.clone !== undefined && (!Array.isArray(raw.clone) || raw.clone.some((a) => typeof a !== "string")))
+    throw new Error(`${file}: "clone" must be a list of base58 addresses`);
+  if (raw.accounts !== undefined && typeof raw.accounts !== "string") throw new Error(`${file}: "accounts" must be a directory path`);
+  return {
+    root: path.dirname(file),
+    file,
+    programs,
+    out: raw.out ?? "target",
+    sbpf: raw.sbpf ?? "v0",
+    clone: (raw.clone as string[] | undefined) ?? [],
+    accounts: path.resolve(path.dirname(file), (raw.accounts as string | undefined) ?? "tests/accounts"),
+  };
 }
 
 export interface ProgramPaths {

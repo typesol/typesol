@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `typesol clone [<address>…]` (Anchor's `[test.validator.clone]`): cluster accounts and programs copied to
+  `tests/accounts/` (`"clone"` and `"accounts"` in `typesol.json`), which `testProgram` loads into its LiteSVM;
+  `loadClonedAccounts(svm, dir)` for a LiteSVM of your own.
 - New: `/** @fallback */` (Anchor's `fallback`): an instruction without parameters run when no other matches the data,
   short data included, instead of 101; it reads `const data = instructionData()` and `remainingAccounts()`.
 - New: `MemoProgram`: `memoProgram.memo(text, [signers], signerSeeds?)`, SPL Memo v2 signed by wallets or this
