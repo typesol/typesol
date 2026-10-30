@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: examples/raydium-clmm now ports all 37 of Raydium CLMM's instructions. Added: the customizable pools,
+  the v1 and v2 positions with Metaplex NFTs, `close_position`, `swap` and the multi-hop `swap_router_base_in`, the
+  five limit order instructions, the reward instructions, and the admin instructions (configs, operators, dynamic fee
+  configs, support mints, pool status, `collect_excess_lamports`). The differential test runs the admin instructions
+  too, with Raydium's admin key swapped for a test key in both programs: 300 transactions, the same outcomes, account
+  bytes and events, 33–84% fewer compute units.
+
 ## 0.37.0 — 2026-10-31
 
 Raydium CLMM ported and checked against the mainnet binary, with what it needed: `u256`, big-endian seeds,
