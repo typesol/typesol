@@ -1453,7 +1453,8 @@ export interface Mint extends AccountMeta {
 /** The System Program. Its address is checked. */
 export interface SystemProgram extends AccountMeta {
   readonly __system: void;
-  transfer(from: Mut<Signer>, to: AccountMeta, lamports: u64): void;
+  /** `from` signs: a `Mut<Signer>`, or a system-owned PDA of this program (a SOL vault) with its `signerSeeds`. */
+  transfer(from: AccountMeta, to: AccountMeta, lamports: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /**
    * Create `account` with `space` bytes owned by `owner`, funded by `payer`. The new account signs: a
    * `Mut<Signer>` keypair, or a PDA of this program when you pass its `signerSeeds` (with the bump).
@@ -1480,6 +1481,10 @@ interface TokenOps {
   /** Let `delegate` move up to `amount` from `source`. */
   approve(source: TokenAccount, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   revoke(source: TokenAccount, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** The checked forms read the decimals from `mint`; Token-2022 mints with some extensions require them. */
+  approveChecked(source: TokenAccount, mint: Mint, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  mintToChecked(mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  burnChecked(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Change or remove (null) an authority of a mint or token account: `AuthorityType.MintTokens`, …. */
   setAuthority(target: AccountMeta, currentAuthority: AccountMeta, authorityType: u8, newAuthority: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
   freezeAccount(account: TokenAccount, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
@@ -1650,7 +1655,8 @@ export declare function invoke(
   program: Program<string> | UncheckedProgram | SystemProgram | TokenProgram | Token2022Program | TokenInterface | RemainingAccount,
   accounts: CpiAccount[],
   data: CpiData[],
-  signerSeeds?: Seed[] | SignerSeeds,
+  /** One PDA's seeds (with its bump), or a list of them when several PDAs sign: `[["vault", key, b1], ["fees", b2]]`. */
+  signerSeeds?: Seed[] | SignerSeeds | (Seed[] | SignerSeeds)[],
 ): void;
 
 /** One account of an instruction built at run time (Rust's `AccountMeta`): any struct with these three fields. */
@@ -1676,7 +1682,7 @@ export declare function invokeInstruction(
   accounts: IndexedList<InstructionAccountMeta>,
   data: IndexedList<u8>,
   infos: RemainingAccounts | RemainingSlice,
-  signerSeeds?: Seed[] | SignerSeeds,
+  signerSeeds?: Seed[] | SignerSeeds | (Seed[] | SignerSeeds)[],
 ): void;
 
 /**

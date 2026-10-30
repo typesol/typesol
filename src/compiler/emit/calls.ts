@@ -670,7 +670,28 @@ export abstract class CallEmitter extends ExpressionEmitter {
       this.fail(callee.expression, "fixedArray<T, N>(fill) is only allowed as a local declaration: const xs = fixedArray<u64, 4>(0n)");
     if (ts.isPropertyAccessExpression(callee) && callee.name.text === "slice" && this.isRemaining(callee.expression))
       this.fail(node, "rest.slice(a, b) is only for spreading into a CPI's accounts: invoke(p, [..., ...readonly(rest.slice(a, b))], data)");
-    this.fail(node, "unsupported call");
+    this.fail(node, this.unsupportedCall(callee));
+  }
+
+  /** "unsupported call" naming the callee, with the TypeSOL form of common JavaScript calls. */
+  private unsupportedCall(callee: ts.Expression): string {
+    const text = callee.getText();
+    const hints: Record<string, string> = {
+      "console.log": "log(…)",
+      "Math.min": "min(a, b)",
+      "Math.max": "max(a, b)",
+      "Date.now": "now() (the Clock's unix timestamp)",
+      "JSON.stringify": "log(…) with the values",
+      Number: "u64(x) or another integer cast",
+      BigInt: "u64(x) or another integer cast",
+      String: "a FixedString<N> field, or log(…)",
+    };
+    const hint = hints[text];
+    if (hint) return `unsupported call: ${text}; use ${hint}`;
+    if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+      if (this.accounts.get(callee.expression.text)) return `unsupported call: the account ${callee.expression.text} has no method ${callee.name.text}`;
+    }
+    return `unsupported call: ${text.length > 60 ? `${text.slice(0, 57)}…` : text}`;
   }
 
   protected vecMethod(node: ts.CallExpression, method: string, v: Ref): Value | undefined {

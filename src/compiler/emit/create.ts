@@ -483,14 +483,22 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
   }
 
   protected systemTransfer(node: ts.CallExpression): undefined {
-    if (node.arguments.length !== 3) this.fail(node, "transfer(from, to, lamports) takes three arguments");
-    const [fromN, toN, amtN] = node.arguments;
+    const a = node.arguments;
+    if (a.length !== 3 && a.length !== 4) this.fail(node, "transfer(from, to, lamports, signerSeeds?)");
+    const [fromN, toN, amtN] = a;
     const from = this.accountParam(fromN, "transfer's source");
-    if (from.kind.kind !== "signer" || !from.kind.mut) this.fail(fromN, "the source must be a Mut<Signer>");
+    if (a.length === 3 && (from.kind.kind !== "signer" || !from.kind.mut))
+      this.fail(fromN, "the source must be a Mut<Signer>, or a Mut<AccountInfo> PDA of this program with signerSeeds");
+    if (a.length === 4 && !isWritable(from.kind)) this.fail(fromN, "the source must be writable (Mut<...>)");
     const to = this.accountParam(toN, "transfer's destination");
     if (!isWritable(to.kind)) this.fail(toN, "the destination must be writable (Mut<...>)");
     const amt = this.expect(this.expr(amtN, U64), U64, amtN);
-    this.line(`TS_TRY(ts_system_transfer(params, a_${from.name}, a_${to.name}, ${amt.c}));`);
+    if (a.length === 3) this.line(`TS_TRY(ts_system_transfer(params, a_${from.name}, a_${to.name}, ${amt.c}));`);
+    else {
+      // A system-owned PDA of this program (a SOL vault) pays.
+      const s = this.signingSeeds(a[3]);
+      this.line(`TS_TRY(ts_system_transfer_signed(params, a_${from.name}, a_${to.name}, ${amt.c}, ${s.name}, ${s.count}));`);
+    }
     return undefined;
   }
 

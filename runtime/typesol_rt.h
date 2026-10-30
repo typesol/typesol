@@ -775,15 +775,22 @@ static inline uint64_t ts_require_pda(const TsAccount *a, const SolSignerSeed *s
 }
 
 /* ---- System program CPIs ------------------------------------------------- */
-static inline uint64_t ts_system_transfer(TsParams *params, TsAccount *from, TsAccount *to,
-                                          uint64_t lamports) {
+static inline uint64_t ts_system_transfer_signed(TsParams *params, TsAccount *from, TsAccount *to,
+                                                 uint64_t lamports, const SolSignerSeed *seeds, int nseeds) {
   uint8_t data[12];
   uint32_t tag = 2;
   ts_memcpy(data, &tag, 4);
   ts_memcpy(data + 4, &lamports, 8);
   SolAccountMeta metas[2] = {{&from->key, true, true}, {&to->key, true, false}};
   SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
-  return ts_invoke(params, &ix, NULL, 0);
+  if (nseeds == 0) return ts_invoke(params, &ix, NULL, 0);
+  SolSignerSeeds signer = {seeds, (uint64_t)nseeds};
+  return ts_invoke(params, &ix, &signer, 1);
+}
+
+static inline uint64_t ts_system_transfer(TsParams *params, TsAccount *from, TsAccount *to,
+                                          uint64_t lamports) {
+  return ts_system_transfer_signed(params, from, to, lamports, NULL, 0);
 }
 
 /*

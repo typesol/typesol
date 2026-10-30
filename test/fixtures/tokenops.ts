@@ -128,3 +128,23 @@ export function wrap(payer: Mut<Signer>, account: Mut<TokenAccount>, systemProgr
   require(account.isNative, "wrapped SOL");
   return account.amount;
 }
+
+/** The checked forms, which carry the mint's decimals. */
+export function mintChecked(mint: HasOne<Mut<Mint>, "mintAuthority">, to: Mut<TokenAccount>, mintAuthority: Account<Config>, tokenProgram: TokenInterface, amount: u64): void {
+  tokenProgram.mintToChecked(mint, to, mintAuthority, amount, ["config", mintAuthority.bump]);
+}
+
+export function burnChecked(vault: HasOne<Mut<TokenAccount>, "mint" | "owner">, mint: Mut<Mint>, owner: Account<Config>, tokenProgram: TokenInterface, amount: u64): void {
+  tokenProgram.burnChecked(vault, mint, owner, amount, ["config", owner.bump]);
+}
+
+export function delegateChecked(
+  vault: HasOne<Mut<TokenAccount>, "mint" | "owner">,
+  mint: Mint,
+  owner: Account<Config>,
+  spender: AccountInfo,
+  tokenProgram: TokenInterface,
+  amount: u64,
+): void {
+  tokenProgram.approveChecked(vault, mint, spender, owner, amount, ["config", owner.bump]);
+}

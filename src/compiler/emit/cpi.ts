@@ -126,7 +126,8 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     }
     finish(a[2]);
 
-    const seeds = hasSeeds ? this.signingSeeds(a[3]) : { name: "NULL", count: 0 };
+    const multi = hasSeeds ? this.signerSets(a[3]) : undefined;
+    const seeds = hasSeeds && !multi ? this.signingSeeds(a[3]) : { name: "NULL", count: 0 };
     const metasName = this.tmp("metas");
     let count: string = String(metas.length);
     if (parts.some((p) => p.kind === "spread")) {
@@ -157,7 +158,8 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     } else this.line(`SolAccountMeta ${metasName}[${Math.max(metas.length, 1)}] = {${metas.join(", ")}};`);
     const ixName = this.tmp("cpi");
     this.line(`SolInstruction ${ixName} = {${programKey}, ${metasName}, ${count}, ${buf}, ${len}};`);
-    if (hasSeeds) {
+    if (multi) this.line(`TS_TRY(ts_invoke(params, &${ixName}, ${multi.ptr}, ${multi.count}));`);
+    else if (hasSeeds) {
       const signer = this.tmp("signer");
       this.line(`SolSignerSeeds ${signer} = {${seeds.name}, ${seeds.count}};`);
       // No seeds (e.g. signer([]) passed to a helper) means no PDA signature at all.
@@ -199,7 +201,8 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     const data = list(a[2]!, "the data");
     if (data.elem.kind !== "int" || data.elem.name !== "u8") this.fail(a[2]!, "the data is a list of u8");
     const range = this.remainingRange(a[3]!) ?? this.fail(a[3]!, "pass the accounts the CPI may use: remainingAccounts() or rest.slice(a, b)");
-    const seeds = a.length === 5 ? this.signingSeeds(a[4]!) : undefined;
+    const multi = a.length === 5 ? this.signerSets(a[4]!) : undefined;
+    const seeds = a.length === 5 && !multi ? this.signingSeeds(a[4]!) : undefined;
 
     const n = this.tmp("dn");
     const m = this.tmp("dmetas");
@@ -219,7 +222,8 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     this.line(`for (uint64_t ${i}b = ${base} + ${range.from}; ${i}b < ${base} + ${range.to}; ${i}b++) ts_info(params->ka[${i}b], &params->infos[${k}++]);`);
     const ixName = this.tmp("cpi");
     this.line(`SolInstruction ${ixName} = {&${programKey}, ${m}, ${n}, (uint8_t *)${data.items}, ${data.count}};`);
-    if (seeds) {
+    if (multi) this.line(`TS_TRY(sol_invoke_signed(&${ixName}, params->infos, ${k}, ${multi.ptr}, ${multi.count}));`);
+    else if (seeds) {
       const signer = this.tmp("signer");
       this.line(`SolSignerSeeds ${signer} = {${seeds.name}, ${seeds.count}};`);
       this.line(
