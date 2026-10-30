@@ -659,6 +659,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
         if (target?.kind.kind === "memoProgram") return this.memoOp(node, target, method);
+        if (target?.kind.kind === "stakeProgram") return this.stakeOp(node, target, method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
         // Each Metaplex CPI in its own C block: its data buffer's stack slot is reused by the next one.
         if (target?.kind.kind === "coreProgram" || target?.kind.kind === "bubblegumProgram") {

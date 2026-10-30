@@ -3,6 +3,8 @@ import { type AccountParam, type ScalarType, type ValueType, isWritable, optionK
 import { U64, U8, BOOL, PUBKEY, STRING, type Value, cBytes } from "./shared.js";
 import { TokenEmitter } from "./token.js";
 
+const U16V: ValueType = { kind: "int", name: "u16" };
+
 /** One piece of a Metaplex instruction's Borsh data: fixed bytes, or a value lowered and serialized in source order. */
 type MplField = { bytes: number[] } | { value: ts.Expression; type: ValueType } | { c: string; n: string };
 
@@ -198,8 +200,12 @@ const CORE_PLUGIN_FIELDS: Record<string, string[]> = {
 export abstract class MetaplexEmitter extends TokenEmitter {
   protected metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
     if (method === "createMasterEditionV3" || method === "verifyCollection") return this.metadataCollectionOp(node, program, method);
+    if (method === "updateMetadataAccountsV2") return this.metadataUpdate(node, program);
     if (method !== "createV3")
-      this.fail(node.expression, `the Token Metadata program supports createV3, createMasterEditionV3 and verifyCollection, not ${method}`);
+      this.fail(
+        node.expression,
+        `the Token Metadata program supports createV3, createMasterEditionV3, verifyCollection and updateMetadataAccountsV2, not ${method}`,
+      );
     const a = node.arguments;
     const usage =
       "createV3(metadata, mint, mintAuthority, payer, updateAuthority, systemProgram, name, symbol, uri, sellerFeeBasisPoints, isMutable, { creators?, collection?, isCollection? }?, signerSeeds?)";
@@ -234,36 +240,9 @@ export abstract class MetaplexEmitter extends TokenEmitter {
       for (const p of extras.properties) {
         if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) this.fail(p, "use creators: [...], collection: key and isCollection: boolean");
         if (p.name.text === "creators") {
-          if (!ts.isArrayLiteralExpression(p.initializer)) this.fail(p.initializer, "creators: [{ address, verified, share }, …] (an array literal)");
-          const list = p.initializer.elements;
-          if (list.length < 1 || list.length > 5) this.fail(p.initializer, "Metaplex takes 1 to 5 creators");
-          const buf = this.tmp("creators");
-          this.line(`uint8_t ${buf}[${34 * list.length}];`);
-          let shares = 0n;
-          let constant = true;
-          list.forEach((el, i) => {
-            if (!ts.isObjectLiteralExpression(el)) this.fail(el, "a creator is { address, verified, share }");
-            const field = (k: string) => {
-              const q = el.properties.find((x) => ts.isPropertyAssignment(x) && ts.isIdentifier(x.name) && x.name.text === k) as
-                ts.PropertyAssignment | undefined;
-              const sh = el.properties.find((x) => ts.isShorthandPropertyAssignment(x) && x.name.text === k) as ts.ShorthandPropertyAssignment | undefined;
-              if (!q && !sh) this.fail(el, `a creator needs ${k}`);
-              return q ? q.initializer : sh!.name;
-            };
-            const at = 34 * i;
-            const key = this.expect(this.expr(field("address"), PUBKEY), PUBKEY, el);
-            this.line(`ts_memcpy(${buf} + ${at}, ${key.c}, 32);`);
-            const verified = this.expect(this.expr(field("verified"), BOOL), BOOL, el);
-            this.line(`${buf}[${at + 32}] = (${verified.c}) ? 1 : 0;`);
-            const shareNode = field("share");
-            if (ts.isBigIntLiteral(shareNode)) shares += BigInt(shareNode.text.slice(0, -1));
-            else constant = false;
-            const share = this.expect(this.expr(shareNode, U8), U8, el);
-            this.line(`${buf}[${at + 33}] = (uint8_t)(${share.c});`);
-          });
-          if (constant && shares !== 100n) this.fail(p.initializer, `creator shares add up to ${shares}; Metaplex requires 100`);
-          creators = buf;
-          ncreators = String(list.length);
+          const c = this.mplCreators(p.initializer);
+          creators = c.buf;
+          ncreators = c.count;
         } else if (p.name.text === "collection") {
           const key = this.expect(this.expr(p.initializer, PUBKEY), PUBKEY, p.initializer);
           const t = this.tmp("coll");
@@ -282,6 +261,99 @@ export abstract class MetaplexEmitter extends TokenEmitter {
     const [name, symbol, uri, fee, mutable] = slots.map((i) => vals[i]);
     this.line(
       `TS_TRY(ts_mpl_create_v3(params, a_${program.name}, a_${metadata.name}, a_${mint.name}, a_${mintAuth.name}, a_${payer.name}, a_${updateAuth.name}, a_${sys.name}, ${name.c}, ${symbol.c}, ${uri.c}, ${fee.c}, ${mutable.c}, ${creators}, ${ncreators}, ${collection}, ${sized}, ${seeds.name}, ${seeds.count}));`,
+    );
+    return undefined;
+  }
+
+  /** Metaplex creators `[{ address, verified, share }, …]` (1 to 5, shares adding up to 100): 34 bytes each. */
+  protected mplCreators(list0: ts.Expression): { buf: string; count: string } {
+    if (!ts.isArrayLiteralExpression(list0)) this.fail(list0, "creators: [{ address, verified, share }, …] (an array literal)");
+    const list = list0.elements;
+    if (list.length < 1 || list.length > 5) this.fail(list0, "Metaplex takes 1 to 5 creators");
+    const buf = this.tmp("creators");
+    this.line(`uint8_t ${buf}[${34 * list.length}];`);
+    let shares = 0n;
+    let constant = true;
+    list.forEach((el, i) => {
+      if (!ts.isObjectLiteralExpression(el)) this.fail(el, "a creator is { address, verified, share }");
+      const field = (k: string) => {
+        const q = el.properties.find((x) => ts.isPropertyAssignment(x) && ts.isIdentifier(x.name) && x.name.text === k) as ts.PropertyAssignment | undefined;
+        const sh = el.properties.find((x) => ts.isShorthandPropertyAssignment(x) && x.name.text === k) as ts.ShorthandPropertyAssignment | undefined;
+        if (!q && !sh) this.fail(el, `a creator needs ${k}`);
+        return q ? q.initializer : sh!.name;
+      };
+      const at = 34 * i;
+      const key = this.expect(this.expr(field("address"), PUBKEY), PUBKEY, el);
+      this.line(`ts_memcpy(${buf} + ${at}, ${key.c}, 32);`);
+      const verified = this.expect(this.expr(field("verified"), BOOL), BOOL, el);
+      this.line(`${buf}[${at + 32}] = (${verified.c}) ? 1 : 0;`);
+      const shareNode = field("share");
+      if (ts.isBigIntLiteral(shareNode)) shares += BigInt(shareNode.text.slice(0, -1));
+      else constant = false;
+      const share = this.expect(this.expr(shareNode, U8), U8, el);
+      this.line(`${buf}[${at + 33}] = (uint8_t)(${share.c});`);
+    });
+    if (constant && shares !== 100n) this.fail(list0, `creator shares add up to ${shares}; Metaplex requires 100`);
+    return { buf, count: String(list.length) };
+  }
+
+  /**
+   * updateMetadataAccountsV2(metadata, updateAuthority, data | null, newUpdateAuthority | null, primarySaleHappened |
+   * null, isMutable | null, signerSeeds?): Anchor's `update_metadata_accounts_v2`. `data` is the whole new DataV2
+   * (`{ name, symbol, uri, sellerFeeBasisPoints, creators?, collection? }`); each null leaves that part as it is.
+   */
+  protected metadataUpdate(node: ts.CallExpression, program: AccountParam): undefined {
+    const a = node.arguments;
+    const usage =
+      "updateMetadataAccountsV2(metadata, updateAuthority, data | null, newUpdateAuthority | null, primarySaleHappened | null, isMutable | null, signerSeeds?)";
+    if (a.length !== 6 && a.length !== 7) this.fail(node, usage);
+    const metadata = this.accountParam(a[0], "the metadata account");
+    if (!isWritable(metadata.kind)) this.fail(a[0], "the metadata account must be Mut<AccountInfo>");
+    const ua = this.accountParam(a[1], "the update authority");
+    const isNull = (n: ts.Expression) => n.kind === ts.SyntaxKind.NullKeyword;
+    let hasData = "false";
+    let name = "ts_str(NULL, 0)";
+    let symbol = name;
+    let uri = name;
+    let fee = "0";
+    let creators = "NULL";
+    let ncreators = "-1";
+    let collection = "NULL";
+    if (!isNull(a[2])) {
+      if (!ts.isObjectLiteralExpression(a[2])) this.fail(a[2], "data is { name, symbol, uri, sellerFeeBasisPoints, creators?, collection? } or null");
+      const props = this.literalProps(a[2], ["name", "symbol", "uri", "sellerFeeBasisPoints", "creators", "collection"], "data");
+      for (const k of ["name", "symbol", "uri", "sellerFeeBasisPoints"]) if (!props.has(k)) this.fail(a[2], `data needs ${k} (it replaces the whole DataV2)`);
+      const text = (k: string) => {
+        const t = this.tmp("md");
+        this.line(`TS_Str ${t} = ${this.expect(this.expr(props.get(k)!, STRING), STRING, props.get(k)!).c};`);
+        return t;
+      };
+      [name, symbol, uri] = ["name", "symbol", "uri"].map(text);
+      const f = this.tmp("fee");
+      this.line(`uint16_t ${f} = ${this.expect(this.expr(props.get("sellerFeeBasisPoints")!, U16V), U16V, props.get("sellerFeeBasisPoints")!).c};`);
+      fee = f;
+      if (props.has("creators")) ({ buf: creators, count: ncreators } = this.mplCreators(props.get("creators")!));
+      if (props.has("collection")) {
+        const key = this.expect(this.expr(props.get("collection")!, PUBKEY), PUBKEY, props.get("collection")!);
+        const t = this.tmp("coll");
+        this.line(`SolPubkey ${t} = *(${key.c});`);
+        collection = `&${t}`;
+      }
+      hasData = "true";
+    }
+    let next = "NULL";
+    if (!isNull(a[3])) {
+      const key = this.expect(this.expr(a[3], PUBKEY), PUBKEY, a[3]);
+      const t = this.tmp("ua");
+      this.line(`SolPubkey ${t} = *(${key.c});`);
+      next = `&${t}`;
+    }
+    const flag = (n: ts.Expression) => (isNull(n) ? "-1" : `((${this.expect(this.expr(n, BOOL), BOOL, n).c}) ? 1 : 0)`);
+    const primary = flag(a[4]);
+    const mutable = flag(a[5]);
+    const seeds = this.signerSeeds(a[6], ua, a[1]);
+    this.line(
+      `TS_TRY(ts_mpl_update_v2(params, a_${program.name}, a_${metadata.name}, a_${ua.name}, ${hasData}, ${name}, ${symbol}, ${uri}, ${fee}, ${creators}, ${ncreators}, ${collection}, ${next}, ${primary}, ${mutable}, ${seeds.name}, ${seeds.count}));`,
     );
     return undefined;
   }

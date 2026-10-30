@@ -1,3 +1,4 @@
+import { FailedTransactionMetadata } from "litesvm";
 import { getAddressDecoder } from "@solana/kit";
 import { pk } from "../ports-helpers.js";
 import { existsSync } from "node:fs";
@@ -170,6 +171,86 @@ describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
     expect(data[0]).toBe(4); // Key::MetadataV1
     expect(data.includes(Buffer.from("TypeSOL"))).toBe(true);
     expect(data.includes(Buffer.from("https://example.com/m.json"))).toBe(true);
+  });
+
+  it.skipIf(!HAVE_MPL)("updates Metaplex metadata signed by the PDA update authority, then hands it over", async () => {
+    const { admin, mint, issuer } = await issuerWith(TOKEN_PROGRAM);
+    const [metadata] = await pda(MPL, ["metadata", MPL, mint]);
+    expectOk(
+      await send(d.svm, admin, [
+        ix(d, "name_metaplex", { name: "TypeSOL", symbol: "DEMO", uri: "https://example.com/m.json" }, [
+          { address: admin.address, signer: admin, writable: true },
+          { address: issuer },
+          { address: mint },
+          { address: metadata, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: MPL },
+        ]),
+      ]),
+    );
+    const artist = (await generateKeyPairSigner()).address;
+    const parse = () => {
+      const b = Buffer.from((d.svm.getAccount(metadata) as { data: Uint8Array }).data);
+      let at = 1;
+      const key = () => getAddressDecoder().decode(b.subarray(at, (at += 32)));
+      const str = () => {
+        const n = b.readUInt32LE(at);
+        const v = b
+          .subarray(at + 4, at + 4 + n)
+          .toString("utf8")
+          .replace(/\0+$/, "");
+        at += 4 + n;
+        return v;
+      };
+      const updateAuthority = key();
+      key(); // mint
+      const [name, symbol, uri] = [str(), str(), str()];
+      const fee = b.readUInt16LE(at);
+      at += 2;
+      const creators: string[] = [];
+      if (b[at++] === 1) {
+        const n = b.readUInt32LE(at);
+        at += 4;
+        for (let i = 0; i < n; i++, at += 34) creators.push(getAddressDecoder().decode(b.subarray(at, at + 32)));
+      }
+      const primarySale = b[at++] === 1;
+      const mutable = b[at++] === 1;
+      return { updateAuthority, name, symbol, uri, fee, creators, primarySale, mutable };
+    };
+    const rename = (name: string) =>
+      send(d.svm, admin, [
+        ix(d, "rename_metaplex", { name, artist: pk(artist) }, [
+          { address: admin.address, signer: admin },
+          { address: issuer },
+          { address: metadata, writable: true },
+          { address: MPL },
+        ]),
+      ]);
+    expectOk(await rename("TypeSOL v2"));
+    expect(parse()).toEqual({
+      updateAuthority: issuer,
+      name: "TypeSOL v2",
+      symbol: "DEMO2",
+      uri: "https://example.com/v2.json",
+      fee: 250,
+      creators: [artist],
+      primarySale: true,
+      mutable: true,
+    });
+    const next = (await generateKeyPairSigner()).address;
+    expectOk(
+      await send(d.svm, admin, [
+        ix(d, "hand_over_metaplex", { next: pk(next) }, [
+          { address: admin.address, signer: admin },
+          { address: issuer },
+          { address: metadata, writable: true },
+          { address: MPL },
+        ]),
+      ]),
+    );
+    expect([parse().updateAuthority, parse().mutable, parse().name]).toEqual([next, false, "TypeSOL v2"]);
+    // The issuer is no longer the update authority.
+    expect(await rename("again")).toBeInstanceOf(FailedTransactionMetadata);
   });
 
   it.skipIf(!HAVE_MPL)("writes creators and an unverified collection into Metaplex metadata", async () => {

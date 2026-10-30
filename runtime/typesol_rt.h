@@ -1837,6 +1837,7 @@ static inline uint64_t ts_switchboard_value(const TsAccount *a, uint64_t max_sta
 }
 
 /* ---- Associated token accounts, token metadata, transfer hooks ------------------- */
+static const SolPubkey TS_STAKE_PROGRAM_ID = {{6,161,216,23,145,55,84,42,152,52,55,189,254,42,122,178,85,127,83,92,138,120,114,43,104,164,157,192,0,0,0,0}};
 static const SolPubkey TS_MEMO_PROGRAM_ID = {{5,74,83,90,153,41,33,6,77,36,232,113,96,218,56,124,124,53,181,221,188,146,187,129,228,31,168,64,65,5,68,141}};
 static const SolPubkey TS_SLOT_HASHES_ID = {{6,167,213,23,25,47,10,175,198,242,101,227,251,119,204,122,218,130,197,41,208,190,59,19,110,45,0,85,32,0,0,0}};
 static const SolPubkey TS_ATA_PROGRAM_ID = {{140,151,37,143,78,36,137,241,187,61,16,41,20,142,13,131,11,90,19,153,218,255,16,132,4,142,123,216,219,233,248,89}};
@@ -1969,6 +1970,66 @@ static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *progr
                              {&mint_authority->key, false, true},     {&payer->key, true, true},
                              {&update_authority->key, false, ua_signs}, {&system->key, false, false}};
   SolInstruction ix = {(SolPubkey *)&program->key, metas, 6, data, at};
+  SolSignerSeeds signer = {seeds, (uint64_t)n};
+  return ts_invoke(params, &ix, &signer, n > 0 ? 1 : 0);
+}
+
+/*
+ * UpdateMetadataAccountV2 (15): each part optional. `has_data` sets the whole DataV2 (name, symbol, uri, fee, creators
+ * (ncreators < 0: None), collection (NULL: None), uses None); `new_ua` NULL leaves the update authority; `primary` and
+ * `mutable` are -1 to leave them, else 0 / 1. The update authority signs.
+ */
+static inline uint64_t ts_mpl_update_v2(TsParams *params, const TsAccount *program, TsAccount *metadata,
+                                        TsAccount *update_authority, bool has_data, TS_Str name, TS_Str symbol, TS_Str uri,
+                                        uint16_t fee_bps, const uint8_t *creators, int ncreators, const SolPubkey *collection,
+                                        const SolPubkey *new_ua, int primary, int mutable_, const SolSignerSeed *seeds, int n) {
+  uint8_t *data;
+  uint64_t ncr = ncreators > 0 ? (uint64_t)ncreators : 0;
+  TS_TRY(ts_alloc(1 + 1 + 12 + name.len + symbol.len + uri.len + 2 + (1 + 4 + 34 * ncr) + (1 + 33) + 1 + 33 + 2 + 2, &data));
+  uint64_t at = 0;
+  data[at++] = 15;
+  if (!has_data) {
+    data[at++] = 0;
+  } else {
+    data[at++] = 1;
+    ts_put_str(data, &at, name);
+    ts_put_str(data, &at, symbol);
+    ts_put_str(data, &at, uri);
+    ts_memcpy(data + at, &fee_bps, 2);
+    at += 2;
+    if (ncreators < 0) {
+      data[at++] = 0;
+    } else {
+      data[at++] = 1;
+      uint32_t count = (uint32_t)ncreators;
+      ts_memcpy(data + at, &count, 4);
+      at += 4;
+      ts_memcpy(data + at, creators, 34 * ncr);
+      at += 34 * ncr;
+    }
+    if (collection) {
+      data[at++] = 1;
+      data[at++] = 0; /* verified: false */
+      ts_memcpy(data + at, collection, 32);
+      at += 32;
+    } else {
+      data[at++] = 0;
+    }
+    data[at++] = 0; /* uses: None */
+  }
+  if (new_ua) {
+    data[at++] = 1;
+    ts_memcpy(data + at, new_ua, 32);
+    at += 32;
+  } else {
+    data[at++] = 0;
+  }
+  if (primary < 0) data[at++] = 0;
+  else data[at++] = 1, data[at++] = (uint8_t)primary;
+  if (mutable_ < 0) data[at++] = 0;
+  else data[at++] = 1, data[at++] = (uint8_t)mutable_;
+  SolAccountMeta metas[2] = {{&metadata->key, true, false}, {&update_authority->key, false, true}};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, 2, data, at};
   SolSignerSeeds signer = {seeds, (uint64_t)n};
   return ts_invoke(params, &ix, &signer, n > 0 ? 1 : 0);
 }
