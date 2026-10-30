@@ -469,8 +469,11 @@ export interface AccountMeta {
  */
 export declare function pubkey(base58: string): Pubkey;
 
-/** The account must be this exact address (Anchor `address = …`, error 2012): `Address<Mut<AccountInfo>, "4Nd1…">`. */
-export type Address<A, Base58 extends string> = A & { readonly __address?: Base58 };
+/**
+ * The account must be this exact address (Anchor `address = …`, error 2012): `Address<Mut<AccountInfo>, "4Nd1…">`.
+ * A third argument fails with one of your errors instead (Anchor's `address = … @ ErrorCode.X`).
+ */
+export type Address<A, Base58 extends string, E = never> = A & { readonly __address?: [Base58, E] };
 
 /**
  * Token constraints, checked before your code runs:
@@ -561,8 +564,11 @@ export interface AccountInfo extends AccountMeta {
 /** A program-owned account holding struct `T`. Owner and discriminator are checked. */
 export type Account<T> = Readonly<T> & AccountMeta;
 
-/** Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. */
-export type Mut<T> = T & AccountMeta;
+/**
+ * Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. A second
+ * argument fails with one of your errors when the account is not writable (Anchor's `mut @ ErrorCode.X`; else 2000).
+ */
+export type Mut<T, E = never> = T & AccountMeta & { readonly __mutError?: E };
 
 /** A PDA seed: a string, a Pubkey, an integer (at its width) or a unit enum value (one byte). */
 export type Seed = string | Pubkey | bigint | number;
@@ -647,8 +653,12 @@ export type InitIfNeeded<T> = T extends TokenAccount
  *    ("@param" names a program parameter, or give a base58 address).
  *  - `CloseTo<Mut<Vault>, "owner">`: close the account into `owner` when the instruction succeeds.
  * They nest: `CloseTo<HasOne<Mut<Vault>, "owner">, "owner">`.
+ *
+ * `HasOne`, `Address`, `Owner`, `Signed` and `Mut` take one of your errors as their last argument, as Anchor's
+ * `has_one = owner @ ErrorCode.NotOwner` does: `HasOne<Mut<Vault>, "owner", ErrorCode.NotOwner>` (for one field each
+ * its own error, nest them: `HasOne<HasOne<Mut<Vault>, "owner", E.A>, "admin", E.B>`).
  */
-export type HasOne<A, Field extends string> = A & { readonly __hasOne?: Field };
+export type HasOne<A, Field extends string, E = never> = A & { readonly __hasOne?: [Field, E] };
 /**
  * Anchor's `token::mint = mintParam, token::authority = authorityParam, token::token_program = tokenProgramParam` on an
  * existing token account, naming the parameters (2014 / 2015 / 2021: owned by that token program); `never` leaves one out.
@@ -673,7 +683,7 @@ export type Dup<A> = A & { readonly __dup?: true };
  * The account must sign the transaction (Anchor's `signer` constraint on an account that is not a `Signer`; 2002), e.g.
  * `Signed<Zeroed<Multisig>>` for an account the client creates with a fresh keypair in the same transaction.
  */
-export type Signed<A> = A & { readonly __signed?: true };
+export type Signed<A, E = never> = A & { readonly __signed?: E | true };
 /**
  * Anchor 1.0's `Migration<From, To>`: an existing `From` account (owner, discriminator and size checked) that this
  * instruction rewrites as `To` with `acct.migrate(payer, value)`, a top-level statement every path must reach. Read
@@ -694,8 +704,8 @@ export type Seeds<A, Names extends readonly string[], Bump extends string = neve
   /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */
   readonly pdaBump: u8;
 };
-/** The account's owner program must be this address (Anchor `owner = …`, 2004). */
-export type Owner<A, Base58 extends string> = A & { readonly __owner?: Base58 };
+/** The account's owner program must be this address (Anchor `owner = …`, 2004; a third argument: one of your errors). */
+export type Owner<A, Base58 extends string, E = never> = A & { readonly __owner?: [Base58, E] };
 /**
  * An optional account (Anchor `Option<Account<…>>`): the client passes this program's id in its slot to leave it out.
  * Same as `A | null`. Check `x !== null` before using it; its checks and constraints run only when it is passed.

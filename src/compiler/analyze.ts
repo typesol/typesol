@@ -1673,15 +1673,31 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
 /** Peel HasOne / Seeds / CloseTo wrappers off a parameter type, recording what they ask for. */
 function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<string, string>, out: Constraints): ts.TypeNode {
   const name = typesolName(node, imports);
-  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable", "Dup", "Signed"].includes(name ?? "")) return node;
   const args = (node as ts.TypeReferenceNode).typeArguments ?? [];
+  // One of the program's errors in a type position: `ErrorCode.NotOwner` (Anchor's `@ ErrorCode.NotOwner`).
+  const customError = (key: string, t: ts.TypeNode | undefined) => {
+    if (!t || t.kind === ts.SyntaxKind.NeverKeyword) return;
+    const q = ts.isTypeReferenceNode(t) && ts.isQualifiedName(t.typeName) && ts.isIdentifier(t.typeName.left) ? t.typeName : undefined;
+    if (!q || (t as ts.TypeReferenceNode).typeArguments) reporter.fail(t, "the error is a member of one of your error enums: ErrorCode.NotOwner");
+    (out.errors ??= new Map()).set(key, { enumName: (q.left as ts.Identifier).text, member: q.right.text, node: t });
+  };
+  // Mut<T, ErrorCode.X>: Anchor's `mut @ ErrorCode.X`.
+  if (name === "Mut") {
+    if (args.length === 2) customError("mut", args[1]);
+    return node;
+  }
+  if (!["HasOne", "TokenOf", "MintOf", "Seeds", "CloseTo", "Address", "Ata", "Owner", "Executable", "Dup", "Signed"].includes(name ?? "")) return node;
   const lit = (t: ts.TypeNode | undefined): string[] => {
     if (!t) return [];
     if (ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal)) return [t.literal.text];
     if (ts.isUnionTypeNode(t)) return t.types.flatMap(lit);
     reporter.fail(t, "expected a string literal type");
   };
-  if (name === "HasOne") out.hasOne.push(...lit(args[1]));
+  if (name === "HasOne") {
+    const fields = lit(args[1]);
+    out.hasOne.push(...fields);
+    for (const f of fields) customError(`hasOne:${f}`, args[2]);
+  }
   // Anchor's `token::mint = m, token::authority = a` / `mint::authority = a, mint::freeze_authority = f` naming the
   // parameters: recorded as "field=param" (`never` leaves one out).
   if (name === "TokenOf" || name === "MintOf") {
@@ -1701,15 +1717,20 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     const bytes = text === undefined ? undefined : decodeAddress(text);
     if (!bytes) reporter.fail(args[1] ?? node, `Owner<…, "base58">: "${text}" is not a valid base58 Solana address`);
     out.owner = { base58: text!, bytes: [...bytes] };
+    customError("owner", args[2]);
   }
   if (name === "Executable") out.executable = true;
   if (name === "Dup") out.dup = true;
-  if (name === "Signed") out.signed = true;
+  if (name === "Signed") {
+    out.signed = true;
+    customError("signer", args[1]);
+  }
   if (name === "Address") {
     const text = lit(args[1])[0];
     const bytes = text === undefined ? undefined : decodeAddress(text);
     if (!bytes) reporter.fail(args[1] ?? node, `Address<…, "base58">: "${text}" is not a valid base58 Solana address`);
     out.address = { base58: text!, bytes: [...bytes] };
+    customError("address", args[2]);
   }
   if (name === "Ata") {
     const [owner] = lit(args[1]);
@@ -1854,7 +1875,8 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       return { kind: "zeroed", struct: s };
     }
     case "Mut": {
-      const t = inner();
+      // Mut<T, ErrorCode.X>: the error is recorded with the constraints.
+      const t = ref.typeArguments?.length === 2 ? ref.typeArguments[0] : inner();
       const s = structOf(t);
       if (s) return { kind: "account", struct: s, mut: true };
       const innerName = typesolName(t, imports);
