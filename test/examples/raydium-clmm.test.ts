@@ -318,10 +318,18 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
   const ata = async (owner: Address, m: Address, program: Address) => (await token.findAssociatedTokenPda({ owner, mint: m, tokenProgram: program }))[0];
 
   /** A pool with a price, and a funded user holding both tokens (in associated token accounts). */
-  async function poolWith(spacing: number, index: number, sqrt: bigint, programs: [Address, Address] = [TOKEN, TOKEN], ext1?: "fee", freeze1?: Address) {
-    const user = await funded();
+  async function poolWith(
+    spacing: number,
+    index: number,
+    sqrt: bigint,
+    programs: [Address, Address] = [TOKEN, TOKEN],
+    ext1?: "fee",
+    freeze1?: Address,
+    given?: { user: KeyPairSigner; mints: [MintInfo, MintInfo] },
+  ) {
+    const user = given?.user ?? (await funded());
     const cfg = await config(index, spacing, 2500, user.address);
-    const [m0, m1] = await pair(user, programs[0], programs[1], ext1, freeze1);
+    const [m0, m1] = given?.mints ?? (await pair(user, programs[0], programs[1], ext1, freeze1));
     const p = await poolAccounts(cfg, m0, m1);
     expect(await both(`create_pool, spacing ${spacing}`, user, [createPool(user, cfg, m0, m1, p, sqrt)], watchPool(p))).toBe("ok");
     const acct0 = await ata(user.address, m0.address, m0.program);
@@ -731,8 +739,8 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
   };
   const tickOf = (pool: Pool) => Buffer.from(acct(original, pool.p.pool).data).readInt32LE(269);
   /** A pool with positions around tick 1234 (spacing 60): in range, wide, and on both sides. */
-  async function liquidPool(index: number, programs: [Address, Address] = [TOKEN, TOKEN], ext1?: "fee") {
-    const pool = await poolWith(60, index, 19_574_085_512_633_416_581n, programs, ext1);
+  async function liquidPool(index: number, programs: [Address, Address] = [TOKEN, TOKEN], ext1?: "fee", given?: { user: KeyPairSigner; mints: [MintInfo, MintInfo] }) {
+    const pool = await poolWith(60, index, 19_574_085_512_633_416_581n, programs, ext1, undefined, given);
     for (const [lower, upper, liquidity] of [
       [-600, 1800, 10n ** 12n],
       [-7200, 9000, 5n * 10n ** 11n],
@@ -1532,6 +1540,89 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     const e = await open(true, 6000, 1_000_000n);
     expect(await both("open_limit_order, orders off", pool.user, [e.instruction], e.watch)).toBe(custom(errors.NotApproved!));
     patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 0));
+  });
+
+  // ---- swap (v1) and the router ------------------------------------------------------------------------------
+
+  it("swaps with the v1 instruction and routes through two pools", async () => {
+    const pool = await liquidPool(43);
+    const v1 = async (zeroForOne: boolean, amount: bigint, opts: { exactOut?: boolean; threshold?: bigint; first?: Address } = {}) => {
+      const arrays = await arraysFor(pool, zeroForOne);
+      const current = await tickArray(pool.p.pool, startOf(tickOf(pool), pool.spacing));
+      const first = opts.first ?? current;
+      const [inAcct, outAcct] = zeroForOne ? [pool.acct0, pool.acct1] : [pool.acct1, pool.acct0];
+      const [inVault, outVault] = zeroForOne ? [pool.p.vault0, pool.p.vault1] : [pool.p.vault1, pool.p.vault0];
+      const instruction = ix(
+        "swap",
+        {
+          amount: new BN(amount.toString()),
+          other_amount_threshold: new BN((opts.threshold ?? (opts.exactOut ? 2n ** 64n - 1n : 0n)).toString()),
+          sqrt_price_limit_x64: new BN(0),
+          is_base_input: !opts.exactOut,
+        },
+        [
+          { address: pool.user.address, signer: pool.user },
+          { address: pool.cfg },
+          { address: pool.p.pool, writable: true },
+          { address: inAcct, writable: true },
+          { address: outAcct, writable: true },
+          { address: inVault, writable: true },
+          { address: outVault, writable: true },
+          { address: pool.p.observation, writable: true },
+          { address: TOKEN },
+          { address: first, writable: true },
+          ...arrays.filter((a) => a !== first).map((a) => ({ address: a, writable: true })),
+        ],
+      );
+      return { instruction, watch: [pool.p.pool, pool.p.vault0, pool.p.vault1, pool.acct0, pool.acct1, pool.p.observation, ...arrays] };
+    };
+    for (const [label, zeroForOne, amount, opts, want] of [
+      ["0 for 1", true, 10_000_000_000n, {}, "ok"],
+      ["1 for 0, across arrays", false, 150_000_000_000n, {}, "ok"],
+      ["0 for 1, exact output", true, 3_000_000_000n, { exactOut: true }, "ok"],
+      ["too little out", true, 1_000_000n, { threshold: 10n ** 12n }, custom(errors.TooLittleOutputReceived!)],
+      ["too much in", false, 1_000_000n, { exactOut: true, threshold: 1n }, custom(errors.TooMuchInputPaid!)],
+    ] as const) {
+      const s1 = await v1(zeroForOne, amount, opts);
+      expect(await both(`swap (v1), ${label}`, pool.user, [s1.instruction], s1.watch)).toBe(want);
+    }
+
+    // A second pool trading token 1 of the first against a new token: the router goes token 0 → token 1 → new.
+    const third = await mint(pool.user, TOKEN, 8);
+    const pairB = (Buffer.compare(key(pool.m1.address), key(third.address)) < 0 ? [pool.m1, third] : [third, pool.m1]) as [MintInfo, MintInfo];
+    const poolB = await liquidPool(44, [TOKEN, TOKEN], undefined, { user: pool.user, mints: pairB });
+    const hop = async (p: Pool, inMint: Address) => {
+      const zeroForOne = inMint === p.m0.address;
+      const arrays = await arraysFor(p, zeroForOne);
+      return [
+        { address: p.cfg },
+        { address: p.p.pool, writable: true },
+        { address: zeroForOne ? p.acct1 : p.acct0, writable: true },
+        { address: zeroForOne ? p.p.vault0 : p.p.vault1, writable: true },
+        { address: zeroForOne ? p.p.vault1 : p.p.vault0, writable: true },
+        { address: (zeroForOne ? p.m1 : p.m0).address },
+        { address: p.p.observation, writable: true },
+        ...arrays.map((a) => ({ address: a, writable: true })),
+      ] as Meta[];
+    };
+    const route = async (amount: bigint, min: bigint) =>
+      ix("swap_router_base_in", { amount_in: new BN(amount.toString()), amount_out_minimum: new BN(min.toString()) }, [
+        { address: pool.user.address, signer: pool.user },
+        { address: pool.acct0, writable: true },
+        { address: pool.m0.address, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: MEMO },
+        ...(await hop(pool, pool.m0.address)),
+        ...(await hop(poolB, pool.m1.address)),
+      ]);
+    const watch = [pool.p.pool, poolB.p.pool, pool.acct0, pool.acct1, poolB.acct0, poolB.acct1, pool.p.vault0, pool.p.vault1, poolB.p.vault0, poolB.p.vault1];
+    const thirdAcct = third.address === poolB.m0.address ? poolB.acct0 : poolB.acct1;
+    const before = bytesAt(thirdAcct).readBigUInt64LE(64);
+    expect(await both("swap_router_base_in, two hops", pool.user, [await route(2_000_000_000n, 0n)], watch)).toBe("ok");
+    // The new token arrived: both hops ran.
+    expect(bytesAt(thirdAcct).readBigUInt64LE(64)).toBeGreaterThan(before);
+    expect(await both("swap_router_base_in, too little out", pool.user, [await route(2_000_000_000n, 10n ** 13n)], watch)).toBe(custom(errors.TooLittleOutputReceived!));
   });
 
   it("reports compute units", () => {

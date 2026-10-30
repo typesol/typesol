@@ -4,16 +4,18 @@
 // bitmap searches (libraries/tick_array_bit_map.rs, states/tickarray_bitmap_extension.rs, PoolState) and the oracle
 // (states/oracle.rs). The loop itself is swapV2 in raydium_clmm.ts. The dynamic fee's state is updated in the pool
 // account in place: the original works on a copy and writes the same four fields back at the end.
-import { AnchorError, type Account, type Mut, type u16, i32, i64, i128, log, require, u32, u64, u128, u256 } from "typesol";
+import { AnchorError, type Account, type Mut, type u16, currentEpoch, i32, i64, i128, log, require, u32, u64, u128, u256 } from "typesol";
 import { ErrorCode } from "./errors";
-import { NO_KEY, abs32, arrayStartIndex, isValidStartIndex, maxTickInBitmap, tickCount, wrappingAdd128, wrappingSub128 } from "./liquidity";
-import { FEE_RATE_DENOMINATOR_VALUE, MAX_TICK, MIN_TICK, Q64, mulDivCeil64, mulDivFloor128, msb128 } from "./math";
+import { NO_KEY, abs32, arrayStartIndex, flipBitDefault, isValidStartIndex, maxTickInBitmap, overflowsDefaultBitmap, tickCount, wrappingAdd128, wrappingSub128 } from "./liquidity";
+import { FEE_RATE_DENOMINATOR_VALUE, MAX_TICK, MIN_TICK, Q64, addDelta, computeSwap, getSqrtPriceAtTick, getTickAtSqrtPrice, mulDivCeil64, mulDivFloor128, msb128 } from "./math";
 import { type AmmConfig, type ObservationState, type PoolState, type TickArrayBitmapExtension, type TickArrayState, type TickState } from "./state";
 
 const MAX_FEE_RATE_NUMERATOR: u32 = 100_000n;
 const VOLATILITY_ACCUMULATOR_SCALE: u64 = 10_000n;
 const REDUCTION_FACTOR_DENOMINATOR: u64 = 10_000n;
 const SWAP_U64_MAX: u64 = 18446744073709551615n;
+/** A search through the tick array bitmap that found nothing (and no bounded tick). */
+export const NO_ARRAY: i64 = 4294967296n;
 const SWAP_U128_MAX: u128 = 340282366920938463463374607431768211455n;
 
 /** The swap in progress (swap.rs SwapState; the dynamic fee lives in the pool). */
@@ -30,6 +32,19 @@ export interface SwapState {
   sqrt_price_next_x64: u128;
   tick_next: i32;
   tick_spacing_index: i32;
+  /** Where the loop over tick arrays is (swap_internal's locals): the next array's first used tick is next. */
+  take_first: boolean;
+  first_has_pool_tick: boolean;
+  /** This array has no more used ticks in the swap's direction. */
+  move_on: boolean;
+  /** An array was emptied whose bit is in the bitmap extension: the caller flips it. */
+  ext_flip: boolean;
+  ext_flip_start: i32;
+}
+
+/** A swap state held where whole new states can be stored. */
+export interface SwapRun {
+  s: SwapState;
 }
 
 /** A limit order filled at a tick (LimitOrderMatchResult). */
@@ -150,6 +165,11 @@ export function splitFees(s: SwapState, fee: u64, config: Account<AmmConfig>): S
     sqrt_price_next_x64: s.sqrt_price_next_x64,
     tick_next: s.tick_next,
     tick_spacing_index: s.tick_spacing_index,
+    take_first: s.take_first,
+    first_has_pool_tick: s.first_has_pool_tick,
+    move_on: s.move_on,
+    ext_flip: s.ext_flip,
+    ext_flip_start: s.ext_flip_start,
   };
 }
 
@@ -496,19 +516,201 @@ export function spacingBound(pool: Account<PoolState>, s: SwapState, zeroForOne:
 
 
 /** SwapState::new: the pool's price, liquidity and the fee growth of the token fees are taken in. */
-export function newSwapState(pool: Account<PoolState>, amount: u64, zeroForOne: boolean): SwapState {
+export function newSwapRun(pool: Account<PoolState>, amount: u64, zeroForOne: boolean, firstHasPoolTick: boolean): SwapRun {
   return {
-    amount_specified_remaining: amount,
-    amount_calculated: 0n,
-    sqrt_price_x64: pool.sqrt_price_x64,
-    tick: pool.tick_current,
-    fee_growth_global_x64: feeOnToken0(pool, zeroForOne) ? pool.fee_growth_global_0_x64 : pool.fee_growth_global_1_x64,
-    lp_fee: 0n,
-    protocol_fee: 0n,
-    fund_fee: 0n,
-    liquidity: pool.liquidity,
-    sqrt_price_next_x64: 0n,
-    tick_next: 0n,
-    tick_spacing_index: 0n,
+    s: {
+      amount_specified_remaining: amount,
+      amount_calculated: 0n,
+      sqrt_price_x64: pool.sqrt_price_x64,
+      tick: pool.tick_current,
+      fee_growth_global_x64: feeOnToken0(pool, zeroForOne) ? pool.fee_growth_global_0_x64 : pool.fee_growth_global_1_x64,
+      lp_fee: 0n,
+      protocol_fee: 0n,
+      fund_fee: 0n,
+      liquidity: pool.liquidity,
+      sqrt_price_next_x64: 0n,
+      tick_next: 0n,
+      tick_spacing_index: 0n,
+      take_first: false,
+      first_has_pool_tick: firstHasPoolTick,
+      move_on: false,
+      ext_flip: false,
+      ext_flip_start: 0n,
+    },
   };
+}
+
+/** A copy of a swap state, to change. */
+function copySwapState(s: SwapState): SwapState {
+  return {
+    amount_specified_remaining: s.amount_specified_remaining,
+    amount_calculated: s.amount_calculated,
+    sqrt_price_x64: s.sqrt_price_x64,
+    tick: s.tick,
+    fee_growth_global_x64: s.fee_growth_global_x64,
+    lp_fee: s.lp_fee,
+    protocol_fee: s.protocol_fee,
+    fund_fee: s.fund_fee,
+    liquidity: s.liquidity,
+    sqrt_price_next_x64: s.sqrt_price_next_x64,
+    tick_next: s.tick_next,
+    tick_spacing_index: s.tick_spacing_index,
+    take_first: s.take_first,
+    first_has_pool_tick: s.first_has_pool_tick,
+    move_on: s.move_on,
+    ext_flip: s.ext_flip,
+    ext_flip_start: s.ext_flip_start,
+  };
+}
+
+/**
+ * The swap loop over one tick array (swap_internal's while loop while it stays in this array): ticks crossed, limit
+ * orders filled, the dynamic fee stepped. Returns the new state; `move_on` when the array has no more used ticks in
+ * the swap's direction, `ext_flip` when an array was emptied whose bit is in the extension (the caller flips it).
+ */
+export function swapInArray(
+  pool_state: Mut<PoolState>,
+  amm_config: Account<AmmConfig>,
+  array: Mut<TickArrayState>,
+  from: SwapState,
+  limit: u128,
+  zeroForOne: boolean,
+  baseInput: boolean,
+  isFeeOnInput: boolean,
+  dynamic: boolean,
+): SwapState {
+  const st = copySwapState(from);
+  const spacing = pool_state.tick_spacing;
+  /** SwapState::apply_swap_amounts. */
+  const apply = (amountIn: u64, amountOut: u64, fee: u64): void => {
+    let consumed = amountIn;
+    if (isFeeOnInput) {
+      require(amountIn <= 18446744073709551615n - fee, ErrorCode.CalculateOverflow);
+      consumed = amountIn + fee;
+    }
+    const spent = baseInput ? consumed : amountOut;
+    const got = baseInput ? amountOut : consumed;
+    require(st.amount_specified_remaining >= spent, ErrorCode.CalculateOverflow);
+    st.amount_specified_remaining -= spent;
+    require(st.amount_calculated <= 18446744073709551615n - got, ErrorCode.CalculateOverflow);
+    st.amount_calculated += got;
+    const split = splitFees(st, fee, amm_config);
+    st.fee_growth_global_x64 = split.fee_growth_global_x64;
+    st.lp_fee = split.lp_fee;
+    st.protocol_fee = split.protocol_fee;
+    st.fund_fee = split.fund_fee;
+  };
+
+  while (st.amount_specified_remaining !== 0n && st.sqrt_price_x64 !== limit && !st.move_on) {
+    // The next tick with liquidity or orders: in this array, the first of it, or the next marked array's.
+    let offset: i64 = -1n;
+    if (st.take_first) {
+      offset = i64(firstInitializedOffset(array, zeroForOne));
+      st.take_first = false;
+    } else {
+      offset = nextInitializedOffset(array, st.tick, spacing, zeroForOne);
+      if (offset < 0n) {
+        if (!st.first_has_pool_tick) {
+          st.first_has_pool_tick = true;
+          offset = i64(firstInitializedOffset(array, zeroForOne));
+        } else st.move_on = true;
+      }
+    }
+    if (st.move_on) break;
+    const slot = u64(offset);
+    require(tickInitialized(array.ticks.get(slot)), AnchorError.RequireEqViolated);
+    // get_target_price_based_on_next_tick
+    const tickNext = array.ticks.get(slot).tick;
+    st.tick_next = tickNext < MIN_TICK ? MIN_TICK : tickNext > MAX_TICK ? MAX_TICK : tickNext;
+    st.sqrt_price_next_x64 = getSqrtPriceAtTick(st.tick_next);
+    const target = (zeroForOne && st.sqrt_price_next_x64 < limit) || (!zeroForOne && st.sqrt_price_next_x64 > limit) ? limit : st.sqrt_price_next_x64;
+    if (zeroForOne) {
+      require(st.tick >= st.tick_next, AnchorError.RequireGteViolated);
+      require(st.sqrt_price_x64 >= st.sqrt_price_next_x64, AnchorError.RequireGteViolated);
+      require(st.sqrt_price_x64 >= target, AnchorError.RequireGteViolated);
+    } else {
+      require(st.tick_next > st.tick, AnchorError.RequireGtViolated);
+      require(st.sqrt_price_next_x64 >= st.sqrt_price_x64, AnchorError.RequireGteViolated);
+      require(target >= st.sqrt_price_x64, AnchorError.RequireGteViolated);
+    }
+    let liquidityNext = st.liquidity;
+    let stepDone = false;
+    while (!stepDone) {
+      if (dynamic) updateVolatilityAccumulator(pool_state, st.tick_spacing_index);
+      const feeRate = totalFeeRate(pool_state, dynamic, amm_config.trade_fee_rate);
+      // get_spacing_bounded_price: with a dynamic fee, one tick spacing group at a time.
+      let skipped = true;
+      let bounded = target;
+      let boundedTick: i64 = NO_ARRAY;
+      if (dynamic && st.liquidity !== 0n && pool_state.dynamic_fee_info.volatility_accumulator !== pool_state.dynamic_fee_info.max_volatility_accumulator) {
+        skipped = false;
+        const edge = spacingBound(pool_state, st, zeroForOne);
+        const edgePrice = getSqrtPriceAtTick(edge);
+        if (zeroForOne ? target <= edgePrice : target >= edgePrice) {
+          bounded = edgePrice;
+          boundedTick = i64(edge);
+        }
+      }
+      let reached = bounded;
+      if (st.sqrt_price_x64 !== bounded) {
+        const step = computeSwap(st.sqrt_price_x64, bounded, st.liquidity, st.amount_specified_remaining, feeRate, baseInput, zeroForOne, isFeeOnInput);
+        reached = step.sqrtPriceNextX64;
+        apply(step.amountIn, step.amountOut, step.feeAmount);
+      }
+      const unfilledBefore = unfilledAmount(array.ticks.get(slot));
+      if (st.sqrt_price_next_x64 === reached) {
+        // At the tick: its limit orders, then crossing it.
+        const filled = matchLimitOrder(array, slot, st.amount_specified_remaining, zeroForOne, baseInput, feeRate, isFeeOnInput, st.sqrt_price_next_x64);
+        if (filled.amount_in !== 0n || filled.amount_out !== 0n || filled.amm_fee_amount !== 0n) apply(filled.amount_in, filled.amount_out, filled.amm_fee_amount);
+        if (!tickInitialized(array.ticks.get(slot))) {
+          require(array.initialized_tick_count > 0n, ErrorCode.CalculateOverflow);
+          array.initialized_tick_count -= 1n;
+          if (array.initialized_tick_count === 0n) {
+            // In the extension: left to the caller, which holds the remaining accounts (nothing below reads it).
+            if (overflowsDefaultBitmap(array.start_tick_index, spacing)) {
+              st.ext_flip = true;
+              st.ext_flip_start = array.start_tick_index;
+            } else flipBitDefault(pool_state, array.start_tick_index);
+          }
+        }
+        const t = array.ticks.get(slot);
+        const hasOrders = t.orders_amount > 0n || t.part_filled_orders_remaining > 0n;
+        if (t.liquidity_gross > 0n && !hasOrders) {
+          const onToken0 = feeOnToken0(pool_state, zeroForOne);
+          const net = crossTick(
+            array,
+            slot,
+            pool_state,
+            onToken0 ? st.fee_growth_global_x64 : pool_state.fee_growth_global_0_x64,
+            onToken0 ? pool_state.fee_growth_global_1_x64 : st.fee_growth_global_x64,
+          );
+          liquidityNext = addDelta(st.liquidity, zeroForOne ? -net : net);
+        }
+        array.recent_epoch = currentEpoch();
+        st.tick = (zeroForOne && !hasOrders) || (!zeroForOne && hasOrders) ? st.tick_next - 1n : st.tick_next;
+      } else if (st.sqrt_price_x64 !== reached) {
+        st.tick = boundedTick !== NO_ARRAY && reached === bounded ? i32(boundedTick) : getTickAtSqrtPrice(reached);
+      }
+      st.sqrt_price_x64 = reached;
+      // update_dynamic_fee_index
+      if (dynamic) {
+        if (skipped) {
+          const tickIndex = st.sqrt_price_x64 === st.sqrt_price_next_x64 ? st.tick_next : st.tick;
+          let index = tickSpacingIndex(tickIndex, spacing);
+          if (!zeroForOne && tickIndex % i32(spacing) === 0n) index = index - 1n;
+          st.tick_spacing_index = index;
+          if (pool_state.dynamic_fee_info.volatility_accumulator !== pool_state.dynamic_fee_info.max_volatility_accumulator)
+            updateVolatilityAccumulator(pool_state, st.tick_spacing_index);
+        }
+        st.tick_spacing_index = zeroForOne ? st.tick_spacing_index - 1n : st.tick_spacing_index + 1n;
+      }
+      if (st.amount_specified_remaining === 0n || st.sqrt_price_x64 === target) {
+        const unfilledAfter = unfilledAmount(array.ticks.get(slot));
+        if (st.amount_specified_remaining !== 0n && unfilledAfter !== unfilledBefore) require(unfilledAfter === 0n, AnchorError.RequireEqViolated);
+        stepDone = true;
+      }
+    }
+    st.liquidity = liquidityNext;
+  }
+  return st;
 }
