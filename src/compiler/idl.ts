@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { snakeCase } from "./analyze.js";
+import { argIdlName, snakeCase } from "./analyze.js";
 import { decodeAddress } from "../keys.js";
 import {
   type FieldType,
@@ -201,12 +201,19 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         ...docsOf(ix.node),
         discriminator: ix.discriminator,
         accounts: nestGroups(ix, (a) => accountEntry(ix, a.name, a.kind, address)),
-        args: ix.args.map((a) => ({ name: snakeCase(a.name), ...paramDocs(a.node), type: idlType(a.type, true) })),
+        args: ix.args.map((a) => ({
+          name: argIdlName(
+            a.name,
+            ix.accounts.map((o) => o.name),
+          ),
+          ...paramDocs(a.node),
+          type: idlType(a.type, true),
+        })),
         ...(ix.returns ? { returns: idlType(ix.returns) } : {}),
       })),
     accounts: structs.filter((s) => model.accountStructs.has(s.name)).map((s) => ({ name: s.name, discriminator: s.accountDiscriminator })),
     events: structs.filter((s) => model.events.has(s.name)).map((s) => ({ name: s.name, discriminator: s.eventDiscriminator })),
-    errors: model.errors.map((e) => ({ code: e.code, name: e.name, msg: e.msg })),
+    errors: model.errors.map((e) => ({ code: e.code, name: e.name, ...(e.msg ? { msg: e.msg } : {}) })),
     types: [
       ...usedStructs.map((s) => ({
         name: s.name,

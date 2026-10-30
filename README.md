@@ -181,6 +181,8 @@ checks it against the binary deployed on mainnet (same outcomes and account byte
 (pool creation included: same outcomes, account bytes and events on 70 transactions; 45–79% fewer compute units), and
 [docs/case-study-raydium-clmm.md](docs/case-study-raydium-clmm.md) for all 37 instructions of Raydium CLMM
 (pools, positions, swaps and routes, limit orders, rewards, admin: the same on 300 transactions; 33–84% fewer
+compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) for Jito's three MEV programs (tip
+payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–95% fewer
 compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
@@ -333,6 +335,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`orderbook/`](examples/orderbook) | a three-file, 28 KiB zero-copy limit order book |
 | [`raydium-cp-swap/`](examples/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
 | [`raydium-clmm/`](examples/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
+| [`jito-mev/`](examples/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
 | [`multisig.ts`](examples/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

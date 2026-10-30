@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { snakeCase } from "../analyze.js";
+import { argIdlName, snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
 import { accountLimit, MAX_SEEDS, U64, type Value, isStable, cString, scalarStorageC, optC } from "./shared.js";
 import { CallEmitter } from "./calls.js";
@@ -104,7 +104,13 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     }
     // Only the argument itself, not a local that shadows its name.
     if (ts.isIdentifier(el) && this.ix?.args.some((a) => a.name === el.text) && this.lookup(el.text) === this.args.get(el.text))
-      return { kind: "arg", path: snakeCase(el.text) };
+      return {
+        kind: "arg",
+        path: argIdlName(
+          el.text,
+          this.ix.accounts.map((o) => o.name),
+        ),
+      };
     if (ts.isIdentifier(el) && !this.lookup(el.text)) {
       const k = this.model.constants.get(el.text);
       if (k && typeof k.value === "string") return { kind: "const", value: [...Buffer.from(k.value, "utf8")] };

@@ -51,6 +51,9 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 5115 | an optional account that was left out was used |
 | 6000+ | your error enums' members, in declaration order (imported files first), then one `RequireFailed<N>` error (code 6000 + N) per distinct `require(cond, "message")` string |
 
+A member's string is its message (the IDL's `msg`); `X = ""` leaves the message out, as an Anchor variant without
+`#[msg]`.
+
 Any of Anchor's own codes can be raised directly: `require(cond, AnchorError.RequireKeysEqViolated)` fails with 2502,
 as `require_keys_eq!` does.
 
