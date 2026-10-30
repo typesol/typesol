@@ -1,5 +1,6 @@
 import ts from "typescript";
-import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase } from "../analyze.js";
+import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf } from "../analyze.js";
+import { borshIdentical } from "./borsh.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
@@ -1416,7 +1417,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.fail(node, "the error must be a member of an exported error enum or a string literal");
   }
 
+  /** The struct of `returnData<Quote>(…)`, when T is one; refused when its bytes are not its Borsh form. */
+  protected returnedStruct(node: ts.CallExpression): StructDef | undefined {
+    const targ = node.typeArguments?.[0];
+    const name = targ && structNameOf(targ, this.scope);
+    const s = name ? this.model.structs.get(name) : undefined;
+    if (!s) return undefined;
+    if (s.layout !== "borsh" && !borshIdentical({ kind: "struct", name: s.name }, this.model))
+      this.fail(targ!, `${s.name} holds Options or FixedStrings, whose fixed layout is not Borsh: declare it /** @layout borsh */ to read it as return data`);
+    return s;
+  }
+
   protected returnData(node: ts.CallExpression): Value {
+    if (this.returnedStruct(node)) this.fail(node, "bind a returned struct to a local: const quote = returnData<Quote>(program)");
     const targ = node.typeArguments?.[0];
     const t = targ && resolveScalarType(targ, this.scope);
     if (!t) this.fail(node, "returnData needs an explicit type: returnData<u64>(program)");

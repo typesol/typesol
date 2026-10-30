@@ -1803,9 +1803,12 @@ export declare function emit<T>(event: T): void;
 
 /**
  * Read the return data the last invoke() left behind, checking it came from `program`
- * and has exactly the size of T: `const n = returnData<u64>(counterProgram)`.
+ * and has exactly the size of T: `const n = returnData<u64>(counterProgram)`. A struct is bound to a local:
+ * `const quote = returnData<Quote>(amm)`. A fixed layout of integers, booleans, Pubkeys, unit enums and arrays is its
+ * own Borsh form; a struct with Options, strings or Vecs is declared `@layout borsh` and Borsh-decoded (5106 when the
+ * bytes do not decode to exactly it).
  */
-export declare function returnData<T extends bigint | boolean | Pubkey | Hash>(program: AccountMeta): T;
+export declare function returnData<T extends bigint | boolean | Pubkey | Hash | object>(program: AccountMeta): T;
 
 /**
  * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's

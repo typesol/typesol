@@ -160,6 +160,9 @@ export function payOut(admin: Signer, treasury: Mut<SystemAccount>, recipient: M
 - A seed list used more than once can be named: `const vault = signer(["vault", owner.key, bump])`, then pass `vault`
   wherever signerSeeds go.
 - After the call, `returnData<u64>(program)` reads what the callee returned, checking the size and that it came from `program`.
+  A struct is bound to a local, `const quote = returnData<Quote>(amm)`: a fixed layout of integers, booleans, Pubkeys,
+  unit enums and arrays is read as its bytes (bools and enums checked); a struct with Options, strings or Vecs is
+  declared `/** @layout borsh */` and Borsh-decoded. Bytes that are not exactly the struct fail with 5106.
 
 A call decided at run time, such as one a multisig stored in account data, is `invokeInstruction` (Rust's
 `invoke_signed(&Instruction { program_id, accounts, data }, infos, seeds)`):
