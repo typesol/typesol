@@ -853,6 +853,34 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d });
         continue;
       }
+      // A struct another program returned: `const q = returnData<Quote>(amm)` (Anchor's `get_return_data` + deserialize).
+      if (fn === "returnData" && this.returnedStruct(init as ts.CallExpression)) {
+        if (mutable) this.fail(d, "bind return data with const (its fields can still be updated)");
+        const S = this.returnedStruct(init as ts.CallExpression)!;
+        const call = init as ts.CallExpression;
+        if (call.arguments.length !== 1) this.fail(call, "returnData<T>(program) takes the program that returned it");
+        const program = this.accountParam(call.arguments[0], "returnData's program");
+        const bad = `TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid ${S.name} return data")`;
+        if (S.layout === "borsh") {
+          // Borsh of any size: unpacked into the fixed-layout struct, every byte used.
+          const raw = `${c}__raw`;
+          this.line(`uint8_t *${raw};`);
+          this.line(`uint64_t ${raw}_len = 0, ${raw}_used = 0;`);
+          this.line(`TS_TRY(ts_return_data_any(a_${program.name}, &${raw}, &${raw}_len));`);
+          this.line(`TSS_${S.name} *${c};`);
+          this.line(`TS_TRY(ts_alloc(sizeof(TSS_${S.name}), (uint8_t **)&${c}));`);
+          this.line(`if (ts_unpack_${S.name}(${raw}, ${raw}_len, ${c}, &${raw}_used) != SUCCESS || ${raw}_used != ${raw}_len) ${bad};`);
+          for (const f of S.fields) if (f.type.kind === "fstring") this.line(`if (!ts_utf8_valid(${c}->${f.name}.bytes, ${c}->${f.name}.len)) ${bad};`);
+        } else {
+          // A fixed layout whose bytes are its Borsh form: copied in, then bools and enums checked.
+          this.line(`TSS_${S.name} ${c}__v;`);
+          this.line(`TS_TRY(ts_return_data_exact(a_${program.name}, &${c}__v, sizeof(TSS_${S.name})));`);
+          for (const l of this.validation(`${c}__v`, { kind: "struct", name: S.name }, "", bad)) this.line(l.trim());
+          this.line(`TSS_${S.name} *${c} = &${c}__v;`);
+        }
+        this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        continue;
+      }
       // Struct values: `const p: Point = { x, y }` (or a copy of another Point) is a local of its own.
       const structType = d.type && structNameOf(d.type, this.scope) ? this.model.structs.get(structNameOf(d.type, this.scope)!) : undefined;
       if (structType) {

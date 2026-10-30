@@ -38,6 +38,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `seeds = [b"vault", owner.key().as_ref()], bump = vault.bump` | `Seeds<Mut<Vault>, ["vault", "@owner"], "bump">` |
 | `seeds = [b"offer", offer.maker.as_ref(), offer.id.to_le_bytes().as_ref()]` | `Seeds<…, ["offer", "@offer.maker", "@offer.id"], "bump">` |
 | `has_one = owner` | `HasOne<Mut<T>, "owner">` |
+| `has_one = owner @ ErrorCode::NotOwner` (also `address`, `owner`, `signer`, `mut` with `@ …`) | `HasOne<Mut<T>, "owner", ErrorCode.NotOwner>`; `Address<A, "…", E.X>`, `Owner<A, "…", E.X>`, `Signed<A, E.X>`, `Mut<T, E.X>` |
 | `close = destination` | `CloseTo<Mut<T>, "destination">`, or `close(acct, destination)` in the body |
 | `address = ADMIN` | `Address<AccountInfo, "Admin1111…">` |
 | `owner = program`, `executable` | `Owner<A, "…">`, `Executable<A>` |
@@ -113,6 +114,7 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `token::mint_to_checked` / `burn_checked` / `approve_checked` | `tokenProgram.mintToChecked(mint, to, authority, amount)` / `burnChecked(from, mint, authority, amount)` / `approveChecked(source, mint, delegate, owner, amount)` |
 | `system_program::transfer(CpiContext::new_with_signer(…, &[vault_seeds]), lamports)` | `systemProgram.transfer(vault, to, lamports, ["vault", owner.key, bump])` |
 | `invoke_signed(&ix, infos, &[seeds_a, seeds_b])` | `invoke(program, accounts, data, [seedsA, seedsB])` |
+| `let (_, data) = get_return_data().unwrap(); Quote::try_from_slice(&data)?` | `const quote = returnData<Quote>(program)` (a `@layout borsh` struct when it holds Options, strings or Vecs) |
 | `invoke_signed(&ix, &accounts, &[seeds])` | `invoke(program, [writable(a), readonly(b)], [data…], seeds)` |
 | `invoke_signed(&Instruction { program_id, accounts, data }, ctx.remaining_accounts, …)` built at run time | `invokeInstruction(programId, metas, data, remainingAccounts(), seeds)` |
 | `multisig.owners = owners` (a `Vec` argument into account data) | the same |

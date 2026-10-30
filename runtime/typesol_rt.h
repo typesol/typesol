@@ -1249,6 +1249,15 @@ static inline uint64_t ts_return_data(const TsAccount *program, uint8_t *out, ui
   return SUCCESS;
 }
 
+/* Return data of exactly `size` bytes (a struct), copied straight into `out`. */
+static inline uint64_t ts_return_data_exact(const TsAccount *program, void *out, uint64_t size) {
+  SolPubkey from;
+  uint64_t n = sol_get_return_data((uint8_t *)out, size, &from);
+  if (n != size || !ts_key_eq(&from, &program->key))
+    TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: missing or mismatched return data");
+  return SUCCESS;
+}
+
 /* ---- Crypto ---------------------------------------------------------------- */
 static const SolPubkey TS_ED25519_PROGRAM_ID = {{3,125,70,214,124,147,251,190,18,249,66,143,131,141,64,255,5,112,116,73,39,244,138,100,252,202,112,68,128,0,0,0}};
 static const SolPubkey TS_INSTRUCTIONS_SYSVAR_ID = {{6,167,213,23,24,123,209,102,53,218,212,4,85,253,194,192,193,36,198,143,33,86,117,165,219,186,203,95,8,0,0,0}};
@@ -1428,6 +1437,17 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
   if (at + n > TS_HEAP_LENGTH) TS_FAIL(TS_ERR_HEAP, "TypeSOL: out of heap");
   *next = at + n;
   *out = (uint8_t *)(HEAP_START_ADDRESS + at);
+  return SUCCESS;
+}
+
+/* Return data of any size (Borsh, at most 1024 bytes) into a heap buffer: its bytes and length. */
+static inline uint64_t ts_return_data_any(const TsAccount *program, uint8_t **out, uint64_t *len) {
+  TS_TRY(ts_alloc(1024, out));
+  SolPubkey from;
+  uint64_t n = sol_get_return_data(*out, 1024, &from);
+  if (n == 0 || n > 1024 || !ts_key_eq(&from, &program->key))
+    TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: missing or mismatched return data");
+  *len = n;
   return SUCCESS;
 }
 

@@ -175,6 +175,11 @@ export interface Constraints {
   address?: { base58: string; bytes: number[] };
   /** Ata<A, "owner", "mint">: the account must be the associated token account of those parameters. */
   ata?: { owner: string; mint: string };
+  /**
+   * Your errors for these checks (Anchor's `@ ErrorCode.X`), by check: "mut", "signer", "owner", "address" or
+   * "hasOne:<field>"; the enum and member named in the type, looked up among the program's error enums.
+   */
+  errors?: Map<string, { enumName: string; member: string; node: ts.Node }>;
 }
 
 export interface AccountParam {

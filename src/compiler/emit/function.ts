@@ -3,6 +3,7 @@ import { snakeCase } from "../analyze.js";
 import { decodeAddress } from "../../keys.js";
 import {
   INT_INFO,
+  type AccountParam,
   type FieldType,
   type IdlSeed,
   type Instruction,
@@ -56,9 +57,10 @@ export class FunctionEmitter extends StatementEmitter {
         head.push(
           `  TS_TRY(ts_check_zeroed(${v}, params->program_id, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : `sizeof(TSS_${k.struct.name})`}));`,
         );
-      if (isWritable(k)) head.push(`  TS_TRY(ts_check_mut(${v}));`);
+      if (isWritable(k))
+        head.push(a.constraints.errors?.has("mut") ? `  if (!${v}->is_writable) ${this.checkFail(a, "mut", "", "")};` : `  TS_TRY(ts_check_mut(${v}));`);
       // Signed<…>: Anchor's `signer` constraint (2002), right after `mut`.
-      if (a.constraints.signed) head.push(`  if (!${v}->is_signer) TS_FAIL(TS_ERR_CONSTRAINT_SIGNER, "TypeSOL: ${a.name} must sign");`);
+      if (a.constraints.signed) head.push(`  if (!${v}->is_signer) ${this.checkFail(a, "signer", "TS_ERR_CONSTRAINT_SIGNER", `${a.name} must sign`)};`);
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       if (k.kind === "account")
         head.push(
@@ -423,6 +425,15 @@ export class FunctionEmitter extends StatementEmitter {
    * (anchor-syn's `linearize`): seeds, associated token, has_one, constraint, owner, executable, address, token::, mint::.
    * A transaction that breaks several checks then fails with the same error code as under Anchor.
    */
+  /** `TS_FAIL` for a failed check: your error when the parameter's type names one (Anchor's `@ ErrorCode.X`), else Anchor's. */
+  protected checkFail(a: AccountParam, key: string, code: string, msg: string): string {
+    const ref = a.constraints.errors?.get(key);
+    if (!ref) return `TS_FAIL(${code}, ${cString(`TypeSOL: ${msg}`)})`;
+    const def = this.model.errorEnums.get(ref.enumName)?.get(ref.member);
+    if (!def) this.reporter.fail(ref.node, `${ref.enumName}.${ref.member} is not one of this program's errors`);
+    return `TS_FAIL(${def.code}, ${cString(`Error ${def.code} ${def.name}: ${def.msg} (${this.location(a.node)})`)})`;
+  }
+
   /**
    * `constraint(account, condition, error?)` statements at the start of the body: Anchor's `constraint = expr @ error`.
    * Each is lowered here, with the arguments decoded, and runs with its account's constraints (after has_one, before
@@ -495,20 +506,24 @@ export class FunctionEmitter extends StatementEmitter {
             `  if (ts_read_le(a_${a.name}->data + ${at}, 4) != 1 || !ts_key_eq((const SolPubkey *)(a_${a.name}->data + ${at + 4}), &a_${p}->key)) TS_FAIL(${code}, "TypeSOL: ${p} is not the ${f} of ${a.name}");`,
           );
         } else
-          hasOne.push(`  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) TS_FAIL(TS_ERR_CONSTRAINT, "TypeSOL: ${a.name}.${f} must be the ${f} account");`);
+          hasOne.push(
+            `  if (!ts_key_eq(&d_${a.name}->${f}, &a_${f}->key)) ${this.checkFail(a, `hasOne:${f}`, "TS_ERR_CONSTRAINT", `${a.name}.${f} must be the ${f} account`)};`,
+          );
       }
       if (k === "account") out.push(...hasOne);
       out.push(...(raw.get(a.name) ?? []));
       if (c.owner) {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
-          `  if (!ts_key_eq(&a_${a.name}->owner, &co_${a.name})) TS_FAIL(TS_ERR_CONSTRAINT_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
+          `  if (!ts_key_eq(&a_${a.name}->owner, &co_${a.name})) ${this.checkFail(a, "owner", "TS_ERR_CONSTRAINT_OWNER", `${a.name} is not owned by the expected program`)};`,
         );
       }
       if (c.executable) out.push(`  if (!a_${a.name}->executable) TS_FAIL(TS_ERR_CONSTRAINT_EXECUTABLE, "TypeSOL: ${a.name} must be an executable program");`);
       if (c.address) {
         out.push(`  static const SolPubkey ca_${a.name} = {${cBytes(c.address.bytes)}};`);
-        out.push(`  if (!ts_key_eq(&a_${a.name}->key, &ca_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not the expected address");`);
+        out.push(
+          `  if (!ts_key_eq(&a_${a.name}->key, &ca_${a.name})) ${this.checkFail(a, "address", "TS_ERR_ADDRESS", `${a.name} is not the expected address`)};`,
+        );
       }
       if (k !== "account") out.push(...hasOne);
       // Constraints run only when every optional account they mention was passed.
