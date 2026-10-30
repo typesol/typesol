@@ -6,7 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
-Raydium CP-Swap's pool creation, and what creating accounts by hand needs.
+## 0.32.0 — 2026-10-30
+
+Anchor parity and usability: Raydium CP-Swap's pool creation and what creating accounts by hand needs, several PDAs
+signing one CPI, PDA-signed SOL transfers, the checked token instructions, faster u128 arithmetic and Clock reads,
+clearer errors, and tooling for fresh clones, multi-program projects and token tests.
 
 - New: `systemProgram.allocate(account, space, seeds?)` / `assign(account, owner, seeds?)`, `programId()`,
   `findProgramAddressBump(seeds, program)`, `initAccount<T>(account)` (Anchor's `load_init` on an account the body
