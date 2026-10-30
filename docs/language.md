@@ -12,7 +12,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Integer helpers | `mulDiv(a, b, c)` / `mulDivCeil` (u64 through a 128-bit product, u128 through a 256-bit one), `isqrt(x)` (up to u128), `min(a, b)`, `max(a, b)` |
 | Other scalars | `boolean`, `Pubkey` (compare with `===` or `.equals`) |
 | Errors | `export enum MyError { Name = "message" }` + `require(cond, MyError.Name)` → codes 6000+; `require(cond, "message")` makes an error of its own (`RequireFailed<N>`, numbered after the enums' errors; one per distinct message, listed in the IDL); `require(cond, AnchorError.RequireKeysEqViolated)` fails with one of Anchor's own codes (2502 here; any anchor-lang `ErrorCode` can be raised this way). See [errors.md](errors.md) |
-| Casts | `u8(x)`, `u64(x)`, … abort if the value does not fit |
+| Casts | `u8(x)`, `u64(x)`, … abort if the value does not fit. A cast is a value: import `u64`, not `type u64` (one import serves as both) |
 | Logging | `log("text")`, `log(value)`, `log(pubkey)` |
 | Arrays | `scores: FixedArray<u64, 8>` in account data — `.get(i)`, `.set(i, v)`, `.length`, bounds-checked; elements can be structs or strings |
 | Local arrays | `const xs = fixedArray<i64, 5>(0n)` — up to 256 elements on the stack |

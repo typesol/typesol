@@ -30,6 +30,15 @@ Raydium CP-Swap's pool creation, and what creating accounts by hand needs.
 - Better errors: `throw`, `try`/`catch`, optional and default parameters, `...rest` parameters and optional fields now
   say what to write instead; "unsupported call" names the callee and, for common JavaScript calls (`console.log`,
   `Math.min`, `BigInt`, …), the TypeSOL form.
+- Tooling: a project without its program keypair (a fresh clone, CI) builds and tests at the address `typesol.json`
+  records; only `deploy` needs the keypair. New projects run `typesol build` before `npm test` and `npm run
+  typecheck`, which import the client it writes.
+- Tooling: `typesol new <program>` adds a program and its test to a project; `typesol check` with no argument checks
+  every program of the project (or those named).
+- Testing: `t.mint`, `t.tokenAccount` and `t.tokenBalance` write and read SPL Token / Token-2022 accounts in the VM,
+  `t.warp` moves the Clock, `t.errorName(code)` names an error, and a failed `t.ok` names the error. The escrow
+  template uses them (and no longer needs `@solana-program/token`).
+- Docs: the docs in the npm package link to tests and examples on GitHub.
 
 ## 0.31.0 — 2026-10-30
 

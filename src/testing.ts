@@ -39,6 +39,7 @@ import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { TYPESOL_ERRORS } from "./tools/clientgen.js";
 import { type SvmConnection, svmConnection } from "./tools/svmrpc.js";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
 
@@ -72,6 +73,7 @@ interface ProgramIdl {
   address: string;
   instructions: { name: string; accounts: IdlAccountItem[]; args: { name: string; type: IdlType }[]; returns?: IdlType }[];
   types?: { name: string; type: { kind: string; fields?: { name: string; type: IdlType }[] } }[];
+  errors?: { code: number; name: string }[];
 }
 
 const BIG = new Set(["u64", "i64", "u128", "i128"]);
@@ -111,7 +113,29 @@ export interface TestProgram {
   balance(address: Address): bigint;
   /** A kit RPC and subscriptions pair over this LiteSVM, for the generated client (`svmConnection`). */
   connection: SvmConnection;
+  /** The name of an error code: the program's own (6000+), TypeSOL's or Anchor's; undefined for others. */
+  errorName(code: number): string | undefined;
+  /**
+   * A mint written straight into the VM (as System CreateAccount + InitializeMint2 would leave it). SPL Token unless
+   * `tokenProgram` is Token-2022; no extensions.
+   */
+  mint(opts: {
+    authority: Address;
+    decimals?: number;
+    supply?: bigint;
+    freezeAuthority?: Address;
+    tokenProgram?: Address;
+    address?: Address;
+  }): Promise<Address>;
+  /** A token account of `owner` for `mint` holding `amount`, written straight into the VM (at `address`, e.g. an ATA). */
+  tokenAccount(opts: { mint: Address; owner: Address; amount?: bigint; tokenProgram?: Address; address?: Address }): Promise<Address>;
+  /** The amount a token account holds, or null when it does not exist. */
+  tokenBalance(address: Address): bigint | null;
+  /** Move the Clock: to a unix timestamp and/or a slot, or forward by `seconds`. */
+  warp(to: { unixTimestamp?: bigint; slot?: bigint; seconds?: bigint }): void;
 }
+
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address;
 
 /** Build `program` of the project around `from` (a file URL such as import.meta.url, or a directory) and load it. */
 export async function testProgram(program: string, from: string | URL): Promise<TestProgram> {
@@ -348,7 +372,11 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       return res;
     },
     ok(res) {
-      if (res instanceof FailedTransactionMetadata) throw new Error(`transaction failed: ${String(res.err())}\n${res.meta().logs().join("\n")}`);
+      if (res instanceof FailedTransactionMetadata) {
+        const m = /Custom\D*(\d+)/.exec(String(res.err()));
+        const name = m ? harness.errorName(Number(m[1])) : undefined;
+        throw new Error(`transaction failed: ${String(res.err())}${name ? ` (${name})` : ""}\n${res.meta().logs().join("\n")}`);
+      }
       return res;
     },
     errorCode(res) {
@@ -356,6 +384,60 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
       const m = /Custom\D*(\d+)/.exec(String(res.err()));
       if (!m) throw new Error(`not a custom program error: ${String(res.err())}\n${res.meta().logs().join("\n")}`);
       return Number(m[1]);
+    },
+    errorName(code) {
+      return pidl.errors?.find((e) => e.code === code)?.name ?? TYPESOL_ERRORS[code];
+    },
+    async mint({ authority, decimals = 6, supply = 0n, freezeAuthority, tokenProgram = TOKEN_PROGRAM, address }) {
+      const at = address ?? (await generateKeyPairSigner()).address;
+      const data = new Uint8Array(82);
+      const view = new DataView(data.buffer);
+      view.setUint32(0, 1, true);
+      data.set(enc.encode(authority), 4);
+      view.setBigUint64(36, supply, true);
+      data[44] = decimals;
+      data[45] = 1;
+      if (freezeAuthority) {
+        view.setUint32(46, 1, true);
+        data.set(enc.encode(freezeAuthority), 50);
+      }
+      svm.setAccount({
+        address: at,
+        data,
+        executable: false,
+        lamports: lamports(svm.minimumBalanceForRentExemption(82n)),
+        programAddress: tokenProgram,
+        space: 82n,
+      });
+      return at;
+    },
+    async tokenAccount({ mint, owner, amount = 0n, tokenProgram = TOKEN_PROGRAM, address }) {
+      const at = address ?? (await generateKeyPairSigner()).address;
+      const data = new Uint8Array(165);
+      data.set(enc.encode(mint), 0);
+      data.set(enc.encode(owner), 32);
+      new DataView(data.buffer).setBigUint64(64, amount, true);
+      data[108] = 1; // AccountState::Initialized
+      svm.setAccount({
+        address: at,
+        data,
+        executable: false,
+        lamports: lamports(svm.minimumBalanceForRentExemption(165n)),
+        programAddress: tokenProgram,
+        space: 165n,
+      });
+      return at;
+    },
+    tokenBalance(address) {
+      const a = svm.getAccount(address);
+      return a.exists && a.data.length >= 72 ? new DataView(a.data.buffer, a.data.byteOffset).getBigUint64(64, true) : null;
+    },
+    warp({ unixTimestamp, slot, seconds }) {
+      const clock = svm.getClock();
+      if (slot !== undefined) clock.slot = slot;
+      if (unixTimestamp !== undefined) clock.unixTimestamp = unixTimestamp;
+      if (seconds !== undefined) clock.unixTimestamp += seconds;
+      svm.setClock(clock);
     },
     async account<T>(type: string, address: Address) {
       const a = svm.getAccount(address);

@@ -3,8 +3,8 @@
 This page ports a program that holds real authority on mainnet:
 [coral-xyz/multisig](https://github.com/coral-xyz/multisig) (`programs/multisig/src/lib.rs`, Anchor 0.25, Apache-2.0),
 deployed at `msigUdDBsR4zSUYqYEDrc1LcgtmuSDDM7KxpRUXNC6U`. The port is
-[`examples/multisig.ts`](../examples/multisig.ts). Instead of a twin built for the occasion, it is checked against the
-binary that runs on mainnet: [`test/examples/multisig.test.ts`](../test/examples/multisig.test.ts) runs both under the
+[`examples/multisig.ts`](https://github.com/typesol/typesol/blob/main/examples/multisig.ts). Instead of a twin built for the occasion, it is checked against the
+binary that runs on mainnet: [`test/examples/multisig.test.ts`](https://github.com/typesol/typesol/blob/main/test/examples/multisig.test.ts) runs both under the
 same program id and compares every outcome and every account byte. See
 [case-study-escrow.md](case-study-escrow.md) for a token program and [Migrate from Anchor](migrate-from-anchor.md) for
 the general reference.
@@ -99,7 +99,7 @@ existing clients and existing accounts work with the port unchanged.
 ## How it was checked
 
 `test/programs/coral_multisig.so` is the program dumped from mainnet on 2026-10-29 (sha256 in
-[`test/programs/SOURCES.md`](../test/programs/SOURCES.md)). The test loads it into one LiteSVM and the port into
+[`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)). The test loads it into one LiteSVM and the port into
 another, both at `msigUdDB…`, then sends each transaction to both. After each one it requires the same outcome (success,
 or the same error down to the code) and the same lamports, owner and data bytes for every account involved.
 

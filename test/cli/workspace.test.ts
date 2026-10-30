@@ -57,13 +57,43 @@ describe("projects: typesol init / build / deploy --dry-run", () => {
       `solana program deploy ${path.join(dir, "target/tally/tally.so")} --program-id ${path.join(dir, "target/deploy/tally-keypair.json")} --use-rpc --url http://127.0.0.1:8899`,
     );
 
-    // A swapped or lost keypair is caught before anything is deployed.
+    // Without the keypair (a fresh clone, CI) it still builds at the recorded address; a deploy is refused.
     renameSync(path.join(dir, "target/deploy/tally-keypair.json"), path.join(dir, "kp.bak"));
-    expect(run(["build"], dir).stderr).toMatch(/is missing, but typesol\.json records/);
+    const keyless = run(["build"], dir);
+    expect(keyless.status).toBe(0);
+    expect(keyless.stdout).toMatch(/no keypair here: deploying needs it/);
+    expect(existsSync(path.join(dir, "target/deploy/tally-keypair.json"))).toBe(false);
+    expect(run(["deploy", "--dry-run"], dir).stderr).toMatch(/is missing, but typesol\.json records/);
     renameSync(path.join(dir, "kp.bak"), path.join(dir, "target/deploy/tally-keypair.json"));
 
     // The generated test typechecks and passes.
     runGeneratedTest(dir);
+  });
+
+  it("adds programs with typesol new and checks the whole project with typesol check", () => {
+    const dir = tmp();
+    expect(run(["init", ".", "--name", "tally"], dir).status).toBe(0);
+    const added = run(["new", "vaults", "--template", "vault"], dir);
+    expect(added.status).toBe(0);
+    expect(added.stdout).toMatch(/created programs\/vaults\.ts[\s\S]*updated typesol\.json/);
+    expect(JSON.parse(readFileSync(path.join(dir, "typesol.json"), "utf8")).programs.vaults).toEqual({ path: "programs/vaults.ts" });
+    expect(run(["new", "vaults"], dir).stderr).toMatch(/already has a program "vaults"/);
+    expect(run(["new", "Bad-Name"], dir).status).toBe(2);
+
+    const ok = run(["check"], dir);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toMatch(/ok {2}tally:[\s\S]*ok {2}vaults:/);
+    writeFileSync(
+      path.join(dir, "programs/vaults.ts"),
+      readFileSync(path.join(dir, "programs/vaults.ts"), "utf8") + "\nexport function bad(x?: u64): void {}\n",
+    );
+    const one = run(["check", "tally"], dir);
+    expect(one.status).toBe(0);
+    const json = run(["check", "--json"], dir);
+    expect(json.status).toBe(1);
+    const diagnostics = JSON.parse(json.stdout).diagnostics as { file: string }[];
+    expect(diagnostics.length).toBeGreaterThan(0);
+    expect(diagnostics.every((d) => d.file.endsWith("vaults.ts"))).toBe(true);
   });
 
   it.each(["vault", "escrow"])("--template %s: the program is the matching example and the generated test passes", (template) => {

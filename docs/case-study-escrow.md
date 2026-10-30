@@ -4,7 +4,7 @@ This page follows one complete Anchor program into TypeSOL: the token escrow fro
 [solana-developers/program-examples](https://github.com/solana-developers/program-examples/tree/de090195e4de698e150572c4f886c333323a64a5/tokens/escrow/anchor)
 (`tokens/escrow`, commit `de09019`). It shows the original and the port side by side, what changed, how the two were
 checked against each other, where they still differ, and what the port costs to run. The port is
-[`test/ports/tokens/escrow.ts`](../test/ports/tokens/escrow.ts); [Migrate from Anchor](migrate-from-anchor.md) is the
+[`test/ports/tokens/escrow.ts`](https://github.com/typesol/typesol/blob/main/test/ports/tokens/escrow.ts); [Migrate from Anchor](migrate-from-anchor.md) is the
 general reference.
 
 ## The program
@@ -160,13 +160,13 @@ tokenProgram.closeAccount(vault, maker, offer, ["offer", maker.key, offer.id, of
 | `ErrorCode::CustomError` (unused upstream) | `enum ErrorCode`, the same code 6000 |
 
 Nothing in the program needed a construct TypeSOL lacks, and every account constraint has its TypeSOL form; the port
-is marked PORTED in [the ports table](../test/ports/README.md).
+is marked PORTED in [the ports table](https://github.com/typesol/typesol/blob/main/test/ports/README.md).
 
 ## Same inputs, same results
 
 Two independent checks run the original and the port against each other.
 
-- **The port's own test** ([`test/porting/ports-tokens.test.ts`](../test/porting/ports-tokens.test.ts)) runs the upstream flow with SPL
+- **The port's own test** ([`test/porting/ports-tokens.test.ts`](https://github.com/typesol/typesol/blob/main/test/porting/ports-tokens.test.ts)) runs the upstream flow with SPL
   Token mints and again with Token-2022 mints: make, take (creating the taker's and the maker's missing token accounts),
   make again, a refund attempt by someone other than the maker, and the refund. It checks balances, the decoded offer
   and that offer and vault are closed.

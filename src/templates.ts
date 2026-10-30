@@ -270,46 +270,24 @@ export function refund(
 `,
     test: (name) =>
       testFile(name, {
-        imports: `import { AccountState, getMintEncoder, getMintSize, getTokenDecoder, getTokenEncoder, getTokenSize } from "@solana-program/token";\nimport { type Address, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";\n`,
+        imports: `import { type Address, type KeyPairSigner } from "@solana/kit";\n`,
         body: `
-  const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address;
-  /** A mint, written straight into the VM (a real client sends System CreateAccount + InitializeMint2). */
-  const mint = async (authority: Address) => {
-    const address = (await generateKeyPairSigner()).address;
-    const data = getMintEncoder().encode({ mintAuthority: authority, supply: 0n, decimals: 6, isInitialized: true, freezeAuthority: null });
-    t.svm.setAccount({ address, data: new Uint8Array(data), executable: false, lamports: lamports(1_461_600n), programAddress: TOKEN, space: BigInt(getMintSize()) });
-    return address;
-  };
-  /** A token account of owner for mint holding amount, written straight into the VM. */
-  const tokenAccount = async (owner: Address, mintAddress: Address, amount: bigint) => {
-    const address = (await generateKeyPairSigner()).address;
-    const data = getTokenEncoder().encode({
-      mint: mintAddress,
-      owner,
-      amount,
-      delegate: null,
-      state: AccountState.Initialized,
-      isNative: null,
-      delegatedAmount: 0n,
-      closeAuthority: null,
-    });
-    t.svm.setAccount({ address, data: new Uint8Array(data), executable: false, lamports: lamports(2_039_280n), programAddress: TOKEN, space: BigInt(getTokenSize()) });
-    return address;
-  };
-  const balance = (address: Address) => {
-    const account = t.svm.getAccount(address);
-    return account.exists ? getTokenDecoder().decode(account.data).amount : null;
-  };
+  // Mints and token accounts are written straight into the VM (a real client sends System CreateAccount and
+  // InitializeMint2 / InitializeAccount3).
+  const mint = (authority: KeyPairSigner) => t.mint({ authority: authority.address, decimals: 6 });
+  const tokenAccount = (owner: KeyPairSigner | Address, mintAddress: Address, amount: bigint) =>
+    t.tokenAccount({ owner: typeof owner === "string" ? owner : owner.address, mint: mintAddress, amount });
+  const balance = (address: Address) => t.tokenBalance(address);
 
   it("escrows mint A for mint B; the taker swaps, the maker can refund", async () => {
     const maker = await t.wallet();
     const taker = await t.wallet();
-    const mintA = await mint(maker.address);
-    const mintB = await mint(taker.address);
-    const makerTokenA = await tokenAccount(maker.address, mintA, 1_000n);
-    const makerTokenB = await tokenAccount(maker.address, mintB, 0n);
-    const takerTokenA = await tokenAccount(taker.address, mintA, 0n);
-    const takerTokenB = await tokenAccount(taker.address, mintB, 500n);
+    const mintA = await mint(maker);
+    const mintB = await mint(taker);
+    const makerTokenA = await tokenAccount(maker, mintA, 1_000n);
+    const makerTokenB = await tokenAccount(maker, mintB, 0n);
+    const takerTokenA = await tokenAccount(taker, mintA, 0n);
+    const takerTokenB = await tokenAccount(taker, mintB, 500n);
 
     const open = async (seed: bigint) => {
       const offer = await t.pda("offer", maker, seed);
@@ -333,6 +311,5 @@ export function refund(
   });
 `,
       }),
-    devDependencies: { "@solana-program/token": "~0.18.0" },
   },
 };

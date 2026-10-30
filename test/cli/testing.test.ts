@@ -97,4 +97,38 @@ export function book(payer: Signer, book: Seeds<AccountInfo, ["book", "@side"]>,
     expect(t.returned<{ limit: bigint | null }>("preview", n).limit).toBeNull();
     expect(() => t.ix("preview", { price: 1n, limit: null }, { owner: owner.address })).toThrow(/signs; pass its keypair/);
   });
+  it("writes mints and token accounts, moves the clock and names errors", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-testing-"));
+    const file = path.join(dir, "tokens.ts");
+    writeFileSync(
+      file,
+      `import { type Mint, type TokenAccount, type TokenInterface, type i64, now, require, u64 } from "typesol";
+export enum Gate { TooEarly = "too early" }
+/** amount * 100 + decimals, once the clock is past \`at\`. */
+export function read(mint: Mint, account: TokenAccount, tokenProgram: TokenInterface, at: i64): u64 {
+  require(now() >= at, Gate.TooEarly);
+  require(account.mint === mint.key, "mint");
+  return account.amount * 100n + u64(mint.decimals);
+}
+`,
+    );
+    const d = await deployFile(file);
+    const t = programHarness(d.svm, d.programId, d.idl as never);
+    const payer = await t.wallet();
+    for (const tokenProgram of ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"] as Address[]) {
+      const mint = await t.mint({ authority: payer.address, decimals: 9, supply: 1_000n, tokenProgram });
+      const account = await t.tokenAccount({ mint, owner: payer.address, amount: 250n, tokenProgram });
+      expect(t.tokenBalance(account)).toBe(250n);
+      const at = t.svm.getClock().unixTimestamp + 3_600n;
+      const read = () => t.send(payer, t.ix("read", { at }, { mint, account, tokenProgram }));
+      const early = await read();
+      expect(t.errorName(t.errorCode(early))).toBe("TooEarly");
+      expect(() => t.ok(early)).toThrow(/code: 6000 } } \(TooEarly\)/);
+      t.warp({ seconds: 3_600n });
+      expect(t.returned("read", t.ok(await read()))).toBe(250n * 100n + 9n);
+    }
+    expect(t.errorName(5100)).toBe("ArithmeticOverflow");
+    expect(t.errorName(1)).toBeUndefined();
+    expect(t.tokenBalance((await t.wallet()).address)).toBeNull();
+  });
 });

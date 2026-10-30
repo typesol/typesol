@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Sbpf } from "./compiler/index.js";
+import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Diagnostic, type Sbpf } from "./compiler/index.js";
 import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
@@ -13,7 +13,18 @@ import { buildIdl } from "./compiler/idl.js";
 import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
 import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
-import { buildWorkspace, CONFIG, deployArgs, findWorkspace, programAddress, programForEntry, programPaths, scaffold, type Workspace } from "./workspace.js";
+import {
+  addProgram,
+  buildWorkspace,
+  CONFIG,
+  deployArgs,
+  findWorkspace,
+  programAddress,
+  programForEntry,
+  programPaths,
+  scaffold,
+  type Workspace,
+} from "./workspace.js";
 import { clusterUrl, deployPreflight, doctorChecks, formatChecks, INSTALL_AGAVE, solanaConfig as readSolanaConfig, toolchainCheck } from "./tools/doctor.js";
 
 const ASSETS = fileURLToPath(new URL("../assets/", import.meta.url));
@@ -55,6 +66,26 @@ interface Command {
 }
 
 const COMMANDS: Record<string, Command> = {
+  new: {
+    usage: "typesol new <program> [--template counter|vault|escrow]",
+    help: [
+      "Add a program to this project: programs/<program>.ts, tests/<program>.test.ts and its entry in typesol.json.",
+      "Refuses to overwrite files. <program> must be snake_case. Templates as for `typesol init`.",
+    ].join("\n  "),
+    options: { template: { type: "string" } },
+    run(v, args) {
+      const name = one(args, "<program>");
+      if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new UsageError(`"${name}" must be snake_case (a-z, 0-9, _; starting with a letter)`);
+      const template = (v.template as string | undefined) ?? "counter";
+      if (!(TEMPLATE_NAMES as readonly string[]).includes(template))
+        throw new UsageError(`--template "${template}" is not one of ${TEMPLATE_NAMES.join(", ")}`);
+      const ws = needWorkspace("new");
+      const { files, missing } = addProgram(ws, name, template as TemplateName);
+      for (const f of files) log(`  ${f === CONFIG ? "updated" : "created"} ${path.relative(process.cwd(), path.join(ws.root, f)) || f}`);
+      if (missing.length) log(`\n  The ${template} test also needs: npm install -D ${missing.join(" ")}`);
+      return 0;
+    },
+  },
   init: {
     usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow]",
     help: [
@@ -120,7 +151,9 @@ const COMMANDS: Record<string, Command> = {
           throw new UsageError(`--out and --program-id do not apply to programs of ${CONFIG} (use "out" there; keypairs live in <out>/deploy/)`);
         if (!v.quiet && process.stdout.isTTY) log(banner());
         for (const b of buildWorkspace(ws, inProject ? [inProject] : names(ws, args), { sbpf, profile }))
-          log(`  ${b.paths.name.padEnd(12)} ${b.address}${b.created ? " (new keypair)" : ""}  ${path.relative(process.cwd(), b.result.soPath)}`);
+          log(
+            `  ${b.paths.name.padEnd(12)} ${b.address}${b.created ? " (new keypair)" : b.keyless ? " (no keypair here: deploying needs it)" : ""}  ${path.relative(process.cwd(), b.result.soPath)}`,
+          );
         return 0;
       }
       if (!file)
@@ -149,15 +182,33 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   check: {
-    usage: "typesol check <program.ts> [--json] [--stdin | --files]",
+    usage: "typesol check [<program.ts> | <program>…] [--json] [--stdin | --files]",
     help: [
-      "Typecheck and validate the TypeSOL subset without building.",
+      "Typecheck and validate the TypeSOL subset without building. In a project, no argument checks every program.",
       "--json    print { ok, diagnostics: [{ file, line, column, message }] } (exit 1 when there are diagnostics)",
       "--stdin   read <program.ts>'s text from stdin instead of the file (an editor's unsaved buffer); its imports are read from disk",
       '--files   read { "files": { "<absolute path>": "<text>", … } } from stdin: those files\' texts instead of the disk (unsaved buffers)',
     ].join("\n  "),
     options: { json: { type: "boolean" }, stdin: { type: "boolean" }, files: { type: "boolean" } },
     run(v, args) {
+      // In a project: the named programs, or all of them.
+      const ws = !v.stdin && !v.files && !args.some((a) => a.endsWith(".ts")) ? findWorkspace(process.cwd()) : undefined;
+      if (ws) {
+        const diagnostics: Diagnostic[] = [];
+        for (const name of names(ws, args)) {
+          try {
+            const { model } = generate(programPaths(ws, name).entry);
+            if (!v.json)
+              log(`ok  ${name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
+          } catch (e) {
+            if (!(e instanceof CompileError)) throw e;
+            diagnostics.push(...e.diagnostics);
+            if (!v.json) console.error(`${name}:\n${e.message}`);
+          }
+        }
+        if (v.json) log(JSON.stringify({ ok: !diagnostics.length, diagnostics }));
+        return diagnostics.length ? 1 : 0;
+      }
       const file = path.resolve(one(args, "<program.ts>"));
       let files: Map<string, string> | undefined;
       if (v.stdin) files = new Map([[file, readFileSync(0, "utf8")]]);
@@ -213,7 +264,7 @@ const COMMANDS: Record<string, Command> = {
     options: { url: { type: "string" }, keypair: { type: "string" }, config: { type: "string" }, "dry-run": { type: "boolean" }, sbpf: { type: "string" } },
     async run(v, args) {
       const ws = needWorkspace("deploy");
-      const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v) });
+      const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v), needKeypair: true });
       if (!v["dry-run"]) {
         // Before any transaction: the RPC answers and the payer can afford it, with what to do if not.
         const cfg = solanaConfig(v.config as string | undefined);

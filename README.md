@@ -220,8 +220,9 @@ The full reference, with every type, check and built-in, is in [docs/language.md
 | Command | What it does |
 | --- | --- |
 | `typesol init` | scaffold a project with a program, a LiteSVM test and TypeScript configs |
+| `typesol new <program>` | add another program and its test to a project |
 | `typesol build` | compile every program in `typesol.json`, or a single `.ts` file |
-| `typesol check` | typecheck and subset-check without compiling |
+| `typesol check` | typecheck and subset-check without compiling (every program of the project, or one file) |
 | `typesol deploy` | `solana program deploy` with the right program keypair (`--dry-run` prints the commands) |
 | `typesol idl publish` | upload the IDL to the Program Metadata program (canonical when the upgrade authority signs) |
 | `typesol cpi <idl.json>` | generate typed CPI helpers for another program |
