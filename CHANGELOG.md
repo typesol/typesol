@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.36.0 — 2026-10-30
+
+Verifiable randomness from Switchboard, Anchor's check order for instructions with account groups, and the
+StakeHistory sysvar. Programs without account groups compile to the same binaries as in 0.35.0.
+
 - New: `StakeHistorySysvar`, the StakeHistory sysvar read as an account: `count`, `latestEpoch`, `has(epoch)`,
   `effective(epoch)`, `activating(epoch)`, `deactivating(epoch)`.
 - Changed: an instruction with an account group checks in Anchor's order: the arguments first, then the accounts in
