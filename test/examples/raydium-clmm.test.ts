@@ -9,9 +9,12 @@ import * as t22 from "@solana-program/token-2022";
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, generateKeyPairSigner, getAddressDecoder, getAddressEncoder, lamports } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { web3 } from "@anchor-lang/core";
 import { BN, acct, deployFile, pda, send, type Deployed } from "../harness.js";
 
 const PROGRAM = address("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
@@ -44,15 +47,35 @@ const custom = (code: number) => `error: TransactionErrorInstructionError { inde
 describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CLMM on mainnet", () => {
   let d: Deployed;
   let original: LiteSVM;
+  let admin: KeyPairSigner;
   const cu: Record<string, [bigint, bigint]> = {};
   let compared = 0;
   const errors = Object.fromEntries(
     [...readFileSync(fileURLToPath(new URL("../../examples/raydium-clmm/errors.ts", import.meta.url)), "utf8").matchAll(/^ {2}(\w+) = /gm)].map((m, i) => [m[1]!, 6000 + i]),
   ) as Record<string, number>;
   beforeAll(async () => {
-    d = await deployFile(PORT, { programId: PROGRAM });
+    // Raydium's admin key is replaced by a test key in both, so the admin instructions run too: in the original, in
+    // each of the 26 places its code loads the key (as four 64-bit immediates, lddw); in the port, in its source.
+    admin = await generateKeyPairSigner();
+    const so = Buffer.from(readFileSync(ORIGINAL));
+    const [from, to] = [key(ADMIN), key(admin.address)];
+    for (let c = 0; c < 4; c++) {
+      const [was, now] = [from.readBigUInt64LE(c * 8), to.readBigUInt64LE(c * 8)];
+      let patched = 0;
+      for (let i = 0; i + 16 <= so.length; i += 8)
+        if (so[i] === 0x18 && so.readUInt32LE(i + 4) === Number(was & 0xffffffffn) && so[i + 8] === 0 && so.readUInt32LE(i + 12) === Number(was >> 32n)) {
+          so.writeUInt32LE(Number(now & 0xffffffffn), i + 4);
+          so.writeUInt32LE(Number(now >> 32n), i + 12);
+          patched++;
+        }
+      expect(patched, `admin key, part ${c}`).toBe(26);
+    }
+    const source = mkdtempSync(path.join(os.tmpdir(), "clmm-port-"));
+    cpSync(path.dirname(PORT), source, { recursive: true });
+    for (const f of readdirSync(source)) writeFileSync(path.join(source, f), readFileSync(path.join(source, f), "utf8").replaceAll(ADMIN, admin.address));
+    d = await deployFile(path.join(source, path.basename(PORT)), { programId: PROGRAM });
     original = new LiteSVM();
-    original.addProgramFromFile(PROGRAM, ORIGINAL);
+    original.addProgram(PROGRAM, new Uint8Array(so));
     for (const vm of [original, d.svm]) {
       const clock = vm.getClock();
       clock.unixTimestamp = 1_800_000_000n;
@@ -954,6 +977,313 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
       ["0 for 1, exact output", true, 500_000n, true],
     ] as const)
       expect(await swapBoth(`swap, mainnet USDC/CC pool, ${label}`, cloned, zeroForOne, amount, { arrays: zeroForOne ? arrays : [...arrays].reverse(), ext: true, exactOut })).toBe("ok");
+  });
+
+  // ---- admin, customizable pools, rewards ------------------------------------------------------------------------
+
+  const pk = (a: Address) => new web3.PublicKey(a);
+  const adminReady = () => {
+    for (const vm of vms()) vm.airdrop(admin.address, lamports(100_000_000_000n));
+    return admin;
+  };
+  const bytesAt = (a: Address) => Buffer.from(acct(original, a).data);
+
+  it("runs the admin instructions: configs, operators, dynamic fee configs, support mints, pool status and owner", async () => {
+    const a = adminReady();
+    const someone = await funded();
+    // create_amm_config and update_amm_config.
+    const [cfg] = await pda(PROGRAM, ["amm_config", be16(90)]);
+    const create = (signer: KeyPairSigner) =>
+      ix("create_amm_config", { index: 90, tick_spacing: 10, trade_fee_rate: 2500, protocol_fee_rate: 120_000, fund_fee_rate: 40_000 }, [
+        { address: signer.address, signer, writable: true },
+        { address: cfg, writable: true },
+        { address: SYSTEM },
+      ]);
+    expect(await both("create_amm_config, admin", a, [create(a)], [cfg])).toBe("ok");
+    expect(await both("create_amm_config, again", a, [create(a)], [cfg])).toBe(custom(0));
+    const update = (signer: KeyPairSigner, param: number, value: number, rest: Meta[] = []) =>
+      ix("update_amm_config", { param, value }, [{ address: signer.address, signer }, { address: cfg, writable: true }, ...rest]);
+    for (const [label, param, value, rest, want] of [
+      ["trade fee", 0, 3000, [], "ok"],
+      ["trade fee too high", 0, 1_000_000, [], custom(2505)],
+      ["protocol fee", 1, 200_000, [], "ok"],
+      ["protocol fee too high", 1, 970_000, [], custom(2506)],
+      ["fund fee", 2, 50_000, [], "ok"],
+      ["owner", 3, 0, [{ address: someone.address }], "ok"],
+      ["owner, no account", 3, 0, [], custom(errors.AccountLack!)],
+      ["fund owner", 4, 0, [{ address: someone.address }], "ok"],
+      ["unknown flag", 9, 0, [], custom(errors.InvalidUpdateConfigFlag!)],
+    ] as [string, number, number, Meta[], string][])
+      expect(await both(`update_amm_config, ${label}`, a, [update(a, param, value, rest)], [cfg])).toBe(want);
+    expect(await both("update_amm_config, not the admin", someone, [update(someone, 0, 10, [])], [cfg])).toBe(custom(errors.NotApproved!));
+
+    // The operation account.
+    const [operation] = await pda(PROGRAM, ["operation"]);
+    const createOp = ix("create_operation_account", {}, [{ address: a.address, signer: a, writable: true }, { address: operation, writable: true }, { address: SYSTEM }]);
+    expect(await both("create_operation_account", a, [createOp], [operation])).toBe("ok");
+    const keys = await Promise.all([1, 2, 3, 4].map(async () => (await generateKeyPairSigner()).address));
+    const updateOp = (param: number, list: Address[], signer = a) =>
+      ix("update_operation_account", { param, keys: list.map(pk) }, [{ address: signer.address, signer }, { address: operation, writable: true }, { address: SYSTEM }]);
+    for (const [label, param, list, want] of [
+      ["add operators", 0, [keys[2]!, keys[0]!, keys[1]!], "ok"],
+      ["add operators again, one new", 0, [keys[1]!, keys[3]!], "ok"],
+      ["remove an operator", 1, [keys[0]!], "ok"],
+      ["add a reward mint", 2, [keys[0]!], "ok"],
+      ["remove the reward mint", 3, [keys[0]!], "ok"],
+      ["unknown flag", 4, [], custom(errors.InvalidUpdateConfigFlag!)],
+    ] as [string, number, Address[], string][])
+      expect(await both(`update_operation_account, ${label}`, a, [updateOp(param, list)], [operation])).toBe(want);
+    const eleven = await Promise.all(Array.from({ length: 11 }, async () => (await generateKeyPairSigner()).address));
+    expect(await both("update_operation_account, more operators than fit", a, [updateOp(0, eleven)], [operation], true)).toBe("failed");
+    expect(await both("update_operation_account, not the admin", someone, [updateOp(0, [someone.address], someone)], [operation])).toBe(
+      custom(errors.NotApproved!),
+    );
+
+    // Dynamic fee configs.
+    const [dyn] = await pda(PROGRAM, ["dynamic_fee_config", be16(3)]);
+    const dynArgs = { filter_period: 10, decay_period: 60, reduction_factor: 5000, dynamic_fee_control: 80_000, max_volatility_accumulator: 350_000 };
+    const createDyn = (args: typeof dynArgs) =>
+      ix("create_dynamic_fee_config", { index: 3, ...args }, [{ address: a.address, signer: a, writable: true }, { address: dyn, writable: true }, { address: SYSTEM }]);
+    expect(await both("create_dynamic_fee_config, bad parameters", a, [createDyn({ ...dynArgs, decay_period: 5 })], [dyn])).toBe(
+      custom(errors.InvalidDynamicFeeConfigParams!),
+    );
+    expect(await both("create_dynamic_fee_config", a, [createDyn(dynArgs)], [dyn])).toBe("ok");
+    const updateDyn = (args: typeof dynArgs) => ix("update_dynamic_fee_config", args, [{ address: a.address, signer: a }, { address: dyn, writable: true }]);
+    expect(await both("update_dynamic_fee_config", a, [updateDyn({ ...dynArgs, filter_period: 20 })], [dyn])).toBe("ok");
+    expect(await both("update_dynamic_fee_config, bad parameters", a, [updateDyn({ ...dynArgs, reduction_factor: 10_000 })], [dyn])).toBe(
+      custom(errors.InvalidDynamicFeeConfigParams!),
+    );
+
+    // Support mints: a Token-2022 mint with an extension pools refuse, allowed, then not.
+    const odd = await mint(someone, TOKEN_2022, 6, "closeAuthority");
+    const [assoc] = await pda(PROGRAM, ["support_mint", odd.address]);
+    const supportIx = (name: string, signer: KeyPairSigner, m: Address) =>
+      ix(name, {}, [
+        { address: signer.address, signer, writable: true },
+        { address: m },
+        { address: (name === "create_support_mint_associated" || m === odd.address ? assoc : assoc), writable: true },
+        ...(name === "create_support_mint_associated" ? [{ address: SYSTEM }] : []),
+      ]);
+    expect(await both("create_support_mint_associated, not allowed", someone, [supportIx("create_support_mint_associated", someone, odd.address)], [assoc])).toBe(
+      custom(errors.NotApproved!),
+    );
+    const legacy = await mint(someone, TOKEN, 6);
+    expect(await both("create_support_mint_associated, an SPL Token mint", a, [supportIx("create_support_mint_associated", a, legacy.address)], [assoc])).not.toBe("ok");
+    expect(await both("create_support_mint_associated", a, [supportIx("create_support_mint_associated", a, odd.address)], [assoc])).toBe("ok");
+    // A pool of it, now allowed with the associated account passed.
+    const cfg2 = await config(91, 10, 500);
+    const other = await mint(someone, TOKEN, 9);
+    const [n0, n1] = Buffer.compare(key(odd.address), key(other.address)) < 0 ? [odd, other] : [other, odd];
+    const q = await poolAccounts(cfg2, n0, n1);
+    const plain = createPool(someone, cfg2, n0, n1, q, 18_446_744_073_709_551_616n);
+    const withAssoc = { ...plain, accounts: [...plain.accounts!, { address: assoc, role: AccountRole.READONLY }] } as Instruction;
+    expect(await both("create_pool, allowed Token-2022 mint", someone, [withAssoc], watchPool(q))).toBe("ok");
+    expect(await both("close_support_mint_associated", a, [supportIx("close_support_mint_associated", a, odd.address)], [assoc, a.address])).toBe("ok");
+
+    // Pool status, reward owner, a protocol position.
+    const pool = await poolWith(10, 92, 18_446_744_073_709_551_616n);
+    const status = (s: number, signer = a) => ix("update_pool_status", { status: s }, [{ address: signer.address, signer }, { address: pool.p.pool, writable: true }]);
+    expect(await both("update_pool_status", a, [status(16)], [pool.p.pool])).toBe("ok");
+    expect(await both("update_pool_status, not the admin", someone, [status(0, someone)], [pool.p.pool])).toBe(custom(2012));
+    expect(await both("update_pool_status, back", a, [status(0)], [pool.p.pool])).toBe("ok");
+    const transfer = (signer: KeyPairSigner) =>
+      ix("transfer_reward_owner", { new_owner: pk(someone.address) }, [{ address: signer.address, signer }, { address: pool.p.pool, writable: true }]);
+    expect(await both("transfer_reward_owner", a, [transfer(a)], [pool.p.pool])).toBe("ok");
+    expect(await both("transfer_reward_owner, not the admin", someone, [transfer(someone)], [pool.p.pool])).toBe(custom(errors.NotApproved!));
+    const protocolPosition = (await generateKeyPairSigner()).address;
+    const pp = Buffer.concat([disc("ProtocolPositionState"), Buffer.alloc(217)]);
+    for (const vm of vms())
+      vm.setAccount({ address: protocolPosition, data: new Uint8Array(pp), executable: false, lamports: lamports(5_000_000n), programAddress: PROGRAM, space: BigInt(pp.length) });
+    expect(await both("close_protocol_position", a, [ix("close_protocol_position", {}, [{ address: a.address, signer: a, writable: true }, { address: protocolPosition, writable: true }])], [protocolPosition, a.address])).toBe("ok");
+
+    // Lamports above rent: on the pool, a vault and the observation account.
+    await setup(someone, [
+      getTransferSolInstruction({ source: someone, destination: pool.p.pool, amount: 7_000n }),
+      getTransferSolInstruction({ source: someone, destination: pool.p.vault0, amount: 9_000n }),
+      getTransferSolInstruction({ source: someone, destination: pool.p.observation, amount: 11_000n }),
+    ]);
+    const collectLamports = (signer: KeyPairSigner) =>
+      ix("collect_excess_lamports", {}, [
+        { address: signer.address, signer, writable: true },
+        { address: pool.p.pool, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: pool.p.vault0, writable: true },
+        { address: pool.p.observation, writable: true },
+      ]);
+    expect(await both("collect_excess_lamports, not allowed", someone, [collectLamports(someone)], [pool.p.pool])).toBe(custom(errors.NotApproved!));
+    await both("collect_excess_lamports", a, [collectLamports(a)], [pool.p.pool, pool.p.vault0, pool.p.observation, a.address]);
+  });
+
+  it("creates customizable pools: fee modes, a dynamic fee, seed indexes", async () => {
+    const a = adminReady();
+    const creator = await funded();
+    const cfg = await config(93, 10, 2500, creator.address);
+    const [dyn] = await pda(PROGRAM, ["dynamic_fee_config", be16(4)]);
+    expect(
+      await both(
+        "create_dynamic_fee_config",
+        a,
+        [
+          ix("create_dynamic_fee_config", { index: 4, filter_period: 10, decay_period: 60, reduction_factor: 5000, dynamic_fee_control: 80_000, max_volatility_accumulator: 350_000 }, [
+            { address: a.address, signer: a, writable: true },
+            { address: dyn, writable: true },
+            { address: SYSTEM },
+          ]),
+        ],
+        [dyn],
+      ),
+    ).toBe("ok");
+    const [m0, m1] = await pair(creator);
+    const params = (feeOn: number, dynamic: boolean) => ({
+      sqrt_price_x64: new BN("19574085512633416581"),
+      collect_fee_on: [{ FromInput: {} }, { Token0Only: {} }, { Token1Only: {} }][feeOn],
+      enable_dynamic_fee: dynamic,
+    });
+    const accountsFor = async (seedIndex: number | null) => {
+      const seeds: (string | Address | Uint8Array)[] = ["pool", cfg, m0.address, m1.address];
+      if (seedIndex !== null) seeds.push(u16(seedIndex));
+      const [pool] = await pda(PROGRAM, seeds);
+      const [vault0] = await pda(PROGRAM, ["pool_vault", pool, m0.address]);
+      const [vault1] = await pda(PROGRAM, ["pool_vault", pool, m1.address]);
+      const [observation] = await pda(PROGRAM, ["observation", pool]);
+      const [bitmap] = await pda(PROGRAM, [Buffer.from("pool_tick_array_bitmap_extension"), pool]);
+      return { pool, vault0, vault1, observation, bitmap };
+    };
+    const tail = (p: Awaited<ReturnType<typeof accountsFor>>) => [
+      { address: cfg },
+      { address: p.pool, writable: true },
+      { address: m0.address },
+      { address: m1.address },
+      { address: p.vault0, writable: true },
+      { address: p.vault1, writable: true },
+      { address: p.observation, writable: true },
+      { address: p.bitmap, writable: true },
+      { address: m0.program },
+      { address: m1.program },
+      { address: SYSTEM },
+      { address: RENT },
+    ];
+    const v1 = await accountsFor(null);
+    expect(
+      await both(
+        "create_customizable_pool, fee on token 1, dynamic fee",
+        creator,
+        [ix("create_customizable_pool", { customizable_params: params(2, true) }, [{ address: creator.address, signer: creator, writable: true }, ...tail(v1), { address: dyn }])],
+        watchPool(v1),
+      ),
+    ).toBe("ok");
+    const v2 = await accountsFor(7);
+    const createV2 = (seedIndex: number, p: Awaited<ReturnType<typeof accountsFor>>, dynamic = false) =>
+      ix("create_customizable_pool_v2", { customizable_params: params(1, dynamic), seed_index: seedIndex }, [
+        { address: creator.address, signer: creator, writable: true },
+        { address: a.address },
+        ...tail(p),
+        ...(dynamic ? [] : []),
+      ]);
+    expect(await both("create_customizable_pool_v2, seed index 7", creator, [createV2(7, v2)], watchPool(v2))).toBe("ok");
+    const v0 = await accountsFor(0);
+    expect(await both("create_customizable_pool_v2, seed index 0", creator, [createV2(0, v0)], watchPool(v0))).toBe(custom(2505));
+    const v3 = await accountsFor(8);
+    expect(await both("create_customizable_pool_v2, dynamic fee without its config", creator, [createV2(8, v3, true)], watchPool(v3))).toBe(
+      custom(errors.AccountLack!),
+    );
+
+    // The seeded pool works: a position and swaps, signed by the pool with its seed index.
+    const acct0 = await ata(creator.address, m0.address, TOKEN);
+    const acct1 = await ata(creator.address, m1.address, TOKEN);
+    await setup(creator, [
+      token.getCreateAssociatedTokenIdempotentInstruction({ payer: creator, ata: acct0, owner: creator.address, mint: m0.address, tokenProgram: TOKEN }),
+      token.getCreateAssociatedTokenIdempotentInstruction({ payer: creator, ata: acct1, owner: creator.address, mint: m1.address, tokenProgram: TOKEN }),
+      token.getMintToInstruction({ mint: m0.address, token: acct0, mintAuthority: creator, amount: 10n ** 15n }),
+      token.getMintToInstruction({ mint: m1.address, token: acct1, mintAuthority: creator, amount: 10n ** 15n }),
+    ]);
+    const seeded = { user: creator, cfg, m0, m1, p: v2, acct0, acct1, spacing: 10, starts: new Set<number>() } as Pool;
+    const pos = await openPosition(seeded, -600, 1800, 10n ** 11n);
+    expect(await both("open_position, seeded pool", creator, [pos.instruction], pos.watch)).toBe("ok");
+    expect(await swapBoth("swap, seeded pool", seeded, true, 1_000_000_000n)).toBe("ok");
+    expect(await both("decrease_liquidity, seeded pool", creator, [decrease(seeded, pos, positionLiquidity(pos) / 2n)], pos.watch)).toBe("ok");
+    expect(bytesAt(v2.pool).readUInt16LE(391)).toBe(7);
+  });
+
+  it("runs reward streams: set up, changed, paid, and what is left returned", async () => {
+    const a = adminReady();
+    const pool = await poolWith(10, 94, 18_446_744_073_709_551_616n);
+    const [operation] = await pda(PROGRAM, ["operation"]);
+    if (!original.getAccount(operation).exists)
+      await both("create_operation_account", a, [ix("create_operation_account", {}, [{ address: a.address, signer: a, writable: true }, { address: operation, writable: true }, { address: SYSTEM }])], [operation]);
+    const pos = await openPosition(pool, -600, 600, 10n ** 12n);
+    expect(await both("open_position", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    // The reward is token 1 of the pool (allowed as the first reward), funded by the pool's creator.
+    const [vault] = await pda(PROGRAM, ["pool_reward_vault", pool.p.pool, pool.m1.address]);
+    const start = 1_800_000_000n;
+    const init = (open: bigint, end: bigint, emissions: bigint) =>
+      ix("initialize_reward", { param: { open_time: new BN(open.toString()), end_time: new BN(end.toString()), emissions_per_second_x64: new BN(emissions.toString()) } }, [
+        { address: pool.user.address, signer: pool.user, writable: true },
+        { address: pool.acct1, writable: true },
+        { address: pool.cfg },
+        { address: pool.p.pool, writable: true },
+        { address: operation },
+        { address: pool.m1.address },
+        { address: vault, writable: true },
+        { address: pool.m1.program },
+        { address: SYSTEM },
+        { address: RENT },
+      ]);
+    const week = 604_800n;
+    const watch = [pool.p.pool, vault, pool.acct1];
+    expect(await both("initialize_reward, too short", pool.user, [init(start + 10n, start + 10n + week - 1n, 10n << 64n)], watch)).toBe(custom(errors.InvalidRewardPeriod!));
+    expect(await both("initialize_reward, in the past", pool.user, [init(start - 10n, start + week, 10n << 64n)], watch)).toBe(custom(errors.InvalidRewardInitParam!));
+    expect(await both("initialize_reward", pool.user, [init(start + 10n, start + 10n + week, 10n << 64n)], watch)).toBe("ok");
+    expect(await both("initialize_reward, the same mint again", pool.user, [init(start + 10n, start + 10n + week, 10n << 64n)], watch)).not.toBe("ok");
+    const update = ix("update_reward_infos", {}, [{ address: pool.p.pool, writable: true }]);
+    setTime(start + 3_600n);
+    expect(await both("update_reward_infos", pool.user, [update], [pool.p.pool])).toBe("ok");
+    // The admin raises the emissions; the reward added comes from the admin's account.
+    const adminAcct = await ata(a.address, pool.m1.address, TOKEN);
+    await setup(pool.user, [
+      token.getCreateAssociatedTokenIdempotentInstruction({ payer: pool.user, ata: adminAcct, owner: a.address, mint: pool.m1.address, tokenProgram: TOKEN }),
+      token.getMintToInstruction({ mint: pool.m1.address, token: adminAcct, mintAuthority: pool.user, amount: 10n ** 13n }),
+    ]);
+    const setParams = (signer: KeyPairSigner, emissions: bigint, open: bigint, end: bigint, from: Address) =>
+      ix("set_reward_params", { reward_index: 0, emissions_per_second_x64: new BN(emissions.toString()), open_time: new BN(open.toString()), end_time: new BN(end.toString()) }, [
+        { address: signer.address, signer },
+        { address: pool.cfg },
+        { address: pool.p.pool, writable: true },
+        { address: operation },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: vault, writable: true },
+        { address: from, writable: true },
+        { address: pool.m1.address },
+      ]);
+    expect(await both("set_reward_params, admin", a, [setParams(a, 20n << 64n, start + 4_000n, start + 10n + 2n * week, adminAcct)], [...watch, adminAcct])).toBe("ok");
+    expect(await both("set_reward_params, authority, too short an extension", pool.user, [setParams(pool.user, 20n << 64n, start + 4_000n, start + 10n + 2n * week + 100n, pool.acct1)], watch)).toBe(
+      custom(errors.NotApproveUpdateRewardEmissions!),
+    );
+    expect(await both("set_reward_params, authority, extended", pool.user, [setParams(pool.user, 25n << 64n, start + 4_000n, start + 10n + 3n * week, pool.acct1)], watch)).toBe("ok");
+    setTime(start + 10_000n);
+    const rewardAcct = pool.acct1;
+    expect(
+      await both("decrease_liquidity, with the reward", pool.user, [decrease(pool, pos, 1_000n, 0n, 0n, [{ address: vault, writable: true }, { address: rewardAcct, writable: true }, { address: pool.m1.address }])], [
+        ...pos.watch,
+        vault,
+      ]),
+    ).toBe("ok");
+    const collect = ix("collect_remaining_rewards", { reward_index: 0 }, [
+      { address: pool.user.address, signer: pool.user },
+      { address: pool.acct1, writable: true },
+      { address: pool.p.pool, writable: true },
+      { address: vault, writable: true },
+      { address: pool.m1.address },
+      { address: TOKEN },
+      { address: TOKEN_2022 },
+      { address: MEMO },
+    ]);
+    expect(await both("collect_remaining_rewards, still running", pool.user, [collect], watch)).toBe(custom(errors.NotApproved!));
+    setTime(start + 10n + 4n * week);
+    expect(await both("collect_remaining_rewards", pool.user, [collect], watch)).toBe("ok");
+    setTime(start);
   });
 
   it("reports compute units", () => {

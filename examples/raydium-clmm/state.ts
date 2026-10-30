@@ -353,3 +353,111 @@ export interface CollectProtocolFeeEvent {
   amount_0: u64;
   amount_1: u64;
 }
+
+/** Operators allowed to set up rewards, and the mints any pool may reward in (states/operation_account.rs; zero-copy). */
+export interface OperationState {
+  bump: u8;
+  operation_owners: FixedArray<Pubkey, 10>;
+  whitelist_mints: FixedArray<Pubkey, 100>;
+}
+
+/** A dynamic fee a customizable pool may take on (states/dynamic_fee_config.rs; Borsh). */
+export interface DynamicFeeConfig {
+  index: u16;
+  filter_period: u16;
+  decay_period: u16;
+  reduction_factor: u16;
+  dynamic_fee_control: u32;
+  max_volatility_accumulator: u32;
+  padding: FixedArray<u64, 8>;
+}
+
+/** A limit order on a tick (states/limit_order.rs; Borsh). */
+export interface LimitOrderState {
+  pool_id: Pubkey;
+  owner: Pubkey;
+  tick_index: i32;
+  zero_for_one: boolean;
+  order_phase: u64;
+  total_amount: u64;
+  filled_amount: u64;
+  settle_base: u64;
+  settled_output: u64;
+  open_time: u64;
+  unfilled_ratio_x64: u128;
+  padding: FixedArray<u64, 4>;
+}
+
+/** A wallet's counter for its limit order addresses (states/limit_order_nonce.rs; Borsh). */
+export interface LimitOrderNonce {
+  user_wallet: Pubkey;
+  nonce_index: u8;
+  order_nonce: u64;
+  padding: FixedArray<u64, 4>;
+}
+
+/** Where a pool takes its trade fee from (states/pool_fee.rs). */
+export enum CollectFeeOn {
+  FromInput,
+  Token0Only,
+  Token1Only,
+}
+
+/** create_customizable_pool's settings. */
+export interface CreateCustomizableParams {
+  sqrt_price_x64: u128;
+  collect_fee_on: CollectFeeOn;
+  enable_dynamic_fee: boolean;
+}
+
+/** initialize_reward's settings. */
+export interface InitializeRewardParam {
+  open_time: u64;
+  end_time: u64;
+  emissions_per_second_x64: u128;
+}
+
+/** Emitted by update_reward_infos (states/personal_position.rs). */
+export interface UpdateRewardInfosEvent {
+  reward_growth_global_x64: FixedArray<u128, 3>;
+}
+
+export interface OpenLimitOrderEvent {
+  pool_id: Pubkey;
+  limit_order: Pubkey;
+  zero_for_one: boolean;
+  tick_index: i32;
+  total_amount: u64;
+  transfer_fee: u64;
+}
+
+export interface IncreaseLimitOrderEvent {
+  pool_id: Pubkey;
+  limit_order: Pubkey;
+  zero_for_one: boolean;
+  tick_index: i32;
+  total_amount: u64;
+  increased_amount: u64;
+  transfer_fee: u64;
+}
+
+export interface SettleLimitOrderEvent {
+  pool_id: Pubkey;
+  limit_order: Pubkey;
+  zero_for_one: boolean;
+  tick_index: i32;
+  total_amount: u64;
+  filled_amount: u64;
+  settled_amount_out: u64;
+}
+
+export interface DecreaseLimitOrderEvent {
+  pool_id: Pubkey;
+  limit_order: Pubkey;
+  zero_for_one: boolean;
+  tick_index: i32;
+  total_amount: u64;
+  filled_amount: u64;
+  settled_output_amount: u64;
+  decreased_amount: u64;
+}

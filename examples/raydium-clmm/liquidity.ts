@@ -168,7 +168,7 @@ export function flipBitExtension(ext: Mut<TickArrayBitmapExtension>, start: i32,
 // ---- rewards (states/pool.rs) -------------------------------------------------------------------------------------
 
 /** PoolState::update_reward_infos: the rewards emitted up to `now`. */
-export function updateRewardInfos(pool: Mut<PoolState>, now: u64): void {
+export function accrueRewards(pool: Mut<PoolState>, now: u64): void {
   for (let i = 0n; i < 3n; i++) {
     const r = pool.reward_infos.get(i);
     if (r.token_mint === NO_KEY || r.reward_total_emitted === MAX_U64) continue;
@@ -245,7 +245,7 @@ function modifyPosition(
   liquidity: u128,
   liquidityBefore: u128,
 ): LiquidityChange {
-  updateRewardInfos(pool, timestamp);
+  accrueRewards(pool, timestamp);
   let flippedLower = false;
   let flippedUpper = false;
   if (delta !== 0n) {
