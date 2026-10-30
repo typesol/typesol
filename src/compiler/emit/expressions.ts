@@ -295,7 +295,9 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     // A struct loaded with loadAccount / loadAccountMut is also its account: key, lamports, dataLen, isSigner, isWritable.
     if (ts.isIdentifier(node.expression)) {
       const l = this.lookup(node.expression.text);
-      const acct = l?.loaded?.handle;
+      // A field of the struct by that name comes first (as before loaded structs were accounts too).
+      const own = l?.loaded && this.model.structs.get(l.loaded.struct)?.fields.some((f) => f.name === field);
+      const acct = own ? undefined : l?.loaded?.handle;
       if (acct && field === "key") return { c: `&${acct}->key`, type: PUBKEY };
       if (acct && field === "lamports") return { c: `${acct}->lamports`, type: U64 };
       if (acct && field === "dataLen") return { c: `${acct}->data_len`, type: U64 };

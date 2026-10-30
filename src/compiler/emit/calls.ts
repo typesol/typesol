@@ -1175,8 +1175,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
       const acct = this.accountParam(node.arguments[0], "the account");
       if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
       if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadAccountMut`);
+      if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct to this helper as ${mut ? "Mut" : "Account"}<${s.name}>`);
       h = `a_${acct.name}`;
-      param = this.ix!.accounts.indexOf(acct);
+      param = this.ix.accounts.indexOf(acct);
     }
     if (this.model.events.has(s.name) && s.fields.some((f) => f.type.kind === "option" || f.type.kind === "dataEnum"))
       this.fail(node, `${s.name} is emitted as an event and has Option or enum fields; declare a separate event struct`);

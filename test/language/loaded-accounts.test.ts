@@ -3,6 +3,7 @@
 // UncheckedAccount) including two Dup<…> views of one account, a loaded struct passed to helpers as Mut<T>, and a seed
 // list chosen at run time (`cond ? signer(a) : signer(b)`).
 import { type Address, lamports } from "@solana/kit";
+import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,7 @@ const SOURCE = `import {
   findProgramAddress,
   findProgramAddressBump,
   initAccount,
+  loadAccount,
   loadAccountMut,
   programId,
   rentExempt,
@@ -31,6 +33,13 @@ const SOURCE = `import {
 } from "typesol";
 
 export interface Slot { owner: Pubkey; start: i32; count: u64 }
+export interface Jar { lamports: u64 }
+
+/** A field named like an account property stays the field. */
+export function jar(a: AccountInfo): u64 {
+  const j = loadAccount<Jar>(a);
+  return j.lamports;
+}
 
 /** Created at ["slot", owner, start as big-endian bytes] when it does not exist yet. */
 export function open(
@@ -130,6 +139,15 @@ describe("accounts loaded in the body", () => {
     expect(customError(await send(d.svm, payer, [count(a, b)]))).toBe(3007);
   });
 
+  it("reads a struct field named like an account property as the field", async () => {
+    const payer = await fundedSigner(d.svm);
+    const k = (await fundedSigner(d.svm)).address;
+    const data = Buffer.concat([createHash("sha256").update("account:Jar").digest().subarray(0, 8), Buffer.from(new BigUint64Array([42n]).buffer)]);
+    d.svm.setAccount({ address: k, data: new Uint8Array(data), executable: false, lamports: lamports(10_000_000n), programAddress: d.programId, space: 16n });
+    const res = expectOk(await send(d.svm, payer, [ix(d, "jar", {}, [{ address: k }])]));
+    expect(Buffer.from(res.returnData().data()).readBigUInt64LE(0)).toBe(42n);
+  });
+
   it("signs with a seed list picked at run time", async () => {
     const payer = await fundedSigner(d.svm);
     const to = await fundedSigner(d.svm);
@@ -162,5 +180,10 @@ describe("accounts loaded in the body", () => {
     expect(errs(`export function f(a: Seeds<Mut<AccountInfo>, ["s", "@a:be"]>): void { a.lamports; }`)).toContain("only integers have a byte order");
     expect(errs(`export function f(x: i32): Pubkey { return findProgramAddress(["s", bigEndian(7n)], programId()); }`)).toContain("not a literal");
     expect(errs(`export function f(x: i32): void { const s = bigEndian(x); }`)).toContain("inside a seeds list");
+    expect(
+      errs(
+        `function h(a: Mut<AccountInfo>): void { const x = loadAccountMut<Slot>(a); x.count = 1n; }\nexport function f(a: Mut<AccountInfo>): void { h(a); }`,
+      ),
+    ).toContain("load a in the instruction");
   });
 });
