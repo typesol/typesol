@@ -108,7 +108,15 @@ function idlType(t: FieldType | ValueType, borshOption = false): unknown {
  */
 function relativePath(path: string, from: string | undefined): string {
   if (!path.includes("__")) return path;
-  if (from && path.startsWith(`${from}__`) && !path.slice(from.length + 2).split(".")[0]!.includes("__")) return path.slice(from.length + 2);
+  if (
+    from &&
+    path.startsWith(`${from}__`) &&
+    !path
+      .slice(from.length + 2)
+      .split(".")[0]!
+      .includes("__")
+  )
+    return path.slice(from.length + 2);
   return path.replaceAll("__", "_");
 }
 

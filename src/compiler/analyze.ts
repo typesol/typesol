@@ -1628,7 +1628,8 @@ function analyzeInstruction(
         const [f, param] = e.split("=") as [string, string];
         return `${f}=${sibling(param)}`;
       });
-      if (c.seeds) c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
+      if (c.seeds)
+        c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
       if (c.closeTo) c.closeTo = sibling(c.closeTo);
       if (c.ata) c.ata = { owner: sibling(c.ata.owner), mint: sibling(c.ata.mint) };
     }
