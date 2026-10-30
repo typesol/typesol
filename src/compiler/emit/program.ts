@@ -138,7 +138,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   // loadAccountMut's record of the accounts it loaded: set up only in programs that use it (one store otherwise wasted).
   // Above 32 accounts the CPI scratch lists are taken from the heap when first needed.
   if (limit > 32) out.push(`  params.infos_cap = 0;`, `  params.metas = NULL;`);
-  if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_claim_mut(")))
+  if ([...helperBodies, ...ixBodies].some((b) => /ts_claim_mut(_at)?\(/.test(b)))
     out.push(limit > 64 ? `  ts_memzero(params.loaded_mut, sizeof(params.loaded_mut));` : `  params.loaded_mut = 0;`);
   const fallback = model.instructions.find((ix) => ix.fallback);
   const dispatched = model.instructions.filter((ix) => !ix.fallback);

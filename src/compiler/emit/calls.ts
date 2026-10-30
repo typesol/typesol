@@ -528,6 +528,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return { c: "", type: { kind: "remaining" } };
       case "readData":
         return this.readData(node);
+      case "bigEndian":
+        this.fail(node, "bigEndian(value) is a PDA seed: use it inside a seeds list");
       case "loadAccount":
       case "loadAccountMut":
       case "loadForeign":
@@ -1164,9 +1166,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s || s.size === undefined) this.fail(node, "loadAccount needs an account struct type: loadAccount<MyStruct>(account)");
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: declare it as an instruction parameter (remaining accounts are read in place)`);
-    if (node.arguments.length !== 1) this.fail(node, "loadAccount<T>(account) takes one remaining account");
-    const h = this.handle(node.arguments[0]);
-    if (!h) this.fail(node.arguments[0], "pass a remaining account, e.g. remainingAccounts().get(i)");
+    if (node.arguments.length !== 1) this.fail(node, "loadAccount<T>(account) takes one remaining account or AccountInfo parameter");
+    let h = this.handle(node.arguments[0]);
+    // An AccountInfo parameter (Anchor: AccountLoader::try_from on an UncheckedAccount). The entry checks already
+    // refuse it aliasing another writable parameter (unless Dup<…>), so only a second load of it is refused here.
+    let param: number | undefined;
+    if (!h) {
+      const acct = this.accountParam(node.arguments[0], "the account");
+      if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
+      if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadAccountMut`);
+      if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct to this helper as ${mut ? "Mut" : "Account"}<${s.name}>`);
+      h = `a_${acct.name}`;
+      param = this.ix.accounts.indexOf(acct);
+    }
     if (this.model.events.has(s.name) && s.fields.some((f) => f.type.kind === "option" || f.type.kind === "dataEnum"))
       this.fail(node, `${s.name} is emitted as an event and has Option or enum fields; declare a separate event struct`);
     this.model.accountStructs.add(s.name);
@@ -1174,7 +1186,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (s.vec) for (const l of vecLenCheck(s, h, `((TSS_${s.name} *)(${h}->data + 8))`, "")) this.line(l);
     if (mut) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
-      this.line(`TS_TRY(ts_claim_mut(params, ${h}));`);
+      this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
     }
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: mut } };
   }
@@ -1378,6 +1390,15 @@ export abstract class CallEmitter extends ExpressionEmitter {
   /** One helper argument: a C argument list fragment (accounts, seeds, references) or a value to settle. */
   protected helperArg(h: Helper, p: Helper["params"][number], n: ts.Expression): Value | string {
     if (p.account) {
+      // A struct of this program loaded with loadAccount / loadAccountMut: its account, as Account<T> / Mut<T>.
+      const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
+      if (l?.loaded) {
+        const want = p.account;
+        if (want.kind !== "account" || want.struct.name !== l.loaded.struct || want.struct.layout === "borsh" || want.struct.vec)
+          this.fail(n, `${h.name}() takes ${p.name} as another kind of account; ${(n as ts.Identifier).text} is a loaded ${l.loaded.struct}`);
+        if (want.mut && !l.loaded.mut) this.fail(n, `${h.name}() takes ${p.name} as Mut<${l.loaded.struct}>: load it with loadAccountMut`);
+        return l.loaded.handle;
+      }
       const acct = this.accountParam(n, `${h.name}()'s ${p.name}`);
       const why = accountMismatch(acct.kind, p.account);
       if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);

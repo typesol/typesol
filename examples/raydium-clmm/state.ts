@@ -266,3 +266,63 @@ export interface PoolCreatedEvent {
   token_vault_0: Pubkey;
   token_vault_1: Pubkey;
 }
+
+/** Emitted when a position is opened (states/personal_position.rs). */
+export interface CreatePersonalPositionEvent {
+  pool_state: Pubkey;
+  minter: Pubkey;
+  nft_owner: Pubkey;
+  tick_lower_index: i32;
+  tick_upper_index: i32;
+  liquidity: u128;
+  deposit_amount_0: u64;
+  deposit_amount_1: u64;
+  deposit_amount_0_transfer_fee: u64;
+  deposit_amount_1_transfer_fee: u64;
+}
+
+/** Emitted when liquidity is added to a position (states/personal_position.rs). */
+export interface IncreaseLiquidityEvent {
+  position_nft_mint: Pubkey;
+  liquidity: u128;
+  amount_0: u64;
+  amount_1: u64;
+  amount_0_transfer_fee: u64;
+  amount_1_transfer_fee: u64;
+}
+
+/** Emitted when liquidity is taken out of a position, with the fees and rewards collected (states/personal_position.rs). */
+export interface DecreaseLiquidityEvent {
+  position_nft_mint: Pubkey;
+  liquidity: u128;
+  decrease_amount_0: u64;
+  decrease_amount_1: u64;
+  fee_amount_0: u64;
+  fee_amount_1: u64;
+  reward_amounts: FixedArray<u64, 3>;
+  transfer_fee_0: u64;
+  transfer_fee_1: u64;
+}
+
+/** The amounts a liquidity change works out to (states/personal_position.rs). */
+export interface LiquidityCalculateEvent {
+  pool_liquidity: u128;
+  pool_sqrt_price_x64: u128;
+  pool_tick: i32;
+  calc_amount_0: u64;
+  calc_amount_1: u64;
+  trade_fee_owed_0: u64;
+  trade_fee_owed_1: u64;
+  transfer_fee_0: u64;
+  transfer_fee_1: u64;
+}
+
+/** Emitted when the pool's liquidity changes (states/pool.rs). */
+export interface LiquidityChangeEvent {
+  pool_state: Pubkey;
+  tick: i32;
+  tick_lower: i32;
+  tick_upper: i32;
+  liquidity_before: u128;
+  liquidity_after: u128;
+}

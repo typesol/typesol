@@ -102,6 +102,8 @@ export interface Local {
   decl?: ts.VariableDeclaration | ts.ParameterDeclaration;
   /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
   closure?: Closure;
+  /** `const t = loadAccount<T>(acct)` / `loadAccountMut`: the account it views (a `TsAccount *`), to pass to helpers. */
+  loaded?: { handle: string; struct: string; mut: boolean };
 }
 
 /** A closure and the scopes it was declared in (its free names resolve there, wherever it is called). */

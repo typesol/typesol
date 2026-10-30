@@ -35,6 +35,21 @@ export abstract class CpiCoreEmitter extends CallEmitter {
         parts.push(`{(const uint8_t *)${cString(el.text)}, ${len}}`);
         continue;
       }
+      // bigEndian(x): the integer's bytes most significant first (Rust's `x.to_be_bytes()`).
+      if (ts.isCallExpression(el) && this.exportName(el.expression) === "bigEndian") {
+        if (el.arguments.length !== 1) this.fail(el, "bigEndian(value) takes one integer");
+        const v = this.expr(el.arguments[0]!);
+        if (v.type.kind !== "int" || v.literal !== undefined)
+          this.fail(el, "bigEndian(value) takes a typed integer (an argument, a field or a local), not a literal");
+        const info = INT_INFO[(v.type as { name: IntName }).name];
+        const t = this.tmp("seed");
+        this.line(`uint8_t ${t}[${info.bytes}];`);
+        this.line(
+          `{ ${info.c} ${t}_v = ${v.c}; for (int ${t}_i = 0; ${t}_i < ${info.bytes}; ${t}_i++) ${t}[${t}_i] = ((const uint8_t *)&${t}_v)[${info.bytes - 1} - ${t}_i]; }`,
+        );
+        parts.push(`{${t}, ${info.bytes}}`);
+        continue;
+      }
       // Each seed is copied when it is evaluated, so later seeds (helper calls) cannot change earlier ones.
       const v = this.expr(el);
       if (v.type.kind === "pubkey" && (isStable(v.c) || (inPlace && /^\(&d_\w+(->\w+)+\)$/.test(v.c))))
@@ -77,6 +92,8 @@ export abstract class CpiCoreEmitter extends CallEmitter {
   }
 
   protected describeSeed(el: ts.Expression): IdlSeed | undefined {
+    // Anchor's IDL records `x.to_be_bytes()` as the argument (or field) itself, without the byte order.
+    if (ts.isCallExpression(el) && this.exportName(el.expression) === "bigEndian" && el.arguments.length === 1) return this.describeSeed(el.arguments[0]!);
     if (ts.isStringLiteral(el)) return { kind: "const", value: [...Buffer.from(el.text, "utf8")] };
     if (ts.isBigIntLiteral(el)) {
       const value = BigInt(el.text.slice(0, -1).replace(/_/g, ""));

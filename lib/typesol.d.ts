@@ -174,12 +174,14 @@ export interface RemainingSlice extends Iterable<CpiAccount> {
 export declare function remainingAccounts(): RemainingAccounts;
 
 /**
- * Read a struct of this program from a remaining account: owner, discriminator and size are checked.
+ * Read a struct of this program from a remaining account or an `AccountInfo` parameter (Anchor's
+ * `AccountLoader::try_from` on an `UncheckedAccount`): owner, discriminator and size are checked.
  * `loadAccountMut` also requires it to be writable, not aliased by another writable account, and not already loaded
- * with `loadAccountMut` in this instruction (2040).
+ * with `loadAccountMut` in this instruction (2040). The result is also the account (`.key`, `.lamports`), and passes
+ * to a helper that takes `Account<T>` / `Mut<T>`.
  */
-export declare function loadAccount<T>(account: RemainingAccount): Readonly<T>;
-export declare function loadAccountMut<T>(account: RemainingAccount): T;
+export declare function loadAccount<T>(account: RemainingAccount | AccountInfo): Account<T>;
+export declare function loadAccountMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 
 /** 32 bytes of hash output (sha256 / keccak256, Merkle roots). Compare with `===`. */
 export interface Hash {
@@ -541,6 +543,11 @@ export interface TokenMetadataProgram extends AccountMeta {
 /** The Metaplex master edition address of a mint (PDA ["metadata", program, mint, "edition"]). */
 export declare function masterEditionAddress(mint: Pubkey): Pubkey;
 /** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
+/**
+ * An integer seed with its bytes most significant first (Rust's `x.to_be_bytes()`), inside a seeds list:
+ * `["tick_array", pool.key, bigEndian(startIndex)]`. In `Seeds<…>` write `"@startIndex:be"`.
+ */
+export declare function bigEndian(value: bigint): Seed;
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
 /** The bump of that canonical program address (`Pubkey::find_program_address(seeds, program).1`), to sign with it. */
 export declare function findProgramAddressBump(seeds: Seed[], program: Pubkey): u8;
@@ -1637,7 +1644,8 @@ interface TokenOps {
   transfer(from: TokenAccount, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   transferChecked(from: TokenAccount, mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** `mint`: a Mut<Mint>, or a mint this instruction created and initialized (Mut<Signer> / Mut<AccountInfo>). */
-  mintTo(mint: Mint | AccountMeta, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** `to`: a Mut<TokenAccount>, or a Mut<AccountInfo> token account this instruction created (e.g. with `ata.create`). */
+  mintTo(mint: Mint | AccountMeta, to: TokenAccount | AccountInfo, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   burn(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Close a token account (empty), or under Token-2022 a mint with no supply left (its MintCloseAuthority signs). */
   closeAccount(account: TokenAccount | Mint, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
@@ -1650,7 +1658,8 @@ interface TokenOps {
   burnChecked(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Change or remove (null) an authority of a mint or token account: `AuthorityType.MintTokens`, …. */
   setAuthority(target: AccountMeta, currentAuthority: AccountMeta, authorityType: u8, newAuthority: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
-  freezeAccount(account: TokenAccount, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** `account`: a Mut<TokenAccount>, or (freezeAccount) a Mut<AccountInfo> token account this instruction created. */
+  freezeAccount(account: TokenAccount | AccountInfo, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   thawAccount(account: TokenAccount, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Update a wrapped-SOL account's amount after lamports were sent to it. */
   syncNative(account: TokenAccount): void;

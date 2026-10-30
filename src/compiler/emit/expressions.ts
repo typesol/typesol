@@ -292,6 +292,18 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       }
       this.fail(node.name, `remaining accounts expose key, owner, lamports, dataLen, isSigner and isWritable, not ${field}`);
     }
+    // A struct loaded with loadAccount / loadAccountMut is also its account: key, lamports, dataLen, isSigner, isWritable.
+    if (ts.isIdentifier(node.expression)) {
+      const l = this.lookup(node.expression.text);
+      // A field of the struct by that name comes first (as before loaded structs were accounts too).
+      const own = l?.loaded && this.model.structs.get(l.loaded.struct)?.fields.some((f) => f.name === field);
+      const acct = own ? undefined : l?.loaded?.handle;
+      if (acct && field === "key") return { c: `&${acct}->key`, type: PUBKEY };
+      if (acct && field === "lamports") return { c: `${acct}->lamports`, type: U64 };
+      if (acct && field === "dataLen") return { c: `${acct}->data_len`, type: U64 };
+      if (acct && field === "isSigner") return { c: `${acct}->is_signer`, type: BOOL };
+      if (acct && field === "isWritable") return { c: `${acct}->is_writable`, type: BOOL };
+    }
     if (this.accountAt(node)) this.fail(node, `"${node.getText()}" is an account; use ${node.getText()}.key for its address`);
     if (this.isGroupValue(node)) this.fail(node, `"${node.getText()}" is a group of accounts; use one of its fields (${node.getText()}.…)`);
     if (ts.isIdentifier(node.expression) || this.accountAt(node.expression)) {

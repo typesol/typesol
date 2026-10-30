@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, deployFile, pda, send, type Deployed } from "../harness.js";
+import { BN, acct, deployFile, pda, send, type Deployed } from "../harness.js";
 
 const PROGRAM = address("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
 const ORIGINAL = fileURLToPath(new URL("../programs/raydium_clmm.so", import.meta.url));
@@ -77,8 +77,8 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     return s;
   };
   const bytes = (vm: LiteSVM, a: Address) => {
-    const acct = vm.getAccount(a);
-    return acct.exists ? `${acct.lamports} ${acct.programAddress} ${Buffer.from(acct.data).toString("hex")}` : "missing";
+    const info = vm.getAccount(a);
+    return info.exists ? `${info.lamports} ${info.programAddress} ${Buffer.from(info.data).toString("hex")}` : "missing";
   };
   const setup = async (payer: KeyPairSigner, ixs: Instruction[]) => {
     for (const vm of vms()) {
@@ -87,10 +87,16 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     }
   };
   /** Send to both: the same outcome, account bytes and events. */
-  const both = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[]) => {
+  /** `failing`: the original panics (no error code to match), so only both failing is required. */
+  const both = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing = false) => {
     const [a, b] = [await send(original, payer, ixs), await send(d.svm, payer, ixs)];
     compared++;
     const logs = (r: Result) => meta(r).logs().join("\n");
+    if (failing) {
+      expect(a instanceof FailedTransactionMetadata && b instanceof FailedTransactionMetadata, `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(true);
+      for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
+      return "failed";
+    }
     expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
     for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
     if (!(a instanceof FailedTransactionMetadata)) expect(events(b), `${label}: events`).toEqual(events(a));
@@ -99,7 +105,7 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
   };
 
   /** A mint of `program`, authority `payer`; Token-2022 extensions by name. */
-  async function mint(payer: KeyPairSigner, program: Address, decimals: number, ext?: "fee" | "closeAuthority") {
+  async function mint(payer: KeyPairSigner, program: Address, decimals: number, ext?: "fee" | "closeAuthority", freezeAuthority?: Address) {
     const m = await generateKeyPairSigner();
     const exts =
       ext === "fee"
@@ -132,14 +138,19 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
         : ext === "closeAuthority"
           ? [t22.getInitializeMintCloseAuthorityInstruction({ mint: m.address, closeAuthority: payer.address })]
           : []),
-      (program === TOKEN ? token.getInitializeMint2Instruction : t22.getInitializeMint2Instruction)({ mint: m.address, decimals, mintAuthority: payer.address }) as Instruction,
+      (program === TOKEN ? token.getInitializeMint2Instruction : t22.getInitializeMint2Instruction)({
+        mint: m.address,
+        decimals,
+        mintAuthority: payer.address,
+        ...(freezeAuthority ? { freezeAuthority } : {}),
+      }) as Instruction,
     ]);
     return { address: m.address, program };
   }
   type MintInfo = Awaited<ReturnType<typeof mint>>;
   /** Two mints, ordered as a pool wants them (token_mint_0 < token_mint_1). */
-  async function pair(payer: KeyPairSigner, p0: Address = TOKEN, p1: Address = TOKEN, ext1?: "fee" | "closeAuthority") {
-    const [a, b] = [await mint(payer, p0, 6), await mint(payer, p1, 9, ext1)];
+  async function pair(payer: KeyPairSigner, p0: Address = TOKEN, p1: Address = TOKEN, ext1?: "fee" | "closeAuthority", freeze1?: Address) {
+    const [a, b] = [await mint(payer, p0, 6), await mint(payer, p1, 9, ext1, freeze1)];
     return Buffer.compare(key(a.address), key(b.address)) < 0 ? [a, b] : [b, a];
   }
 
@@ -265,6 +276,373 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     expect(await both("create_pool, unsupported extension", creator, [createPool(creator, cfg, n0, n1, q, sqrt)], watchPool(q))).toBe(
       custom(errors.NotSupportMint!),
     );
+  });
+
+  // ---- positions ----------------------------------------------------------------------------------------------
+
+  const ATA = address(token.ASSOCIATED_TOKEN_PROGRAM_ADDRESS);
+  const MEMO = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+  const be32 = (n: number) => {
+    const b = Buffer.alloc(4);
+    b.writeInt32BE(n);
+    return b;
+  };
+  const startOf = (tick: number, spacing: number) => Math.floor(tick / (60 * spacing)) * 60 * spacing;
+  const tickArray = async (pool: Address, start: number) => (await pda(PROGRAM, ["tick_array", pool, be32(start)]))[0];
+  const ata = async (owner: Address, m: Address, program: Address) => (await token.findAssociatedTokenPda({ owner, mint: m, tokenProgram: program }))[0];
+
+  /** A pool with a price, and a funded user holding both tokens (in associated token accounts). */
+  async function poolWith(spacing: number, index: number, sqrt: bigint, programs: [Address, Address] = [TOKEN, TOKEN], ext1?: "fee", freeze1?: Address) {
+    const user = await funded();
+    const cfg = await config(index, spacing, 2500);
+    const [m0, m1] = await pair(user, programs[0], programs[1], ext1, freeze1);
+    const p = await poolAccounts(cfg, m0, m1);
+    expect(await both(`create_pool, spacing ${spacing}`, user, [createPool(user, cfg, m0, m1, p, sqrt)], watchPool(p))).toBe("ok");
+    const acct0 = await ata(user.address, m0.address, m0.program);
+    const acct1 = await ata(user.address, m1.address, m1.program);
+    await setup(user, [
+      token.getCreateAssociatedTokenIdempotentInstruction({ payer: user, ata: acct0, owner: user.address, mint: m0.address, tokenProgram: m0.program }),
+      token.getCreateAssociatedTokenIdempotentInstruction({ payer: user, ata: acct1, owner: user.address, mint: m1.address, tokenProgram: m1.program }),
+      { ...token.getMintToInstruction({ mint: m0.address, token: acct0, mintAuthority: user, amount: 10n ** 15n }), programAddress: m0.program },
+      { ...token.getMintToInstruction({ mint: m1.address, token: acct1, mintAuthority: user, amount: 10n ** 15n }), programAddress: m1.program },
+    ]);
+    return { user, cfg, m0, m1, p, acct0, acct1, spacing };
+  }
+  type Pool = Awaited<ReturnType<typeof poolWith>>;
+
+  /** open_position_with_token22_nft; returns the instruction and the position's accounts. */
+  async function openPosition(
+    pool: Pool,
+    lower: number,
+    upper: number,
+    liquidity: bigint,
+    opts: { max0?: bigint; max1?: bigint; metadata?: boolean; base?: boolean | null; starts?: [number, number]; rest?: Meta[]; owner?: Address } = {},
+  ) {
+    const nft = await generateKeyPairSigner();
+    const owner = opts.owner ?? pool.user.address;
+    const [ls, us] = opts.starts ?? [startOf(lower, pool.spacing), startOf(upper, pool.spacing)];
+    const arrays = [await tickArray(pool.p.pool, ls), await tickArray(pool.p.pool, us)] as const;
+    const [position] = await pda(PROGRAM, ["position", nft.address]);
+    const nftAccount = await ata(owner, nft.address, TOKEN_2022);
+    const instruction = ix(
+      "open_position_with_token22_nft",
+      {
+        tick_lower_index: lower,
+        tick_upper_index: upper,
+        tick_array_lower_start_index: ls,
+        tick_array_upper_start_index: us,
+        liquidity: new BN(liquidity.toString()),
+        amount_0_max: new BN((opts.max0 ?? 10n ** 14n).toString()),
+        amount_1_max: new BN((opts.max1 ?? 10n ** 14n).toString()),
+        with_metadata: opts.metadata ?? true,
+        base_flag: opts.base ?? null,
+      },
+      [
+        { address: pool.user.address, signer: pool.user, writable: true },
+        { address: owner },
+        { address: nft.address, signer: nft, writable: true },
+        { address: nftAccount, writable: true },
+        { address: pool.p.pool, writable: true },
+        { address: PROGRAM },
+        { address: arrays[0], writable: true },
+        { address: arrays[1], writable: true },
+        { address: position, writable: true },
+        { address: pool.acct0, writable: true },
+        { address: pool.acct1, writable: true },
+        { address: pool.p.vault0, writable: true },
+        { address: pool.p.vault1, writable: true },
+        { address: RENT },
+        { address: SYSTEM },
+        { address: TOKEN },
+        { address: ATA },
+        { address: TOKEN_2022 },
+        { address: pool.m0.address },
+        { address: pool.m1.address },
+        ...(opts.rest ?? []),
+      ],
+    );
+    const watch = [pool.p.pool, pool.p.vault0, pool.p.vault1, pool.p.bitmap, pool.acct0, pool.acct1, ...arrays, position, nft.address, nftAccount];
+    return { instruction, nft: nft.address, nftAccount, position, arrays, watch, lower, upper };
+  }
+  type Position = Awaited<ReturnType<typeof openPosition>>;
+
+  const changeAccounts = (pool: Pool, pos: Position) => ({
+    owner: { address: pool.user.address, signer: pool.user } as Meta,
+    nft: { address: pos.nftAccount } as Meta,
+  });
+  const increase = (pool: Pool, pos: Position, liquidity: bigint, max0: bigint, max1: bigint, base: boolean | null = null, rest: Meta[] = []) =>
+    ix(
+      "increase_liquidity_v2",
+      { liquidity: new BN(liquidity.toString()), amount_0_max: new BN(max0.toString()), amount_1_max: new BN(max1.toString()), base_flag: base },
+      [
+        changeAccounts(pool, pos).owner,
+        changeAccounts(pool, pos).nft,
+        { address: pool.p.pool, writable: true },
+        { address: PROGRAM },
+        { address: pos.position, writable: true },
+        { address: pos.arrays[0], writable: true },
+        { address: pos.arrays[1], writable: true },
+        { address: pool.acct0, writable: true },
+        { address: pool.acct1, writable: true },
+        { address: pool.p.vault0, writable: true },
+        { address: pool.p.vault1, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: pool.m0.address },
+        { address: pool.m1.address },
+        ...rest,
+      ],
+    );
+  const decrease = (pool: Pool, pos: Position, liquidity: bigint, min0 = 0n, min1 = 0n, rest: Meta[] = []) =>
+    ix(
+      "decrease_liquidity_v2",
+      { liquidity: new BN(liquidity.toString()), amount_0_min: new BN(min0.toString()), amount_1_min: new BN(min1.toString()) },
+      [
+        changeAccounts(pool, pos).owner,
+        changeAccounts(pool, pos).nft,
+        { address: pos.position, writable: true },
+        { address: pool.p.pool, writable: true },
+        { address: PROGRAM },
+        { address: pool.p.vault0, writable: true },
+        { address: pool.p.vault1, writable: true },
+        { address: pos.arrays[0], writable: true },
+        { address: pos.arrays[1], writable: true },
+        { address: pool.acct0, writable: true },
+        { address: pool.acct1, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: MEMO },
+        { address: pool.m0.address },
+        { address: pool.m1.address },
+        ...rest,
+      ],
+    );
+  /** The liquidity a position holds (PersonalPositionState.liquidity, at 8 + 1 + 32 + 32 + 4 + 4). */
+  const positionLiquidity = (pos: Position) => {
+    const b = Buffer.from(acct(original, pos.position).data);
+    return b.readBigUInt64LE(81) | (b.readBigUInt64LE(89) << 64n);
+  };
+  /** Change PoolState bytes in both VMs. */
+  const patchPool = (pool: Pool, edit: (b: Buffer) => void) => {
+    for (const vm of vms()) {
+      const a = vm.getAccount(pool.p.pool);
+      if (!a.exists) throw new Error("no pool");
+      const b = Buffer.from(a.data);
+      edit(b);
+      vm.setAccount({ ...a, address: pool.p.pool, data: new Uint8Array(b) } as never);
+    }
+  };
+  const setTime = (unix: bigint) => {
+    for (const vm of vms()) {
+      const clock = vm.getClock();
+      clock.unixTimestamp = unix;
+      vm.setClock(clock);
+    }
+  };
+  const writeU128 = (b: Buffer, at: number, v: bigint) => {
+    b.writeBigUInt64LE(v & ((1n << 64n) - 1n), at);
+    b.writeBigUInt64LE(v >> 64n, at + 8);
+  };
+  // PoolState offsets (with the discriminator): fee_growth_global_0_x64 277, _1 293, status 389, reward_infos 397 (169 bytes each).
+  const POOL_FEE_GROWTH_0 = 277;
+  const POOL_STATUS = 389;
+  const POOL_REWARDS = 397;
+
+  it("opens positions in range, below and above the price, in one tick array or two", async () => {
+    // Spacing 60, price at tick 1234.
+    const pool = await poolWith(60, 20, 19_574_085_512_633_416_581n);
+    const cases: [string, number, number, bigint, Parameters<typeof openPosition>[4]][] = [
+      ["in range", -600, 1800, 1_000_000_000n, {}],
+      ["below the price", -7200, -3600, 2_000_000_000n, {}],
+      ["above the price, one tick array", 3600, 4200, 3_000_000_000n, {}],
+      ["below the minimum array", -443_580, -440_400, 1_000_000n, {}],
+      ["sharing a tick", -600, 3600, 500_000_000n, { metadata: false }],
+      ["no liquidity, no base_flag", -1200, 1200, 0n, {}],
+      ["liquidity from amount_0", -1200, 1200, 0n, { base: true, max0: 1_000_000n }],
+      ["liquidity from amount_1", -1200, 2400, 0n, { base: false, max1: 1_000_000n }],
+    ];
+    for (const [label, lower, upper, liquidity, opts] of cases) {
+      const pos = await openPosition(pool, lower, upper, liquidity, opts);
+      expect(await both(`open_position, ${label}`, pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    }
+  });
+
+  it("refuses bad positions as the original does", async () => {
+    const pool = await poolWith(60, 21, 19_574_085_512_633_416_581n);
+    const bad: [string, number, number, bigint, Parameters<typeof openPosition>[4], string | undefined][] = [
+      ["ticks out of order", 1800, -600, 1_000n, {}, custom(errors.TickInvalidOrder!)],
+      ["tick off the spacing", -590, 1800, 1_000n, {}, custom(2501)],
+      ["wrong tick array start", -600, 1800, 1_000n, { starts: [0, 0] }, custom(2501)],
+      ["tick below the minimum", -443_700, 1800, 1_000n, { starts: [-446_400, 0] }, custom(errors.TickLowerOverflow!)],
+      ["slippage on token 0", -600, 1800, 1_000_000_000n, { max0: 10n }, custom(errors.PriceSlippageCheck!)],
+      ["slippage on token 1", -600, 1800, 1_000_000_000n, { max1: 10n }, custom(errors.PriceSlippageCheck!)],
+      ["zero liquidity from amounts", -600, 1800, 0n, { base: true, max0: 0n }, custom(errors.ZeroLiquidity!)],
+    ];
+    for (const [label, lower, upper, liquidity, opts, want] of bad) {
+      const pos = await openPosition(pool, lower, upper, liquidity, opts);
+      const out = await both(`open_position, ${label}`, pool.user, [pos.instruction], pos.watch);
+      if (want) expect(out, label).toBe(want);
+      else expect(out, label).not.toBe("ok");
+    }
+    // A closed pool (status bit 0) opens nothing.
+    patchPool(pool, (b) => (b[POOL_STATUS] = 1));
+    const pos = await openPosition(pool, -600, 1800, 1_000n);
+    expect(await both("open_position, pool closed to new positions", pool.user, [pos.instruction], pos.watch)).toBe(custom(errors.NotApproved!));
+  });
+
+  it("adds and removes liquidity, down to an empty position", async () => {
+    const pool = await poolWith(60, 22, 19_574_085_512_633_416_581n);
+    const a = await openPosition(pool, -600, 1800, 1_000_000_000n);
+    const b = await openPosition(pool, -600, 3600, 700_000_000n);
+    for (const pos of [a, b]) expect(await both("open_position", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    const watch = (pos: Position) => [...pos.watch, pool.acct0, pool.acct1];
+    expect(await both("increase_liquidity", pool.user, [increase(pool, a, 250_000_000n, 10n ** 12n, 10n ** 12n)], watch(a))).toBe("ok");
+    expect(await both("increase_liquidity, from amount_1", pool.user, [increase(pool, a, 0n, 10n ** 12n, 5_000_000n, false)], watch(a))).toBe("ok");
+    expect(await both("increase_liquidity, from amount_0", pool.user, [increase(pool, b, 0n, 3_000_000n, 10n ** 12n, true)], watch(b))).toBe("ok");
+    expect(await both("increase_liquidity, nothing", pool.user, [increase(pool, b, 0n, 10n ** 12n, 10n ** 12n)], watch(b))).toBe(custom(errors.MissingBaseFlag!));
+    expect(await both("increase_liquidity, slippage", pool.user, [increase(pool, a, 250_000_000n, 1n, 10n ** 12n)], watch(a))).toBe(
+      custom(errors.PriceSlippageCheck!),
+    );
+    expect(await both("decrease_liquidity, half", pool.user, [decrease(pool, a, positionLiquidity(a) / 2n)], watch(a))).toBe("ok");
+    expect(await both("decrease_liquidity, too much", pool.user, [decrease(pool, a, positionLiquidity(a) + 1n)], watch(a))).toBe(custom(2506));
+    expect(await both("decrease_liquidity, slippage", pool.user, [decrease(pool, a, 1_000n, 10n ** 12n)], watch(a))).toBe(custom(errors.PriceSlippageCheck!));
+    expect(await both("decrease_liquidity, all", pool.user, [decrease(pool, a, positionLiquidity(a))], watch(a))).toBe("ok");
+    expect(await both("decrease_liquidity, nothing left", pool.user, [decrease(pool, a, 0n)], watch(a))).toBe("ok");
+    expect(await both("decrease_liquidity, the other, all", pool.user, [decrease(pool, b, positionLiquidity(b))], watch(b))).toBe("ok");
+    // Both ticks in one array: added, then emptied (the array's count back to 0, its bit cleared).
+    const c = await openPosition(pool, 3600, 4200, 400_000_000n);
+    expect(await both("open_position, one tick array", pool.user, [c.instruction], c.watch)).toBe("ok");
+    expect(await both("increase_liquidity, one tick array", pool.user, [increase(pool, c, 100_000_000n, 10n ** 12n, 10n ** 12n)], watch(c))).toBe("ok");
+    expect(await both("decrease_liquidity, one tick array, all", pool.user, [decrease(pool, c, positionLiquidity(c))], watch(c))).toBe("ok");
+    // Pool status bits: decrease liquidity off (fees still collected), then all three off.
+    const e = await openPosition(pool, -1200, 1200, 300_000_000n);
+    expect(await both("open_position", pool.user, [e.instruction], e.watch)).toBe("ok");
+    patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 2));
+    expect(await both("decrease_liquidity, decreasing off", pool.user, [decrease(pool, e, 1_000n)], watch(e))).toBe("ok");
+    patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 14));
+    expect(await both("decrease_liquidity, all off", pool.user, [decrease(pool, e, 1_000n)], watch(e))).toBe(custom(errors.NotApproved!));
+    patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 1));
+    expect(await both("increase_liquidity, adding off", pool.user, [increase(pool, e, 1_000n, 10n ** 12n, 10n ** 12n)], watch(e))).toBe(custom(errors.NotApproved!));
+    patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 0));
+    // Another position's tick arrays.
+    const mixed = { ...e, arrays: c.arrays } as Position;
+    expect(await both("increase_liquidity, wrong tick arrays", pool.user, [increase(pool, mixed, 1_000n, 10n ** 12n, 10n ** 12n)], watch(e))).toBe(
+      custom(errors.InvalidTickArray!),
+    );
+    // Someone else's position NFT account.
+    const other = await funded();
+    const stolen = { ...decrease(pool, b, 0n), accounts: decrease(pool, b, 0n).accounts!.map((m, i) => (i === 0 ? { ...m, address: other.address, signer: other } : m)) };
+    expect(await both("decrease_liquidity, not the owner", other, [stolen as Instruction], watch(b))).toBe(custom(2015));
+  });
+
+  it("pays fees and rewards a position earned", async () => {
+    const pool = await poolWith(60, 23, 19_574_085_512_633_416_581n);
+    const pos = await openPosition(pool, -600, 1800, 1_000_000_000_000n);
+    expect(await both("open_position", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    // Fees as swaps would have left them: fee growth in the pool, the tokens in the vaults.
+    patchPool(pool, (b) => {
+      writeU128(b, POOL_FEE_GROWTH_0, 1n << 56n);
+      writeU128(b, POOL_FEE_GROWTH_0 + 16, 3n << 55n);
+    });
+    const before = Buffer.from(acct(original, pool.acct0).data).readBigUInt64LE(64);
+    expect(await both("decrease_liquidity, fees only", pool.user, [decrease(pool, pos, 0n)], [...pos.watch])).toBe("ok");
+    // 2^-8 of token 0 per unit of liquidity.
+    expect(Buffer.from(acct(original, pool.acct0).data).readBigUInt64LE(64) - before).toBe(1_000_000_000_000n >> 8n);
+
+    // A reward: mint and vault (owned by the pool), emitting 1,000 tokens a second from now.
+    const rewardMint = await mint(pool.user, TOKEN, 6);
+    const vault = (await generateKeyPairSigner());
+    await setup(pool.user, [
+      getCreateAccountInstruction({ payer: pool.user, newAccount: vault, lamports: original.minimumBalanceForRentExemption(165n), space: 165, programAddress: TOKEN }),
+      token.getInitializeAccount3Instruction({ account: vault.address, mint: rewardMint.address, owner: pool.p.pool }),
+      token.getMintToInstruction({ mint: rewardMint.address, token: vault.address, mintAuthority: pool.user, amount: 10n ** 12n }),
+    ]);
+    const recipient = await ata(pool.user.address, rewardMint.address, TOKEN);
+    await setup(pool.user, [token.getCreateAssociatedTokenIdempotentInstruction({ payer: pool.user, ata: recipient, owner: pool.user.address, mint: rewardMint.address, tokenProgram: TOKEN })]);
+    const start = 1_800_000_000n;
+    patchPool(pool, (b) => {
+      const r = POOL_REWARDS;
+      b[r] = 1;
+      b.writeBigUInt64LE(start, r + 1);
+      b.writeBigUInt64LE(start + 1_000_000n, r + 9);
+      b.writeBigUInt64LE(start, r + 17);
+      writeU128(b, r + 25, 1000n << 64n);
+      key(rewardMint.address).copy(b, r + 57);
+      key(vault.address).copy(b, r + 89);
+    });
+    setTime(start + 100n);
+    const groups: Meta[] = [{ address: vault.address, writable: true }, { address: recipient, writable: true }, { address: rewardMint.address }];
+    expect(await both("increase_liquidity, rewards accrue", pool.user, [increase(pool, pos, 1_000_000n, 10n ** 12n, 10n ** 12n)], [...pos.watch])).toBe("ok");
+    setTime(start + 250n);
+    expect(await both("decrease_liquidity, without the reward accounts", pool.user, [decrease(pool, pos, 1_000n)], [...pos.watch])).toBe(
+      custom(errors.InvalidRewardInputAccountNumber!),
+    );
+    expect(await both("decrease_liquidity, with rewards", pool.user, [decrease(pool, pos, 1_000n, 0n, 0n, groups)], [...pos.watch, vault.address, recipient])).toBe("ok");
+    // Rewards were paid: 250 seconds at 1,000 a second, nearly all to this position.
+    const paid = Buffer.from(acct(original, recipient).data).readBigUInt64LE(64);
+    expect(paid).toBeGreaterThan(200_000n);
+    expect(paid).toBeLessThanOrEqual(250_000n);
+    setTime(1_800_000_000n);
+  });
+
+  it("marks tick arrays beyond the pool's bitmap in the extension", async () => {
+    // Spacing 1: the pool's own bitmap covers ticks -30720..30720.
+    const pool = await poolWith(1, 24, 18_446_744_073_709_551_616n);
+    const ext = [{ address: pool.p.bitmap, writable: true }];
+    const cases: [string, number, number][] = [
+      ["both arrays beyond", 40_000, 40_100],
+      ["one array beyond", -100, 40_000],
+      ["below, beyond", -40_100, -40_000],
+    ];
+    const opened: Position[] = [];
+    for (const [label, lower, upper] of cases) {
+      const pos = await openPosition(pool, lower, upper, 1_000_000_000n, { rest: ext });
+      expect(await both(`open_position, ${label}`, pool.user, [pos.instruction], pos.watch)).toBe("ok");
+      opened.push(pos);
+    }
+    // The extension holds bits now (the pool's own bitmap only the one for -100's array).
+    const extBits = Buffer.from(acct(original, pool.p.bitmap).data).subarray(40);
+    expect(extBits.some((x) => x !== 0)).toBe(true);
+    const missing = await openPosition(pool, 50_000, 50_100, 1_000_000_000n);
+    // remaining_accounts[0] of none: the original panics.
+    expect(await both("open_position, extension missing", pool.user, [missing.instruction], missing.watch, true)).toBe("failed");
+    const wrong = await openPosition(pool, 50_000, 50_100, 1_000_000_000n, { rest: [{ address: pool.p.observation, writable: true }] });
+    expect(await both("open_position, not the extension", pool.user, [wrong.instruction], wrong.watch)).toBe(custom(2502));
+    for (const pos of opened) {
+      expect(await both("increase_liquidity, extension", pool.user, [increase(pool, pos, 1_000n, 10n ** 12n, 10n ** 12n, null, ext)], pos.watch)).toBe("ok");
+      expect(await both("decrease_liquidity, extension missing", pool.user, [decrease(pool, pos, positionLiquidity(pos))], pos.watch)).toBe(
+        custom(errors.MissingTickArrayBitmapExtensionAccount!),
+      );
+      expect(await both("decrease_liquidity, all, extension", pool.user, [decrease(pool, pos, positionLiquidity(pos), 0n, 0n, ext)], pos.watch)).toBe("ok");
+    }
+    // Every position emptied: no array is marked any more.
+    expect(Buffer.from(acct(original, pool.p.bitmap).data).subarray(40).every((x) => x === 0)).toBe(true);
+  });
+
+  it("opens positions in Token-2022 transfer-fee pools and restricted-asset pools", async () => {
+    const fee = await poolWith(60, 25, 19_574_085_512_633_416_581n, [TOKEN, TOKEN_2022], "fee");
+    const pos = await openPosition(fee, -600, 1800, 1_000_000_000_000n);
+    expect(await both("open_position, transfer-fee mint", fee.user, [pos.instruction], pos.watch)).toBe("ok");
+    const base = await openPosition(fee, -600, 1800, 0n, { base: false, max1: 2_000_000_000n });
+    expect(await both("open_position, transfer-fee mint, from amount_1", fee.user, [base.instruction], base.watch)).toBe("ok");
+    expect(await both("increase_liquidity, transfer-fee mint", fee.user, [increase(fee, pos, 10n ** 9n, 10n ** 13n, 10n ** 13n)], pos.watch)).toBe("ok");
+    expect(await both("decrease_liquidity, transfer-fee mint", fee.user, [decrease(fee, pos, positionLiquidity(pos) / 3n)], pos.watch)).toBe("ok");
+    expect(await both("decrease_liquidity, transfer-fee mint, slippage", fee.user, [decrease(fee, pos, 10n ** 9n, 0n, 10n ** 12n)], pos.watch)).toBe(
+      custom(errors.PriceSlippageCheck!),
+    );
+
+    // A mint frozen by the restricted-asset authority: the position NFT account ends frozen.
+    const restricted = await poolWith(60, 26, 19_574_085_512_633_416_581n, [TOKEN, TOKEN], undefined, address("2Yq4T3mPNfjtEyTxSbRjRKqLf1pwbTasuCQrWe6QpM7x"));
+    const frozen = await openPosition(restricted, -600, 1800, 1_000_000n);
+    expect(await both("open_position, restricted-asset pool", restricted.user, [frozen.instruction], frozen.watch)).toBe("ok");
+    expect(Buffer.from(acct(d.svm, frozen.nftAccount).data)[108]).toBe(2);
+  });
+
+  it("opens a position whose tick array address someone pre-funded", async () => {
+    const pool = await poolWith(60, 27, 19_574_085_512_633_416_581n);
+    const pos = await openPosition(pool, -600, 1800, 1_000_000n);
+    await setup(pool.user, [getTransferSolInstruction({ source: pool.user, destination: pos.arrays[0], amount: 1_000_000n })]);
+    expect(await both("open_position, pre-funded tick array", pool.user, [pos.instruction], pos.watch)).toBe("ok");
   });
 
   it("reports compute units", () => {
