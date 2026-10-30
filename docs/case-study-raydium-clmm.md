@@ -100,7 +100,7 @@ and the port into another. Both use the same program id and the same clock.
 **Comparison.** For each transaction, the test requires the same outcome (success, or the same error down to the
 code), the same lamports, owner and data for every account involved, and the same events byte for byte.
 
-There are 161 transactions:
+There are 166 transactions:
 
 - **Configs and pools.** SPL Token and Token-2022 transfer-fee pools, the mainnet config, a pre-funded vault, and the
   refusals: mints out of order, a vault that is not the PDA, a price out of range, an open time ahead, the wrong
@@ -118,8 +118,10 @@ There are 161 transactions:
 - **Swaps.**
   - Both directions, by input and by output, across ticks and tick arrays, to a price limit.
   - Fees taken in token 0 only or token 1 only, then protocol and fund fees collected.
-  - A dynamic fee across its filter and decay periods, and limit orders filled at a tick while a reward stream accrues.
-  - Into the bitmap extension and back, and Token-2022 transfer-fee mints both ways.
+  - A dynamic fee across its filter and decay periods; limit orders filled at a tick while a reward stream accrues, and
+    orders alone on a tick filled in full (the tick leaves use, its array counts one less).
+  - Into the bitmap extension and back, above and below the pool's own bitmap, and Token-2022 transfer-fee mints both
+    ways.
   - The USDC/CC pool as cloned from mainnet: its config, vaults, oracle, extension and two tick arrays.
   - Refusals: slippage both ways, a zero amount, a limit on the wrong side, missing or wrong tick arrays, liquidity
     running out, swapped vaults, swaps disabled.

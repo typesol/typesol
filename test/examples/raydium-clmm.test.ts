@@ -841,6 +841,24 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     const filled = Buffer.from(acct(original, below).data).subarray(slotAt);
     expect([filled.readBigUInt64LE(124), filled.readBigUInt64LE(132), filled.readBigUInt64LE(116)]).toEqual([0n, 0n, 1n]);
     expect(await swapBoth("swap, back up", pool, false, 300_000_000_000n)).toBe("ok");
+    // Orders alone on a fresh tick (-1800, no liquidity): filled in full, the tick is no longer in use, its array counts one less.
+    const fresh = 8 + 32 + 4 + ((-1800 - -3600) / 60) * 168;
+    const countAt = 8 + 32 + 4 + 60 * 168;
+    let countBefore = 0;
+    for (const vm of vms()) {
+      const a = vm.getAccount(below);
+      if (!a.exists) throw new Error("no array");
+      const b = Buffer.from(a.data);
+      b.writeInt32LE(-1800, fresh);
+      b.writeBigUInt64LE(500_000n, fresh + 124);
+      b[countAt] += 1;
+      countBefore = b[countAt]!;
+      vm.setAccount({ ...a, address: below, data: new Uint8Array(b) } as never);
+    }
+    expect(await swapBoth("swap, orders alone on a tick", pool, true, 300_000_000_000n)).toBe("ok");
+    expect(tickOf(pool)).toBeLessThan(-1800);
+    const after = Buffer.from(acct(original, below).data);
+    expect([after.readBigUInt64LE(fresh + 124), after.readBigUInt64LE(fresh + 132), after[countAt]]).toEqual([0n, 0n, countBefore - 1]);
     setTime(1_800_000_000n);
   });
 
@@ -862,6 +880,18 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     expect(await swapBoth("swap, extension missing", pool, true, 1_000_000n)).toBe(custom(errors.MissingTickArrayBitmapExtensionAccount!));
     expect(await swapBoth("swap, back down", pool, true, 10n ** 13n, { ext: true, limit: 18_446_744_073_709_551_616n })).toBe("ok");
     expect(tickOf(pool)).toBeLessThan(30_720);
+    // The negative side: positions past -30,720, and a swap down into them and back.
+    for (const [lower, upper] of [
+      [-41_000, -39_000],
+      [-40_000, 60],
+    ] as const) {
+      const pos = await openPosition(pool, lower, upper, 10n ** 11n, { rest: [{ address: pool.p.bitmap, writable: true }] });
+      expect(await both("open_position, negative side", pool.user, [pos.instruction], pos.watch)).toBe("ok");
+    }
+    const down = BigInt(Math.floor(Math.sqrt(1.0001 ** -40_500) * 2 ** 32)) << 32n;
+    expect(await swapBoth("swap, down into the extension", pool, true, 10n ** 13n, { ext: true, limit: down })).toBe("ok");
+    expect(tickOf(pool)).toBeLessThan(-30_720);
+    expect(await swapBoth("swap, back up from below", pool, false, 10n ** 13n, { ext: true, limit: 18_446_744_073_709_551_616n })).toBe("ok");
   });
 
   it("swaps in a Token-2022 transfer-fee pool", async () => {
