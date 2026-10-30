@@ -30,6 +30,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | Anchor | TypeSOL |
 | --- | --- |
 | `#[derive(Accounts)] struct Ctx` + `ctx.accounts.x` | the instruction's parameters, in the same order |
+| a composite field, `pub pool: PoolAccounts<'info>` + `ctx.accounts.pool.vault` | an account group: `export interface PoolAccounts { vault: Mut<TokenAccount>; … }`, the parameter `pool: PoolAccounts`, and `pool.vault` |
 | `Signer<'info>` / `#[account(mut)] Signer` | `Signer` / `Mut<Signer>` |
 | `Account<'info, T>` / `#[account(mut)]` | `Account<T>` / `Mut<T>` |
 | `#[account(init, payer = p, space = …, seeds = […], bump)]` | `Init<T>`, then `const bump = acct.create(p, ["seed", other.key])` (space is computed; `acct.create(p, […], 8n + 64n)` keeps an explicit `space`) |
