@@ -40,10 +40,13 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TYPESOL_ERRORS } from "./tools/clientgen.js";
+import { loadClonedAccounts } from "./tools/clone.js";
 import { type SvmConnection, svmConnection } from "./tools/svmrpc.js";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
 
 export { type SvmConnection, svmConnection };
+/** Load what `typesol clone` wrote (a directory of `<address>.json` accounts and `<address>.so` programs) into a LiteSVM. */
+export { loadClonedAccounts };
 
 // @anchor-lang/core is CommonJS: Node 22 cannot import its classes by name from an installed ES module.
 const { BN, BorshCoder } = anchor;
@@ -169,6 +172,8 @@ export async function testProgram(program: string, from: string | URL): Promise<
   const svm = new LiteSVM();
   const programId = built.address as Address;
   svm.addProgramFromFile(programId, built.result.soPath);
+  // Accounts and programs `typesol clone` copied from a cluster (tests/accounts), in place before the first test.
+  loadClonedAccounts(svm as never, ws.accounts);
   return programHarness(svm, programId, built.result.idl as unknown as Idl);
 }
 

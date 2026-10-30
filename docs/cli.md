@@ -12,6 +12,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json`. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. |
 | `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile]` | Outside a project (or a file that is not one of its programs): build that file. A project program's `.ts` builds as that program. |
 | `typesol check [<program>… \| <file.ts>] [--json] [--stdin]` | Type-check and validate without building. In a project, no argument checks every program (or those named) and exits 1 if any has errors. `--json` prints `{ ok, diagnostics: [{ file, line, column, message }] }`; `--stdin` checks the text given on stdin as that file (its imports come from disk). |
+| `typesol clone [<address>…] [--url <rpc>] [--config <cli config>] [--out <dir>]` | Copy cluster accounts and programs for the tests (Anchor's `[test.validator.clone]`): each account to `<address>.json` (lamports, owner, data), each program to `<address>.so` (its ELF, from the ProgramData account for upgradeable programs), in `tests/accounts` (`"accounts"` in `typesol.json`) or `--out`. Without addresses it clones the project's `"clone"` list. `testProgram` loads that directory into its LiteSVM; commit it so the tests run offline. |
 | `typesol emit-c <file.ts> [--out <file.c>] [--profile]` | Print or write the generated C. |
 | `typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <cli config>] [--dry-run] [--sbpf …]` | Build, then `solana program deploy --use-rpc` at the program keypair's address. Deploying again upgrades (the payer must be the upgrade authority). `--dry-run` builds and prints the commands. Before sending anything it checks that the RPC answers and that the payer holds enough for the rent (about twice the binary's on a first deploy, while the buffer exists), and says what to do if not (start `solana-test-validator`, `solana airdrop` on devnet or a local validator). Needs `solana` on PATH. |
 | `typesol idl publish [<program>…] [--url <rpc>] [--keypair <authority.json>] [--config <cli config>] [--non-canonical]` | Compile (the binary is not rebuilt), then write each IDL to the Program Metadata program (seed `idl`). Canonical IDLs must be signed by the upgrade authority. Defaults come from the Solana CLI config (`~/.config/solana/cli/config.yml`). |
@@ -33,7 +34,8 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 }
 ```
 
-`"programs": { "vault": "programs/vault.ts" }` (a plain path) is accepted too. Keep `target/deploy/*-keypair.json`
+`"clone": ["<address>", …]` lists the cluster accounts `typesol clone` copies for the tests, and `"accounts"` where
+they are kept (default `tests/accounts`). `"programs": { "vault": "programs/vault.ts" }` (a plain path) is accepted too. Keep `target/deploy/*-keypair.json`
 safe and out of git: it is each program's address and its first upgrade authority must not lose it. A clone without
 it still builds and tests (`npm test` builds first) at the recorded address; deploying needs it.
 

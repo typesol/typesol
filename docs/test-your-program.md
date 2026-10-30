@@ -60,6 +60,13 @@ instruction that takes the bump as an argument.
 | `t.tokenBalance(address)` | the amount a token account holds, or `null` when it does not exist |
 | `t.warp({ unixTimestamp?, slot?, seconds? })` | moves the Clock: to a timestamp or slot, or forward by `seconds` |
 
+## Accounts from a cluster
+
+To test against accounts that exist on mainnet (a mint, an oracle, another program), list them in `typesol.json` as
+`"clone": ["<address>", …]` and run `typesol clone --url mainnet-beta` once (or `typesol clone <address>…`). They are
+written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
+the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
+
 `t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
 program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
 program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
