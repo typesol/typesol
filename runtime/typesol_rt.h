@@ -712,6 +712,12 @@ static inline uint64_t ts_event_dispatch(TsParams *params) {
   return ts_check_event_authority(params->ka[0], params->program_id, &bump);
 }
 
+/* The Clock sysvar into `clock` (an instruction keeps it: the Clock does not change within a transaction). */
+static inline uint64_t ts_read_clock(uint64_t clock[5]) {
+  if (sol_get_clock_sysvar(clock) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: clock sysvar unavailable");
+  return SUCCESS;
+}
+
 static inline uint64_t ts_now(int64_t *out) {
   /* Clock { slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp } */
   uint64_t clock[5] = {0};
