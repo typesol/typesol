@@ -125,6 +125,8 @@ const TYPE_EXPORTS = new Set([
   "PythPriceUpdate",
   "AssociatedTokenProgram",
   "TokenMetadataProgram",
+  "MemoProgram",
+  "SlotHashesSysvar",
   "SwitchboardFeed",
   "HasOne",
   "TokenOf",
@@ -665,6 +667,13 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   for (const fn of functions) {
     const ix = reporter.guard(() => analyzeInstruction(fn.node, reporter, scopeFor(fn.imports), structs, groups));
     if (!ix) continue;
+    // `/** @fallback */`: Anchor's fallback, run when no instruction matches the data (instead of 101).
+    if (ts.getJSDocTags(fn.node).some((t) => t.tagName.text === "fallback")) {
+      if (ix.accounts.length || ix.args.length || ix.returns)
+        reporter.error(fn.node.name ?? fn.node, "a @fallback takes no parameters and returns nothing: read remainingAccounts() and instructionData()");
+      if (instructions.some((o) => o.fallback)) reporter.error(fn.node.name ?? fn.node, "a program has at most one @fallback");
+      ix.fallback = true;
+    }
     instructions.push(ix);
     for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
     for (const a of ix.args) {
@@ -1476,6 +1485,8 @@ const ACCOUNT_TYPES = new Set([
   "PythPriceUpdate",
   "AssociatedTokenProgram",
   "TokenMetadataProgram",
+  "MemoProgram",
+  "SlotHashesSysvar",
   "SwitchboardFeed",
   "HasOne",
   "TokenOf",
@@ -1922,6 +1933,10 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       return { kind: "selfProgram" };
     case "AssociatedTokenProgram":
       return { kind: "ataProgram" };
+    case "MemoProgram":
+      return { kind: "memoProgram" };
+    case "SlotHashesSysvar":
+      return { kind: "slotHashes" };
     case "TokenMetadataProgram":
       return { kind: "metadataProgram" };
     case "SwitchboardFeed": {

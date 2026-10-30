@@ -148,6 +148,10 @@ export type ParamKind =
   /** This program's ProgramData account (BPF upgradeable loader): address, owner and state checked. */
   | { kind: "programData" }
   | { kind: "ataProgram" }
+  /** The SPL Memo program (v2). */
+  | { kind: "memoProgram" }
+  /** The SlotHashes sysvar account (too large for the sysvar syscalls, so read as an account). */
+  | { kind: "slotHashes" }
   | { kind: "metadataProgram" }
   | { kind: "switchboard"; devnet: boolean }
   | { kind: "tokenProgram"; flavor: TokenProgramKind }
@@ -209,6 +213,8 @@ export interface ArgParam {
 export type IdlSeed = { kind: "const"; value: number[] } | { kind: "account"; path: string; account?: string } | { kind: "arg"; path: string };
 
 export interface Instruction {
+  /** `@fallback`: run when no instruction's discriminator matches; not in the IDL. */
+  fallback?: boolean;
   name: string;
   discriminator: number[];
   accounts: AccountParam[];

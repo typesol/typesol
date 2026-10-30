@@ -522,6 +522,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "returnData":
         return this.returnData(node);
+      case "instructionData":
+        this.fail(node, "bind the data to a local first: const data = instructionData()");
       case "fixedArray":
         this.fail(node, "fixedArray<T, N>(fill) is only allowed as a local declaration: const xs = fixedArray<u64, 4>(0n)");
       case "readonly":
@@ -656,6 +658,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "system" && (method === "allocate" || method === "assign")) return this.allocateOrAssign(node, target, method);
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
+        if (target?.kind.kind === "memoProgram") return this.memoOp(node, target, method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
         // Each Metaplex CPI in its own C block: its data buffer's stack slot is reused by the next one.
         if (target?.kind.kind === "coreProgram" || target?.kind.kind === "bubblegumProgram") {

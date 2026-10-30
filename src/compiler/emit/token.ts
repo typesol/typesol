@@ -149,7 +149,102 @@ export abstract class TokenEmitter extends CreateEmitter {
       return anyAcct(a[0], "the mint", true);
     };
     const none = { name: "NULL", count: 0 };
+    // The Token Group interface (spl-token-group-interface), which Token-2022 implements: 8-byte discriminators.
+    const grouped = (
+      disc: number[],
+      fields: ((put: Put) => void)[],
+      metas: [AccountParam, boolean, boolean][],
+      seeds: { name: string; count: number | string },
+    ) => {
+      const { buf, len, put, finish } = this.byteBuffer("grp", 96, "TS_ERR_INSTRUCTION_DATA", "token group instruction");
+      const d = this.tmp("disc");
+      this.line(`static const uint8_t ${d}[8] = {${disc.join(", ")}};`);
+      put(d, "8", 8);
+      for (const f of fields) f(put);
+      finish(node);
+      this.cpi(
+        p,
+        metas.map(([acc, w, sg]) => [`a_${acc.name}`, w, sg]),
+        buf,
+        len,
+        seeds,
+      );
+    };
     switch (method) {
+      case "initializeTokenGroup": {
+        token2022Only();
+        if (a.length !== 5 && a.length !== 6)
+          this.fail(node, "initializeTokenGroup(group, mint, mintAuthority, updateAuthority | null, maxSize, signerSeeds?)");
+        const group = anyAcct(a[0], "the group", true);
+        const mint = anyAcct(a[1], "the mint", false);
+        const auth = this.accountParam(a[2], "the mint authority");
+        grouped(
+          [121, 113, 108, 39, 54, 51, 0, 4],
+          [nonZeroKey(a[3]), value(a[4], U64)],
+          [
+            [group, true, false],
+            [mint, false, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[5], auth, a[2]),
+        );
+        return undefined;
+      }
+      case "initializeGroupMember": {
+        token2022Only();
+        if (a.length !== 5 && a.length !== 6)
+          this.fail(node, "initializeGroupMember(member, memberMint, memberMintAuthority, group, groupUpdateAuthority, signerSeeds?)");
+        const member = anyAcct(a[0], "the member", true);
+        const memberMint = anyAcct(a[1], "the member mint", false);
+        const mintAuth = this.accountParam(a[2], "the member mint's authority");
+        const group = anyAcct(a[3], "the group", true);
+        const groupAuth = this.accountParam(a[4], "the group's update authority");
+        grouped(
+          [152, 32, 222, 176, 223, 237, 116, 134],
+          [],
+          [
+            [member, true, false],
+            [memberMint, false, false],
+            [mintAuth, false, true],
+            [group, true, false],
+            [groupAuth, false, true],
+          ],
+          a[5] ? this.signingSeeds(a[5]) : none,
+        );
+        return undefined;
+      }
+      case "updateGroupMaxSize": {
+        token2022Only();
+        if (a.length !== 3 && a.length !== 4) this.fail(node, "updateGroupMaxSize(group, updateAuthority, maxSize, signerSeeds?)");
+        const group = anyAcct(a[0], "the group", true);
+        const auth = this.accountParam(a[1], "the update authority");
+        grouped(
+          [108, 37, 171, 143, 248, 30, 18, 110],
+          [value(a[2], U64)],
+          [
+            [group, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[3], auth, a[1]),
+        );
+        return undefined;
+      }
+      case "updateGroupAuthority": {
+        token2022Only();
+        if (a.length !== 3 && a.length !== 4) this.fail(node, "updateGroupAuthority(group, updateAuthority, next | null, signerSeeds?)");
+        const group = anyAcct(a[0], "the group", true);
+        const auth = this.accountParam(a[1], "the update authority");
+        grouped(
+          [161, 105, 88, 1, 237, 221, 216, 203],
+          [nonZeroKey(a[2])],
+          [
+            [group, true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[3], auth, a[1]),
+        );
+        return undefined;
+      }
       case "initializeTransferFeeConfig": {
         const mint = mintOnly(5, "initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)");
         this.model.options.set("pubkey", PUBKEY);
@@ -608,6 +703,30 @@ export abstract class TokenEmitter extends CreateEmitter {
     this.line(
       `TS_TRY(ts_ata_create(params, a_${program.name}, a_${payer.name}, a_${ata.name}, a_${owner.name}, a_${mint.name}, a_${sys.name}, a_${tp.name}, ${method === "createIdempotent"}));`,
     );
+    return undefined;
+  }
+
+  /** memoProgram.memo(text, signers?, signerSeeds?): SPL Memo v2, the UTF-8 text as data, each signer a signing account. */
+  protected memoOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+    if (method !== "memo") this.fail(node.expression, "the Memo program has memo(text, signers?, signerSeeds?)");
+    const a = node.arguments;
+    if (a.length < 1 || a.length > 3) this.fail(node, "memo(text, signers?, signerSeeds?)");
+    const text = this.expect(this.expr(a[0], STRING), STRING, a[0]);
+    const list = a[1];
+    if (list && !ts.isArrayLiteralExpression(list)) this.fail(list, "the signers are a list of accounts: [authority, …]");
+    const signers = list ? (list as ts.ArrayLiteralExpression).elements.map((e) => this.accountParam(e, "a memo signer")) : [];
+    const t = this.tmp("memo");
+    this.line(`TS_Str ${t} = ${text.c};`);
+    const seeds = a[2] ? this.signingSeeds(a[2]) : { name: "NULL", count: 0 };
+    if (!signers.length) this.line(`TS_TRY(ts_cpi(params, a_${program.name}, (uint8_t *)${t}.ptr, ${t}.len, NULL, 0, ${seeds.name}, ${seeds.count}));`);
+    else
+      this.cpi(
+        `a_${program.name}`,
+        signers.map((s) => [`a_${s.name}`, false, true]),
+        `(uint8_t *)${t}.ptr`,
+        `${t}.len`,
+        seeds,
+      );
     return undefined;
   }
 }

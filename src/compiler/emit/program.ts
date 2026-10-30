@@ -140,12 +140,15 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   if (limit > 32) out.push(`  params.infos_cap = 0;`, `  params.metas = NULL;`);
   if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_claim_mut(")))
     out.push(limit > 64 ? `  ts_memzero(params.loaded_mut, sizeof(params.loaded_mut));` : `  params.loaded_mut = 0;`);
-  const minDisc = Math.min(8, ...model.instructions.map((ix) => ix.discriminator.length));
-  out.push(`  if (params.data_len < ${minDisc}) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSOL: instruction data too short");`);
+  const fallback = model.instructions.find((ix) => ix.fallback);
+  const dispatched = model.instructions.filter((ix) => !ix.fallback);
+  const minDisc = Math.min(8, ...dispatched.map((ix) => ix.discriminator.length));
+  // With a @fallback, short data goes to it too (Anchor's dispatch); each comparison below checks the length.
+  if (!fallback) out.push(`  if (params.data_len < ${minDisc}) TS_FAIL(TS_ERR_INSTRUCTION_MISSING, "TypeSOL: instruction data too short");`);
   // Self-CPI events (emitCpi): accept the event instruction when its authority PDA signed it, like Anchor.
   if (model.instructions.some((ix) => ix.accounts.some((a) => a.kind.kind === "eventAuthority")))
     out.push(`  if (params.data_len >= 8 && ts_mem_eq(params.data, TS_EVENT_IX_TAG, 8)) return ts_event_dispatch(&params);`);
-  for (const ix of model.instructions) {
+  for (const ix of dispatched) {
     const n = ix.discriminator.length;
     // An 8-byte discriminator is one u64 compare (the data is little-endian bytes, the literal their u64 value).
     if (n === 8) {
@@ -158,7 +161,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     out.push(`    if (params.data_len >= ${n} && ts_mem_eq(params.data, disc, ${n})) return ix_${ix.name}(&params);`);
     out.push(`  }`);
   }
-  out.push(`  TS_FAIL(TS_ERR_INSTRUCTION_NOT_FOUND, "TypeSOL: unknown instruction");`);
+  out.push(fallback ? `  return ix_${fallback.name}(&params);` : `  TS_FAIL(TS_ERR_INSTRUCTION_NOT_FOUND, "TypeSOL: unknown instruction");`);
   out.push(`}`);
   return out.join("\n") + "\n";
 }
