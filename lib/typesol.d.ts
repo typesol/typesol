@@ -305,6 +305,45 @@ export interface MemoProgram extends AccountMeta {
 }
 
 /**
+ * The native Stake program (`Stake1111…`). Its address is checked. The sysvar and config accounts it reads are
+ * passed in, as anchor-spl's stake module does (`SysvarRent…`, `SysvarC1ock…`, `SysvarStakeHistory…`,
+ * `StakeConfig…`). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`.
+ */
+export interface StakeProgram extends AccountMeta {
+  readonly __stake_program: void;
+  /** Initialize a stake account (created with 200 bytes, owned by the Stake program), with no lockup. */
+  initialize(stake: AccountMeta, rentSysvar: AccountMeta, staker: Pubkey, withdrawer: Pubkey): void;
+  /** Hand the staker or the withdrawer authority to `newAuthority`. */
+  authorize(
+    stake: AccountMeta,
+    clockSysvar: AccountMeta,
+    authority: AccountMeta,
+    newAuthority: Pubkey,
+    which: "staker" | "withdrawer",
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  delegate(
+    stake: AccountMeta,
+    vote: AccountMeta,
+    clockSysvar: AccountMeta,
+    stakeHistorySysvar: AccountMeta,
+    stakeConfig: AccountMeta,
+    staker: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  deactivate(stake: AccountMeta, clockSysvar: AccountMeta, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  withdraw(
+    stake: AccountMeta,
+    to: AccountMeta,
+    clockSysvar: AccountMeta,
+    stakeHistorySysvar: AccountMeta,
+    withdrawer: AccountMeta,
+    lamports: u64,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+}
+
+/**
  * The SlotHashes sysvar (`SysvarS1otHashes…`), read as an account: it is too large for the sysvar syscalls (Anchor's
  * `Sysvar<SlotHashes>` cannot load it either). The address is checked, and that it holds an entry (5103).
  */

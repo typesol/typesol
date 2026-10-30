@@ -117,6 +117,8 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | `invoke_signed(&ix, infos, &[seeds_a, seeds_b])` | `invoke(program, accounts, data, [seedsA, seedsB])` |
 | `let (_, data) = get_return_data().unwrap(); Quote::try_from_slice(&data)?` | `const quote = returnData<Quote>(program)` (a `@layout borsh` struct when it holds Options, strings or Vecs) |
 | `[test.validator.clone]` in Anchor.toml | `"clone": [...]` in typesol.json and `typesol clone` (loaded by `testProgram`) |
+| `anchor_spl::metadata::update_metadata_accounts_v2` | `metadataProgram.updateMetadataAccountsV2(…)` |
+| `anchor_spl::stake::{authorize, deactivate_stake, withdraw}`, `delegate_stake` | `stakeProgram.authorize / deactivate / withdraw / delegate(…)` |
 | `pub fn fallback(program_id, accounts, data)` | `/** @fallback */ export function fallback(): void` with `instructionData()` and `remainingAccounts()` |
 | `#[access_control(check(&ctx))]` | call the check first in the body (`check(vault, owner)`), or `constraint(acct, …)` for one that belongs with an account's checks |
 | `spl_memo::build_memo` + `invoke` | `memoProgram.memo(text, [signers])` |

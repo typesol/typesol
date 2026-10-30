@@ -150,6 +150,8 @@ export type ParamKind =
   | { kind: "ataProgram" }
   /** The SPL Memo program (v2). */
   | { kind: "memoProgram" }
+  /** The native Stake program. */
+  | { kind: "stakeProgram" }
   /** The SlotHashes sysvar account (too large for the sysvar syscalls, so read as an account). */
   | { kind: "slotHashes" }
   | { kind: "metadataProgram" }

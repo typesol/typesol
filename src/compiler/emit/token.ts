@@ -729,4 +729,132 @@ export abstract class TokenEmitter extends CreateEmitter {
       );
     return undefined;
   }
+
+  /**
+   * The Stake program (bincode: a u32 instruction tag): initialize, authorize, delegate, deactivate and withdraw, with
+   * the sysvar and config accounts it reads passed in, as anchor-spl's stake module does. Each authority signs (a PDA of
+   * this program with `signerSeeds`).
+   */
+  protected stakeOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+    const a = node.arguments;
+    type Put = (src: string, n: string, bytes?: number) => void;
+    const acct = (i: number, what: string, mut = false) => {
+      const x = this.accountParam(a[i]!, what);
+      if (mut && !isWritable(x.kind)) this.fail(a[i]!, `${what} must be writable (Mut<...>)`);
+      return x;
+    };
+    const send = (tag: number, fields: ((put: Put) => void)[], metas: [AccountParam, boolean, boolean][], seeds: { name: string; count: number | string }) => {
+      const { buf, len, put, finish } = this.byteBuffer("stk", 116, "TS_ERR_INSTRUCTION_DATA", "stake instruction");
+      const t = this.tmp("tag");
+      this.line(`uint32_t ${t} = ${tag};`);
+      put(`&${t}`, "4", 4);
+      for (const f of fields) f(put);
+      finish(node);
+      this.cpi(
+        `a_${program.name}`,
+        metas.map(([x, w, sg]) => [`a_${x.name}`, w, sg]),
+        buf,
+        len,
+        seeds,
+      );
+    };
+    const value = (n: ts.Expression, t: ValueType) => (put: Put) => this.serialize(this.expect(this.expr(n, t), t, n), n, put);
+    const zeros = (n: number) => (put: Put) => {
+      const z = this.tmp("z");
+      this.line(`uint8_t ${z}[${n}] = {0};`);
+      put(z, String(n), n);
+    };
+    const arity = (n: number, usage: string) => {
+      if (a.length !== n && a.length !== n + 1) this.fail(node, usage);
+    };
+    switch (method) {
+      case "initialize": {
+        // Authorized { staker, withdrawer }, Lockup { unix_timestamp, epoch, custodian }: no lockup.
+        if (a.length !== 4) this.fail(node, "initialize(stake, rentSysvar, staker, withdrawer)");
+        send(
+          0,
+          [value(a[2]!, PUBKEY), value(a[3]!, PUBKEY), zeros(48)],
+          [
+            [acct(0, "the stake account", true), true, false],
+            [acct(1, "the Rent sysvar"), false, false],
+          ],
+          {
+            name: "NULL",
+            count: 0,
+          },
+        );
+        return undefined;
+      }
+      case "authorize": {
+        arity(5, 'authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer", signerSeeds?)');
+        const kind = a[4]!;
+        const i = ts.isStringLiteral(kind) ? ["staker", "withdrawer"].indexOf(kind.text) : -1;
+        if (i < 0) this.fail(kind, 'the authority to change is "staker" or "withdrawer"');
+        const auth = acct(2, "the authority");
+        const k = this.tmp("which");
+        send(
+          1,
+          [value(a[3]!, PUBKEY), (put) => (this.line(`uint32_t ${k} = ${i};`), put(`&${k}`, "4", 4))],
+          [
+            [acct(0, "the stake account", true), true, false],
+            [acct(1, "the Clock sysvar"), false, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[5], auth, a[2]!),
+        );
+        return undefined;
+      }
+      case "delegate": {
+        arity(6, "delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker, signerSeeds?)");
+        const staker = acct(5, "the staker");
+        send(
+          2,
+          [],
+          [
+            [acct(0, "the stake account", true), true, false],
+            [acct(1, "the vote account"), false, false],
+            [acct(2, "the Clock sysvar"), false, false],
+            [acct(3, "the StakeHistory sysvar"), false, false],
+            [acct(4, "the stake config account"), false, false],
+            [staker, false, true],
+          ],
+          this.signerSeeds(a[6], staker, a[5]!),
+        );
+        return undefined;
+      }
+      case "deactivate": {
+        arity(3, "deactivate(stake, clockSysvar, staker, signerSeeds?)");
+        const staker = acct(2, "the staker");
+        send(
+          5,
+          [],
+          [
+            [acct(0, "the stake account", true), true, false],
+            [acct(1, "the Clock sysvar"), false, false],
+            [staker, false, true],
+          ],
+          this.signerSeeds(a[3], staker, a[2]!),
+        );
+        return undefined;
+      }
+      case "withdraw": {
+        arity(6, "withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports, signerSeeds?)");
+        const withdrawer = acct(4, "the withdrawer");
+        send(
+          4,
+          [value(a[5]!, U64)],
+          [
+            [acct(0, "the stake account", true), true, false],
+            [acct(1, "the destination", true), true, false],
+            [acct(2, "the Clock sysvar"), false, false],
+            [acct(3, "the StakeHistory sysvar"), false, false],
+            [withdrawer, false, true],
+          ],
+          this.signerSeeds(a[6], withdrawer, a[4]!),
+        );
+        return undefined;
+      }
+    }
+    this.fail(node.expression, `the Stake program supports initialize, authorize, delegate, deactivate and withdraw, not ${method}`);
+  }
 }

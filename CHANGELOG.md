@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: Token Metadata `updateMetadataAccountsV2` (Anchor's `update_metadata_accounts_v2`): the whole DataV2 or null,
+  a new update authority, primary sale and mutability, signed by the update authority (a PDA with seeds).
+- New: `StakeProgram`: `initialize`, `authorize`, `delegate`, `deactivate`, `withdraw`, with the sysvars passed in as
+  anchor-spl does, signed by wallets or this program's PDAs.
 - New: `typesol clone [<address>…]` (Anchor's `[test.validator.clone]`): cluster accounts and programs copied to
   `tests/accounts/` (`"clone"` and `"accounts"` in `typesol.json`), which `testProgram` loads into its LiteSVM;
   `loadClonedAccounts(svm, dir)` for a LiteSVM of your own.

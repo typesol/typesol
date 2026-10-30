@@ -1837,6 +1837,7 @@ static inline uint64_t ts_switchboard_value(const TsAccount *a, uint64_t max_sta
 }
 
 /* ---- Associated token accounts, token metadata, transfer hooks ------------------- */
+static const SolPubkey TS_STAKE_PROGRAM_ID = {{6,161,216,23,145,55,84,42,152,52,55,189,254,42,122,178,85,127,83,92,138,120,114,43,104,164,157,192,0,0,0,0}};
 static const SolPubkey TS_MEMO_PROGRAM_ID = {{5,74,83,90,153,41,33,6,77,36,232,113,96,218,56,124,124,53,181,221,188,146,187,129,228,31,168,64,65,5,68,141}};
 static const SolPubkey TS_SLOT_HASHES_ID = {{6,167,213,23,25,47,10,175,198,242,101,227,251,119,204,122,218,130,197,41,208,190,59,19,110,45,0,85,32,0,0,0}};
 static const SolPubkey TS_ATA_PROGRAM_ID = {{140,151,37,143,78,36,137,241,187,61,16,41,20,142,13,131,11,90,19,153,218,255,16,132,4,142,123,216,219,233,248,89}};
