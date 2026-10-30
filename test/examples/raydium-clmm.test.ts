@@ -306,7 +306,9 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
       { ...token.getMintToInstruction({ mint: m0.address, token: acct0, mintAuthority: user, amount: 10n ** 15n }), programAddress: m0.program },
       { ...token.getMintToInstruction({ mint: m1.address, token: acct1, mintAuthority: user, amount: 10n ** 15n }), programAddress: m1.program },
     ]);
-    return { user, cfg, m0, m1, p, acct0, acct1, spacing };
+    // The tick array starts positions may have created, for swaps to pass.
+    const starts = new Set<number>();
+    return { user, cfg, m0, m1, p, acct0, acct1, spacing, starts };
   }
   type Pool = Awaited<ReturnType<typeof poolWith>>;
 
@@ -321,6 +323,7 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     const nft = await generateKeyPairSigner();
     const owner = opts.owner ?? pool.user.address;
     const [ls, us] = opts.starts ?? [startOf(lower, pool.spacing), startOf(upper, pool.spacing)];
+    pool.starts.add(ls).add(us);
     const arrays = [await tickArray(pool.p.pool, ls), await tickArray(pool.p.pool, us)] as const;
     const [position] = await pda(PROGRAM, ["position", nft.address]);
     const nftAccount = await ata(owner, nft.address, TOKEN_2022);
@@ -650,8 +653,7 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
   /** Every tick array of a pool that exists, ordered for a swap in this direction. */
   const arraysFor = async (pool: Pool, zeroForOne: boolean) => {
     const found: [number, Address][] = [];
-    const span = 60 * pool.spacing;
-    for (let start = Math.floor(-443_636 / span) * span; start <= 443_636; start += span) {
+    for (const start of pool.starts) {
       const a = await tickArray(pool.p.pool, start);
       if (original.getAccount(a).exists) found.push([start, a]);
     }
