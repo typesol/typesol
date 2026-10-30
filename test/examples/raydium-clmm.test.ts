@@ -1413,6 +1413,127 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     expect(await both("close_position, frozen", restricted.user, [closePosition(restricted, frozen, TOKEN_2022, [{ address: restricted.p.pool }])], frozen.watch)).toBe("ok");
   });
 
+  // ---- limit orders -------------------------------------------------------------------------------------------
+
+  it("places, adds to, fills, settles, takes back and closes limit orders", async () => {
+    const pool = await liquidPool(42);
+    const u64be = (n: bigint) => {
+      const b = Buffer.alloc(8);
+      b.writeBigUInt64BE(n);
+      return b;
+    };
+    const [nonce] = await pda(PROGRAM, [pool.user.address, Buffer.from([0])]);
+    const orderAt = async (n: bigint) => (await pda(PROGRAM, [pool.user.address, nonce, u64be(n)]))[0];
+    const nonceCount = () => (original.getAccount(nonce).exists ? bytesAt(nonce).readBigUInt64LE(8 + 32 + 1) : 0n);
+    /** zero_for_one: token 0 offered for token 1, on a tick above the price. */
+    const open = async (zeroForOne: boolean, tick: number, amount: bigint, rest: Meta[] = []) => {
+      const order = await orderAt(nonceCount());
+      const start = startOf(tick, pool.spacing);
+      pool.starts.add(start);
+      const array = await tickArray(pool.p.pool, start);
+      const [inMint, outMint] = zeroForOne ? [pool.m0, pool.m1] : [pool.m1, pool.m0];
+      const instruction = ix("open_limit_order", { nonce_index: 0, zero_for_one: zeroForOne, tick_index: tick, amount: new BN(amount.toString()) }, [
+        { address: pool.user.address, signer: pool.user, writable: true },
+        { address: pool.p.pool, writable: true },
+        { address: array, writable: true },
+        { address: nonce, writable: true },
+        { address: order, writable: true },
+        { address: zeroForOne ? pool.acct0 : pool.acct1, writable: true },
+        { address: zeroForOne ? pool.acct1 : pool.acct0, writable: true },
+        { address: zeroForOne ? pool.p.vault0 : pool.p.vault1, writable: true },
+        { address: zeroForOne ? pool.p.vault1 : pool.p.vault0, writable: true },
+        { address: inMint.address },
+        { address: outMint.address },
+        { address: inMint.program },
+        { address: SYSTEM },
+        ...rest,
+      ]);
+      return { instruction, order, array, zeroForOne, tick, watch: [pool.p.pool, array, nonce, order, pool.acct0, pool.acct1, pool.p.vault0, pool.p.vault1] };
+    };
+    type Order = Awaited<ReturnType<typeof open>>;
+    const increase = (o: Order, amount: bigint) =>
+      ix("increase_limit_order", { amount: new BN(amount.toString()) }, [
+        { address: pool.user.address, signer: pool.user },
+        { address: pool.p.pool, writable: true },
+        { address: o.array, writable: true },
+        { address: o.order, writable: true },
+        { address: o.zeroForOne ? pool.acct0 : pool.acct1, writable: true },
+        { address: o.zeroForOne ? pool.p.vault0 : pool.p.vault1, writable: true },
+        { address: (o.zeroForOne ? pool.m0 : pool.m1).address },
+        { address: (o.zeroForOne ? pool.m0 : pool.m1).program },
+      ]);
+    const decreaseOrder = (o: Order, amount: bigint, min = 0n) =>
+      ix("decrease_limit_order", { amount: new BN(amount.toString()), amount_min: new BN(min.toString()) }, [
+        { address: pool.user.address, signer: pool.user },
+        { address: pool.p.pool, writable: true },
+        { address: o.array, writable: true },
+        { address: o.order, writable: true },
+        { address: o.zeroForOne ? pool.acct0 : pool.acct1, writable: true },
+        { address: o.zeroForOne ? pool.acct1 : pool.acct0, writable: true },
+        { address: o.zeroForOne ? pool.p.vault0 : pool.p.vault1, writable: true },
+        { address: o.zeroForOne ? pool.p.vault1 : pool.p.vault0, writable: true },
+        { address: (o.zeroForOne ? pool.m0 : pool.m1).address },
+        { address: (o.zeroForOne ? pool.m1 : pool.m0).address },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+      ]);
+    const settle = (o: Order, by: KeyPairSigner = pool.user) =>
+      ix("settle_limit_order", {}, [
+        { address: by.address, signer: by },
+        { address: pool.p.pool },
+        { address: o.array },
+        { address: o.order, writable: true },
+        { address: o.zeroForOne ? pool.acct1 : pool.acct0, writable: true },
+        { address: o.zeroForOne ? pool.p.vault1 : pool.p.vault0, writable: true },
+        { address: (o.zeroForOne ? pool.m1 : pool.m0).address },
+        { address: (o.zeroForOne ? pool.m1 : pool.m0).program },
+      ]);
+    const closeOrder = (o: Order) =>
+      ix("close_limit_order", {}, [{ address: pool.user.address, signer: pool.user }, { address: pool.user.address, writable: true }, { address: o.order, writable: true }]);
+
+    // Refusals first: the wrong side of the price, off the spacing, nothing.
+    for (const [label, zeroForOne, tick, amount, want] of [
+      ["below the price", true, 600, 1_000_000n, custom(errors.InvalidTickIndex!)],
+      ["off the spacing", true, 3010, 1_000_000n, custom(errors.TickAndSpacingNotMatch!)],
+      ["nothing", true, 3000, 0n, custom(errors.ZeroAmountSpecified!)],
+    ] as const) {
+      const o = await open(zeroForOne, tick, amount);
+      expect(await both(`open_limit_order, ${label}`, pool.user, [o.instruction], o.watch)).toBe(want);
+    }
+    // Orders on a used tick (3000 is not one; 1800 is), on a fresh tick, and on a tick in an array that does not exist yet.
+    const a = await open(true, 1800, 5_000_000_000n);
+    expect(await both("open_limit_order, on a used tick", pool.user, [a.instruction], a.watch)).toBe("ok");
+    const b = await open(true, 3000, 3_000_000_000n);
+    expect(await both("open_limit_order, a fresh tick", pool.user, [b.instruction], b.watch)).toBe("ok");
+    const c = await open(true, 12_000, 1_000_000_000n);
+    expect(await both("open_limit_order, a new tick array", pool.user, [c.instruction], [...c.watch, pool.p.bitmap])).toBe("ok");
+    const d1 = await open(false, -2400, 4_000_000_000n);
+    expect(await both("open_limit_order, token 1 for token 0", pool.user, [d1.instruction], d1.watch)).toBe("ok");
+    expect(await both("increase_limit_order", pool.user, [increase(b, 1_000_000_000n)], b.watch)).toBe("ok");
+    expect(await both("increase_limit_order, nothing", pool.user, [increase(b, 0n)], b.watch)).toBe(custom(errors.ZeroAmountSpecified!));
+    expect(await both("settle_limit_order, nothing filled", pool.user, [settle(b)], b.watch)).toBe(custom(2505));
+    expect(await both("close_limit_order, unfilled", pool.user, [closeOrder(b)], b.watch)).toBe(custom(errors.InvalidLimitOrderAmount!));
+    expect(await both("decrease_limit_order, part", pool.user, [decreaseOrder(b, 500_000_000n)], b.watch)).toBe("ok");
+    // A swap up through 1800 and 3000: the orders there fill (b in full, a perhaps in part).
+    expect(await swapBoth("swap, up through the orders", pool, false, 400_000_000_000n)).toBe("ok");
+    expect(tickOf(pool)).toBeGreaterThan(3000);
+    expect(await both("increase_limit_order, being filled", pool.user, [increase(b, 1_000_000n)], b.watch)).not.toBe("ok");
+    for (const o of [a, b]) expect(await both(`settle_limit_order, tick ${o.tick}`, pool.user, [settle(o)], o.watch)).toBe("ok");
+    const someone = await funded();
+    expect(await both("settle_limit_order, someone else", someone, [settle(a, someone)], a.watch)).toBe(custom(2003));
+    expect(await both("decrease_limit_order, filled", pool.user, [decreaseOrder(b, 1n)], b.watch)).not.toBe("");
+    expect(await both("close_limit_order, filled", pool.user, [closeOrder(b)], [...b.watch, pool.user.address])).toBe("ok");
+    expect(await both("decrease_limit_order, the rest of a", pool.user, [decreaseOrder(a, 10n ** 12n)], a.watch)).not.toBe("");
+    // The order in the new array: taken back in full, its tick and the array's bit cleared.
+    expect(await both("decrease_limit_order, all of a lone order", pool.user, [decreaseOrder(c, 10n ** 12n)], [...c.watch, pool.p.bitmap])).toBe("ok");
+    expect(await both("close_limit_order, emptied", pool.user, [closeOrder(c)], c.watch)).toBe("ok");
+    // Limit orders off.
+    patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 32));
+    const e = await open(true, 6000, 1_000_000n);
+    expect(await both("open_limit_order, orders off", pool.user, [e.instruction], e.watch)).toBe(custom(errors.NotApproved!));
+    patchPool(pool, (bytes) => (bytes[POOL_STATUS] = 0));
+  });
+
   it("reports compute units", () => {
     expect(compared).toBeGreaterThan(5);
     console.log(`${compared} transactions compared`);

@@ -12,6 +12,7 @@ import {
   type CloseTo,
   type Dup,
   type Init,
+  type InitIfNeeded,
   type MemoProgram,
   type Mint,
   type MintOf,
@@ -37,6 +38,8 @@ import {
   u32,
   bigEndian,
   byteLength,
+  close,
+  findProgramAddressBump,
   constraint,
   currentEpoch,
   emit,
@@ -67,6 +70,7 @@ import {
   u64,
 } from "typesol";
 import { ErrorCode } from "./errors";
+import { checkLimitOrderAmount, checkTickIndex, decreaseOrder, increaseOrder, orderOffset, settleFilledOrder, unfilledOf } from "./limit_order";
 import {
   type LiquidityChange,
   addLiquidityToTicks,
@@ -133,6 +137,12 @@ import {
   type InitializeRewardParam,
   type UpdateRewardInfosEvent,
   CollectFeeOn,
+  type LimitOrderNonce,
+  type LimitOrderState,
+  type OpenLimitOrderEvent,
+  type IncreaseLimitOrderEvent,
+  type DecreaseLimitOrderEvent,
+  type SettleLimitOrderEvent,
 } from "./state";
 
 const PROTOCOL_FEE_OWNER = pubkey("projjosVCPQH49d5em7VYS7fJZzaqKixqKtus7yk416");
@@ -2745,4 +2755,286 @@ export function closePosition(
   // A Token-2022 NFT's mint closes too; the position is its close authority.
   if (position_nft_mint.tokenProgram === SPL_TOKEN_2022)
     token_program.closeAccount(position_nft_mint, nft_owner, personal_position, ["position", position_nft_mint.key, personal_position.bump.get(0n)]);
+}
+
+// ---- limit orders --------------------------------------------------------------------------------------------------
+
+const LIMIT_ORDER_ADMIN = pubkey("Ray8HHtixhL9zvnokMyELCVGp622PDPJj96zcVC9RWp");
+
+/** The pool's bit for a tick array whose first used tick appeared or whose last went: in its bitmap or the extension (the first remaining account). */
+function flipForOrder(pool: Mut<PoolState>, start: i32, extensionPassed: boolean): boolean {
+  if (!overflowsDefaultBitmap(start, pool.tick_spacing)) {
+    flipBitDefault(pool, start);
+    return false;
+  }
+  require(extensionPassed, ErrorCode.AccountLack);
+  return true;
+}
+
+/**
+ * Place a limit order on a tick past the price: `amount` of the input token waits there for a swap that crosses it.
+ * The order's address comes from the payer's nonce account `nonce_index`.
+ */
+export function openLimitOrder(
+  payer: Mut<Signer>,
+  pool_state: Mut<PoolState>,
+  tick_array: Mut<AccountInfo>,
+  limit_order_nonce: InitIfNeeded<LimitOrderNonce>,
+  limit_order: Init<LimitOrderState>,
+  input_token_account: Mut<TokenAccount>,
+  output_token_account: Mut<TokenAccount>,
+  input_vault: Mut<TokenAccount>,
+  output_vault: Mut<TokenAccount>,
+  input_vault_mint: Mint,
+  output_vault_mint: Mint,
+  input_token_program: TokenInterface,
+  system_program: SystemProgram,
+  nonce_index: u8,
+  zero_for_one: boolean,
+  tick_index: i32,
+  amount: u64,
+): void {
+  constraint(input_token_account, input_token_account.mint === input_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(input_token_account, input_token_account.owner === payer.key, AnchorError.ConstraintTokenOwner);
+  constraint(output_token_account, output_token_account.mint === output_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(output_token_account, output_token_account.owner === payer.key, AnchorError.ConstraintTokenOwner);
+  constraint(input_vault, input_vault.key === (zero_for_one ? pool_state.token_vault_0 : pool_state.token_vault_1));
+  constraint(output_vault, output_vault.key === (zero_for_one ? pool_state.token_vault_1 : pool_state.token_vault_0));
+  constraint(input_vault_mint, input_vault_mint.key === input_vault.mint, AnchorError.ConstraintAddress);
+  constraint(output_vault_mint, output_vault_mint.key === output_vault.mint, AnchorError.ConstraintAddress);
+  constraint(input_token_program, input_token_program.key === input_vault_mint.tokenProgram, AnchorError.ConstraintAddress);
+  // `&[nonce_index as u8]`: a seed Anchor's IDL does not record.
+  limit_order_nonce.createIfNeeded(payer, [payer.key, u8(nonce_index)]);
+  limit_order.create(payer, [payer.key, limit_order_nonce.key, bigEndian(limit_order_nonce.order_nonce)]);
+
+  require(!input_token_account.isFrozen && !output_token_account.isFrozen, ErrorCode.NotApproved);
+  // Limit orders (bit 5) and swaps (bit 4) both on.
+  require((pool_state.status & 48n) === 0n, ErrorCode.NotApproved);
+  const spacing = pool_state.tick_spacing;
+  checkTickIndex(tick_index, zero_for_one, pool_state.tick_current, spacing);
+  const fee = transferFee(input_vault_mint, amount);
+  require(amount >= fee, ErrorCode.CalculateOverflow);
+  const net = amount - fee;
+  checkLimitOrderAmount(net, tick_index, zero_for_one);
+  const start = arrayStartIndex(tick_index, spacing);
+  require(tick_array.key === findProgramAddress(["tick_array", pool_state.key, bigEndian(start)], programId()), AnchorError.RequireKeysEqViolated);
+  // get_or_create_tick_array
+  require(isValidStartIndex(start, spacing), ErrorCode.InvalidTickIndex);
+  if (tick_array.owner === SYSTEM)
+    createTickArray(payer, tick_array, pool_state, system_program, start, findProgramAddressBump(["tick_array", pool_state.key, bigEndian(start)], programId()));
+  const array = loadAccountMut<TickArrayState>(tick_array);
+  const countBefore = array.initialized_tick_count;
+  const offset = orderOffset(array, tick_index, spacing);
+  const t = array.ticks.get(offset);
+  require(t.order_phase < 18446744073709551615n, ErrorCode.OrderPhaseSaturated);
+  const usedBefore = tickInitialized(t);
+  t.tick = tick_index;
+  limit_order.pool_id = pool_state.key;
+  limit_order.owner = payer.key;
+  limit_order.tick_index = tick_index;
+  limit_order.zero_for_one = zero_for_one;
+  limit_order.order_phase = t.order_phase;
+  limit_order.total_amount = net;
+  limit_order.filled_amount = 0n;
+  limit_order.open_time = u64(now());
+  limit_order.unfilled_ratio_x64 = Q64;
+  limit_order.settle_base = net;
+  limit_order.settled_output = 0n;
+  require(t.orders_amount <= 18446744073709551615n - net, ErrorCode.CalculateOverflow);
+  t.orders_amount += net;
+  if (!usedBefore) {
+    require(array.initialized_tick_count < 255n, ErrorCode.CalculateOverflow);
+    array.initialized_tick_count += 1n;
+    const rest = remainingAccounts();
+    if (countBefore === 0n && flipForOrder(pool_state, array.start_tick_index, rest.length > 0n)) {
+      require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(0n));
+      flipBitExtension(ext, array.start_tick_index, spacing);
+    }
+  }
+  if (limit_order_nonce.user_wallet === NO_KEY) {
+    limit_order_nonce.user_wallet = payer.key;
+    limit_order_nonce.nonce_index = nonce_index;
+  }
+  limit_order_nonce.order_nonce = limit_order_nonce.order_nonce < 18446744073709551615n ? limit_order_nonce.order_nonce + 1n : limit_order_nonce.order_nonce;
+  input_token_program.transferChecked(input_token_account, input_vault_mint, input_vault, payer, amount);
+  emit<OpenLimitOrderEvent>({
+    pool_id: pool_state.key,
+    limit_order: limit_order.key,
+    zero_for_one: limit_order.zero_for_one,
+    tick_index: limit_order.tick_index,
+    total_amount: limit_order.total_amount,
+    transfer_fee: fee,
+  });
+}
+
+/** Add to a limit order while its tick has not started filling it. */
+export function increaseLimitOrder(
+  owner: Signer,
+  pool_state: Mut<PoolState>,
+  tick_array: Mut<TickArrayState>,
+  limit_order: Mut<LimitOrderState>,
+  input_token_account: Mut<TokenAccount>,
+  input_vault: Mut<TokenAccount>,
+  input_vault_mint: Mint,
+  input_token_program: TokenInterface,
+  amount: u64,
+): void {
+  constraint(tick_array, tick_array.pool_id === pool_state.key);
+  constraint(limit_order, limit_order.pool_id === pool_state.key && limit_order.owner === owner.key);
+  constraint(input_token_account, input_token_account.mint === input_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(input_token_account, input_token_account.owner === owner.key, AnchorError.ConstraintTokenOwner);
+  constraint(input_vault, input_vault.key === (limit_order.zero_for_one ? pool_state.token_vault_0 : pool_state.token_vault_1));
+  constraint(input_vault_mint, input_vault_mint.key === input_vault.mint, AnchorError.ConstraintAddress);
+  constraint(input_token_program, input_token_program.key === input_vault_mint.tokenProgram, AnchorError.ConstraintAddress);
+  require(amount > 0n, ErrorCode.ZeroAmountSpecified);
+  require((pool_state.status & 48n) === 0n, ErrorCode.NotApproved);
+  const spacing = pool_state.tick_spacing;
+  checkTickIndex(limit_order.tick_index, limit_order.zero_for_one, pool_state.tick_current, spacing);
+  const countBefore = tick_array.initialized_tick_count;
+  const offset = orderOffset(tick_array, limit_order.tick_index, spacing);
+  const usedBefore = tickInitialized(tick_array.ticks.get(offset));
+  const fee = transferFee(input_vault_mint, amount);
+  require(amount >= fee, ErrorCode.CalculateOverflow);
+  const net = amount - fee;
+  increaseOrder(limit_order, tick_array, offset, net);
+  emit<IncreaseLimitOrderEvent>({
+    pool_id: pool_state.key,
+    limit_order: limit_order.key,
+    zero_for_one: limit_order.zero_for_one,
+    tick_index: limit_order.tick_index,
+    total_amount: limit_order.total_amount,
+    increased_amount: net,
+    transfer_fee: fee,
+  });
+  checkLimitOrderAmount(limit_order.total_amount, limit_order.tick_index, limit_order.zero_for_one);
+  if (!usedBefore) {
+    require(tick_array.initialized_tick_count < 255n, ErrorCode.CalculateOverflow);
+    tick_array.initialized_tick_count += 1n;
+    const rest = remainingAccounts();
+    if (countBefore === 0n && flipForOrder(pool_state, tick_array.start_tick_index, rest.length > 0n)) {
+      require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(0n));
+      flipBitExtension(ext, tick_array.start_tick_index, spacing);
+    }
+  }
+  input_token_program.transferChecked(input_token_account, input_vault_mint, input_vault, owner, amount);
+}
+
+/** Take back part of a limit order (what is unfilled), with what it has filled so far. */
+export function decreaseLimitOrder(
+  owner: Signer,
+  pool_state: Mut<PoolState>,
+  tick_array: Mut<TickArrayState>,
+  limit_order: Mut<LimitOrderState>,
+  input_token_account: Mut<TokenAccount>,
+  output_token_account: Mut<TokenAccount>,
+  input_vault: Mut<TokenAccount>,
+  output_vault: Mut<TokenAccount>,
+  input_vault_mint: Mint,
+  output_vault_mint: Mint,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  amount: u64,
+  amount_min: u64,
+): void {
+  constraint(tick_array, tick_array.pool_id === pool_state.key);
+  constraint(limit_order, limit_order.pool_id === pool_state.key && limit_order.owner === owner.key);
+  constraint(input_token_account, input_token_account.mint === input_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(input_token_account, input_token_account.owner === owner.key, AnchorError.ConstraintTokenOwner);
+  constraint(output_token_account, output_token_account.mint === output_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(output_token_account, output_token_account.owner === owner.key, AnchorError.ConstraintTokenOwner);
+  constraint(input_vault, input_vault.key === (limit_order.zero_for_one ? pool_state.token_vault_0 : pool_state.token_vault_1));
+  constraint(output_vault, output_vault.key === (limit_order.zero_for_one ? pool_state.token_vault_1 : pool_state.token_vault_0));
+  constraint(input_vault_mint, input_vault_mint.key === input_vault.mint, AnchorError.ConstraintAddress);
+  constraint(output_vault_mint, output_vault_mint.key === output_vault.mint, AnchorError.ConstraintAddress);
+  require(amount > 0n, ErrorCode.ZeroAmountSpecified);
+  const spacing = pool_state.tick_spacing;
+  const offset = orderOffset(tick_array, limit_order.tick_index, spacing);
+  const usedBefore = tickInitialized(tick_array.ticks.get(offset));
+  const result = decreaseOrder(limit_order, tick_array, offset, amount);
+  emit<DecreaseLimitOrderEvent>({
+    pool_id: pool_state.key,
+    limit_order: limit_order.key,
+    zero_for_one: limit_order.zero_for_one,
+    tick_index: limit_order.tick_index,
+    total_amount: limit_order.total_amount,
+    filled_amount: limit_order.filled_amount,
+    settled_output_amount: result.settled_output_amount,
+    decreased_amount: result.real_decrease_amount,
+  });
+  if (usedBefore && !tickInitialized(tick_array.ticks.get(offset))) {
+    require(tick_array.initialized_tick_count > 0n, ErrorCode.CalculateOverflow);
+    tick_array.initialized_tick_count -= 1n;
+    const rest = remainingAccounts();
+    const start = arrayStartIndex(limit_order.tick_index, spacing);
+    if (tick_array.initialized_tick_count === 0n && flipForOrder(pool_state, start, rest.length > 0n)) {
+      require(rest.get(0n).key === extensionKey(pool_state), AnchorError.RequireKeysEqViolated);
+      const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(0n));
+      flipBitExtension(ext, start, spacing);
+    }
+  }
+  const seedIndex = u16(pool_state.seed_index.get(0n)) | (u16(pool_state.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool_state)
+    ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
+    : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
+  if (result.settled_output_amount > 0n)
+    transferOut(pool_state, output_vault, output_token_account, output_vault_mint, token_program, token_program_2022, result.settled_output_amount, poolSigner);
+  if (result.real_decrease_amount > 0n) {
+    const fee = transferFee(input_vault_mint, result.real_decrease_amount);
+    require(result.real_decrease_amount >= fee, ErrorCode.CalculateOverflow);
+    require(result.real_decrease_amount - fee >= amount_min, ErrorCode.PriceSlippageCheck);
+    transferOut(pool_state, input_vault, input_token_account, input_vault_mint, token_program, token_program_2022, result.real_decrease_amount, poolSigner);
+  }
+}
+
+/** Pay out what a limit order has filled (its owner, or Raydium's limit order operator). */
+export function settleLimitOrder(
+  signer: Signer,
+  pool_state: Account<PoolState>,
+  tick_array: Account<TickArrayState>,
+  limit_order: Mut<LimitOrderState>,
+  output_token_account: Mut<TokenAccount>,
+  output_vault: Mut<TokenAccount>,
+  output_vault_mint: Mint,
+  output_token_program: TokenInterface,
+): void {
+  constraint(signer, signer.key === limit_order.owner || signer.key === LIMIT_ORDER_ADMIN);
+  constraint(tick_array, tick_array.pool_id === pool_state.key);
+  constraint(limit_order, limit_order.pool_id === pool_state.key);
+  constraint(output_token_account, output_token_account.mint === output_vault.mint, AnchorError.ConstraintTokenMint);
+  constraint(output_token_account, output_token_account.owner === limit_order.owner, AnchorError.ConstraintTokenOwner);
+  constraint(output_vault, output_vault.key === (limit_order.zero_for_one ? pool_state.token_vault_1 : pool_state.token_vault_0));
+  constraint(output_vault_mint, output_vault_mint.key === output_vault.mint, AnchorError.ConstraintAddress);
+  constraint(output_token_program, output_token_program.key === output_vault_mint.tokenProgram, AnchorError.ConstraintAddress);
+  const offset = orderOffset(tick_array, limit_order.tick_index, pool_state.tick_spacing);
+  const out = settleFilledOrder(limit_order, tick_array, offset);
+  if (unfilledOf(limit_order) !== 0n) require(out > 0n, AnchorError.RequireGtViolated);
+  emit<SettleLimitOrderEvent>({
+    pool_id: pool_state.key,
+    limit_order: limit_order.key,
+    zero_for_one: limit_order.zero_for_one,
+    tick_index: limit_order.tick_index,
+    total_amount: limit_order.total_amount,
+    filled_amount: limit_order.filled_amount,
+    settled_amount_out: out,
+  });
+  payFromPool(pool_state, output_vault, output_token_account, output_vault_mint, output_token_program, out);
+}
+
+/** transfer_checked out of a pool vault, the pool signing (always, even of 0, as settle_limit_order does). */
+function payFromPool(pool: Account<PoolState>, vault: Mut<TokenAccount>, to: Mut<TokenAccount>, mint: Mint, program: TokenInterface, amount: u64): void {
+  const seedIndex = u16(pool.seed_index.get(0n)) | (u16(pool.seed_index.get(1n)) << 8n);
+  const poolSigner = poolIsIndexed(pool)
+    ? signer(["pool", pool.amm_config, pool.token_mint_0, pool.token_mint_1, seedIndex, pool.bump.get(0n)])
+    : signer(["pool", pool.amm_config, pool.token_mint_0, pool.token_mint_1, pool.bump.get(0n)]);
+  program.transferChecked(vault, mint, to, pool, amount, poolSigner);
+}
+
+/** Close a fully filled (or emptied) limit order; its rent goes to its owner. */
+export function closeLimitOrder(signer: Signer, rent_receiver: Mut<AccountInfo>, limit_order: Mut<LimitOrderState>): void {
+  constraint(signer, signer.key === limit_order.owner || signer.key === LIMIT_ORDER_ADMIN);
+  constraint(rent_receiver, rent_receiver.key === limit_order.owner, AnchorError.ConstraintAddress);
+  require(unfilledOf(limit_order) === 0n, ErrorCode.InvalidLimitOrderAmount);
+  close(limit_order, rent_receiver);
 }

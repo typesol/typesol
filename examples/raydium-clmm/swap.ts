@@ -201,7 +201,7 @@ export function crossTick(array: Mut<TickArrayState>, offset: u64, pool: Account
 // ---- limit orders (states/tick_array.rs) --------------------------------------------------------------------------
 
 /** tick_math::get_price_from_sqrt_price: the Q64.64 price of token 0. */
-function priceFromSqrt(sqrtPriceX64: u128, roundUp: boolean): u128 {
+export function priceFromSqrt(sqrtPriceX64: u128, roundUp: boolean): u128 {
   let prod = u256(sqrtPriceX64) * u256(sqrtPriceX64);
   if (roundUp) prod += u256(Q64 - 1n);
   const price = prod >> 64n;
@@ -209,7 +209,7 @@ function priceFromSqrt(sqrtPriceX64: u128, roundUp: boolean): u128 {
   return u128(price);
 }
 /** get_limit_order_output_with_price: what `amountIn` buys at `price`. */
-function limitOrderOutput(amountIn: u64, price: u128, zeroForOne: boolean): u128 {
+export function limitOrderOutput(amountIn: u64, price: u128, zeroForOne: boolean): u128 {
   return zeroForOne ? mulDivFloor128(u128(amountIn), price, Q64) : mulDivFloor128(u128(amountIn), Q64, price);
 }
 /** get_limit_order_input_with_price: what `amountOut` costs at `price`, rounded up. */
