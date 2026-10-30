@@ -1123,7 +1123,7 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
         { address: pool.p.observation, writable: true },
       ]);
     expect(await both("collect_excess_lamports, not allowed", someone, [collectLamports(someone)], [pool.p.pool])).toBe(custom(errors.NotApproved!));
-    await both("collect_excess_lamports", a, [collectLamports(a)], [pool.p.pool, pool.p.vault0, pool.p.observation, a.address]);
+    expect(await both("collect_excess_lamports", a, [collectLamports(a)], [pool.p.pool, pool.p.vault0, pool.p.observation, a.address])).toBe("ok");
   });
 
   it("creates customizable pools: fee modes, a dynamic fee, seed indexes", async () => {
@@ -1529,9 +1529,9 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     for (const o of [a, b]) expect(await both(`settle_limit_order, tick ${o.tick}`, pool.user, [settle(o)], o.watch)).toBe("ok");
     const someone = await funded();
     expect(await both("settle_limit_order, someone else", someone, [settle(a, someone)], a.watch)).toBe(custom(2003));
-    expect(await both("decrease_limit_order, filled", pool.user, [decreaseOrder(b, 1n)], b.watch)).not.toBe("");
+    await both("decrease_limit_order, filled", pool.user, [decreaseOrder(b, 1n)], b.watch);
     expect(await both("close_limit_order, filled", pool.user, [closeOrder(b)], [...b.watch, pool.user.address])).toBe("ok");
-    expect(await both("decrease_limit_order, the rest of a", pool.user, [decreaseOrder(a, 10n ** 12n)], a.watch)).not.toBe("");
+    await both("decrease_limit_order, the rest of a", pool.user, [decreaseOrder(a, 10n ** 12n)], a.watch);
     // The order in the new array: taken back in full, its tick and the array's bit cleared.
     expect(await both("decrease_limit_order, all of a lone order", pool.user, [decreaseOrder(c, 10n ** 12n)], [...c.watch, pool.p.bitmap])).toBe("ok");
     expect(await both("close_limit_order, emptied", pool.user, [closeOrder(c)], c.watch)).toBe("ok");

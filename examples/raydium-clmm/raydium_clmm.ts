@@ -804,12 +804,9 @@ export function decreaseLiquidityV2(
       const recipient = rest.get(r);
       const mint = rest.get(m);
       // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program and holding one.
-      require(vault.owner === SPL_TOKEN || vault.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-      require(vault.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
-      require(recipient.owner === SPL_TOKEN || recipient.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-      require(recipient.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
-      require(mint.owner === SPL_TOKEN || mint.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-      require(mint.dataLen >= 82n, AnchorError.AccountDidNotDeserialize);
+      requireTokenAccount(vault.owner, vault.dataLen, vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n, vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n);
+      requireTokenAccount(recipient.owner, recipient.dataLen, recipient.dataLen > 108n ? readData<u8>(recipient, 108n) : 0n, recipient.dataLen > 165n ? readData<u8>(recipient, 165n) : 0n);
+      requireMintAccount(mint.owner, mint.dataLen, mint.dataLen > 45n ? readData<u8>(mint, 45n) : 0n, mint.dataLen > 165n ? readData<u8>(mint, 165n) : 0n);
       require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(recipient, 0n), AnchorError.RequireKeysEqViolated);
       const info = pool_state.reward_infos.get(i);
       require(vault.key === info.token_vault, AnchorError.RequireKeysEqViolated);
@@ -1236,6 +1233,17 @@ export function collectFundFee(
 
 // ---- admin --------------------------------------------------------------------------------------------------------
 
+/** InterfaceAccount<TokenAccount>::try_from on a remaining account: owned by a token program and an initialized token account. */
+function requireTokenAccount(owner: Pubkey, dataLen: u64, state: u8, accountType: u8): void {
+  require(owner === SPL_TOKEN || owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
+  require(tokenAccountUnpacks(dataLen, state, accountType), AnchorError.AccountDidNotDeserialize);
+}
+/** InterfaceAccount<Mint>::try_from on a remaining account: owned by a token program and an initialized mint. */
+function requireMintAccount(owner: Pubkey, dataLen: u64, initialized: u8, accountType: u8): void {
+  require(owner === SPL_TOKEN || owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
+  require(dataLen >= 82n && initialized !== 0n && (dataLen === 82n || (dataLen > 165n && dataLen !== 355n && accountType === 1n)), AnchorError.AccountDidNotDeserialize);
+}
+
 const SUPPORT_MINT_OWNER = pubkey("RayVyjyJQz9vAi126A4sGexKnSU1XeZaHTRcM1mZMPY");
 const COLLECT_LAMPORTS_WALLET = pubkey("Ray9LdYRLXsHzL8pr3Ceahfiz8MsS2pZagzHo1ckdfJ");
 const MAX_FEE_RATE: u32 = 1_000_000n;
@@ -1441,7 +1449,7 @@ export function closeProtocolPosition(
   protocol_position: CloseTo<Mut<ProtocolPositionState>, "admin">,
 ): void {}
 
-/** Whether these token account bytes unpack as an initialized (possibly Token-2022) token account, and if so its fields. */
+/** Whether these bytes unpack as an initialized (possibly Token-2022) token account. */
 function tokenAccountUnpacks(dataLen: u64, state: u8, accountType: u8): boolean {
   if (dataLen < 165n || state === 0n) return false;
   return dataLen === 165n || (dataLen !== 355n && accountType === 2n);
@@ -1980,12 +1988,9 @@ export function setRewardParams(
     const from = rest.get(1n);
     const mint = rest.get(2n);
     // InterfaceAccount<TokenAccount> / <Mint>
-    require(vault.owner === SPL_TOKEN || vault.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-    require(vault.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
-    require(from.owner === SPL_TOKEN || from.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-    require(from.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
-    require(mint.owner === SPL_TOKEN || mint.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-    require(mint.dataLen >= 82n, AnchorError.AccountDidNotDeserialize);
+    requireTokenAccount(vault.owner, vault.dataLen, vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n, vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n);
+    requireTokenAccount(from.owner, from.dataLen, from.dataLen > 108n ? readData<u8>(from, 108n) : 0n, from.dataLen > 165n ? readData<u8>(from, 165n) : 0n);
+    requireMintAccount(mint.owner, mint.dataLen, mint.dataLen > 45n ? readData<u8>(mint, 45n) : 0n, mint.dataLen > 165n ? readData<u8>(mint, 165n) : 0n);
     require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(from, 0n), AnchorError.RequireKeysEqViolated);
     require(vault.key === r.token_vault, AnchorError.RequireKeysEqViolated);
     const fee = transferFeeInverse(mint, amount);
@@ -2545,10 +2550,8 @@ export function decreaseLiquidity(
       const vault = rest.get(v);
       const recipient = rest.get(r);
       // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program and holding one.
-      require(vault.owner === SPL_TOKEN || vault.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-      require(vault.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
-      require(recipient.owner === SPL_TOKEN || recipient.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-      require(recipient.dataLen >= 165n, AnchorError.AccountDidNotDeserialize);
+      requireTokenAccount(vault.owner, vault.dataLen, vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n, vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n);
+      requireTokenAccount(recipient.owner, recipient.dataLen, recipient.dataLen > 108n ? readData<u8>(recipient, 108n) : 0n, recipient.dataLen > 165n ? readData<u8>(recipient, 165n) : 0n);
       require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(recipient, 0n), AnchorError.RequireKeysEqViolated);
       const info = pool_state.reward_infos.get(i);
       require(vault.key === info.token_vault, AnchorError.RequireKeysEqViolated);
@@ -3186,11 +3189,11 @@ export function swapRouterBaseIn(
     const outMint = rest.get(pos + 5n);
     const obs = loadAccountMut<ObservationState>(rest.get(pos + 6n));
     // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program, holding one.
-    for (let k = 2n; k < 6n; k++) {
+    for (let k = 2n; k < 5n; k++) {
       const t = rest.get(pos + k);
-      require(t.owner === SPL_TOKEN || t.owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-      require(t.dataLen >= (k === 5n ? 82n : 165n), AnchorError.AccountDidNotDeserialize);
+      requireTokenAccount(t.owner, t.dataLen, t.dataLen > 108n ? readData<u8>(t, 108n) : 0n, t.dataLen > 165n ? readData<u8>(t, 165n) : 0n);
     }
+    requireMintAccount(outMint.owner, outMint.dataLen, outMint.dataLen > 45n ? readData<u8>(outMint, 45n) : 0n, outMint.dataLen > 165n ? readData<u8>(outMint, 165n) : 0n);
     require(pool.observation_key === obs.key, AnchorError.RequireKeysEqViolated);
     require(pool.amm_config === config.key, AnchorError.RequireKeysEqViolated);
     pos += 7n;

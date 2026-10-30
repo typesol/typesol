@@ -80,7 +80,7 @@ The swap needed nothing new:
   first one as an account; `swap_v2` takes them all from the remaining accounts. `swap_router_base_in` reads every
   hop's pool, config, vaults and token accounts from the remaining accounts, and moves tokens with `invoke`.
 - **The router's account count.** It takes more accounts than TypeSOL's default 32, so the program declares
-  `MAX_ACCOUNTS = 255n`.
+  `MAX_ACCOUNTS = 255n`. That keeps its CPI account lists on the heap, which adds about 3% to a swap.
 
 ## How it was checked
 
@@ -95,6 +95,9 @@ and the port into another. Both use the same program id and the same clock, and 
   a test key in both programs:
   - in the original, in the 26 places its code loads it (four 64-bit immediates each, `lddw`);
   - in the port, in its source.
+
+  The other operator keys (lamport collection, limit order operator, support-mint operator) are not swapped. Each
+  check accepts the admin too, so those paths run as the admin.
 - **Mints and token accounts** are made by the same token-program instructions in both.
 - **State only swaps make.** Where a case needs it, it is written into the pool or a tick array in both VMs: fee growth
   from earlier swaps, a reward stream, a dynamic fee, limit orders on a tick, the pool status bits.
@@ -151,31 +154,32 @@ Compute units per transaction, mainnet original against the port, from one run o
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `create_pool` | 67,818 | 26,935 | −60% |
-| `create_customizable_pool_v2` | 59,173 | 25,525 | −57% |
-| `open_position_with_token22_nft`, in range | 126,375 | 66,015 | −48% |
-| `open_position` (Metaplex NFT) | 118,451 | 78,695 | −34% |
-| `increase_liquidity_v2` | 39,759 | 15,018 | −62% |
-| `decrease_liquidity_v2` | 40,615 | 17,263 | −57% |
-| `decrease_liquidity_v2`, with a reward paid | 67,766 | 20,683 | −69% |
-| `close_position` | 19,395 | 9,730 | −50% |
-| `swap_v2` | 49,023 | 22,504 | −54% |
-| `swap_v2`, across tick arrays | 55,837 | 28,161 | −50% |
-| `swap_v2`, dynamic fee | 58,924 | 30,585 | −48% |
-| `swap_v2`, through limit orders | 74,417 | 36,995 | −50% |
-| `swap_v2`, the mainnet USDC/CC pool | 52,708 | 26,881 | −49% |
+| `create_pool` | 55,818 | 24,441 | −56% |
+| `create_customizable_pool_v2` | 51,673 | 23,730 | −54% |
+| `open_position_with_token22_nft`, in range | 109,875 | 63,145 | −43% |
+| `open_position` (Metaplex NFT) | 121,451 | 80,854 | −33% |
+| `increase_liquidity_v2` | 39,759 | 15,148 | −62% |
+| `decrease_liquidity_v2` | 40,615 | 15,694 | −61% |
+| `decrease_liquidity_v2`, with a reward paid | 58,766 | 20,180 | −66% |
+| `close_position`, Metaplex NFT | 12,532 | 3,689 | −71% |
+| `close_position`, Token-2022 NFT (its mint closed too) | 22,395 | 10,376 | −54% |
+| `swap_v2` | 49,040 | 23,209 | −53% |
+| `swap_v2`, across tick arrays | 55,837 | 29,048 | −48% |
+| `swap_v2`, dynamic fee | 58,924 | 31,228 | −47% |
+| `swap_v2`, through limit orders | 74,417 | 37,989 | −49% |
+| `swap_v2`, the mainnet USDC/CC pool | 52,677 | 27,571 | −48% |
 | `swap` | 51,009 | 21,592 | −58% |
-| `swap_router_base_in`, two hops | 80,365 | 42,014 | −48% |
-| `open_limit_order` | 32,720 | 10,108 | −69% |
+| `swap_router_base_in`, two hops | 80,365 | 42,150 | −48% |
+| `open_limit_order` | 35,720 | 10,781 | −70% |
 | `settle_limit_order` | 15,682 | 6,496 | −59% |
 | `initialize_reward` | 23,105 | 9,562 | −59% |
-| `collect_protocol_fee` | 13,626 | 2,353 | −83% |
+| `collect_protocol_fee` | 13,626 | 2,355 | −83% |
 | `update_amm_config` | 3,028 | 491 | −84% |
 
 Opening a position is mostly the token programs', the System Program's and (for a Metaplex NFT) Token Metadata's
 work: the NFT mint, its metadata, the associated token account and the transfers. That work costs the same in both.
 Pool and position creation also vary from run to run with the PDA bump searches of the random keys the test uses, in
-both programs alike. Refusals cost far less; a swap of nothing costs 16,665 against 1,644.
+both programs alike. Refusals cost far less; a swap of nothing costs 16,665 against 1,651.
 
 On size, the port's binary is 566,280 bytes and the deployed original 1,700,160 bytes, for the same 37 instructions.
 
@@ -186,10 +190,12 @@ On size, the port's binary is 566,280 bytes and the deployed original 1,700,160 
   opened without the extension account (the original reads `remaining_accounts[0]` of none), more than 10 operators
   (`copy_from_slice` of the wrong length). The test checks only that both fail there.
 - **Check order on double faults.** Anchor creates `init` accounts (a position, an order) before it checks the accounts
-  after them; the port checks every account first and creates them at the start of the body. A transaction breaking
-  one check gets the same code. One that breaks two at once can be reported differently.
+  after them. The port follows that order where a test showed it mattered (`create_support_mint_associated`);
+  elsewhere it checks every account first and creates them at the start of the body. A transaction breaking one check
+  gets the same code. One that breaks two at once can be reported differently.
 - **Reward mints' order.** The original keeps the operation account's reward mints in a hash set's order; the port
-  keeps them in the order added. Only membership is ever read, and operators are sorted in both.
+  keeps them in the order added. With two or more listed, the `OperationState` bytes differ. Only membership is ever
+  read, and operators are sorted the same in both.
 - **Duplicate tick arrays in a swap.** The original loads every tick array it is given before it starts, so one passed
   twice fails at once. The port loads an array when the swap reaches it. Passed twice but never reached, it does
   not fail.

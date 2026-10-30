@@ -180,7 +180,7 @@ checks it against the binary deployed on mainnet (same outcomes and account byte
 [docs/case-study-raydium-cp-swap.md](docs/case-study-raydium-cp-swap.md) does the same for Raydium CP-Swap's swaps and liquidity
 (pool creation included: same outcomes, account bytes and events on 70 transactions; 45–79% fewer compute units), and
 [docs/case-study-raydium-clmm.md](docs/case-study-raydium-clmm.md) for all 37 instructions of Raydium CLMM
-(pools, positions, swaps and routes, limit orders, rewards, admin: the same on 300 transactions; 34–84% fewer
+(pools, positions, swaps and routes, limit orders, rewards, admin: the same on 300 transactions; 33–84% fewer
 compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
