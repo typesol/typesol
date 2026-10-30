@@ -1974,6 +1974,66 @@ static inline uint64_t ts_mpl_create_v3(TsParams *params, const TsAccount *progr
 }
 
 /*
+ * UpdateMetadataAccountV2 (15): each part optional. `has_data` sets the whole DataV2 (name, symbol, uri, fee, creators
+ * (ncreators < 0: None), collection (NULL: None), uses None); `new_ua` NULL leaves the update authority; `primary` and
+ * `mutable` are -1 to leave them, else 0 / 1. The update authority signs.
+ */
+static inline uint64_t ts_mpl_update_v2(TsParams *params, const TsAccount *program, TsAccount *metadata,
+                                        TsAccount *update_authority, bool has_data, TS_Str name, TS_Str symbol, TS_Str uri,
+                                        uint16_t fee_bps, const uint8_t *creators, int ncreators, const SolPubkey *collection,
+                                        const SolPubkey *new_ua, int primary, int mutable_, const SolSignerSeed *seeds, int n) {
+  uint8_t *data;
+  uint64_t ncr = ncreators > 0 ? (uint64_t)ncreators : 0;
+  TS_TRY(ts_alloc(1 + 1 + 12 + name.len + symbol.len + uri.len + 2 + (1 + 4 + 34 * ncr) + (1 + 33) + 1 + 33 + 2 + 2, &data));
+  uint64_t at = 0;
+  data[at++] = 15;
+  if (!has_data) {
+    data[at++] = 0;
+  } else {
+    data[at++] = 1;
+    ts_put_str(data, &at, name);
+    ts_put_str(data, &at, symbol);
+    ts_put_str(data, &at, uri);
+    ts_memcpy(data + at, &fee_bps, 2);
+    at += 2;
+    if (ncreators < 0) {
+      data[at++] = 0;
+    } else {
+      data[at++] = 1;
+      uint32_t count = (uint32_t)ncreators;
+      ts_memcpy(data + at, &count, 4);
+      at += 4;
+      ts_memcpy(data + at, creators, 34 * ncr);
+      at += 34 * ncr;
+    }
+    if (collection) {
+      data[at++] = 1;
+      data[at++] = 0; /* verified: false */
+      ts_memcpy(data + at, collection, 32);
+      at += 32;
+    } else {
+      data[at++] = 0;
+    }
+    data[at++] = 0; /* uses: None */
+  }
+  if (new_ua) {
+    data[at++] = 1;
+    ts_memcpy(data + at, new_ua, 32);
+    at += 32;
+  } else {
+    data[at++] = 0;
+  }
+  if (primary < 0) data[at++] = 0;
+  else data[at++] = 1, data[at++] = (uint8_t)primary;
+  if (mutable_ < 0) data[at++] = 0;
+  else data[at++] = 1, data[at++] = (uint8_t)mutable_;
+  SolAccountMeta metas[2] = {{&metadata->key, true, false}, {&update_authority->key, false, true}};
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, 2, data, at};
+  SolSignerSeeds signer = {seeds, (uint64_t)n};
+  return ts_invoke(params, &ix, &signer, n > 0 ? 1 : 0);
+}
+
+/*
  * Transfer hook validation account (ExtraAccountMetaList with no extra accounts) at PDA
  * ["extra-account-metas", mint]: TLV = execute discriminator | u32 length 4 | u32 count 0.
  */

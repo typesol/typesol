@@ -414,6 +414,27 @@ export interface TokenMetadataProgram extends AccountMeta {
     instructionsSysvar: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /**
+   * UpdateMetadataAccountV2 (Anchor's `update_metadata_accounts_v2`): `data` replaces the whole DataV2 (creators and
+   * collection left out become none; a verified collection or creator cannot be changed this way, Metaplex refuses);
+   * each `null` leaves that part as it is. The update authority signs (a PDA of this program with `signerSeeds`).
+   */
+  updateMetadataAccountsV2(
+    metadata: AccountMeta,
+    updateAuthority: AccountMeta,
+    data: {
+      name: string;
+      symbol: string;
+      uri: string;
+      sellerFeeBasisPoints: u16;
+      creators?: { address: Pubkey; verified: boolean; share: u8 }[];
+      collection?: Pubkey;
+    } | null,
+    newUpdateAuthority: Pubkey | null,
+    primarySaleHappened: boolean | null,
+    isMutable: boolean | null,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
 }
 /** The Metaplex master edition address of a mint (PDA ["metadata", program, mint, "edition"]). */
 export declare function masterEditionAddress(mint: Pubkey): Pubkey;

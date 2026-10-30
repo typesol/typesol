@@ -66,6 +66,26 @@ export function nameMetaplex(
   metadataProgram.createV3(metadata, mint, issuer, payer, issuer, systemProgram, name, symbol, uri, 500n, true, ["issuer", issuer.mint, issuer.bump]);
 }
 
+/** Rename Metaplex metadata the issuer PDA updates (its whole DataV2, one creator), and mark the primary sale. */
+export function renameMetaplex(payer: Signer, issuer: Account<Issuer>, metadata: Mut<AccountInfo>, metadataProgram: TokenMetadataProgram, name: string, artist: Pubkey): void {
+  require(payer.key === issuer.admin, "admin only");
+  metadataProgram.updateMetadataAccountsV2(
+    metadata,
+    issuer,
+    { name, symbol: "DEMO2", uri: "https://example.com/v2.json", sellerFeeBasisPoints: 250n, creators: [{ address: artist, verified: false, share: 100n }] },
+    null,
+    true,
+    null,
+    ["issuer", issuer.mint, issuer.bump],
+  );
+}
+
+/** Hand the update authority to `next` and freeze the metadata. */
+export function handOverMetaplex(payer: Signer, issuer: Account<Issuer>, metadata: Mut<AccountInfo>, metadataProgram: TokenMetadataProgram, next: Pubkey): void {
+  require(payer.key === issuer.admin, "admin only");
+  metadataProgram.updateMetadataAccountsV2(metadata, issuer, null, next, null, false, ["issuer", issuer.mint, issuer.bump]);
+}
+
 /** Metaplex metadata with creators and a (not yet verified) collection. */
 export function nameWithCreators(
   payer: Mut<Signer>,
