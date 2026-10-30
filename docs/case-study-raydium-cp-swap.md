@@ -125,7 +125,7 @@ Compute units per transaction, mainnet original against the port, from that test
 | `deposit`, Token-2022 transfer fees | 33,237 | 14,482 | −56% |
 
 The Token-2022 rows include the token program's own work, which is the same in both. Refusals cost far less. For
-example, a swap through the wrong config costs 17,190 against 1,628.
+example, a swap through the wrong config costs 17,190 against 1,656.
 
 On size, the port's binary is 143,560 bytes and the deployed original is 793,824 bytes. The original also contains the
 14 instructions not ported here, so the size ratio overstates the gain for the same feature set.
