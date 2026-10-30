@@ -35,7 +35,9 @@ function docsOf(node: ts.Node | undefined): { docs?: string[] } {
 }
 
 /** `@param name text` of a function parameter. */
-function paramDocs(param: ts.ParameterDeclaration): { docs?: string[] } {
+function paramDocs(param: ts.ParameterDeclaration | ts.PropertySignature): { docs?: string[] } {
+  // A group's field: its own doc comment.
+  if (ts.isPropertySignature(param)) return docsOf(param);
   const text = ts
     .getJSDocParameterTags(param)
     .map((t) => (typeof t.comment === "string" ? t.comment : (ts.getTextOfJSDocComment(t.comment) ?? "")))
@@ -100,9 +102,26 @@ function idlType(t: FieldType | ValueType, borshOption = false): unknown {
   }
 }
 
+/**
+ * An account path as the IDL writes it from where it is used: a field of the same group by its own name (Anchor's
+ * composite accounts), a field of another group as `<group>_<field>` (how clients flatten groups), else the name.
+ */
+function relativePath(path: string, from: string | undefined): string {
+  const at = path.indexOf("__");
+  if (at < 0) return path;
+  const group = path.slice(0, at);
+  return group === from ? path.slice(at + 2) : `${group}_${path.slice(at + 2)}`;
+}
+
+function relativeSeeds(seeds: unknown, from: string | undefined): unknown {
+  if (!Array.isArray(seeds)) return seeds;
+  return seeds.map((sd: { kind: string; path?: string }) => (sd.kind === "account" && sd.path ? { ...sd, path: relativePath(sd.path, from) } : sd));
+}
+
 function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddress: string) {
   const param = ix.accounts.find((a) => a.name === name);
-  const entry: Record<string, unknown> = { name: snakeCase(name), ...(param ? paramDocs(param.node) : {}) };
+  const group = param?.group ? snakeCase(param.group.param) : undefined;
+  const entry: Record<string, unknown> = { name: snakeCase(param?.group ? param.group.field : name), ...(param ? paramDocs(param.node) : {}) };
   if (isWritable(k)) entry.writable = true;
   if (param?.optional) entry.optional = true;
   if (k.kind === "signer" || param?.signsInit || param?.constraints.signed) entry.signer = true;
@@ -117,11 +136,16 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
   if (k.kind === "program" && k.address) entry.address = k.address.base58;
   // Anchor's direction: the account named by a has_one lists the accounts that hold it (Anchor clients then read
   // `holder.data[name]` to fill it in). Only struct accounts' HasOne are has_one relations in Anchor's sense.
-  const relations = ix.accounts.filter((a) => a.kind.kind === "account" && a.constraints.hasOne.includes(name)).map((a) => a.name);
-  if (relations.length) entry.relations = relations.map(snakeCase);
+  const holds = (a: Instruction["accounts"][number]) =>
+    a.constraints.hasOne.some((f) => !f.includes("=") && (a.constraints.hasOneParams?.get(f) ?? f) === name);
+  const relations = ix.accounts.filter((a) => a.kind.kind === "account" && holds(a)).map((a) => relativePath(snakeCase(a.name), group));
+  if (relations.length) entry.relations = relations;
   const seeds = ix.pdas.get(name);
   const program = ix.pdaPrograms.get(name);
-  if (seeds) entry.pda = program ? { seeds, program } : { seeds };
+  if (seeds) {
+    const own = relativeSeeds(seeds, group);
+    entry.pda = program ? { seeds: own, program: (relativeSeeds([program], group) as unknown[])[0] } : { seeds: own };
+  }
   const address = ix.accounts.find((a) => a.name === name)?.constraints.address;
   if (address) entry.address = address.base58;
   const programId = decodeAddress(programAddress);
@@ -130,6 +154,25 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
   if (k.kind === "programData" && programId)
     entry.pda = { seeds: [{ kind: "const", value: [...programId] }], program: { kind: "const", value: BPF_UPGRADEABLE_LOADER } };
   return entry;
+}
+
+/** The instruction's account entries, an account group's fields nested under it: `{ name: "pool", accounts: [...] }`. */
+function nestGroups(ix: Instruction, entry: (a: Instruction["accounts"][number]) => Record<string, unknown>): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  let open: { param: string; accounts: Record<string, unknown>[] } | undefined;
+  for (const a of ix.accounts) {
+    if (!a.group) {
+      open = undefined;
+      out.push(entry(a));
+      continue;
+    }
+    if (open?.param !== a.group.param) {
+      open = { param: a.group.param, accounts: [] };
+      out.push({ name: snakeCase(a.group.param), accounts: open.accounts });
+    }
+    open.accounts.push(entry(a));
+  }
+  return out;
 }
 
 /** Anchor IDL (spec 0.1.0) so existing Anchor / Codama clients can talk to TypeSOL programs. */
@@ -143,7 +186,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
       name: ix.name,
       ...docsOf(ix.node),
       discriminator: ix.discriminator,
-      accounts: ix.accounts.map((a) => accountEntry(ix, a.name, a.kind, address)),
+      accounts: nestGroups(ix, (a) => accountEntry(ix, a.name, a.kind, address)),
       args: ix.args.map((a) => ({ name: snakeCase(a.name), ...paramDocs(a.node), type: idlType(a.type, true) })),
       ...(ix.returns ? { returns: idlType(ix.returns) } : {}),
     })),

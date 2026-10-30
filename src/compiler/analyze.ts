@@ -354,6 +354,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const functions: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
   const helperNodes: HelperSource[] = [];
   const interfaces: { decl: ts.InterfaceDeclaration; imports: Map<string, string> }[] = [];
+  const groups: AccountGroups = new Map();
   const aliases: { decl: ts.TypeAliasDeclaration; imports: Map<string, string> }[] = [];
   /** Program-wide names (structs, enums, helpers) -> declaring file, for collision errors. */
   const declared = new Map<string, string>();
@@ -389,7 +390,9 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
         } else if (ts.isInterfaceDeclaration(stmt)) {
           if (!isExported(stmt)) reporter.fail(stmt, "structs must be exported");
           declare(stmt.name, file);
-          interfaces.push({ decl: stmt, imports });
+          // An interface of accounts is an account group (Anchor's composite `#[derive(Accounts)]` field), not a struct.
+          if (isAccountGroup(stmt, imports)) groups.set(stmt.name.text, { decl: stmt, imports });
+          else interfaces.push({ decl: stmt, imports });
         } else if (ts.isTypeAliasDeclaration(stmt)) {
           if (!isExported(stmt)) reporter.fail(stmt, "data enums (type X = { kind: ... } | ...) must be exported");
           declare(stmt.name, file);
@@ -617,7 +620,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       });
       continue;
     }
-    const h = reporter.guard(() => analyzeHelper(fn.node, fn.name, fn.display, reporter, scopeFor(fn.imports), structs));
+    const h = reporter.guard(() => analyzeHelper(fn.node, fn.name, fn.display, reporter, scopeFor(fn.imports), structs, undefined, groups));
     if (h) helpers.set(h.name, h);
   }
   const instances = new Map<string, Helper>();
@@ -642,6 +645,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       { ...scopeFor(g.imports), typeArgs: bound, structArgs: boundStructs },
       structs,
       new Set(g.fnParams),
+      groups,
     );
     h.typeArgs = bound;
     h.structArgs = boundStructs;
@@ -659,7 +663,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const argStructs = new Set<string>();
   const instructions: Instruction[] = [];
   for (const fn of functions) {
-    const ix = reporter.guard(() => analyzeInstruction(fn.node, reporter, scopeFor(fn.imports), structs));
+    const ix = reporter.guard(() => analyzeInstruction(fn.node, reporter, scopeFor(fn.imports), structs, groups));
     if (!ix) continue;
     instructions.push(ix);
     for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
@@ -1344,6 +1348,7 @@ function analyzeHelper(
   scope: TypeScope,
   structs: Map<string, StructDef>,
   skip: Set<number> = new Set(),
+  groups: AccountGroups = new Map(),
 ): Helper {
   if (!fn.body) reporter.fail(fn, "helper functions need a body");
   if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
@@ -1385,6 +1390,8 @@ function analyzeHelper(
         wrapped === "Signed"
       )
         reporter.fail(p.type, "constraints belong on instruction parameters; helpers take the plain account type");
+      if (ts.isTypeReferenceNode(p.type) && ts.isIdentifier(p.type.typeName) && groups.has(p.type.typeName.text))
+        reporter.fail(p.type, `${p.type.typeName.text} is an account group: helpers take its accounts one by one (h(p.pool, p.vault))`);
       const account = resolveAccountKind(p.type, reporter, scope.imports, structs);
       if (account.kind === "init" || account.kind === "initIfNeeded" || account.kind === "zeroed" || account.kind === "migrate")
         reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
@@ -1444,7 +1451,68 @@ function checkRecursion(sources: HelperSource[], decls: Map<ts.Node, string>, ch
   for (const name of byName.keys()) walk(name, []);
 }
 
-function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scope: TypeScope, structs: Map<string, StructDef>): Instruction {
+/** Account groups by interface name: interfaces whose fields are accounts (Anchor's composite accounts). */
+type AccountGroups = Map<string, { decl: ts.InterfaceDeclaration; imports: Map<string, string> }>;
+
+/** TypeSOL types an account parameter can have (with the constraint wrappers around them). */
+const ACCOUNT_TYPES = new Set([
+  "Signer",
+  "AccountInfo",
+  "AccountMeta",
+  "Account",
+  "Mut",
+  "Init",
+  "TokenAccount",
+  "Mint",
+  "SystemProgram",
+  "TokenProgram",
+  "Token2022Program",
+  "TokenInterface",
+  "Program",
+  "UncheckedProgram",
+  "Zeroed",
+  "InstructionsSysvar",
+  "InitIfNeeded",
+  "PythPriceUpdate",
+  "AssociatedTokenProgram",
+  "TokenMetadataProgram",
+  "SwitchboardFeed",
+  "HasOne",
+  "TokenOf",
+  "MintOf",
+  "Seeds",
+  "CloseTo",
+  "Address",
+  "Ata",
+  "Owner",
+  "Executable",
+  "Dup",
+  "Signed",
+  "Migrate",
+  "Optional",
+  "EventAuthority",
+  "MplCoreProgram",
+  "BubblegumProgram",
+  "SelfProgram",
+  "ProgramData",
+  "SystemAccount",
+]);
+
+const withoutNull = (t: ts.TypeNode): ts.TypeNode =>
+  ts.isUnionTypeNode(t) && t.types.length === 2 ? (t.types.find((x) => !(ts.isLiteralTypeNode(x) && x.literal.kind === ts.SyntaxKind.NullKeyword)) ?? t) : t;
+
+/** An interface with an account-typed field: an account group. */
+function isAccountGroup(decl: ts.InterfaceDeclaration, imports: Map<string, string>): boolean {
+  return decl.members.some((m) => ts.isPropertySignature(m) && m.type && ACCOUNT_TYPES.has(typesolName(withoutNull(m.type), imports) ?? ""));
+}
+
+function analyzeInstruction(
+  fn: ts.FunctionDeclaration,
+  reporter: Reporter,
+  scope: TypeScope,
+  structs: Map<string, StructDef>,
+  groups: AccountGroups = new Map(),
+): Instruction {
   const imports = scope.imports;
   if (!fn.name || !fn.body) reporter.fail(fn, "instructions need a name and a body");
   if (fn.typeParameters?.length) reporter.fail(fn, "instructions cannot be generic");
@@ -1487,28 +1555,75 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
                   : 0;
         return;
       }
-      // Optional accounts: `Mut<Vault> | null` or `Optional<Mut<Vault>>`.
-      let typeNode = p.type;
-      let optional = false;
-      const isNull = (t: ts.TypeNode) => ts.isLiteralTypeNode(t) && t.literal.kind === ts.SyntaxKind.NullKeyword;
-      if (ts.isUnionTypeNode(typeNode) && typeNode.types.length === 2 && typeNode.types.some(isNull)) {
-        optional = true;
-        typeNode = typeNode.types.find((t) => !isNull(t))!;
-      } else if (typesolName(typeNode, imports) === "Optional") {
-        optional = true;
-        typeNode = (typeNode as ts.TypeReferenceNode).typeArguments?.[0] ?? typeNode;
+      // An account group: its accounts are this instruction's, in their order, named `<param>__<field>`.
+      const bare = withoutNull(p.type);
+      if (bare !== p.type && ts.isTypeReferenceNode(bare) && ts.isIdentifier(bare.typeName) && groups.has(bare.typeName.text))
+        reporter.fail(p.type, "account groups cannot be optional; make the accounts inside it optional (field: A | null)");
+      const group = ts.isTypeReferenceNode(p.type) && ts.isIdentifier(p.type.typeName) ? groups.get(p.type.typeName.text) : undefined;
+      if (group) {
+        if ((p.type as ts.TypeReferenceNode).typeArguments) reporter.fail(p.type, "account groups take no type arguments");
+        const members: AccountParam[] = [];
+        for (const m of group.decl.members) {
+          if (!ts.isPropertySignature(m) || !m.type || !ts.isIdentifier(m.name)) reporter.fail(m, "account groups hold plain fields");
+          if (m.questionToken) reporter.fail(m, `optional accounts are written ${m.name.text}: A | null`);
+          if (ts.isTypeReferenceNode(m.type) && ts.isIdentifier(m.type.typeName) && groups.has(m.type.typeName.text))
+            reporter.fail(m.type, "account groups do not nest yet: list the inner group's accounts here");
+          if (!ACCOUNT_TYPES.has(typesolName(withoutNull(m.type), group.imports) ?? ""))
+            reporter.fail(m.type, `${group.decl.name.text} is an account group: every field is an account (pass values as instruction arguments)`);
+          const a = accountFrom(m.type, `${p.name.text}__${m.name.text}`, m, group.imports);
+          a.group = { param: p.name.text, field: m.name.text, type: group.decl.name.text };
+          members.push(a);
+        }
+        // Constraints in a group name its own fields (as in Anchor's composite accounts), then the instruction's.
+        const sibling = (n: string) => (members.some((x) => x.group!.field === n) ? `${p.name.text}__${n}` : n);
+        const at = (n: string) => (n.startsWith("@") ? `@${sibling(n.slice(1).split(".")[0]!)}${n.slice(1).includes(".") ? n.slice(n.indexOf(".")) : ""}` : n);
+        for (const a of members) {
+          const c = a.constraints;
+          c.hasOne = c.hasOne.map((e) => {
+            if (!e.includes("=")) {
+              if (sibling(e) !== e) (c.hasOneParams ??= new Map()).set(e, sibling(e));
+              return e;
+            }
+            const [f, param] = e.split("=") as [string, string];
+            return `${f}=${sibling(param)}`;
+          });
+          if (c.seeds)
+            c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
+          if (c.closeTo) c.closeTo = sibling(c.closeTo);
+          if (c.ata) c.ata = { owner: sibling(c.ata.owner), mint: sibling(c.ata.mint) };
+          a.index = accounts.length;
+          accounts.push(a);
+        }
+        return;
       }
-      const constraints: Constraints = { hasOne: [] };
-      const inner = unwrapConstraints(typeNode, reporter, imports, constraints);
-      const kind = resolveAccountKind(inner, reporter, imports, structs);
-      if (
-        optional &&
-        (["init", "initIfNeeded", "zeroed", "migrate", "pyth", "eventAuthority", "selfProgram", "programData"].includes(kind.kind) ||
-          ((kind.kind === "token" || kind.kind === "mint") && kind.init))
-      )
-        reporter.fail(p, "Init, InitIfNeeded, Zeroed, PythPriceUpdate, EventAuthority, SelfProgram and ProgramData accounts cannot be optional");
-      accounts.push({ name: p.name.text, index: accounts.length, kind, node: p, constraints, ...(optional ? { optional } : {}) });
+      const a = accountFrom(p.type, p.name.text, p, imports);
+      a.index = accounts.length;
+      accounts.push(a);
     });
+  }
+
+  /** An account parameter (or a group's field) of type `typeNode`. */
+  function accountFrom(typeNode: ts.TypeNode, name: string, node: ts.ParameterDeclaration | ts.PropertySignature, imports: Map<string, string>): AccountParam {
+    // Optional accounts: `Mut<Vault> | null` or `Optional<Mut<Vault>>`.
+    let optional = false;
+    const isNull = (t: ts.TypeNode) => ts.isLiteralTypeNode(t) && t.literal.kind === ts.SyntaxKind.NullKeyword;
+    if (ts.isUnionTypeNode(typeNode) && typeNode.types.length === 2 && typeNode.types.some(isNull)) {
+      optional = true;
+      typeNode = typeNode.types.find((t) => !isNull(t))!;
+    } else if (typesolName(typeNode, imports) === "Optional") {
+      optional = true;
+      typeNode = (typeNode as ts.TypeReferenceNode).typeArguments?.[0] ?? typeNode;
+    }
+    const constraints: Constraints = { hasOne: [] };
+    const inner = unwrapConstraints(typeNode, reporter, imports, constraints);
+    const kind = resolveAccountKind(inner, reporter, imports, structs);
+    if (
+      optional &&
+      (["init", "initIfNeeded", "zeroed", "migrate", "pyth", "eventAuthority", "selfProgram", "programData"].includes(kind.kind) ||
+        ((kind.kind === "token" || kind.kind === "mint") && kind.init))
+    )
+      reporter.fail(node, "Init, InitIfNeeded, Zeroed, PythPriceUpdate, EventAuthority, SelfProgram and ProgramData accounts cannot be optional");
+    return { name, index: 0, kind, node, constraints, ...(optional ? { optional } : {}) };
   }
 
   checkSnakeDuplicates(
@@ -1521,8 +1636,14 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
     "accounts",
     reporter,
   );
-  for (const p of [...args, ...accounts])
-    if (p.name.includes("__") || p.name.includes("$")) reporter.error(p.node, `"${p.name}": "__" and "$" are reserved in names`);
+  for (const p of [...args, ...accounts]) {
+    const own = "group" in p && p.group ? p.group.field : p.name;
+    if (own.includes("__") || own.includes("$")) reporter.error(p.node, `"${own}": "__" and "$" are reserved in names`);
+  }
+  // A group parameter's name is taken too: `pool.vault` reads its field, so no other parameter may be `pool`.
+  for (const a of accounts)
+    if (a.group && [...args, ...accounts].some((o) => o.name === a.group!.param))
+      reporter.error(a.node, `"${a.group.param}" names both an account group and another parameter`);
   // Constraints refer to other parameters by name: check them now that all are known.
   for (const a of accounts) {
     const c = a.constraints;
@@ -1553,7 +1674,8 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
           if (a.kind.kind === "mint" && f !== "mintAuthority" && f !== "freezeAuthority") reporter.fail(a.node, "MintOf<…> applies to a Mint");
           continue;
         }
-        if (!accounts.some((o) => o.name === f)) reporter.fail(a.node, `HasOne<…, "${f}">: add an account parameter named "${f}"`);
+        const target = c.hasOneParams?.get(f) ?? f;
+        if (!accounts.some((o) => o.name === target)) reporter.fail(a.node, `HasOne<…, "${f}">: add an account parameter named "${f}"`);
         if (a.kind.kind === "token") {
           if (f !== "mint" && f !== "owner") reporter.fail(a.node, `HasOne on a TokenAccount checks "mint" or "owner", not "${f}"`);
           continue;
@@ -1566,7 +1688,6 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
         if (!struct) reporter.fail(a.node, "HasOne needs a struct account, a TokenAccount or a Mint");
         const field = struct.fields.find((x) => x.name === f);
         if (!field || field.type.kind !== "pubkey" || field.type.hash) reporter.fail(a.node, `HasOne<…, "${f}">: ${struct.name} needs a Pubkey field "${f}"`);
-        if (!accounts.some((o) => o.name === f)) reporter.fail(a.node, `HasOne<…, "${f}">: add an account parameter named "${f}"`);
       }
       if (c.seeds?.bump?.startsWith("@")) {
         // "@acct.field": the bump stored in another struct account (Anchor `bump = multisig.nonce`).
@@ -1602,7 +1723,7 @@ function analyzeInstruction(fn: ts.FunctionDeclaration, reporter: Reporter, scop
   for (const a of accounts) {
     const c = a.constraints;
     const refs = [
-      ...c.hasOne.map((e) => e.split("=").at(-1)!),
+      ...c.hasOne.map((e) => (e.includes("=") ? e.split("=").at(-1)! : (c.hasOneParams?.get(e) ?? e))),
       ...(c.seeds?.names ?? []).filter((n) => n.startsWith("@")).map((n) => n.slice(1).split(".")[0]!),
       ...(c.seeds?.program?.startsWith("@") ? [c.seeds.program.slice(1)] : []),
       ...(c.seeds?.bump?.startsWith("@") ? [c.seeds.bump.slice(1).split(".")[0]!] : []),

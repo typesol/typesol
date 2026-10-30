@@ -638,8 +638,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const right = this.expect(this.expr(args[0], left.type), left.type, args[0]);
         return { c: `ts_key_eq(${this.settle(left, mark).c}, ${right.c})`, type: BOOL };
       }
-      if (ts.isIdentifier(callee.expression)) {
-        const target = this.accounts.get(callee.expression.text);
+      if (this.accountAt(callee.expression)) {
+        const target = this.accountAt(callee.expression);
         // Program accounts used through their methods (systemProgram.transfer, tokenProgram.*…) may be optional.
         if (target?.optional) this.assertUsable(target, callee.expression);
         if (
@@ -689,9 +689,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     };
     const hint = hints[text];
     if (hint) return `unsupported call: ${text}; use ${hint}`;
-    if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
-      if (this.accounts.get(callee.expression.text)) return `unsupported call: the account ${callee.expression.text} has no method ${callee.name.text}`;
-    }
+    if (ts.isPropertyAccessExpression(callee) && this.accountAt(callee.expression))
+      return `unsupported call: the account ${callee.expression.getText()} has no method ${callee.name.text}`;
     return `unsupported call: ${text.length > 60 ? `${text.slice(0, 57)}…` : text}`;
   }
 
@@ -949,7 +948,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   /** C pointer (`TsAccount *`) for an expression naming a remaining account, or undefined. */
   /** Whether `node` is an InstructionsSysvar parameter. */
   protected instructionsParam(node: ts.Expression) {
-    const a = ts.isIdentifier(node) ? this.accounts.get(node.text) : undefined;
+    const a = this.accountAt(node);
     return a?.kind.kind === "instructionsSysvar" ? a : undefined;
   }
 
