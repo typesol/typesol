@@ -199,8 +199,11 @@ export interface AccountParam {
   /** The parameter, or the field of an account group. */
   node: ts.ParameterDeclaration | ts.PropertySignature;
   constraints: Constraints;
-  /** A field of an account group: the group parameter, the field, and the group's interface. `name` is `<param>__<field>`. */
-  group?: { param: string; field: string; type: string };
+  /**
+   * A field of an account group: `path` the group parameter and the fields of groups inside it down to this one,
+   * `param` their names joined with "__", the field, and the group's interface. `name` is `<param>__<field>`.
+   */
+  group?: { param: string; field: string; type: string; path: string[] };
   /** Created in the body as a new keypair account (`create(payer, null, …)`), so it signs: the IDL says so. */
   signsInit?: boolean;
 }

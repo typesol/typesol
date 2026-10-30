@@ -107,10 +107,9 @@ function idlType(t: FieldType | ValueType, borshOption = false): unknown {
  * composite accounts), a field of another group as `<group>_<field>` (how clients flatten groups), else the name.
  */
 function relativePath(path: string, from: string | undefined): string {
-  const at = path.indexOf("__");
-  if (at < 0) return path;
-  const group = path.slice(0, at);
-  return group === from ? path.slice(at + 2) : `${group}_${path.slice(at + 2)}`;
+  if (!path.includes("__")) return path;
+  if (from && path.startsWith(`${from}__`) && !path.slice(from.length + 2).split(".")[0]!.includes("__")) return path.slice(from.length + 2);
+  return path.replaceAll("__", "_");
 }
 
 function relativeSeeds(seeds: unknown, from: string | undefined): unknown {
@@ -162,18 +161,19 @@ function accountEntry(ix: Instruction, name: string, k: ParamKind, programAddres
 /** The instruction's account entries, an account group's fields nested under it: `{ name: "pool", accounts: [...] }`. */
 function nestGroups(ix: Instruction, entry: (a: Instruction["accounts"][number]) => Record<string, unknown>): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
-  let open: { param: string; accounts: Record<string, unknown>[] } | undefined;
+  // The groups open at the current account, outermost first: their paths and entry lists.
+  let open: { path: string[]; accounts: Record<string, unknown>[] }[] = [];
   for (const a of ix.accounts) {
-    if (!a.group) {
-      open = undefined;
-      out.push(entry(a));
-      continue;
+    const path = a.group?.path ?? [];
+    let keep = 0;
+    while (keep < open.length && keep < path.length && open[keep]!.path.join("__") === path.slice(0, keep + 1).join("__")) keep++;
+    open = open.slice(0, keep);
+    for (let i = keep; i < path.length; i++) {
+      const g = { path: path.slice(0, i + 1), accounts: [] as Record<string, unknown>[] };
+      (i === 0 ? out : open[i - 1]!.accounts).push({ name: snakeCase(path[i]!), accounts: g.accounts });
+      open.push(g);
     }
-    if (open?.param !== a.group.param) {
-      open = { param: a.group.param, accounts: [] };
-      out.push({ name: snakeCase(a.group.param), accounts: open.accounts });
-    }
-    open.accounts.push(entry(a));
+    (open.length ? open[open.length - 1]!.accounts : out).push(entry(a));
   }
   return out;
 }

@@ -66,10 +66,39 @@ describe("account groups (test/fixtures/account-groups.ts)", () => {
     expect(t.errorCode(await withdraw(await t.wallet(), 1n))).toBe(6001); // NotAdmin
   });
 
+  it("nests a group inside a group, with its constraints and seeds relative to the inner group", async () => {
+    const ix = (d.idl as unknown as { instructions: { name: string; accounts: Record<string, unknown>[] }[] }).instructions.find(
+      (i) => i.name === "deposit_via",
+    )!;
+    const outer = ix.accounts[0] as { name: string; accounts: { name: string; accounts?: { name: string; pda?: { seeds: unknown[] } }[] }[] };
+    expect(outer.name).toBe("d");
+    expect(outer.accounts.map((a) => a.name)).toEqual(["p", "user", "from"]);
+    expect(outer.accounts[0]!.accounts!.map((a) => a.name)).toEqual(["pool", "mint", "vault", "token_program", "memo"]);
+    expect(outer.accounts[0]!.accounts![0]!.pda?.seeds.at(-1)).toEqual({ kind: "account", path: "mint" });
+
+    const user = await t.wallet();
+    const from = await t.tokenAccount({ mint, owner: user.address, amount: 50n });
+    const before = (await t.account<{ reserve: bigint }>("Pool", pool))!.reserve;
+    const via = (amount: bigint, extra: Record<string, unknown> = {}) =>
+      t.send(
+        user,
+        t.ix(
+          "depositVia",
+          { amount },
+          { d_p_pool: pool, d_p_mint: mint, d_p_vault: vault, d_p_token_program: TOKEN, d_p_memo: null, d_user: user, d_from: from, ...extra },
+        ),
+      );
+    t.ok(await via(20n));
+    expect((await t.account<{ reserve: bigint }>("Pool", pool))!.reserve).toBe(before + 20n);
+    expect(t.errorCode(await via(0n))).toBe(6000);
+    expect(t.errorCode(await via(1n, { d_p_vault: await t.tokenAccount({ mint, owner: pool }) }))).toBe(2001);
+  });
+
   it("generates a client whose input flattens the group", () => {
     const { source } = generateClient(d.idl as never);
     expect(source).toMatch(/pPool\??: /);
     expect(source).toMatch(/pVault\??: /);
+    expect(source).toMatch(/dPVault\??: /); // a group inside a group
   });
 
   it("refuses a group used as a value, an optional group and non-account fields", () => {
@@ -79,7 +108,12 @@ describe("account groups (test/fixtures/account-groups.ts)", () => {
     expect(
       compileErrors(`import { type Mint, type u64 } from "typesol";\nexport interface G { mint: Mint; n: u64 }\nexport function f(g: G): void {}`),
     ).toMatch(/G is an account group: every field is an account/);
+    expect(compileErrors(`import { type Mint } from "typesol";\nexport interface G { mint: Mint; again: G }\nexport function f(g: G): void {}`)).toMatch(
+      /G contains itself/,
+    );
     expect(compileErrors(head + `function h(g: G): void {}\nexport function f(g: G): void { h(g); }`)).toMatch(/helpers take its accounts one by one/);
-    expect(compileErrors(head + `export interface H { inner: G; mint: Mint }\nexport function f(h: H): void {}`)).toMatch(/do not nest yet/);
+    expect(compileErrors(head + `export interface H { inner: G; mint: Mint }\nexport function f(h: H): void { const x = h.inner; }`)).toMatch(
+      /"h.inner" is a group of accounts/,
+    );
   });
 });
