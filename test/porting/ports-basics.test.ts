@@ -58,7 +58,7 @@ describe("port: basics/counter", () => {
     expect(count()).toBe("2");
     // A second initialize on the same account is refused.
     d.svm.expireBlockhash();
-    expect(customError(await init(true))).toBe(3000);
+    expect(customError(await init(true))).toBe(0); // AccountAlreadyInUse, as under Anchor
   });
 });
 

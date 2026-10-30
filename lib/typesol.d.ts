@@ -29,6 +29,8 @@ export type i128 = bigint;
 export interface Pubkey {
   readonly __pubkey: unique symbol;
   equals(other: Pubkey): boolean;
+  /** Rust's order on the 32 bytes (lexicographic): -1, 0 or 1. `a.compare(b) < 0n` is Rust's `a < b`. */
+  compare(other: Pubkey): i64;
 }
 
 /**
@@ -394,6 +396,17 @@ export interface TokenMetadataProgram extends AccountMeta {
 export declare function masterEditionAddress(mint: Pubkey): Pubkey;
 /** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
+/** The bump of that canonical program address (`Pubkey::find_program_address(seeds, program).1`), to sign with it. */
+export declare function findProgramAddressBump(seeds: Seed[], program: Pubkey): u8;
+/** This program's address (`crate::ID`). */
+export declare function programId(): Pubkey;
+/**
+ * Anchor's `AccountLoader::load_init` on an account the instruction created itself (`systemProgram.createAccount`, or
+ * `allocate` + `assign` on a pre-funded address): it must be owned by this program (3007), writable (3006), hold the
+ * struct (3003) and have no discriminator yet (3000). The discriminator is written and the data is returned to fill.
+ * Takes a `Mut<AccountInfo>` parameter or a remaining account.
+ */
+export declare function initAccount<T>(account: AccountMeta | RemainingAccount): T;
 /** The Metaplex metadata account address of a mint. */
 export declare function metadataAddress(mint: Pubkey): Pubkey;
 
@@ -575,7 +588,7 @@ export type InitIfNeeded<T> = T extends TokenAccount
        * associated token account when it does not exist yet, with `payer` funding rent; true when it created it now.
        * An existing account must be that ATA, of that mint and owner.
        */
-      createIfNeeded(payer: Mut<Signer>): boolean;
+      createIfNeeded(payer: Mut<Signer>, tokenProgram?: TokenProgram | Token2022Program | TokenInterface): boolean;
       /**
        * Anchor `init_if_needed` + `token::…`: create it as `create(payer, seeds, mint, authority)` does unless it exists;
        * an existing one must be that PDA, a token account of `mint` owned by `authority`. True when it created it now.
@@ -1347,7 +1360,7 @@ export type Init<T> = T extends TokenAccount
        * In `Ata<Init<TokenAccount>, "owner", "mint">` (Anchor `init` + `associated_token`): create the associated token
        * account of those parameters, with `payer` funding rent. Fails if it already exists.
        */
-      create(payer: Mut<Signer>): void;
+      create(payer: Mut<Signer>, tokenProgram?: TokenProgram | Token2022Program | TokenInterface): void;
       /**
        * Anchor `init` + `token::mint` / `token::authority`: create a token account of `mint` owned by `authority`, at the
        * PDA of `seeds` (or, with `null`, a new keypair account that signs), under the instruction's token program, with
@@ -1446,6 +1459,10 @@ export interface SystemProgram extends AccountMeta {
    * `Mut<Signer>` keypair, or a PDA of this program when you pass its `signerSeeds` (with the bump).
    */
   createAccount(payer: Mut<Signer>, account: AccountMeta, lamports: u64, space: u64, owner: Pubkey, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** System Allocate: give `account` `space` bytes of data. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
+  allocate(account: AccountMeta, space: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** System Assign: make `owner` the account's owner. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
+  assign(account: AccountMeta, owner: Pubkey, signerSeeds?: Seed[] | SignerSeeds): void;
 }
 
 /**

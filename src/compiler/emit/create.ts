@@ -428,7 +428,8 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     const call = `${target.name}.${ifNeeded ? "createIfNeeded" : "create"}`;
     if (!topLevel) this.fail(node, `${call}(...) must be a top-level statement of the instruction`);
     if (this.created.has(target.name)) this.fail(node, `${target.name} is already created`);
-    if (node.arguments.length !== 1) this.fail(node, `${call}(payer) takes the payer`);
+    if (node.arguments.length !== 1 && node.arguments.length !== 2)
+      this.fail(node, `${call}(payer, tokenProgram?) takes the payer and, with several token programs, the one to use`);
     const payer = this.accountParam(node.arguments[0], "the payer");
     if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(node.arguments[0], "the payer must be a Mut<Signer>");
     const need = (kind: string, what: string) => {
@@ -439,11 +440,22 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     };
     const ataProgram = need("ataProgram", "an AssociatedTokenProgram");
     const system = need("system", "a SystemProgram");
-    const tokenProgram = need("tokenProgram", "a token program (TokenProgram, Token2022Program or TokenInterface)");
-    // The address is derived under the token program: with two, which one the mint uses is not known here.
-    const tokenPrograms = this.ix!.accounts.filter((o) => o.kind.kind === "tokenProgram");
-    if (tokenPrograms.length > 1)
-      this.fail(node, `${call}(...) needs exactly one token program parameter (found ${tokenPrograms.map((o) => o.name).join(", ")}); use TokenInterface`);
+    // The address is derived under the token program: the one passed (Anchor's associated_token::token_program), or the
+    // instruction's only one.
+    let tokenProgram: AccountParam;
+    if (node.arguments[1]) {
+      tokenProgram = this.accountParam(node.arguments[1], "the token program");
+      if (tokenProgram.kind.kind !== "tokenProgram") this.fail(node.arguments[1], "pass a TokenProgram, Token2022Program or TokenInterface parameter");
+      if (tokenProgram.optional) this.fail(node.arguments[1], `${call}(...) needs "${tokenProgram.name}": it cannot be optional`);
+    } else {
+      tokenProgram = need("tokenProgram", "a token program (TokenProgram, Token2022Program or TokenInterface)");
+      const tokenPrograms = this.ix!.accounts.filter((o) => o.kind.kind === "tokenProgram");
+      if (tokenPrograms.length > 1)
+        this.fail(
+          node,
+          `${call}(...) needs to know the token program: pass it, ${call}(payer, ${tokenPrograms[0]!.name}) (found ${tokenPrograms.map((o) => o.name).join(", ")})`,
+        );
+    }
     const { owner, mint } = target.constraints.ata!;
     const a = `a_${target.name}`;
     const create = `TS_TRY(ts_ata_create(params, a_${ataProgram.name}, a_${payer.name}, ${a}, a_${owner}, a_${mint}, a_${system.name}, a_${tokenProgram.name}, false));`;
@@ -510,6 +522,25 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
       len,
       seeds,
     );
+    return undefined;
+  }
+
+  /** systemProgram.allocate(account, space, signerSeeds?) / systemProgram.assign(account, owner, signerSeeds?). */
+  protected allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined {
+    const a = node.arguments;
+    if (a.length !== 2 && a.length !== 3) this.fail(node, `${method}(account, ${method === "allocate" ? "space" : "owner"}, signerSeeds?)`);
+    const acct = this.accountParam(a[0], "the account");
+    if (!isWritable(acct.kind)) this.fail(a[0], `the account must be writable (Mut<Signer> or Mut<AccountInfo>)`);
+    if (acct.kind.kind !== "signer" && a.length !== 3) this.fail(a[0], "the account must sign: a Mut<Signer> keypair, or pass signerSeeds for a PDA");
+    const { buf, len, put, finish } = this.byteBuffer("sys", 36, "TS_ERR_INSTRUCTION_DATA", "system instruction");
+    const tag = this.tmp("tag");
+    this.line(`uint32_t ${tag} = ${method === "allocate" ? 8 : 1}; /* ${method === "allocate" ? "Allocate" : "Assign"} */`);
+    put(`&${tag}`, "4", 4);
+    if (method === "allocate") this.serialize(this.expect(this.expr(a[1], U64), U64, a[1]), a[1], put);
+    else this.serialize(this.expect(this.expr(a[1], PUBKEY), PUBKEY, a[1]), a[1], put);
+    finish(node);
+    const seeds = a.length === 3 ? this.signingSeeds(a[2]) : { name: "NULL", count: 0 };
+    this.cpi(`a_${system.name}`, [[`a_${acct.name}`, true, true]], buf, len, seeds);
     return undefined;
   }
 }

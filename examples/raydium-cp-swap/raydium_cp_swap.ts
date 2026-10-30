@@ -7,7 +7,11 @@
 import {
   type Account,
   type AccountInfo,
+  type AssociatedTokenProgram,
+  type Ata,
   type Init,
+  type MintOf,
+  type TokenOf,
   type Address,
   type Mint,
   type Mut,
@@ -24,9 +28,18 @@ import {
   constraint,
   currentEpoch,
   emit,
+  extensionsWithin,
+  findProgramAddress,
+  findProgramAddressBump,
+  initAccount,
+  isqrt,
+  loadAccount,
+  log,
   now,
+  programId,
   pubkey,
   remainingAccounts,
+  rentExempt,
   require,
   signer,
   transferFee,
@@ -38,7 +51,7 @@ import {
   u128,
 } from "typesol";
 import { FEE_RATE_DENOMINATOR_VALUE, curveSwapBaseInput, curveSwapBaseOutput, lpTokensToTradingTokens } from "./curve";
-import { type AmmConfig, type LpChangeEvent, type ObservationState, type PoolState, type SwapEvent, ErrorCode } from "./state";
+import { type AmmConfig, type LpChangeEvent, type ObservationState, type PoolState, type SupportMintAssociated, type SwapEvent, ErrorCode } from "./state";
 
 /** The admin (mainnet), the only signer of the configuration instructions. */
 const ADMIN = pubkey("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
@@ -231,6 +244,140 @@ export function updateAmmConfig(owner: Signer, amm_config: Mut<AmmConfig>, param
 export function updatePoolStatus(authority: Address<Signer, "GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ">, pool_state: Mut<PoolState>, status: u8): void {
   pool_state.status = status;
   pool_state.recent_epoch = currentEpoch();
+}
+
+// ---- pools -----------------------------------------------------------------------------------------------------------
+
+/**
+ * Create a pool of two mints (token_0 < token_1) with its first liquidity. The pool account is the PDA
+ * ["pool", amm_config, token_0_mint, token_1_mint] or any keypair that signs, created here; the LP mint, the creator's
+ * LP account and the observation account are created first, as Anchor's `init` does before the body.
+ */
+export function initialize(
+  creator: Mut<Signer>,
+  amm_config: Account<AmmConfig>,
+  authority: Seeds<AccountInfo, ["vault_and_lp_mint_auth_seed"]>,
+  pool_state: Mut<AccountInfo>,
+  token_0_mint: MintOf<Mint, never, never, "token_0_program">,
+  token_1_mint: MintOf<Mint, never, never, "token_1_program">,
+  lp_mint: Init<Mint>,
+  creator_token_0: TokenOf<Mut<TokenAccount>, "token_0_mint", "creator">,
+  creator_token_1: TokenOf<Mut<TokenAccount>, "token_1_mint", "creator">,
+  creator_lp_token: Ata<Init<TokenAccount>, "creator", "lp_mint">,
+  token_0_vault: Init<TokenAccount>,
+  token_1_vault: Init<TokenAccount>,
+  create_pool_fee: Address<Mut<TokenAccount>, "DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8">,
+  observation_state: Init<ObservationState>,
+  token_program: TokenProgram,
+  token_0_program: TokenInterface,
+  token_1_program: TokenInterface,
+  associated_token_program: AssociatedTokenProgram,
+  system_program: SystemProgram,
+  rent: AccountInfo,
+  init_amount_0: u64,
+  init_amount_1: u64,
+  open_time: u64,
+): void {
+  constraint(token_0_mint, token_0_mint.key.compare(token_1_mint.key) < 0n);
+  constraint(rent, rent.key === pubkey("SysvarRent111111111111111111111111111111111"), AnchorError.AccountSysvarMismatch);
+  lp_mint.create(creator, ["pool_lp_mint", pool_state.key], 9n, authority.key, null, token_program);
+  creator_lp_token.create(creator, token_program);
+  observation_state.create(creator, ["observation", pool_state.key]);
+
+  // A Token-2022 mint is supported when its extensions are all ones the pool handles, or the admin listed it
+  // (a SupportMintAssociated account among the remaining accounts).
+  const rest = remainingAccounts();
+  let listed_0 = false;
+  let listed_1 = false;
+  if (rest.length > 0n) {
+    const expect_0 = findProgramAddress(["support_mint", token_0_mint.key], programId());
+    for (let i = 0n; i < rest.length; i++) {
+      const r = rest.get(i);
+      if (r.owner !== programId() || r.key !== expect_0) continue;
+      const listed = loadAccount<SupportMintAssociated>(r);
+      if (listed.mint === token_0_mint.key) {
+        listed_0 = true;
+        break;
+      }
+    }
+    const expect_1 = findProgramAddress(["support_mint", token_1_mint.key], programId());
+    for (let i = 0n; i < rest.length; i++) {
+      const r = rest.get(i);
+      if (r.owner !== programId() || r.key !== expect_1) continue;
+      const listed = loadAccount<SupportMintAssociated>(r);
+      if (listed.mint === token_1_mint.key) {
+        listed_1 = true;
+        break;
+      }
+    }
+  }
+  const supported_0 = token_0_mint.tokenProgram === TOKEN_PROGRAM_ID || listed_0 || extensionsWithin(token_0_mint, [1n, 18n, 19n, 10n, 25n]);
+  const supported_1 = token_1_mint.tokenProgram === TOKEN_PROGRAM_ID || listed_1 || extensionsWithin(token_1_mint, [1n, 18n, 19n, 10n, 25n]);
+  require(supported_0 && supported_1, ErrorCode.NotSupportMint);
+  require(!amm_config.disable_create_pool, ErrorCode.NotApproved);
+  const block_timestamp = u64(now());
+  const opens = open_time <= block_timestamp ? block_timestamp + 1n : open_time;
+
+  token_0_vault.create(creator, ["pool_vault", pool_state.key, token_0_mint.key], token_0_mint, authority.key, token_0_program);
+  token_1_vault.create(creator, ["pool_vault", pool_state.key, token_1_mint.key], token_1_mint, authority.key, token_1_program);
+
+  // The pool account: owned by the System Program until now, at its PDA or a keypair that signed.
+  require(pool_state.owner === pubkey("11111111111111111111111111111111"), ErrorCode.NotApproved);
+  const pool_bump = findProgramAddressBump(["pool", amm_config.key, token_0_mint.key, token_1_mint.key], programId());
+  if (pool_state.key !== findProgramAddress(["pool", amm_config.key, token_0_mint.key, token_1_mint.key], programId()))
+    require(pool_state.isSigner, AnchorError.RequireEqViolated);
+  const space = 637n;
+  if (pool_state.lamports === 0n)
+    system_program.createAccount(creator, pool_state, rentExempt(space), space, programId(), [
+      "pool",
+      amm_config.key,
+      token_0_mint.key,
+      token_1_mint.key,
+      pool_bump,
+    ]);
+  else {
+    let required = rentExempt(space);
+    if (required === 0n) required = 1n;
+    if (required > pool_state.lamports) system_program.transfer(creator, pool_state, required - pool_state.lamports);
+    system_program.allocate(pool_state, space, ["pool", amm_config.key, token_0_mint.key, token_1_mint.key, pool_bump]);
+    system_program.assign(pool_state, programId(), ["pool", amm_config.key, token_0_mint.key, token_1_mint.key, pool_bump]);
+  }
+  const pool = initAccount<PoolState>(pool_state);
+  observation_state.pool_id = pool_state.key;
+
+  if (init_amount_0 !== 0n) token_0_program.transferChecked(creator_token_0, token_0_mint, token_0_vault, creator, init_amount_0);
+  if (init_amount_1 !== 0n) token_1_program.transferChecked(creator_token_1, token_1_mint, token_1_vault, creator, init_amount_1);
+  const vault_0 = token_0_vault.amount;
+  const vault_1 = token_1_vault.amount;
+  require(vault_0 !== 0n && vault_1 !== 0n, ErrorCode.EmptySupply);
+  const liquidity = u64(isqrt(u128(vault_0) * u128(vault_1)));
+  log(`liquidity:${liquidity}, lock_lp_amount:100, vault_0_amount:${vault_0},vault_1_amount:${vault_1}`);
+  require(liquidity >= 100n, ErrorCode.InitLpAmountTooLess);
+  token_program.mintTo(lp_mint, creator_lp_token, authority, liquidity - 100n, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+  // The fee to create a pool, in wrapped SOL.
+  if (amm_config.create_pool_fee !== 0n) {
+    system_program.transfer(creator, create_pool_fee, amm_config.create_pool_fee);
+    token_program.syncNative(create_pool_fee);
+  }
+  pool.auth_bump = authority.pdaBump;
+  pool.lp_supply = liquidity;
+  pool.open_time = opens;
+  pool.pool_creator = creator.key;
+  pool.amm_config = amm_config.key;
+  pool.token_0_vault = token_0_vault.key;
+  pool.token_1_vault = token_1_vault.key;
+  pool.lp_mint = lp_mint.key;
+  pool.token_0_mint = token_0_mint.key;
+  pool.token_1_mint = token_1_mint.key;
+  pool.token_0_program = token_0_mint.tokenProgram;
+  pool.token_1_program = token_1_mint.tokenProgram;
+  pool.observation_key = observation_state.key;
+  pool.lp_mint_decimals = 9n;
+  pool.mint_0_decimals = token_0_mint.decimals;
+  pool.mint_1_decimals = token_1_mint.decimals;
+  pool.recent_epoch = currentEpoch();
+  pool.creator_fee_on = 0n;
+  pool.enable_creator_fee = false;
 }
 
 // ---- liquidity -------------------------------------------------------------------------------------------------------

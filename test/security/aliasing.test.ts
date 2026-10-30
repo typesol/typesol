@@ -101,7 +101,7 @@ describe("an associated token account with two token program parameters", () => 
         head +
           `export function go(payer: Mut<Signer>, mint: Mint, vault: Ata<Init<TokenAccount>, "payer", "mint">, ata: AssociatedTokenProgram, tokenProgram: TokenProgram, token2022Program: Token2022Program, systemProgram: SystemProgram): void {\n  vault.create(payer);\n}\n`,
       ),
-    ).toMatch(/needs exactly one token program parameter \(found tokenProgram, token2022Program\)/);
+    ).toMatch(/needs to know the token program: pass it, vault\.create\(payer, tokenProgram\) \(found tokenProgram, token2022Program\)/);
     expect(
       compileErrors(
         head +

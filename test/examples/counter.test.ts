@@ -48,7 +48,7 @@ describe("examples/counter.ts", () => {
     const init = (target = counter) =>
       ix(d, "initialize", {}, [{ address: bob.address, signer: bob, writable: true }, { address: target, writable: true }, { address: SYSTEM_PROGRAM }]);
     expectOk(await send(svm, bob, [init()]));
-    expect(customError(await send(svm, bob, [init()]))).toBe(3000);
+    expect(customError(await send(svm, bob, [init()]))).toBe(0); // the System Program's AccountAlreadyInUse, as under Anchor
 
     const [someoneElses] = await pda(d.programId, ["counter", (await fundedSigner(svm)).address]);
     expect(customError(await send(svm, bob, [init(someoneElses)]))).toBe(2006);
