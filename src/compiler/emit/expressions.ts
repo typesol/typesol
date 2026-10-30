@@ -781,13 +781,17 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         break;
       case K.AsteriskToken:
         // u64: skips the 128-bit __multi3 call when both factors fit in 32 bits (see ts_mul_overflow_u64).
-        this.line(`if (${type.name === "u64" ? "ts_mul_overflow_u64" : "__builtin_mul_overflow"}(${left.c}, ${right.c}, &${t})) ${overflow};`);
+        // u128: the native 64-bit multiply when both factors fit in 64 bits (see ts_mul_overflow_u128).
+        this.line(
+          `if (${type.name === "u64" ? "ts_mul_overflow_u64" : type.name === "u128" ? "ts_mul_overflow_u128" : "__builtin_mul_overflow"}(${left.c}, ${right.c}, &${t})) ${overflow};`,
+        );
         break;
       case K.SlashToken:
       case K.PercentToken: {
         this.line(`if (${right.c} == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");`);
         if (INT_INFO[type.name].signed) this.line(`if (${left.c} == ${intLiteral(INT_INFO[type.name].min, type.name)} && ${right.c} == -1) ${overflow};`);
-        this.line(`${t} = ${left.c} ${op === K.SlashToken ? "/" : "%"} ${right.c};`);
+        if (type.name === "u128") this.line(`${t} = ${op === K.SlashToken ? "ts_div_u128" : "ts_rem_u128"}(${left.c}, ${right.c});`);
+        else this.line(`${t} = ${left.c} ${op === K.SlashToken ? "/" : "%"} ${right.c};`);
         break;
       }
       case K.AmpersandToken:

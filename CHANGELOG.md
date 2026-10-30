@@ -15,6 +15,9 @@ Raydium CP-Swap's pool creation, and what creating accounts by hand needs.
 - Changed: an `Init` create on an address already in use now fails as Anchor's `init` does, with the System Program's
   AccountAlreadyInUse (custom 0) instead of TypeSOL's 3000; a payer that is the account being created fails with 4101
   (TryingToInitPayerAsProgramAccount). Programs creating accounts use 9–13 fewer compute units; binaries move by ±1%.
+- Faster: u128 multiplication, division and remainder take the native 64-bit instructions when the values fit in 64
+  bits (most amounts and rates) instead of the 128-bit library routines: Raydium CP-Swap's swap drops from 7,478 to
+  6,062 compute units; results are unchanged (the arithmetic fuzzer now samples such values a third of the time).
 - Changed: examples/raydium-cp-swap ports `initialize` too (10 of 24 instructions; 70 transactions against mainnet).
 
 ## 0.31.0 — 2026-10-30

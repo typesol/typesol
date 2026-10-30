@@ -161,6 +161,30 @@ static inline __attribute__((always_inline)) bool ts_mul_overflow_u64(uint64_t a
   return __builtin_mul_overflow(a, b, out);
 }
 
+/*
+ * u128 arithmetic: the 128-bit library routines (__muloti4, __udivti3) cost hundreds of CU on SBF. Values that fit in
+ * 64 bits (most amounts and rates) take the native 64-bit instructions instead; the results are the same.
+ */
+static inline __attribute__((always_inline)) bool ts_mul_overflow_u128(unsigned __int128 a, unsigned __int128 b, unsigned __int128 *out) {
+  if (((a | b) >> 32) == 0) {
+    *out = (uint64_t)a * (uint64_t)b;
+    return false;
+  }
+  if (((a | b) >> 64) == 0) {
+    *out = (unsigned __int128)(uint64_t)a * (uint64_t)b; /* below 2^128: cannot overflow */
+    return false;
+  }
+  return __builtin_mul_overflow(a, b, out);
+}
+static inline __attribute__((always_inline)) unsigned __int128 ts_div_u128(unsigned __int128 a, unsigned __int128 b) {
+  if (((a | b) >> 64) == 0) return (uint64_t)a / (uint64_t)b;
+  return a / b;
+}
+static inline __attribute__((always_inline)) unsigned __int128 ts_rem_u128(unsigned __int128 a, unsigned __int128 b) {
+  if (((a | b) >> 64) == 0) return (uint64_t)a % (uint64_t)b;
+  return a % b;
+}
+
 /* ---- Well-known program ids --------------------------------------------- */
 static const SolPubkey TS_SYSTEM_PROGRAM_ID = {{0}};
 /* TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA */
