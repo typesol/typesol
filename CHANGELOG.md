@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.38.0 — 2026-11-01
+
+Raydium CLMM ported in full, and Jito's three MEV programs ported, each checked against its mainnet binary. The
+compiler gained what the Jito programs needed: stored bumps in nested struct fields, Anchor's names for arguments
+that share an account's name, and error members without messages. Programs that use none of these compile to the
+same binaries as in 0.37.0.
+
 - Examples: examples/raydium-clmm now ports all 37 of Raydium CLMM's instructions. Added: the customizable pools,
   the v1 and v2 positions with Metaplex NFTs, `close_position`, `swap` and the multi-hop `swap_router_base_in`, the
   five limit order instructions, the reward instructions, and the admin instructions (configs, operators, dynamic fee
