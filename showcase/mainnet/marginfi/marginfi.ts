@@ -2,8 +2,8 @@
 // MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA), Copyright mrgnlabs, licensed under the Apache License, Version 2.0
 // (https://www.apache.org/licenses/LICENSE-2.0). Changes: rewritten in TypeSOL; this file holds the instructions ported
 // so far: group and bank administration, oracles, accounts, deposits, withdrawals, borrows, repayments, fees, health
-// pulses, liquidation records, bankruptcy, classic and receivership liquidation and deleverage (see
-// docs/case-study-marginfi.md for what is and is not).
+// pulses, liquidation records, bankruptcy, classic and receivership liquidation, deleverage and flash loans
+// (see docs/case-study-marginfi.md for what is and is not).
 //
 // A lending protocol: groups of banks, one per mint, whose deposits earn what borrowers pay on a seven-point interest
 // curve; the group, insurance and program take fees from the borrowing rate.
@@ -2317,6 +2317,81 @@ export function updateDeleverageWithdrawals(
   require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
   marginfi_group.deleverage_withdraw_last_admin_update_slot = event_end_slot;
   marginfi_group.deleverage_withdraw_last_admin_update_seq = update_seq;
+}
+
+// ---- flash loans ---------------------------------------------------------------------------------------------------
+
+const IX_END_FLASHLOAN: u64 = 11243239327675284585n;
+
+/**
+ * Start a flash loan (the account's authority): until `lending_account_end_flashloan` at `end_index`, which must
+ * name this account first, the account's withdrawals and borrows skip their health checks. Top-level only.
+ */
+export function lendingAccountStartFlashloan(
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "authority", MarginfiError.Unauthorized>,
+  authority: Signer,
+  ixs_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  end_index: u64,
+): void {
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags &
+      (ACCOUNT_IN_FLASHLOAN | ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_DISABLED | ACCOUNT_FROZEN | ACCOUNT_IN_ORDER_EXECUTION)) ===
+      0n,
+    MarginfiError.IllegalFlashloan,
+  );
+  const current = ixs_sysvar.currentIndex();
+  require(ixs_sysvar.get(current).programId === programId(), MarginfiError.NotAllowedInCPI);
+  require(current < end_index, MarginfiError.IllegalFlashloan);
+  require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
+  // Past the transaction's last instruction the original fails reading it (InvalidArgument, not a custom code).
+  const end = ixs_sysvar.get(end_index);
+  // Under 8 bytes of data the original panics slicing the discriminator.
+  require(end.dataLength >= 8n, MarginfiError.InternalLogicError);
+  require(end.readU64(0n) === IX_END_FLASHLOAN, MarginfiError.IllegalFlashloan);
+  require(end.programId === programId(), MarginfiError.IllegalFlashloan);
+  require(end.accountsLength > 0n, MarginfiError.IllegalFlashloan);
+  require(end.accountKey(0n) === marginfi_account.key, MarginfiError.IllegalFlashloan);
+  marginfi_account.account_flags |= ACCOUNT_IN_FLASHLOAN;
+}
+
+/**
+ * End a flash loan (the account's authority): the account's Initial health as after a withdrawal (its banks and
+ * oracles follow), its tag cleared when healthy at Maintenance, its premium rates (every collateral priced when it
+ * owes a premium-active bank), the circuit breaker's gate while it owes anything.
+ */
+export function lendingAccountEndFlashloan(
+  marginfi_account: HasOne<HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, "authority", MarginfiError.Unauthorized>,
+  group: Account<MarginfiGroup>,
+  authority: Signer,
+): void {
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n &&
+      (marginfi_account.account_flags & (ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_DISABLED | ACCOUNT_FROZEN | ACCOUNT_IN_ORDER_EXECUTION)) ===
+        0n,
+    MarginfiError.IllegalFlashloan,
+  );
+  require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
+  marginfi_account.account_flags &= ~ACCOUNT_IN_FLASHLOAN;
+  const t = now();
+  const len = remainingAccounts().length;
+  // check_account_init_health_and_clear_tag (no health cache).
+  const h = healthComponents(marginfi_account, group, remainingAccounts(), 0n, len, REQ_INITIAL, false, true, t);
+  require(h.err === 0n, h.err);
+  require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+  const tiers = riskTiersErr(marginfi_account, remainingAccounts(), 0n, len);
+  require(tiers === 0n, tiers);
+  if (marginfi_account.liquidation_tagged_at !== 0n) {
+    const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, len, REQ_MAINTENANCE, false, false, t);
+    if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
+  }
+  require(!premiumRefreshUnavailable(h), MarginfiError.PremiumSnapshotUnavailable);
+  updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
+  if (hasLiabilities(marginfi_account)) {
+    const gate = cbPriceGate(marginfi_account, remainingAccounts(), 0n, len, t);
+    require(gate === 0n, gate);
+  }
 }
 
 // ---- repayments and fees -------------------------------------------------------------------------------------------
