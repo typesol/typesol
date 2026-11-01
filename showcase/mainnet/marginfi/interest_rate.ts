@@ -2,7 +2,7 @@
 // type-crate/src/types/interest_rate.rs @ c5d440f6): the seven-point curve, the rates and fees it gives at a
 // utilization, and what an accrual over `delta` seconds does to the share values and fee counters. All I80F48
 // (showcase/mainnet/marginfi/i80f48.ts); every checked operation that fails is MathError, where the original's `?` on None is.
-import { type Account, type i128, type u32, type u64, type u8, i128 as toI128, require, u128, u32 as toU32 } from "typesol";
+import { type Account, type i128, type u32, type u64, type u8, i128 as toI128, require, u128, u32 as toU32, u64 as toU64 } from "typesol";
 import { MarginfiError } from "./errors";
 import { I80F48_ONE, I80F48_ZERO, fxAdd, fxDiv, fxFromU64, fxMul } from "./i80f48";
 import { type InterestRateConfig, type MarginfiGroup } from "./state";
@@ -17,17 +17,25 @@ const INTEREST_CURVE_SEVEN_POINT: u8 = 1n;
 /** MarginfiGroup.group_flags: the group pays the program's fees. */
 export const PROGRAM_FEES_ENABLED: u64 = 1n;
 
+/**
+ * u32_to_centi's bits, (util << 48) / u32::MAX truncated, in 64 bits: util << 48 is y << 32 with y = util << 16, and
+ * y << 32 = y × (2^32 − 1) + y, so the quotient is y + y / (2^32 − 1) (under 2^49: no 128-bit division).
+ */
+function centiBits(util: u32): u64 {
+  const y = toU64(util) << 16n;
+  return y + y / 4294967295n;
+}
 /** u32_to_centi: the truncated division util / u32::MAX on the bits. */
 export function u32ToCenti(util: u32): i128 {
-  return (toI128(u128(util)) << 48n) / 4294967295n;
+  return toI128(u128(centiBits(util)));
 }
 /** u32_to_milli: u32_to_centi's bits times 10. */
 export function u32ToMilli(rate: u32): i128 {
-  return u32ToCenti(rate) * 10n;
+  return toI128(u128(centiBits(rate) * 10n));
 }
 /** u32_to_basis: u32_to_centi's bits times 100. */
 export function u32ToBasis(v: u32): i128 {
-  return u32ToCenti(v) * 100n;
+  return toI128(u128(centiBits(v) * 100n));
 }
 /** clamp(v, 0, max) / max × u32::MAX, truncated (milli_to_u32 with max 10, centi 1, basis 100). */
 function toU32Scaled(v: i128, max: i128): u32 {

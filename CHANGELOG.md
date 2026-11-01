@@ -15,6 +15,11 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi decodes its rates' u32 encodings in 64-bit arithmetic (no 128-bit division): accrual 45–73%
+  fewer compute units than the original (was 39–73%), 1,000–4,000 fewer on liquidations and bank configuration. The
+  receivership and deleverage tests now send the banks in the order the instructions between start and end leave
+  them, so their successful cases succeed on every run; the costs in docs/case-study-marginfi.md are re-measured
+  (receiverships 30–40% fewer, not 29–45%).
 - Examples: Marginfi's deleverage, which completes part 4 of the port: `start_deleverage` and `end_deleverage` (the
   risk admin's receivership, any account, health may not fall), `configure_deleverage_withdrawal_limit`,
   `update_deleverage_withdrawals`, `lending_pool_force_tokenless_repay_complete` and `purge_deleverage_balance`.
