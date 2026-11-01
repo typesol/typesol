@@ -730,6 +730,45 @@ export function marginfiPair() {
       ),
       rest,
     );
+  /** start_liquidation; the account's banks (not `readonlyRest`) writable, as the price locks need. */
+  const startLiquidation = (
+    group: Address,
+    account: Address,
+    record: Address,
+    receiver: Address | KeyPairSigner,
+    rest: Address[] = [],
+    opts: { readonlyRest?: Address[]; sysvar?: Address } = {},
+  ): Instruction => {
+    const ix = s.ix("start_liquidation", {}, [
+      { address: account, writable: true },
+      { address: record, writable: true },
+      { address: group },
+      typeof receiver === "string" ? { address: receiver } : { address: receiver.address, signer: receiver },
+      { address: opts.sysvar ?? INSTRUCTIONS },
+    ]);
+    return { ...ix, accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: opts.readonlyRest?.includes(address) ? 0 : 1 }) as never)] };
+  };
+  /** end_liquidation; `rest` is one writable bank per balance. */
+  const endLiquidation = (
+    group: Address,
+    account: Address,
+    record: Address,
+    receiver: KeyPairSigner,
+    rest: Address[] = [],
+    opts: { feePayer?: KeyPairSigner; wallet?: Address; readonlyRest?: Address[] } = {},
+  ): Instruction => {
+    const ix = s.ix("end_liquidation", {}, [
+      { address: account, writable: true },
+      { address: record, writable: true },
+      { address: group },
+      { address: receiver.address, signer: receiver, writable: true },
+      { address: feeState },
+      { address: opts.wallet ?? feeWallet, writable: true },
+      { address: SYSTEM },
+      opts.feePayer ? { address: opts.feePayer.address, signer: opts.feePayer, writable: true } : { address: PROGRAM },
+    ]);
+    return { ...ix, accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: opts.readonlyRest?.includes(address) ? 0 : 1 }) as never)] };
+  };
   const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
 
@@ -749,6 +788,8 @@ export function marginfiPair() {
     tagLiqRecord,
     handleBankruptcy,
     liquidate,
+    startLiquidation,
+    endLiquidation,
     createAta,
     repay,
     ata,

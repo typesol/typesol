@@ -1045,6 +1045,122 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await liq("a fixed-price debt", g, r2, usdc, gold, 100_000_000n, { after: [usdc, gold, sol] });
   });
 
+  it("liquidates in receivership as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    await user([
+      [usdc, 500_000_000_000n],
+      [sol, 500_000_000_000n],
+    ]);
+    const banksOf = (u: User) => healthAccounts(u.account, [], true).filter((a) => banks.some((b) => b.address === a));
+    /** An account with 10 SOL against 1,400 USDC (liquidatable), its liquidation record, a receiver with tokens. */
+    const setup = async (debt = 1_400n, collateral = 10_000_000_000n) => {
+      const e = await user([[sol, collateral]]);
+      owe(e.account, usdc, debt * 1_000_000n * ONE);
+      const payer = await s.funded();
+      const [record] = await pda(PROGRAM, ["liq_record", e.account]);
+      await run(
+        "record",
+        payer,
+        [
+          s.ix("marginfi_account_init_liq_record", {}, [
+            { address: e.account, writable: true },
+            { address: payer.address, signer: payer, writable: true },
+            { address: record, writable: true },
+            { address: SYSTEM },
+          ]),
+        ],
+        [e.account, record],
+      );
+      const r = await user([]);
+      return { e, record, r };
+    };
+    type Rx = {
+      seize?: bigint;
+      repay?: bigint;
+      repayAll?: boolean;
+      before?: Instruction[];
+      middle?: Instruction[];
+      start?: boolean;
+      end?: boolean;
+      receiver?: KeyPairSigner;
+      endBy?: KeyPairSigner;
+      record?: Address;
+      readonlyRest?: Address[];
+      feePayer?: KeyPairSigner;
+      failing?: boolean | "if-panics";
+    };
+    /** [start, withdraw `seize` SOL, repay `repay` USDC, end] in one transaction, the receiver signing. */
+    const rx = (label: string, c: Awaited<ReturnType<typeof setup>>, o: Rx = {}) => {
+      refresh();
+      const receiver = o.receiver ?? c.r.owner;
+      const rest = healthAccounts(c.e.account, [], true);
+      const ixs: Instruction[] = [...(o.before ?? [])];
+      if (o.start ?? true) ixs.push(h.startLiquidation(group.address, c.e.account, o.record ?? c.record, receiver, rest, { readonlyRest: o.readonlyRest }));
+      if (o.seize) ixs.push(h.withdraw(group.address, c.e.account, receiver, sol, c.r.wallets.get(sol.address)!, o.seize, { rest }));
+      if (o.repay || o.repayAll)
+        ixs.push(
+          h.repay(group.address, c.e.account, receiver, usdc.address, c.r.wallets.get(usdc.address)!, usdc.v.liquidity, o.repay ?? 0n, {
+            all: o.repayAll ?? null,
+          }),
+        );
+      ixs.push(...(o.middle ?? []));
+      if (o.end ?? true)
+        ixs.push(
+          h.endLiquidation(group.address, c.e.account, c.record, o.endBy ?? receiver, banksOf(c.e), { feePayer: o.feePayer, readonlyRest: o.readonlyRest }),
+        );
+      return run(
+        `receivership: ${label}`,
+        receiver,
+        ixs,
+        [c.e.account, c.record, sol.address, usdc.address, sol.v.liquidity, usdc.v.liquidity, h.feeWallet, receiver.address],
+        o.failing ?? false,
+      );
+    };
+    const a = await setup();
+    tick();
+    await rx("seize 1 SOL, repay 140 USDC", a, { seize: 1_000_000_000n, repay: 140_000_000n });
+    await rx("again", a, { seize: 1_000_000_000n, repay: 140_000_000n });
+    await rx("seize without repaying", a, { seize: 1_000_000_000n });
+    await rx("too much premium", a, { seize: 1_000_000_000n, repay: 100_000_000n });
+    await rx("repay only", a, { repay: 50_000_000n });
+    await rx("nothing in between", a);
+    await rx("not the last instruction", a, { seize: 100_000_000n, repay: 20_000_000n, end: false });
+    await rx("not the first instruction", a, {
+      before: [h.repay(group.address, a.e.account, a.e.owner, usdc.address, a.e.wallets.get(usdc.address)!, usdc.v.liquidity, 1_000_000n)],
+    });
+    await rx("started twice", a, {
+      middle: [h.startLiquidation(group.address, a.e.account, a.record, a.r.owner, healthAccounts(a.e.account, [], true))],
+    });
+    await rx("a borrow in between", a, {
+      middle: [
+        h.borrow(group.address, a.e.account, a.r.owner, usdc, a.r.wallets.get(usdc.address)!, 1_000_000n, { rest: healthAccounts(a.e.account, [], true) }),
+      ],
+    });
+    await rx("a bank written by another instruction", a, { seize: 100_000_000n, repay: 20_000_000n, readonlyRest: [sol.address] });
+    await rx("a bank not writable", a, { repay: 20_000_000n, readonlyRest: [sol.address] });
+    const other = await s.funded();
+    await rx("ended by someone else", a, { seize: 100_000_000n, repay: 20_000_000n, endBy: other });
+    await rx("the end alone", a, { start: false });
+    await rx("a separate fee payer", a, { seize: 100_000_000n, repay: 20_000_000n, feePayer: other });
+    const b = await setup();
+    await rx("another account's record", a, { record: b.record });
+    // A healthy account cannot be put in receivership.
+    const fine = await setup(100n);
+    await rx("healthy account", fine, { seize: 100_000_000n, repay: 20_000_000n });
+    // Under $5 of collateral: the receiver may leave the account healthy (a close-out).
+    const small = await setup(5n, 20_000_000n);
+    await rx("a close-out under $5", small, { seize: 19_000_000n, repayAll: true });
+    // A halted bank refuses everyone.
+    editBank(usdc.address, [["config.operational_state", 6n, 1]]);
+    await rx("circuit-broken bank", b, { seize: 100_000_000n, repay: 20_000_000n });
+    editBank(usdc.address, [["config.operational_state", 1n, 1]]);
+    // A tagged account: the premium grows with the time since the tag.
+    await run("tag", admin, [h.tagLiqRecord(b.e.account, group.address, healthAccounts(b.e.account, [], true))], [b.e.account]);
+    tick(3n * 86_400n);
+    await rx("tagged three days ago, a larger premium", b, { seize: 1_000_000_000n, repay: 110_000_000n });
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());

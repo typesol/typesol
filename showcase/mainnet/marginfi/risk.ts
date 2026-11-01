@@ -21,6 +21,7 @@ import {
   type u8,
   fixedArray,
   loadAccount,
+  loadAccountMut,
   programId,
   readData,
   require,
@@ -28,9 +29,26 @@ import {
   u8 as toU8,
 } from "typesol";
 import { ACCOUNT_IN_FLASHLOAN, EMPTY_BALANCE_THRESHOLD, ZERO_KEY, claimPremium, writeOffPremium } from "./account";
-import { BANK_SAME_ASSET_EMODE_ELIGIBLE, CIRCUIT_BREAKER_ENABLED, PREMIUM_ACTIVE, cbPriceGateErr } from "./bank";
+import { BANK_SAME_ASSET_EMODE_ELIGIBLE, CIRCUIT_BREAKER_ENABLED, LIQ_CACHE_LOCKED_FLAG, PREMIUM_ACTIVE, cbPriceGateErr, saturatingSubI64 } from "./bank";
 import { MarginfiError } from "./errors";
-import { type Fx, I80F48_ONE, I80F48_ZERO, exp10Fx, fxFromU64, fxMul, fxSub, fxToF64Bits, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
+import {
+  type Fx,
+  I80F48_ONE,
+  I80F48_ZERO,
+  exp10Fx,
+  fxAdd,
+  fxFromI64,
+  fxFromU64,
+  fxMul,
+  fxSub,
+  fxToF64Bits,
+  fxTryAdd,
+  fxTryDiv,
+  fxTryMul,
+  fxTrySub,
+  fxWrappingDiv,
+  fxWrappingMul,
+} from "./i80f48";
 import { SECONDS_PER_YEAR, milliToU32, u32ToBasis, u32ToMilli } from "./interest_rate";
 import {
   BIAS_HIGH,
@@ -175,7 +193,15 @@ export interface Reconciled {
  * every config, its least favorable weight and flags); with same-asset leverage on, liabilities that all price one
  * asset through one feed give their collateral twin the weight `liability weight × (1 − 1 / leverage)`.
  */
-export function reconcileEmode(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, end: u64, req: u8): Reconciled {
+export function reconcileEmode(
+  acc: Account<MarginfiAccount>,
+  group: Account<MarginfiGroup>,
+  rest: RemainingAccounts,
+  start: u64,
+  end: u64,
+  req: u8,
+  cached: boolean,
+): Reconciled {
   let leverage = I80F48_ZERO;
   if (req === REQ_INITIAL) leverage = u32ToBasis(group.same_asset_emode_init_leverage);
   else if (req === REQ_MAINTENANCE) leverage = u32ToBasis(group.same_asset_emode_maint_leverage);
@@ -202,9 +228,12 @@ export function reconcileEmode(acc: Account<MarginfiAccount>, group: Account<Mar
     if (k >= end || loaderErr(rest.get(k)) !== 0n) break;
     const bank = loadAccount<Bank>(rest.get(k));
     if (bank.key !== b.bank_pk) break;
-    const per = accountsPerBank(bank);
-    if (per.err !== 0n) break;
-    at += per.n;
+    if (cached) at += 1n;
+    else {
+      const per = accountsPerBank(bank);
+      if (per.err !== 0n) break;
+      at += per.n;
+    }
     if (b.liability_shares.value < EMPTY_BALANCE_THRESHOLD) continue;
     if (leverageOn && !invalid) {
       // update_reconciled_same_asset_config: integration pricing never establishes the liability side.
@@ -275,8 +304,7 @@ export function reconcileEmode(acc: Account<MarginfiAccount>, group: Account<Mar
   let previous: u16 = 0n;
   for (let o = 0n; o < mn; o++) {
     let best = 10n;
-    for (let m = 0n; m < mn; m++)
-      if (mc.get(m) === configs && mt.get(m) > previous && (best === 10n || mt.get(m) < mt.get(best))) best = m;
+    for (let m = 0n; m < mn; m++) if (mc.get(m) === configs && mt.get(m) > previous && (best === 10n || mt.get(m) < mt.get(best))) best = m;
     if (best === 10n) break;
     tags.set(count, mt.get(best));
     flags.set(count, mf.get(best));
@@ -362,7 +390,7 @@ function initDiscount(bank: Account<Bank>, price: i128): Fx {
  * nothing for Initial (its price still taken for the premium scratch); a failed oracle skips the leg for Initial (its
  * code recorded) and fails the others; else the low-biased price × the weight (cut by the deposit cap for Initial).
  */
-export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, shares: i128, needPremium: boolean): Leg {
+export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, shares: i128, needPremium: boolean, record: boolean): Leg {
   if (bank.config.risk_tier === RiskTier.Isolated) return { err: 0n, value: 0n, price: 0n, premium: 0n, code: 0n };
   const realTime = req === REQ_MAINTENANCE;
   const state = bank.config.operational_state;
@@ -379,7 +407,7 @@ export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, s
     return { err: f.err === ERR_BORSH ? 6000n : f.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   }
   let w = assetWeight(bank, req, r);
-  const lower = priceOfType(f, realTime, BIAS_LOW, bank.config.oracle_max_confidence);
+  const lower = record ? biased(f, realTime, bank.config.oracle_max_confidence, false) : priceOfType(f, realTime, BIAS_LOW, bank.config.oracle_max_confidence);
   if (lower.err !== 0n) return { err: lower.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   if (req === REQ_INITIAL) {
     const d = initDiscount(bank, lower.v);
@@ -398,17 +426,45 @@ export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, s
 }
 
 /** calc_weighted_liab_value_standalone: a failed oracle fails it; else the high-biased price × the liability weight. */
-export function liabilityLeg(bank: Account<Bank>, f: Feed, req: u8, shares: i128): Leg {
+export function liabilityLeg(bank: Account<Bank>, f: Feed, req: u8, shares: i128, record: boolean): Leg {
   // A runtime error that is not a custom code becomes `InvalidOracleSetup as u32` (the variant's index, 25), which
   // MarginfiError::from does not know: InternalLogicError.
   if (f.err !== 0n) return { err: f.err === ERR_BORSH ? 6000n : f.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const higher = priceOfType(f, req === REQ_MAINTENANCE, BIAS_HIGH, bank.config.oracle_max_confidence);
+  const higher = record
+    ? biased(f, req === REQ_MAINTENANCE, bank.config.oracle_max_confidence, true)
+    : priceOfType(f, req === REQ_MAINTENANCE, BIAS_HIGH, bank.config.oracle_max_confidence);
   if (higher.err !== 0n) return { err: higher.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   const amount = fxTryMul(shares, bank.liability_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   const v = calcValue(amount.v, higher.v, bank.mint_decimals, liabilityWeight(bank, req), true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: higher.v, premium: 0n, code: 0n };
+}
+
+/** The price as a liquidation price cache records it (confidence first), then biased (apply_price_bias). */
+function biased(f: Feed, realTime: boolean, maxConfidence: u32, high: boolean): Fx {
+  const pc = priceAndConfidence(f, realTime, maxConfidence);
+  if (pc.err !== 0n) return { err: pc.err, v: 0n };
+  return high ? fxTryAdd(pc.price, pc.conf) : fxTrySub(pc.price, pc.conf);
+}
+
+/**
+ * calc_weighted_value_cached_for_balance: the prices start_liquidation locked into the bank (real-time for
+ * Maintenance, time-weighted otherwise), biased; an isolated bank's collateral worth nothing. Only Maintenance and
+ * Equity reach it (the Initial-only branches are not ported).
+ */
+function cachedLeg(bank: Account<Bank>, req: u8, r: Reconciled, side: u8, assets: i128, liabs: i128): Leg {
+  if (side === 0n || (side === 1n && bank.config.risk_tier === RiskTier.Isolated)) return { err: 0n, value: 0n, price: 0n, premium: 0n, code: 0n };
+  const rt = req === REQ_MAINTENANCE;
+  const price = rt ? bank.cache.liquidation_price_rt.value : bank.cache.liquidation_price_twap.value;
+  const conf = rt ? bank.cache.liquidation_price_rt_confidence.value : bank.cache.liquidation_price_twap_confidence.value;
+  const p = side === 1n ? fxTrySub(price, conf) : fxTryAdd(price, conf);
+  if (p.err !== 0n) return { err: p.err, value: 0n, price: 0n, premium: 0n, code: 0n };
+  const amount = side === 1n ? fxTryMul(assets, bank.asset_share_value.value) : fxTryMul(liabs, bank.liability_share_value.value);
+  if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
+  const v = calcValue(amount.v, p.v, bank.mint_decimals, side === 1n ? assetWeight(bank, req, r) : liabilityWeight(bank, req), true);
+  if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
+  return { err: 0n, value: v.v, price: p.v, premium: p.v, code: 0n };
 }
 
 /** accrued_premium_total: the receivable plus simple interest at the snapshot rate since the last claim. */
@@ -464,6 +520,7 @@ export function healthComponents(
   start: u64,
   end: u64,
   req: u8,
+  record: boolean,
   scratch: boolean,
   t: i64,
 ): Health {
@@ -487,7 +544,7 @@ export function healthComponents(
     h.err = 6037n;
     return h;
   }
-  const r = reconcileEmode(acc, group, rest, start, end, req);
+  const r = reconcileEmode(acc, group, rest, start, end, req, false);
   const pricePremium = group.premium_settings.entry_count > 0n;
   const emodePossible = req === REQ_MAINTENANCE && (r.count > 0n || r.same);
   let collateralSeen = false;
@@ -535,9 +592,9 @@ export function healthComponents(
     if (unpriceable) unpriceableLeg = true;
     const leg: Leg =
       side === 1n
-        ? assetLeg(bank, f, req, r, assets, needPremium)
+        ? assetLeg(bank, f, req, r, assets, needPremium, record)
         : side === 2n
-          ? liabilityLeg(bank, f, req, liabs)
+          ? liabilityLeg(bank, f, req, liabs, record)
           : { err: 0n, value: I80F48_ZERO, price: I80F48_ZERO, premium: I80F48_ZERO, code: 0n };
     if (leg.err !== 0n) {
       h.err = leg.err;
@@ -556,7 +613,10 @@ export function healthComponents(
     let premium = I80F48_ZERO;
     if ((bank.flags & PREMIUM_ACTIVE) !== 0n && side === 2n) {
       const debt = fxTryMul(liabs, bank.liability_share_value.value);
-      const total = debt.err !== 0n ? debt : accruedPremium(debt.v, b.premium_rate_snapshot, b.premium_outstanding.value, premiumElapsed(b.last_update, bank.premium_activated_at, now));
+      const total =
+        debt.err !== 0n
+          ? debt
+          : accruedPremium(debt.v, b.premium_rate_snapshot, b.premium_outstanding.value, premiumElapsed(b.last_update, bank.premium_activated_at, now));
       if (total.err !== 0n) {
         h.err = total.err;
         return h;
@@ -627,6 +687,171 @@ export function healthComponents(
     pos += 1n;
   }
   if (scratch) h.s_complete = !unpriceableLeg;
+  h.emode_boosted = collateralSeen && !unboosted;
+  return h;
+}
+
+/**
+ * get_health_components in Cached mode (end_liquidation): one bank per active balance, priced at what
+ * start_liquidation locked into it; the premium scratch weighs collateral at that price too.
+ */
+export function cachedHealthComponents(
+  acc: Account<MarginfiAccount>,
+  group: Account<MarginfiGroup>,
+  rest: RemainingAccounts,
+  start: u64,
+  end: u64,
+  req: u8,
+  scratch: boolean,
+  t: i64,
+): Health {
+  const h: Health = {
+    err: 0n,
+    assets: I80F48_ZERO,
+    liabs: I80F48_ZERO,
+    err_index: NO_INDEX,
+    internal_err: 0n,
+    prices: fixedArray<u64, 16>(0n),
+    emode_boosted: false,
+    s_count: 0n,
+    s_complete: false,
+    s_value: fixedArray<i128, 16>(0n),
+    s_activated: fixedArray<i64, 16>(0n),
+    s_tag: fixedArray<u16, 16>(0n),
+    s_index: fixedArray<u8, 16>(0n),
+    s_flags: fixedArray<u8, 16>(0n),
+  };
+  if ((acc.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n) {
+    h.err = 6037n;
+    return h;
+  }
+  const r = reconcileEmode(acc, group, rest, start, end, req, true);
+  const emodePossible = req === REQ_MAINTENANCE && (r.count > 0n || r.same);
+  let collateralSeen = false;
+  let unboosted = false;
+  const now = toU64(t);
+  const len = end - start;
+  let at = 0n;
+  let pos = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    if (at >= len) {
+      h.err = INVALID_BANK_ACCOUNT;
+      return h;
+    }
+    const loadErr = loaderErr(rest.get(start + at));
+    if (loadErr !== 0n) {
+      h.err = loadErr;
+      return h;
+    }
+    const bank = loadAccount<Bank>(rest.get(start + at));
+    if (bank.key !== b.bank_pk) {
+      h.err = INVALID_BANK_ACCOUNT;
+      return h;
+    }
+    if ((bank.cache.liq_cache_flags & LIQ_CACHE_LOCKED_FLAG) === 0n) {
+      h.err = 6000n;
+      return h;
+    }
+    // Balance::get_side asserts the balance is not both.
+    const assets = b.asset_shares.value;
+    const liabs = b.liability_shares.value;
+    require(assets < EMPTY_BALANCE_THRESHOLD || liabs < EMPTY_BALANCE_THRESHOLD, MarginfiError.InternalLogicError);
+    const side: u8 = liabs >= EMPTY_BALANCE_THRESHOLD ? 2n : assets >= EMPTY_BALANCE_THRESHOLD ? 1n : 0n;
+    const countable = bank.config.risk_tier !== RiskTier.Isolated && bank.config.asset_weight_maint.value > I80F48_ZERO;
+    const leg = cachedLeg(bank, req, r, side, assets, liabs);
+    if (leg.err !== 0n) {
+      h.err = leg.err;
+      return h;
+    }
+    if (emodePossible && assets >= EMPTY_BALANCE_THRESHOLD) {
+      collateralSeen = true;
+      if (assetWeight(bank, req, r) <= bankAssetWeight(bank, req)) unboosted = true;
+    }
+    if (leg.code !== 0n && h.err_index === NO_INDEX) {
+      h.err_index = toU8(pos);
+      h.internal_err = leg.code;
+    }
+    if (req === REQ_INITIAL) h.prices.set(pos, fxToF64Bits(leg.price));
+    // premium_liability_value: the receivable a premium-active liability projects, weighted like the debt.
+    let premium = I80F48_ZERO;
+    if ((bank.flags & PREMIUM_ACTIVE) !== 0n && side === 2n) {
+      const debt = fxTryMul(liabs, bank.liability_share_value.value);
+      const total =
+        debt.err !== 0n
+          ? debt
+          : accruedPremium(debt.v, b.premium_rate_snapshot, b.premium_outstanding.value, premiumElapsed(b.last_update, bank.premium_activated_at, now));
+      if (total.err !== 0n) {
+        h.err = total.err;
+        return h;
+      }
+      if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
+        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, req), true);
+        if (v.err !== 0n) {
+          h.err = v.err;
+          return h;
+        }
+        premium = v.v;
+      }
+    }
+    // collect_premium_scratch_entry
+    if (scratch && side !== 0n) {
+      let value = I80F48_ZERO;
+      let flags: u8 = 0n;
+      let activated: i64 = 0n;
+      if (side === 1n) {
+        if (leg.premium > I80F48_ZERO && countable) {
+          const amount = fxTryMul(assets, bank.asset_share_value.value);
+          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, bank.mint_decimals, I80F48_ZERO, false);
+          if (usd.err !== 0n) {
+            h.err = usd.err;
+            return h;
+          }
+          value = usd.v;
+        }
+        flags = SCRATCH_ASSET;
+      } else {
+        const debt = fxTryMul(liabs, bank.liability_share_value.value);
+        if (debt.err !== 0n) {
+          h.err = debt.err;
+          return h;
+        }
+        value = debt.v;
+        activated = bank.premium_activated_at;
+        flags = (bank.flags & PREMIUM_ACTIVE) !== 0n ? SCRATCH_LIABILITY | SCRATCH_PREMIUM_ACTIVE : SCRATCH_LIABILITY;
+      }
+      const n = toU64(h.s_count);
+      if (n < 16n) {
+        h.s_value.set(n, value);
+        h.s_activated.set(n, activated);
+        h.s_tag.set(n, bank.premium_tag);
+        h.s_index.set(n, toU8(i));
+        h.s_flags.set(n, flags);
+        h.s_count += 1n;
+      }
+    }
+    const a = fxTryAdd(h.assets, side === 1n ? leg.value : I80F48_ZERO);
+    if (a.err !== 0n) {
+      h.err = a.err;
+      return h;
+    }
+    const l1 = fxTryAdd(h.liabs, side === 2n ? leg.value : I80F48_ZERO);
+    if (l1.err !== 0n) {
+      h.err = l1.err;
+      return h;
+    }
+    const l2 = fxTryAdd(l1.v, premium);
+    if (l2.err !== 0n) {
+      h.err = l2.err;
+      return h;
+    }
+    h.assets = a.v;
+    h.liabs = l2.v;
+    at += 1n;
+    pos += 1n;
+  }
+  if (scratch) h.s_complete = true;
   h.emode_boosted = collateralSeen && !unboosted;
   return h;
 }
@@ -929,7 +1154,7 @@ export interface Totals {
  * prices, assets less liabilities; the caller decides what a healthy account means.
  */
 export function preLiquidation(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, end: u64, t: i64): Totals {
-  const m = healthComponents(acc, group, rest, start, end, REQ_MAINTENANCE, false, t);
+  const m = healthComponents(acc, group, rest, start, end, REQ_MAINTENANCE, false, false, t);
   if (m.err !== 0n) return { err: m.err, health: 0n, assets: 0n, liabs: 0n };
   const health = fxTrySub(m.assets, m.liabs);
   return { err: health.err, health: health.v, assets: m.assets, liabs: m.liabs };
@@ -943,7 +1168,7 @@ export const BANKRUPT_THRESHOLD: i128 = 28147497671066n;
  * under 0.1 in assets (AccountNotBankrupt otherwise).
  */
 export function bankruptcy(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, end: u64, t: i64): Totals {
-  const q = healthComponents(acc, group, rest, start, end, REQ_EQUITY, false, t);
+  const q = healthComponents(acc, group, rest, start, end, REQ_EQUITY, false, false, t);
   if (q.err !== 0n) return { err: q.err, health: 0n, assets: 0n, liabs: 0n };
   const bankrupt = q.liabs > I80F48_ZERO && q.assets < BANKRUPT_THRESHOLD && q.liabs > q.assets;
   return { err: bankrupt ? 0n : 6013n, health: 0n, assets: q.assets, liabs: q.liabs };
@@ -988,7 +1213,8 @@ export function anyBankHalted(acc: Account<MarginfiAccount>, rest: RemainingAcco
     const bank = loadAccount<Bank>(rest.get(at));
     if (bank.key !== b.bank_pk) return { err: INVALID_BANK_ACCOUNT, n: 0n };
     const on = (bank.flags & CIRCUIT_BREAKER_ENABLED) !== 0n;
-    if ((on && bank.cb_tier > 0n && t < bank.cb_halt_ended_at) || bank.config.operational_state === BankOperationalState.CircuitBroken) return { err: 0n, n: 1n };
+    if ((on && bank.cb_tier > 0n && t < bank.cb_halt_ended_at) || bank.config.operational_state === BankOperationalState.CircuitBroken)
+      return { err: 0n, n: 1n };
     const per = accountsPerBank(bank);
     if (per.err !== 0n) return { err: per.err, n: 0n };
     at += per.n;
@@ -1045,4 +1271,101 @@ export function tagAfterLiquidation(taggedAt: i64, pre: i128, post: i128, preLia
   const erased = fxSub(preDeficit, postDeficit) >= fxMul(preDeficit, TAG_RESET_FRACTION);
   const repaidEnough = preLiabs > I80F48_ZERO && repaid >= fxMul(preLiabs, TAG_RESET_FRACTION);
   return erased || repaidEnough ? t : taggedAt;
+}
+
+/**
+ * BankAccountWithCache::load's stride: one account per bank when the list holds exactly one per active balance,
+ * otherwise each bank's oracle accounts too.
+ */
+function banksOnly(acc: Account<MarginfiAccount>, rest: RemainingAccounts): boolean {
+  let n = 0n;
+  for (let i = 0n; i < 16n; i++) if (acc.lending_account.balances.get(i).active !== 0n) n++;
+  return rest.length === n;
+}
+
+/**
+ * write_liquidation_price_cache_from: each of the account's banks (in balance order) keeps the prices
+ * start_liquidation's two passes took for it, real-time from Maintenance and time-weighted from Equity (0 where its
+ * leg took none: an empty balance, isolated collateral), and its cache is locked. Both passes succeeded over these
+ * accounts and this clock, so reading the feeds again gives exactly what they recorded.
+ */
+export function lockLiquidationPrices(acc: Account<MarginfiAccount>, rest: RemainingAccounts, t: i64): void {
+  const only = banksOnly(acc, rest);
+  let at = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    const bank = loadAccountMut<Bank>(rest.get(at));
+    const per = accountsPerBank(bank);
+    require(per.err === 0n, per.err);
+    const assets = b.asset_shares.value;
+    const liabs = b.liability_shares.value;
+    const priced = liabs >= EMPTY_BALANCE_THRESHOLD || (assets >= EMPTY_BALANCE_THRESHOLD && bank.config.risk_tier !== RiskTier.Isolated);
+    let rt = I80F48_ZERO;
+    let rtConf = I80F48_ZERO;
+    let twap = I80F48_ZERO;
+    let twapConf = I80F48_ZERO;
+    if (priced) {
+      const f = feedAt(bank, rest, at + 1n, per.n - 1n, t);
+      const live = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+      const ema = priceAndConfidence(f, false, bank.config.oracle_max_confidence);
+      rt = live.price;
+      rtConf = live.conf;
+      twap = ema.price;
+      twapConf = ema.conf;
+    }
+    bank.cache.liquidation_price_rt.value = rt;
+    bank.cache.liquidation_price_rt_confidence.value = rtConf;
+    bank.cache.liquidation_price_twap.value = twap;
+    bank.cache.liquidation_price_twap_confidence.value = twapConf;
+    bank.cache.liq_cache_flags |= LIQ_CACHE_LOCKED_FLAG;
+    at += only ? 1n : per.n;
+  }
+}
+
+/**
+ * clear_liquidation_price_cache_locks: BankAccountWithCache::load's walk (InvalidBankAccount, the loader's codes, the
+ * oracle count unless the list is banks only), then each bank's lock cleared.
+ */
+export function clearLiquidationLocks(acc: Account<MarginfiAccount>, rest: RemainingAccounts): void {
+  const only = banksOnly(acc, rest);
+  let at = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    require(at < rest.length, INVALID_BANK_ACCOUNT);
+    const loadErr = loaderErr(rest.get(at));
+    require(loadErr === 0n, loadErr);
+    const bank = loadAccount<Bank>(rest.get(at));
+    let n = 1n;
+    if (!only) {
+      const per = accountsPerBank(bank);
+      require(per.err === 0n, per.err);
+      n = per.n;
+    }
+    require(bank.key === b.bank_pk, INVALID_BANK_ACCOUNT);
+    if (!only) require(rest.length >= at + n, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
+    at += n;
+  }
+  at = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    const bank = loadAccountMut<Bank>(rest.get(at));
+    bank.cache.liq_cache_flags &= ~LIQ_CACHE_LOCKED_FLAG;
+    at += only ? 1n : accountsPerBank(bank).n;
+  }
+}
+
+/**
+ * tag_adjusted_premium: the base premium until an hour after the tag, then growing linearly to 100% at a week (a
+ * premium of 100% or more, or no tag, stays as it is).
+ */
+export function tagAdjustedPremium(base: i128, taggedAt: i64, t: i64): i128 {
+  if (taggedAt === 0n || base >= I80F48_ONE) return base;
+  const elapsed = saturatingSubI64(t, taggedAt);
+  if (elapsed <= 3600n) return base;
+  const growth = (elapsed < 604800n ? elapsed : 604800n) - 3600n;
+  const progress = fxWrappingDiv(fxFromI64(growth), fxFromI64(601200n));
+  return fxAdd(base, fxWrappingMul(fxSub(I80F48_ONE, base), progress));
 }

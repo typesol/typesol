@@ -15,6 +15,12 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's receivership liquidation (part 4 of the port): `start_liquidation` and `end_liquidation`, the
+  account's health and its banks' prices locked at the start and its health at those prices at the end (the premium
+  cap, a close-out under $5, the tag's growing premium, the record's entries, the flat SOL fee), the transaction's
+  instructions checked as the original checks them. Against the binary on mainnet: 847 transactions, the same IDL for
+  all 34 ported instructions; the fuzzer runs receiverships too. 29–45% fewer compute units on receivership
+  transactions.
 - Examples: Marginfi's classic liquidation (part 4 of the port): `lending_account_liquidate`, the liquidatee's
   collateral taken at a discount for its debt, the insurance fund's cut sent from the liability bank's vault, the
   liquidatee's tag after it, the liquidator's health over its own accounts and its premium seeded, a halted bank left
