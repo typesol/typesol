@@ -3,12 +3,13 @@
 // fails on, the isolated tier, e-mode, the deposit cap's discount, premiums, the liquidation tag, the circuit breaker's
 // gate, rate limits, receivership and deleverage paths, origination fees, Token-2022. Most debts are written into both
 // programs directly, to set up the withdrawals; the borrows make their own.
+import { createHash } from "node:crypto";
 import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, report } from "./jito-helpers.js";
-import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, U32_MAX, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
 
 type Bank = Awaited<ReturnType<ReturnType<typeof marginfiPair>["addBank"]>>[1];
 
@@ -2432,5 +2433,145 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
       );
     await clone("by someone else", other, false);
     await clone("on the mainnet build", admin, true);
+  });
+  it("places and closes orders as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, {}, 9);
+    const third = await newBank("pyth", 2_000_000n);
+    const fixed = await newBank("fixed", 1_000_000n);
+    await user([[sol, 100_000_000_000n]]);
+    const u = await user([
+      [usdc, 1_000_000_000n],
+      [third, 500_000_000n],
+    ]);
+    tick();
+    await b("for an order", u, sol, 1_000_000_000n);
+    const other = await s.funded();
+    const orderOf = async (account: Address, keys: Address[]) => {
+      const sorted = keys.map(keyBytes).sort(Buffer.compare);
+      const hash = createHash("sha256").update(Buffer.concat(sorted)).digest();
+      return (await pda(PROGRAM, ["order", account, new Uint8Array(hash)]))[0];
+    };
+    const sl = (threshold: bigint, slip = U32_MAX / 100n) => ({ StopLoss: { threshold: fx(threshold), max_slippage: Number(slip) } });
+    const tp = (threshold: bigint, slip = U32_MAX / 100n) => ({ TakeProfit: { threshold: fx(threshold), max_slippage: Number(slip) } });
+    const both = (stop: bigint, take: bigint, slip = U32_MAX / 100n) => ({
+      Both: { stop_loss: fx(stop), take_profit: fx(take), max_slippage: Number(slip) },
+    });
+    const place = async (label: string, by: KeyPairSigner, account: Address, keys: Address[], trigger: unknown) => {
+      const order = await orderOf(account, keys);
+      return run(
+        `place order: ${label}`,
+        by,
+        [
+          s.ix("marginfi_account_place_order", { bank_keys: keys.map((k) => new web3.PublicKey(k)), trigger }, [
+            { address: group.address },
+            { address: account, writable: true },
+            { address: other.address, signer: other, writable: true },
+            { address: by.address, signer: by },
+            { address: order, writable: true },
+            { address: h.feeState },
+            { address: h.feeWallet, writable: true },
+            { address: SYSTEM },
+          ] as never),
+        ],
+        [account, order, h.feeWallet, other.address],
+      );
+    };
+    const a = u.account;
+    await place("one bank", u.owner, a, [usdc.address], sl(ONE));
+    await place("one bank twice", u.owner, a, [usdc.address, usdc.address], sl(ONE));
+    await place("three banks", u.owner, a, [usdc.address, sol.address, third.address], sl(ONE));
+    await place("by someone else", other, a, [usdc.address, sol.address], sl(ONE));
+    await place("a bank without a balance", u.owner, a, [usdc.address, fixed.address], sl(ONE));
+    await place("two assets", u.owner, a, [usdc.address, third.address], sl(ONE));
+    await place("a zero stop loss", u.owner, a, [usdc.address, sol.address], sl(0n));
+    await place("a take profit under the stop loss", u.owner, a, [usdc.address, sol.address], both(500n * ONE, 400n * ONE));
+    await place("too much slippage", u.owner, a, [usdc.address, sol.address], tp(500n * ONE, U32_MAX / 10n + 1n));
+    await place("a stop loss", u.owner, a, [usdc.address, sol.address], sl(700n * ONE, U32_MAX / 10n));
+    await place("the same pair again", u.owner, a, [sol.address, usdc.address], tp(900n * ONE));
+    h.edit("FeeState")(h.feeState, [["order_init_flat_sol_fee", 25_000n, 4]]);
+    await place("a take profit, with the flat fee", u.owner, a, [sol.address, third.address], tp(900n * ONE));
+    h.edit("FeeState")(h.feeState, [["order_init_flat_sol_fee", 0n, 4]]);
+    await place("both, the other way round", u.owner, a, [third.address, sol.address], both(100n * ONE, 900n * ONE));
+    const flags = data(a).readBigUInt64LE(offsetOf("MarginfiAccount", "account_flags"));
+    editAccount(a, [["account_flags", flags | 2n, 8]]);
+    await place("in a flash loan", u.owner, a, [usdc.address, third.address], sl(ONE));
+    editAccount(a, [["account_flags", flags, 8]]);
+    // A second account whose balances are not sorted: the balance search runs over them as the original's does.
+    const v = await user([
+      [third, 100_000_000n],
+      [usdc, 300_000_000n],
+      [fixed, 1_000n],
+    ]);
+    // A debt written into a free slot, as deposits leave them: in no particular order of bank keys.
+    owe(v.account, sol, 500_000_000n * ONE);
+    for (const k of [usdc, third, fixed]) await place(`each pair: ${k.kind}`, v.owner, v.account, [k.address, sol.address], sl(ONE));
+    // Untagging (the authority): some banks, or all; then a keeper may close the orders left without their balances.
+    const untag = (label: string, by: KeyPairSigner, account: Address, keys: Address[] | null) =>
+      run(
+        `keeper close flags: ${label}`,
+        by,
+        [
+          s.ix("marginfi_account_set_keeper_close_flags", { bank_keys_opt: keys && keys.map((k) => new web3.PublicKey(k)) }, [
+            { address: group.address },
+            { address: account, writable: true },
+            { address: by.address, signer: by },
+          ] as never),
+        ],
+        [account],
+      );
+    const keeperClose = async (label: string, account: Address, keys: Address[]) => {
+      const order = await orderOf(account, keys);
+      return run(
+        `keeper close order: ${label}`,
+        other,
+        [
+          s.ix("marginfi_account_keeper_close_order", {}, [
+            { address: account, writable: true },
+            { address: other.address, writable: true },
+            { address: order, writable: true },
+          ] as never),
+        ],
+        [account, order, other.address],
+      );
+    };
+    await keeperClose("both balances tagged", a, [usdc.address, sol.address]);
+    await untag("by someone else", other, a, [usdc.address]);
+    await untag("a bank not held", u.owner, a, [fixed.address]);
+    await untag("usdc", u.owner, a, [usdc.address]);
+    await keeperClose("usdc untagged", a, [usdc.address, sol.address]);
+    await keeperClose("already closed", a, [usdc.address, sol.address]);
+    await place("both, the pair's order gone", u.owner, a, [usdc.address, sol.address], both(100n * ONE, 900n * ONE));
+    await keeperClose("another account's order", v.account, [third.address, sol.address]);
+    await untag("none given: all", v.owner, v.account, null);
+    await untag("an empty list", v.owner, v.account, []);
+    await keeperClose("all untagged", v.account, [third.address, sol.address]);
+    // Closing (the authority or the governance admin): the rent to whom they name.
+    const close = async (label: string, by: KeyPairSigner, account: Address, keys: Address[], orderAccount?: Address) => {
+      const order = await orderOf(orderAccount ?? account, keys);
+      return run(
+        `close order: ${label}`,
+        by,
+        [
+          s.ix("marginfi_account_close_order", {}, [
+            { address: group.address },
+            { address: account, writable: true },
+            { address: by.address, signer: by },
+            { address: order, writable: true },
+            { address: other.address, writable: true },
+            { address: SYSTEM },
+          ] as never),
+        ],
+        [account, order, other.address],
+      );
+    };
+    await close("by someone else", other, a, [sol.address, third.address]);
+    await close("another account's order", u.owner, a, [usdc.address, sol.address], v.account);
+    await close("by its authority", u.owner, a, [sol.address, third.address]);
+    await close("again", u.owner, a, [sol.address, third.address]);
+    // An account closed under its order: anyone may close the order.
+    for (const vm of s.vms())
+      vm.setAccount({ address: v.account, data: new Uint8Array(0), executable: false, lamports: lamports(0n), programAddress: SYSTEM, space: 0n });
+    await keeperClose("its account closed", v.account, [fixed.address, sol.address]);
   });
 });

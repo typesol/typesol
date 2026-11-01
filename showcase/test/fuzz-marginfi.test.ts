@@ -7,6 +7,7 @@
 // Borrows are not ported yet: the fuzzer writes a bank's asset and liability shares into both, then accrues. Oracles
 // are Pyth and Switchboard accounts it writes into both, their prices a random walk with jumps; withdrawals run the
 // risk engine over them. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
+import { createHash } from "node:crypto";
 import { type Address, type KeyPairSigner } from "@solana/kit";
 import { describe, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
@@ -206,7 +207,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(36)) {
+      switch (rng.int(38)) {
         case 0:
         case 1:
         case 2: {
@@ -978,6 +979,72 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
             [b, bank.v.liquidity, from],
             "if-panics",
           );
+          break;
+        }
+        case 36:
+        case 37: {
+          // Orders: placed on two of an account's balances (now and then another bank, the same twice, a bad
+          // threshold or too much slippage), or its balances untagged (some, or all) for the keeper. Mostly accounts
+          // that owe something, so an asset and a liability are there to take.
+          const acct = borrowers.length && rng.chance(70) ? rng.pick(borrowers) : rng.pick(accounts);
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const held: Address[] = [];
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (hb) held.push(hb.address);
+          }
+          const any = () => (held.length && rng.chance(85) ? rng.pick(held) : rng.pick(banks).address);
+          const by = signer(acct.owner);
+          if (rng.chance(50)) {
+            const keys = rng.chance(5) ? [any()] : [any(), any()];
+            const sorted = keys.map((k) => Buffer.from(new web3.PublicKey(k).toBytes())).sort(Buffer.compare);
+            const [order] = await pda(PROGRAM, ["order", acct.address, new Uint8Array(createHash("sha256").update(Buffer.concat(sorted)).digest())]);
+            const level = () => (rng.chance(5) ? 0n : rng.next() % (1n << 60n));
+            const slip = rng.chance(10) ? rng.next() % (1n << 32n) : rng.next() % 429_496_730n;
+            const kind = rng.int(3);
+            const trigger =
+              kind === 0
+                ? { StopLoss: { threshold: fx(level()), max_slippage: Number(slip) } }
+                : kind === 1
+                  ? { TakeProfit: { threshold: fx(level()), max_slippage: Number(slip) } }
+                  : { Both: { stop_loss: fx(level()), take_profit: fx(level()), max_slippage: Number(slip) } };
+            await run(
+              label("place order"),
+              by,
+              [
+                s.ix("marginfi_account_place_order", { bank_keys: keys.map((k) => new web3.PublicKey(k)), trigger }, [
+                  { address: group.address },
+                  { address: acct.address, writable: true },
+                  { address: by.address, signer: by, writable: true },
+                  { address: by.address, signer: by },
+                  { address: order, writable: true },
+                  { address: h.feeState },
+                  { address: h.feeWallet, writable: true },
+                  { address: SYSTEM },
+                ] as never),
+              ],
+              [acct.address, order, h.feeWallet],
+              "if-panics",
+            );
+          } else {
+            const keys = rng.chance(30) ? null : held.filter(() => rng.chance(50)).concat(rng.chance(10) ? [rng.pick(banks).address] : []);
+            await run(
+              label("keeper close flags"),
+              by,
+              [
+                s.ix("marginfi_account_set_keeper_close_flags", { bank_keys_opt: keys && keys.map((k) => new web3.PublicKey(k)) }, [
+                  { address: group.address },
+                  { address: acct.address, writable: true },
+                  { address: by.address, signer: by },
+                ] as never),
+              ],
+              [acct.address],
+              "if-panics",
+            );
+          }
           break;
         }
         default: {

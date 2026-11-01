@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { discriminator, heapVecOf, snakeCase } from "../analyze.js";
-import { type FieldType, type StructDef, type ValueType, isScalar, isWritable, sameType, typeName } from "../model.js";
+import { type FieldType, type StructDef, type StructField, type ValueType, isScalar, isWritable, sameType, typeName } from "../model.js";
 import { accountLimit, MAX_CPI_DATA, MAX_EVENT, PUBKEY, STRING, type Value, cBytes, valueC, fixedVecC, vecCount } from "./shared.js";
 import { MetaplexEmitter } from "./metaplex.js";
 
@@ -270,8 +270,41 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     type Put = (src: string, n: string, bytes?: number) => void;
     const staged = new Map<string, (put: Put) => void>();
     for (const f of s.fields) if (!given.has(f.name)) this.fail(obj, `missing field "${f.name}" of ${s.name}`);
-    for (const [name, e] of given) {
-      const f = s.fields.find((x) => x.name === name)!;
+    // A field's bytes, staged when its value is evaluated: a nested struct written as a literal is Borsh field by field
+    // (its Options one byte when empty), as Anchor serializes it.
+    const stage = (f: StructField, e: ts.Expression): ((put: Put) => void) => {
+      if (f.type.kind === "struct" && ts.isObjectLiteralExpression(e)) {
+        const sd = this.model.structs.get(f.type.name)!;
+        // Its Options and enums go out as Borsh, so the IDL describes them so; account data or arguments need it fixed.
+        if (sd.fields.some((x) => x.type.kind === "option" || x.type.kind === "dataEnum")) {
+          if (this.fixedLayoutStructs().has(sd.name))
+            this.fail(
+              e,
+              `${sd.name} has Option or enum fields and is account data or an argument (fixed layout there, Borsh in events); declare a separate struct for the event`,
+            );
+          sd.wire = "borsh";
+        }
+        const fields = new Map<string, ts.Expression>();
+        for (const p of e.properties) {
+          if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) fields.set(p.name.text, p.initializer);
+          else if (ts.isShorthandPropertyAssignment(p)) fields.set(p.name.text, p.name);
+          else this.fail(p, "use plain `field: value` entries");
+        }
+        for (const k of fields.keys()) if (!sd.fields.some((x) => x.name === k)) this.fail(e, `${sd.name} has no field "${k}"`);
+        for (const x of sd.fields) if (!fields.has(x.name)) this.fail(e, `missing field "${x.name}" of ${sd.name}`);
+        const parts = new Map<string, (put: Put) => void>();
+        for (const [k, v] of fields)
+          parts.set(
+            k,
+            stage(
+              sd.fields.find((x) => x.name === k)!,
+              v,
+            ),
+          );
+        return (put) => {
+          for (const x of sd.fields) parts.get(x.name)!(put);
+        };
+      }
       if (f.type.kind === "vec" && f.type.cap !== undefined) {
         // A FixedVec keeps its fixed layout, as in account data: u32 length, then room for N elements.
         const ft = f.type;
@@ -280,33 +313,45 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         this.line(`ts_memzero(&${t}, sizeof(${t}));`);
         this.writeAggregate({ lv: t, type: ft, writable: true }, e);
         const n = this.fieldBytes(ft);
-        staged.set(name, (put) => put(`&${t}`, String(n), n));
-        continue;
+        return (put) => put(`&${t}`, String(n), n);
       }
       if (f.type.kind === "vec") {
-        // A Vec is Borsh: u32 length, then the elements, read from a Vec argument or account data when emitted.
+        // A Vec is Borsh: u32 length, then the elements, read from a Vec argument or account data when emitted. An
+        // Option<Vec<T>> puts a tag byte first: null, an Option<Vec<T>> argument (None or Some) or a list (Some).
+        const optional = f.type.optional === true;
+        const tag = (put: Put, some: string) => {
+          const t = this.tmp("vt");
+          this.line(`uint8_t ${t} = ${some};`);
+          put(`&${t}`, "1", 1);
+          return t;
+        };
+        if (optional && e.kind === ts.SyntaxKind.NullKeyword) {
+          return (put) => tag(put, "0");
+        }
         const l = ts.isIdentifier(e) ? this.lookup(e.text) : undefined;
         const r = l?.type.kind === "vecArg" ? undefined : this.ref(e);
         const elemSize = this.fieldBytes(f.type.elem);
         if (l?.type.kind === "vecArg") {
           if (!sameType(l.type.elem, f.type.elem)) this.fail(e, `expected a ${typeName(f.type)}`);
           const c = l.c;
-          staged.set(name, (put) => {
+          const maybe = l.type.optional === true;
+          return (put) => {
+            const some = optional ? tag(put, maybe ? `${c}.ptr != NULL` : "1") : undefined;
             const n = this.tmp("vl");
             this.line(`uint32_t ${n} = (uint32_t)${c}.len;`);
-            put(`&${n}`, "4");
+            put(`&${n}`, some && maybe ? `(${some} ? 4 : 0)` : "4");
             put(`(const uint8_t *)${c}.ptr`, `(uint64_t)${n} * ${elemSize}`);
-          });
+          };
         } else if (r?.vec && r.type.kind === "vec" && sameType(r.type.elem, f.type.elem)) {
           const info = r.vec;
-          staged.set(name, (put) => {
+          return (put) => {
+            if (optional) tag(put, "1");
             const n = this.tmp("vl");
             this.line(`uint32_t ${n} = (uint32_t)${vecCount(info)};`);
             put(`&${n}`, "4");
             put(`(const uint8_t *)${info.items}`, `(uint64_t)${n} * ${elemSize}`);
-          });
-        } else this.fail(e, `expected a ${typeName(f.type)}: a Vec argument or a list in account data`);
-        continue;
+          };
+        } else this.fail(e, `expected a ${typeName(f.type)}: ${optional ? "null, " : ""}a Vec argument or a list in account data`);
       }
       if (f.type.kind === "option" && f.type.inner.kind === "struct") this.fail(obj, "Option<struct> fields are not supported in events yet");
       const vt = f.type.kind === "string" ? STRING : f.type.kind === "option" || isScalar(f.type) ? (f.type as ValueType) : undefined;
@@ -317,29 +362,37 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         if (!src || src.type.kind !== "dataEnum" || src.type.name !== enumName) this.fail(e, `expected a ${enumName}`);
         this.line(`TSE_${enumName} ${t};`);
         this.line(`ts_memcpy(&${t}, &${src.lv}, sizeof(${t}));`);
-        staged.set(name, (put) => this.serializeDataEnumLv(t, enumName, put));
+        return (put) => this.serializeDataEnumLv(t, enumName, put);
       } else if (vt) {
         const v = this.ownedString(this.expect(this.expr(e, vt), vt, e));
         if (vt.kind === "pubkey") this.line(`SolPubkey ${t} = *(${v.c});`);
         else this.line(`${valueC(vt)} ${t} = ${v.c};`);
         const held: Value = { c: vt.kind === "pubkey" ? `(&${t})` : t, type: vt };
-        staged.set(name, (put) => this.serialize(held, e, put));
+        return (put) => this.serialize(held, e, put);
       } else if (f.type.kind === "fstring") {
         // Event FixedString keeps its fixed layout: u32 length + capacity bytes.
         const cap = f.type.cap;
         const v = this.expect(this.expr(e, STRING), STRING, e);
         this.line(`TS_FStr${cap} ${t};`);
         this.line(`TS_TRY(ts_fstr_set((uint8_t *)&${t}, ${cap}, ${v.c}));`);
-        staged.set(name, (put) => put(`&${t}`, String(4 + cap), 4 + cap));
+        return (put) => put(`&${t}`, String(4 + cap), 4 + cap);
       } else {
         const src = this.ref(e);
         if (!src || !sameType(src.type, f.type)) this.fail(e, `expected a ${typeName(f.type)} from account data`);
         const n = this.fieldBytes(f.type);
         this.line(`uint8_t ${t}[${n}];`);
         this.line(`ts_memcpy(${t}, &${src.lv}, ${n});`);
-        staged.set(name, (put) => put(t, String(n), n));
+        return (put) => put(t, String(n), n);
       }
-    }
+    };
+    for (const [name, e] of given)
+      staged.set(
+        name,
+        stage(
+          s.fields.find((x) => x.name === name)!,
+          e,
+        ),
+      );
     this.sendEvent(s, obj, cpi, (put) => {
       for (const f of s.fields) staged.get(f.name)!(put);
     });

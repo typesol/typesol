@@ -80,7 +80,7 @@ export type FieldType =
    * room for N elements. With `heap`, a `Vec<T>` in a `@layout borsh` struct: Anchor's Vec, held on the heap while the
    * instruction runs (`TSH_*`: length, capacity, elements) and bounded only by the account when it is written back.
    */
-  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true };
+  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true; optional?: true };
 
 export interface StructField {
   name: string;
@@ -432,6 +432,7 @@ export function typeName(t: ValueType | FieldType): string {
     case "enumRef":
       return t.name;
     case "vec":
+      if (t.optional) return `Option<Vec<${typeName(t.elem)}>>`;
       return t.cap === undefined ? `Vec<${typeName(t.elem)}>` : `FixedVec<${typeName(t.elem)}, ${t.cap}>`;
     case "vecArg":
       return t.optional ? `Option<Vec<${typeName(t.elem)}>>` : `Vec<${typeName(t.elem)}>`;
@@ -472,7 +473,12 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
     case "option":
       return sameType(a.inner, (b as typeof a).inner);
     case "vec":
-      return a.cap === (b as typeof a).cap && !a.heap === !(b as typeof a).heap && sameType(a.elem, (b as typeof a).elem);
+      return (
+        a.cap === (b as typeof a).cap &&
+        !a.heap === !(b as typeof a).heap &&
+        !a.optional === !(b as typeof a).optional &&
+        sameType(a.elem, (b as typeof a).elem)
+      );
     case "vecArg":
       return !a.optional === !(b as typeof a).optional && sameType(a.elem, (b as typeof a).elem);
     case "arrayArg":

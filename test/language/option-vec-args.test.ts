@@ -1,17 +1,23 @@
-// Option<Vec<T>> instruction arguments (Anchor's `Option<Vec<u8>>`, written `bytes` in the IDL): a Borsh tag byte, then
+// Option<Vec<T>> instruction arguments and event fields (Anchor's `Option<Vec<u8>>`, written `bytes` in the IDL): a Borsh tag byte, then
 // the Vec only when Some; `x !== null` before reading it as a list or passing it to a helper that takes the list.
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { web3 } from "@anchor-lang/core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CompileError, generate } from "../../src/compiler/index.js";
 import { BN, acct, deployFile, expectOk, fundedSigner, ix, pda, send, SYSTEM_PROGRAM, type Deployed } from "../harness.js";
 
-const SOURCE = `import { type FixedArray, type FixedVec, type Init, type Mut, type Option, type Signer, type SystemProgram, type Vec, type u8, type u64 } from "typesol";
+const SOURCE = `import { emit, type FixedArray, type FixedVec, type Init, type Mut, type Option, type Pubkey, type Signer, type SystemProgram, type Vec, type u8, type u64 } from "typesol";
 export interface Pair { a: u64; b: u64 }
 export interface Acc { n: u64; sum: u64; pairs: u64; bytes: FixedArray<u8, 8> }
 export function open(payer: Mut<Signer>, acc: Init<Acc>, system_program: SystemProgram): void {
   acc.create(payer, ["acc"]);
+}
+export interface Header { signer: Option<Pubkey>; n: u64 }
+export interface Keys { header: Header; keys: Option<Vec<Pubkey>>; none: Option<Vec<Pubkey>>; some: Option<Vec<u64>> }
+export function keys(who: Signer, list: Option<Vec<Pubkey>>, plain: Vec<u64>): void {
+  emit<Keys>({ keys: list, none: null, some: plain, header: { n: 5n, signer: list === null ? null : who.key } });
 }
 function hundred(xs: Vec<u8>): u64 {
   return xs.length * 100n;
@@ -31,7 +37,7 @@ export function go(acc: Mut<Acc>, ticker: Option<Vec<u8>>, n: u64, desc: Vec<u8>
 }
 `;
 
-describe("Option<Vec<T>> instruction arguments", () => {
+describe("Option<Vec<T>> instruction arguments and event fields", () => {
   let d: Deployed;
   beforeAll(async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-optvecarg-"));
@@ -50,6 +56,51 @@ describe("Option<Vec<T>> instruction arguments", () => {
       "bytes",
       "bytes",
     ]);
+  });
+
+  it("emits Option<Vec<T>> event fields as Anchor does", async () => {
+    const payer = await fundedSigner(d.svm);
+    expect(d.idl.events?.map((e) => e.name)).toEqual(["Keys"]);
+    expect(d.idl.types?.find((t) => t.name === "Keys")?.type).toEqual({
+      kind: "struct",
+      fields: [
+        { name: "header", type: { defined: { name: "Header" } } },
+        { name: "keys", type: { option: { vec: "pubkey" } } },
+        { name: "none", type: { option: { vec: "pubkey" } } },
+        { name: "some", type: { option: { vec: "u64" } } },
+      ],
+    });
+    const emitted = async (list: unknown) => {
+      const r = expectOk(await send(d.svm, payer, [ix(d, "keys", { list, plain: [new BN(1), new BN(2)] }, [{ address: payer.address, signer: payer }])]));
+      const ev = r
+        .logs()
+        .filter((l) => l.startsWith("Program data: "))
+        .map((l) => d.coder.events.decode(l.slice("Program data: ".length)));
+      return JSON.parse(JSON.stringify(ev[0]!.data));
+    };
+    const k = new web3.PublicKey(payer.address);
+    expect(await emitted([k, k])).toEqual({ header: { signer: k.toBase58(), n: "05" }, keys: [k.toBase58(), k.toBase58()], none: null, some: ["01", "02"] });
+    expect(await emitted(null)).toEqual({ header: { signer: null, n: "05" }, keys: null, none: null, some: ["01", "02"] });
+    expect(await emitted([])).toEqual({ header: { signer: k.toBase58(), n: "05" }, keys: [], none: null, some: ["01", "02"] });
+  });
+
+  it("refuses them outside events", () => {
+    const bad = `import { type Init, type Mut, type Option, type Pubkey, type Signer, type SystemProgram, type Vec } from "typesol";
+export interface Acc { keys: Option<Vec<Pubkey>> }
+export function open(payer: Mut<Signer>, acc: Init<Acc>, system_program: SystemProgram): void {
+  acc.create(payer, ["acc"]);
+}
+`;
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-optvecarg-"));
+    writeFileSync(path.join(dir, "bad.ts"), bad);
+    let messages: string[] = [];
+    try {
+      generate(path.join(dir, "bad.ts"));
+    } catch (e) {
+      if (!(e instanceof CompileError)) throw e;
+      messages = e.diagnostics.map((x) => x.message);
+    }
+    expect(messages.join("\n")).toMatch(/Option<Vec<T>> fields are for events/);
   });
 
   it("reads the list when it is there, and skips it when it is not", async () => {

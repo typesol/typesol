@@ -94,3 +94,13 @@ export interface BankConfigGov {
   tokenless_repayments_allowed: Option<boolean>;
   freeze_settings: Option<boolean>;
 }
+
+/**
+ * OrderTrigger: when an order may run, at the net value (assets minus liabilities, in equity terms) of its two
+ * balances.
+ * @repr c
+ */
+export type OrderTrigger =
+  | { kind: "StopLoss"; threshold: WrappedI80F48; max_slippage: u32 }
+  | { kind: "TakeProfit"; threshold: WrappedI80F48; max_slippage: u32 }
+  | { kind: "Both"; stop_loss: WrappedI80F48; take_profit: WrappedI80F48; max_slippage: u32 };
