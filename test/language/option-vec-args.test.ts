@@ -18,7 +18,9 @@ export interface Header { signer: Option<Pubkey>; n: u64 }
 export interface Keys { header: Header; keys: Option<Vec<Pubkey>>; none: Option<Vec<Pubkey>>; some: Option<Vec<u64>> }
 export function keys(who: Signer, list: Option<Vec<Pubkey>>, plain: Vec<u64>): void {
   emit<Keys>({ keys: list, none: null, some: plain, header: { n: 5n, signer: list === null ? null : who.key } });
+  emit<Mixed>({ list: plain, n: 9n });
 }
+export interface Mixed { list: Vec<u64>; n: u64 }
 function hundred(xs: Vec<u8>): u64 {
   return xs.length * 100n;
 }
@@ -60,7 +62,15 @@ describe("Option<Vec<T>> instruction arguments and event fields", () => {
 
   it("emits Option<Vec<T>> event fields as Anchor does", async () => {
     const payer = await fundedSigner(d.svm);
-    expect(d.idl.events?.map((e) => e.name)).toEqual(["Keys"]);
+    expect(d.idl.events?.map((e) => e.name)).toEqual(["Keys", "Mixed"]);
+    // A Vec declared before a scalar goes out (and is listed) in that order, as Anchor sends it.
+    expect(d.idl.types?.find((t) => t.name === "Mixed")?.type).toEqual({
+      kind: "struct",
+      fields: [
+        { name: "list", type: { vec: "u64" } },
+        { name: "n", type: "u64" },
+      ],
+    });
     expect(d.idl.types?.find((t) => t.name === "Keys")?.type).toEqual({
       kind: "struct",
       fields: [
@@ -76,6 +86,7 @@ describe("Option<Vec<T>> instruction arguments and event fields", () => {
         .logs()
         .filter((l) => l.startsWith("Program data: "))
         .map((l) => d.coder.events.decode(l.slice("Program data: ".length)));
+      expect(JSON.parse(JSON.stringify(ev[1]!.data))).toEqual({ list: ["01", "02"], n: "09" });
       return JSON.parse(JSON.stringify(ev[0]!.data));
     };
     const k = new web3.PublicKey(payer.address);

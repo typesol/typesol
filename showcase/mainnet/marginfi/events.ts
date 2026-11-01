@@ -492,10 +492,7 @@ export interface MarginfiAccountPlaceOrderEvent {
   tags: FixedArray<u16, 2>;
 }
 
-/**
- * MarginfiAccountPlaceRebalanceOrderEvent
- * @layout borsh
- */
+/** MarginfiAccountPlaceRebalanceOrderEvent (a Vec<Pubkey>: written field by field, as SetKeeperCloseFlagsEvent) */
 export interface MarginfiAccountPlaceRebalanceOrderEvent {
   header: AccountEventHeader;
   rebalance_order: Pubkey;
@@ -518,10 +515,7 @@ export interface MarginfiAccountTransferToNewAccount {
   new_account_authority: Pubkey;
 }
 
-/**
- * MarginfiAccountUpdateRebalanceOrderEvent
- * @layout borsh
- */
+/** MarginfiAccountUpdateRebalanceOrderEvent (a Vec<Pubkey>: written field by field) */
 export interface MarginfiAccountUpdateRebalanceOrderEvent {
   header: AccountEventHeader;
   rebalance_order: Pubkey;

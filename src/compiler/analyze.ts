@@ -1234,8 +1234,10 @@ function analyzeStructs(
       for (const f of stored) delete f.node;
       const idlMeta = idlMetaOf(decl, reporter);
       if (idlMeta?.repr && layoutText === "borsh") reporter.fail(decl.name, "@repr describes a zero-copy (fixed layout) struct, not a @layout borsh one");
+      const declared = fields.map((f) => f.name);
       structs.set(name, {
         ...(idlMeta ? { idlMeta } : {}),
+        ...(stored.some((f, i) => f.name !== declared[i]) ? { declared } : {}),
         name,
         fields: stored,
         size: undefined,

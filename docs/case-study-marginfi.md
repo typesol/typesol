@@ -262,7 +262,16 @@ the level to hold), marks the account as executing so the executor may withdraw 
 records every other balance; the end wants the order's liability repaid in full and what is left within the order's
 slippage of the level (a take profit also within the fee state's maximum fee of where it started), every recorded
 balance as it was, the account no less healthy unless it is healthy, then refreshes the health cache and premium
-snapshots and closes the order and the record to whom the executor names. Rebalance orders come next.
+snapshots and closes the order and the record to whom the executor names.
+
+**Part 5, rebalance orders (their keeping).** `marginfi_account_place_rebalance_order` (the authority: the PDA of the
+account and a mint, 2 to 8 allowed banks it deposits into one of and owes none, a minimum improvement, cooldown,
+budget and keeper tip, defaults where not given), `marginfi_account_update_rebalance_order` (each field when given),
+`marginfi_account_close_rebalance_order` (the authority, or anyone once the account holds nothing in the allowed banks
+or is closed; an optional signer), `marginfi_account_top_up_rebalance_fee_pool` (anyone: the account's system PDA,
+its rent reserve first) and `marginfi_account_withdraw_rebalance_fee_pool` (the authority; all of it rather than leave
+it short of the reserve). Their events carry the allowed banks as a Vec, sent in declared order as Anchor does.
+Running them (start and end of a rebalance, settling the tip) needs each bank's supply rate and comes next.
 
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.

@@ -117,6 +117,8 @@ export interface StructDef {
    * Anchor's bytes, where strings, Vecs and Options take only what they hold).
    */
   layout: "fixed" | "borsh";
+  /** The field names as declared, when the fixed layout stores them in another order (growable Vecs last). */
+  declared?: string[];
   /** "borsh": a struct with Options that only travels in instruction data and events: Borsh there, fixed in C. */
   wire?: "borsh";
   /** `/** @repr … *\/` and `/** @serialization … *\/`: what the IDL says of an Anchor zero-copy type (see IdlMeta). */
