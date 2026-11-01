@@ -5,7 +5,7 @@
 // programs directly, to set up the withdrawals; the borrows make their own.
 import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
-import { afterAll, beforeAll, describe, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, report } from "./jito-helpers.js";
 import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
@@ -994,6 +994,39 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     tick();
     await liq("premium settled from the seized collateral", e, r3, sol, usdc, 200_000_000n);
     editBank(sol.address, [["flags", 0n, 8]]);
+    // A liquidator in a flash loan: no health check now. A premium-active debt it takes on that way is raised to the
+    // highest rate configured for its tag.
+    const fl = await user([[gold, 10_000_000_000n]]);
+    editAccount(fl.account, [["account_flags", 2n, 8]]);
+    await liq("liquidator in a flash loan", e, fl, sol, usdc, 50_000_000n, { after: [gold, sol, usdc] });
+    const countAt = offsetOf("MarginfiGroup", "premium_settings.entry_count");
+    const countWas = BigInt(data(group.address).readUInt16LE(countAt));
+    editGroup(group.address, [
+      ["premium_settings.entry_count", 2n, 2],
+      ["premium_entries[0].collateral_tag", 5n, 2],
+      ["premium_entries[0].liability_tag", 9n, 2],
+      ["premium_entries[0].rate", 40_000_000n, 4],
+      ["premium_entries[1].collateral_tag", 6n, 2],
+      ["premium_entries[1].liability_tag", 9n, 2],
+      ["premium_entries[1].rate", 90_000_000n, 4],
+    ]);
+    editBank(usdc.address, [
+      ["flags", 8192n, 8],
+      ["premium_tag", 9n, 2],
+      ["premium_activated_at", t - 50_000n, 8],
+    ]);
+    tick(3600n);
+    await liq("liquidator in a flash loan, a premium-active debt", e, fl, sol, usdc, 50_000_000n, { after: [gold, sol, usdc] });
+    const snapshotAt = offsetOf("MarginfiAccount", `lending_account.balances[${slotOf(fl.account, usdc)}].premium_rate_snapshot`);
+    expect(data(fl.account).readUInt32LE(snapshotAt)).toBe(90_000_000);
+    tick(3600n);
+    await liq("again, the debt's rate already raised", e, fl, sol, usdc, 50_000_000n, { after: [gold, sol, usdc] });
+    editAccount(fl.account, [["account_flags", 0n, 8]]);
+    editBank(usdc.address, [
+      ["flags", 0n, 8],
+      ["premium_tag", 0n, 2],
+    ]);
+    editGroup(group.address, [["premium_settings.entry_count", countWas, 2]]);
     // One liquidation too many: healthy after.
     const near = await user([[sol, 10_000_000_000n]]);
     owe(near.account, usdc, 800n * 1_000_000n * ONE);

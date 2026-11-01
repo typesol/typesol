@@ -238,7 +238,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 380 in
+for the oracles, and 385 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -287,7 +287,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation and the risk engine (380, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation and the risk engine (385, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -314,10 +314,11 @@ byte into both ledgers:
   bank fully covered, a debt past every deposit (the bank killed); in a Token-2022 bank with a transfer fee, and
   without its mint. Liquidations of part of a collateral, a tagged account's (a little, then a quarter of its debt),
   just enough and one too many (healthy after), a fixed-price debt, a Token-2022 debt and one without its mint, by a
-  liquidator owing a premium in the asset bank, by one without collateral of its own, by the risk admin through a
-  halted bank; refused: a zero amount, one bank as both, past the collateral, a bank the account owes nothing, a
-  healthy account, the liquidatee's or the liquidator's accounts left out or miscounted, another signer, the
-  liquidatee as its own liquidator, either in receivership, the liquidatee in a flash loan, a circuit-broken bank,
+  liquidator owing a premium in the asset bank, by one without collateral of its own, by one in a flash loan (a
+  premium-active debt raised to its tag's highest rate), by the risk admin through a halted bank; refused: a zero
+  amount, one bank as both, past the collateral, a bank the account owes nothing, a healthy account, the liquidatee's
+  or the liquidator's accounts left out or miscounted, another signer, the liquidatee as its own liquidator, either
+  in receivership, the liquidatee in a flash loan, a circuit-broken bank,
   the protocol paused.
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
@@ -442,6 +443,6 @@ Across the 125 transactions of the first file that succeed, the port uses 36–9
 refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
 In the oracle file, the 72 that succeed use 47–84% fewer; the 76 refused ones 46–93% fewer. In the risk file, the
 withdrawals that succeed use 38–63% fewer, the borrows 41–47%, the health pulses 15–64% (the least: an empty account,
-where the original does little), a tag 45%, records 69–74%, bankruptcies 44–52%, liquidations 34–37%; refused
+where the original does little), a tag 45%, records 69–74%, bankruptcies 44–52%, liquidations 34–39%; refused
 withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48
 products and quotients, like accrual.

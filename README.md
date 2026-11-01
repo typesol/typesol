@@ -185,7 +185,7 @@ compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) f
 payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–79% fewer
 compute units, up to 95% on refused calls), and [docs/case-study-marginfi.md](docs/case-study-marginfi.md) for
 Marginfi v2 as far as it goes (administration, interest, accounts, deposits, repayments, fees, oracles, the risk
-engine, withdrawals, borrows, health pulses, liquidation records, bankruptcy and classic liquidation: the same on 798 transactions; 34–97% fewer compute units, 34–37% on
+engine, withdrawals, borrows, health pulses, liquidation records, bankruptcy and classic liquidation: the same on 803 transactions; 34–97% fewer compute units, 34–39% on
 liquidations, 15–64% on health pulses). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
