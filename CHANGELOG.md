@@ -23,6 +23,11 @@ codes, and says so here.
   `WrappedI80F48 { value: [u8; 16] }`); `/** @idlName _pad0 */` names a field in the IDL where the source cannot (a
   leading underscore); a `key_` or `lamports_` field is `key` / `lamports` in the IDL. `typesol port` writes these
   tags from the IDL, so a ported zero-copy account's IDL is the original's.
+- Tests: random transactions against the mainnet binaries. `test/verification/fuzz-jito.test.ts` drives Jito's three
+  MEV programs and their ports through random tips, receiver and builder changes, epochs, roots, Merkle claims and
+  closes (with injected faults); Raydium CLMM's differential test adds a random run of swaps, positions and liquidity
+  changes. Every step must match the original (outcome, account bytes, events, log lines), with a new seed on every
+  run, CI's included (`FUZZ_SEED` reproduces one).
 
 ## 0.38.0 — 2026-11-01
 
