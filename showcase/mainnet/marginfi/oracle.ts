@@ -329,7 +329,7 @@ export function loadFeed(bank: Account<Bank>, a: RemainingAccount, t: i64): Feed
  * load_price_update_v2_checked: at least the discriminator, then a Borsh PriceUpdateV2: write authority (32), a
  * verification level (1 = Full, or 0 = Partial and its signature count), the price message (84) and the posted slot.
  */
-function pythAccountErr(a: RemainingAccount): u32 {
+export function pythAccountErr(a: RemainingAccount): u32 {
   if (a.dataLen < 8n || readData<u64>(a, 0n) !== PRICE_UPDATE_V2_DISC) return 6060n;
   if (a.dataLen < 41n) return ERR_BORSH;
   const level = readData<u8>(a, 40n);

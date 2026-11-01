@@ -15,6 +15,7 @@ import {
   AnchorError,
   type Dup,
   type RemainingAccounts,
+  type RemainingAccount,
   type SystemAccount,
   type FixedVec,
   type Address,
@@ -114,7 +115,7 @@ import {
   refreshIndexerFlags,
   clearLendingAccount,
 } from "./account";
-import { type BankConfigCompact, type BankConfigFast, type BankConfigGov, type OrderTrigger } from "./args";
+import { type BankConfigCompact, type BankConfigFast, type BankConfigGov, type OrderTrigger, type StakedSettingsConfig } from "./args";
 import {
   ASSET_TAG_JUPLEND,
   BANK_ASSET_TAG_STAKED,
@@ -131,6 +132,8 @@ import {
   checkSameAssetFee,
   configureBank,
   initBank,
+  initBankFields,
+  setStakedConfig,
   recordDepositInflow,
   recordWithdrawalOutflow,
   socializeLoss,
@@ -220,6 +223,8 @@ import {
   type RebalanceFeePoolWithdrawEvent,
   type RebalanceExecutedEvent,
   type RebalanceTipSettledEvent,
+  type EditStakedSettingsEvent,
+  type StakedSettingsEditConfig,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
@@ -285,6 +290,7 @@ import {
   priceAndConfidence,
   setupOf,
   validateFeedAccount,
+  pythAccountErr,
   validateOracleCount,
   validatesFeedAccount,
 } from "./oracle";
@@ -302,6 +308,8 @@ import {
   type ExecuteOrderRecord,
   type RebalanceOrder,
   type RebalanceRecord,
+  type RatePoint,
+  type StakedSettings,
   type RebalanceMove,
   OrderTriggerType,
   type WrappedI80F48,
@@ -3747,8 +3755,7 @@ function addSameAssetEmodeBank(registry: Mut<SameAssetEmodeRegistry>, bankKey: P
   if (listed) return;
   const groups = u64(registry.group_count);
   let index = groups;
-  for (let i = 0n; i < groups; i++)
-    if (index === groups && registry.groups.get(i).mint === mint && registry.groups.get(i).oracle_key === oracleKey) index = i;
+  for (let i = 0n; i < groups; i++) if (index === groups && registry.groups.get(i).mint === mint && registry.groups.get(i).oracle_key === oracleKey) index = i;
   if (index === groups) {
     require(index < 32n, MarginfiError.BadEmodeConfig);
     registry.groups.get(index).mint = mint;
@@ -3793,8 +3800,7 @@ function removeSameAssetEmodeBank(registry: Mut<SameAssetEmodeRegistry>, bankKey
   registry.groups.get(lastGroup).mint = ZERO_KEY;
   registry.groups.get(lastGroup).oracle_key = ZERO_KEY;
   registry.group_count -= 1n;
-  if (gone !== lastGroup)
-    for (let i = 0n; i < last; i++) if (u64(registry.banks.get(i).group_index) === lastGroup) registry.banks.get(i).group_index = removed;
+  if (gone !== lastGroup) for (let i = 0n; i < last; i++) if (u64(registry.banks.get(i).group_index) === lastGroup) registry.banks.get(i).group_index = removed;
 }
 
 /**
@@ -3805,11 +3811,7 @@ export function lendingPoolSetBankSameAssetEmodeEligibility(
   group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
   governance_admin: Signer,
   bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
-  same_asset_emode_registry: HasOne<
-    Seeds<Mut<SameAssetEmodeRegistry>, ["same_asset_emode_registry", "@group"]>,
-    "group",
-    MarginfiError.InvalidGroup
-  >,
+  same_asset_emode_registry: HasOne<Seeds<Mut<SameAssetEmodeRegistry>, ["same_asset_emode_registry", "@group"]>, "group", MarginfiError.InvalidGroup>,
   instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
   enabled: boolean,
 ): void {
@@ -3839,12 +3841,7 @@ const BANK_DISCRIMINATOR: u64 = 13574203538458161550n;
  * Open a bank's metadata, the PDA ["metadata", bank] (anyone pays). The bank may not exist yet; when it is a bank of
  * this program whose seed is known, it must be the PDA of its group, mint and seed.
  */
-export function initBankMetadata(
-  bank: AccountInfo,
-  fee_payer: Mut<Signer>,
-  metadata: Init<BankMetadata>,
-  system_program: SystemProgram,
-): void {
+export function initBankMetadata(bank: AccountInfo, fee_payer: Mut<Signer>, metadata: Init<BankMetadata>, system_program: SystemProgram): void {
   const bump = metadata.create(fee_payer, ["metadata", bank.key]);
   if (bank.dataLen > 0n && bank.owner === programId() && bank.dataLen >= 8n + 3904n && readData<u64>(bank, 0n) === BANK_DISCRIMINATOR) {
     const b = loadAccount<Bank>(bank);
@@ -4246,12 +4243,7 @@ export function marginfiAccountEndExecuteOrder(
   const healthy = health.v >= I80F48_ZERO;
   const q = taggedHealth(marginfi_account, group, rest, order.tags.get(0n), order.tags.get(1n), t);
   require(q.err === 0n, q.err);
-  resetHealthCache(
-    marginfi_account,
-    t,
-    3n,
-    (healthy ? HEALTH_HEALTHY : 0n) | HEALTH_ENGINE_OK | (h.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n),
-  );
+  resetHealthCache(marginfi_account, t, 3n, (healthy ? HEALTH_HEALTHY : 0n) | HEALTH_ENGINE_OK | (h.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n));
   marginfi_account.health_cache.asset_value_maint.value = h.assets;
   marginfi_account.health_cache.liability_value_maint.value = h.liabs;
   if (h.err_index !== 255n) {
@@ -4755,18 +4747,15 @@ function validateRebalance(ixs: InstructionsSysvar, account: Pubkey, order: Acco
   const n = ixs.length;
   for (let i = 0n; i < n; i++) {
     const p = ixs.get(i).programId;
-    require(
-      p === programId() ||
-        p === COMPUTE_BUDGET_ID ||
-        p === KAMINO_ID ||
-        p === DRIFT_ID ||
-        p === JUPLEND_EARN_ID ||
-        p === JUPLEND_LIQUIDITY_ID ||
-        p === ATA_PROGRAM_ID ||
-        p === TOKEN_PROGRAM_ID ||
-        p === TOKEN_2022_PROGRAM,
-      MarginfiError.ForbiddenIx,
-    );
+    require(p === programId() ||
+      p === COMPUTE_BUDGET_ID ||
+      p === KAMINO_ID ||
+      p === DRIFT_ID ||
+      p === JUPLEND_EARN_ID ||
+      p === JUPLEND_LIQUIDITY_ID ||
+      p === ATA_PROGRAM_ID ||
+      p === TOKEN_PROGRAM_ID ||
+      p === TOKEN_2022_PROGRAM, MarginfiError.ForbiddenIx);
   }
   const last = ixs.get(n - 1n);
   require(last.dataLength >= 8n, MarginfiError.EndNotLast);
@@ -4926,7 +4915,10 @@ export function marginfiAccountStartRebalance(
   // RebalanceRecord::initialize.
   for (let k = 0n; k < m; k++) {
     const mv = moves.get(k);
-    require(u64(mv.src_index) < n && u64(mv.dst_index) < n && mv.src_index !== mv.dst_index && mv.amount.value > I80F48_ZERO, MarginfiError.IllegalBalanceState);
+    require(u64(mv.src_index) < n &&
+      u64(mv.dst_index) < n &&
+      mv.src_index !== mv.dst_index &&
+      mv.amount.value > I80F48_ZERO, MarginfiError.IllegalBalanceState);
   }
   rebalance_record.order = rebalance_order.key;
   rebalance_record.marginfi_account = marginfi_account.key;
@@ -5205,5 +5197,316 @@ export function marginfiAccountSettleRebalanceTip(
     executor: executor.key,
     realized,
     tip_paid: refunded ? 0n : pending,
+  });
+}
+
+// ---- staked SOL ---------------------------------------------------------------------------------------------------
+
+const SPL_SINGLE_POOL_ID = pubkey("SVSPxpvHdN29nkVg9rPapPNDddN5DipNLRUFhyjFThE");
+const NATIVE_STAKE_ID = pubkey("Stake11111111111111111111111111111111111111");
+const VOTE_PROGRAM_ID = pubkey("Vote111111111111111111111111111111111111111");
+/** STAKED_ORACLE_DISABLED, STAKED_ORACLE_PRICE_USES_ONRAMP, and both. */
+const STAKED_ORACLE_DISABLED: u64 = 512n;
+const STAKED_ORACLE_PRICE_USES_ONRAMP: u64 = 1024n;
+const STAKED_ORACLE_FLAGS: u64 = 1536n;
+
+/** StakedSettings::validate: weights in [0, 1], maintenance at least initial; an isolated tier's both 0. */
+function validateStakedSettings(s: Mut<StakedSettings>): void {
+  const init = s.asset_weight_init.value;
+  const maint = s.asset_weight_maint.value;
+  require(init >= I80F48_ZERO && init <= I80F48_ONE, MarginfiError.InvalidConfig);
+  require(maint >= init, MarginfiError.InvalidConfig);
+  require(maint <= I80F48_ONE, MarginfiError.InvalidConfig);
+  if (s.risk_tier === RiskTier.Isolated) {
+    require(init === I80F48_ZERO, MarginfiError.InvalidConfig);
+    require(maint === I80F48_ZERO, MarginfiError.InvalidConfig);
+  }
+}
+
+/** Create the group's staked-SOL settings, the PDA ["staked_settings", group] (governance admin). */
+export function initStakedSettings(
+  marginfi_group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  fee_payer: Mut<Signer>,
+  staked_settings: Init<StakedSettings>,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  settings: StakedSettingsConfig,
+): void {
+  staked_settings.create(fee_payer, ["staked_settings", marginfi_group.key]);
+  checkNoDurableNonce(instruction_sysvar);
+  staked_settings.key_ = staked_settings.key;
+  staked_settings.marginfi_group = marginfi_group.key;
+  staked_settings.oracle = settings.oracle;
+  staked_settings.asset_weight_init.value = settings.asset_weight_init.value;
+  staked_settings.asset_weight_maint.value = settings.asset_weight_maint.value;
+  staked_settings.deposit_limit = settings.deposit_limit;
+  staked_settings.total_asset_value_init_limit = settings.total_asset_value_init_limit;
+  staked_settings.oracle_max_age = settings.oracle_max_age;
+  staked_settings.risk_tier = settings.risk_tier;
+  validateStakedSettings(staked_settings);
+}
+
+/** Change the staked settings (governance admin; each field when given), then check them. */
+export function editStakedSettings(
+  marginfi_group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  staked_settings: HasOne<Mut<StakedSettings>, "marginfi_group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  settings: StakedSettingsEditConfig,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  if (settings.oracle !== null) staked_settings.oracle = settings.oracle;
+  if (settings.asset_weight_init !== null) staked_settings.asset_weight_init.value = settings.asset_weight_init.value;
+  if (settings.asset_weight_maint !== null) staked_settings.asset_weight_maint.value = settings.asset_weight_maint.value;
+  if (settings.deposit_limit !== null) staked_settings.deposit_limit = settings.deposit_limit;
+  if (settings.total_asset_value_init_limit !== null) staked_settings.total_asset_value_init_limit = settings.total_asset_value_init_limit;
+  if (settings.oracle_max_age !== null) staked_settings.oracle_max_age = settings.oracle_max_age;
+  if (settings.risk_tier !== null) staked_settings.risk_tier = settings.risk_tier;
+  validateStakedSettings(staked_settings);
+  emit<EditStakedSettingsEvent>({ group: marginfi_group.key, settings });
+}
+
+/**
+ * Copy the staked settings onto a staked bank of the group (anyone): oracle, weights, limits, age, tier and the oracle
+ * flags; a new oracle (not while the bank is in same-asset e-mode) is checked against the remaining accounts.
+ */
+export function propagateStakedSettings(
+  marginfi_group: Account<MarginfiGroup>,
+  staked_settings: HasOne<Account<StakedSettings>, "marginfi_group", MarginfiError.InvalidGroup>,
+  bank: Mut<Bank>,
+): void {
+  constraint(bank, bank.group === marginfi_group.key && bank.config.asset_tag === BANK_ASSET_TAG_STAKED);
+  const before = bank.config.oracle_keys.get(0n);
+  const after = staked_settings.oracle;
+  require(before === after || (bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) === 0n, MarginfiError.BadEmodeConfig);
+  bank.config.oracle_keys.set(0n, after);
+  bank.config.asset_weight_init.value = staked_settings.asset_weight_init.value;
+  bank.config.asset_weight_maint.value = staked_settings.asset_weight_maint.value;
+  bank.config.deposit_limit = staked_settings.deposit_limit;
+  bank.config.total_asset_value_init_limit = staked_settings.total_asset_value_init_limit;
+  bank.config.oracle_max_age = staked_settings.oracle_max_age;
+  bank.config.risk_tier = staked_settings.risk_tier;
+  bank.flags = (bank.flags & ~STAKED_ORACLE_FLAGS) | (staked_settings.flags & STAKED_ORACLE_FLAGS);
+  if (before !== after) {
+    const rem = remainingAccounts();
+    let err = validateOracleCount(bank, rem.length);
+    if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
+    require(err === 0n, err);
+  }
+  validateBankConfig(bank.config);
+}
+
+/** Turn staked banks' oracles off (governance admin): they price nothing until the on-ramp is enabled. */
+export function disableStakedOracles(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  staked_settings: Seeds<Mut<StakedSettings>, ["staked_settings", "@group"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(staked_settings, staked_settings.marginfi_group === group.key, MarginfiError.InvalidGroup);
+  checkNoDurableNonce(instruction_sysvar);
+  staked_settings.flags = (staked_settings.flags & ~STAKED_ORACLE_PRICE_USES_ONRAMP) | STAKED_ORACLE_DISABLED;
+}
+
+/** Price staked banks with the pool's on-ramp counted (governance admin). */
+export function enableStakedOracleOnramp(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  staked_settings: Seeds<Mut<StakedSettings>, ["staked_settings", "@group"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(staked_settings, staked_settings.marginfi_group === group.key, MarginfiError.InvalidGroup);
+  checkNoDurableNonce(instruction_sysvar);
+  staked_settings.flags = (staked_settings.flags & ~STAKED_ORACLE_DISABLED) | STAKED_ORACLE_PRICE_USES_ONRAMP;
+}
+
+/** The SPL single-validator pool's addresses for a vote account: its pool, LST mint, stake account and on-ramp. */
+function poolOf(vote: Pubkey): Pubkey {
+  return findProgramAddress(["pool", vote], SPL_SINGLE_POOL_ID);
+}
+
+/**
+ * Add a staked-SOL bank (anyone): the LST of a validator's SPL single pool, as the PDA of the group, the LST mint and
+ * a seed, configured from the group's staked settings (a placeholder interest curve: it is never borrowed), priced
+ * by the settings' SOL oracle times the pool's stake per LST. The pool's accounts must be the vote account's.
+ */
+export function lendingPoolAddBankPermissionless(
+  marginfi_group: Mut<MarginfiGroup>,
+  staked_settings: HasOne<Account<StakedSettings>, "marginfi_group", MarginfiError.InvalidGroup>,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  sol_pool: AccountInfo,
+  pool_onramp: AccountInfo,
+  stake_pool: AccountInfo,
+  validator_vote_account: AccountInfo,
+  bank: Init<Bank>,
+  liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<AccountInfo, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<AccountInfo, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  bank_seed: u64,
+): void {
+  bank.create(fee_payer, [marginfi_group.key, bank_mint.key, bank_seed]);
+  const lv = liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  const iv = insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  const fv = fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  const t = now();
+  initBankFields(
+    bank,
+    marginfi_group.key,
+    bank_mint.key,
+    bank_mint.decimals,
+    liquidity_vault.key,
+    insurance_vault.key,
+    fee_vault.key,
+    t,
+    lv,
+    liquidity_vault_authority.pdaBump,
+    iv,
+    insurance_vault_authority.pdaBump,
+    fv,
+    fee_vault_authority.pdaBump,
+    bank_seed,
+  );
+  setStakedConfig(
+    bank,
+    staked_settings.asset_weight_init.value,
+    staked_settings.asset_weight_maint.value,
+    staked_settings.deposit_limit,
+    staked_settings.risk_tier,
+    staked_settings.total_asset_value_init_limit,
+    staked_settings.oracle_max_age,
+  );
+  bank.flags |= BANK_SEED_KNOWN;
+  bank.flags |= staked_settings.flags & STAKED_ORACLE_FLAGS;
+  if (bank_mint.tokenProgram === TOKEN_2022_ID) bank.flags |= IS_T22;
+  bank.config.oracle_setup = OracleSetup.StakedWithPythPush;
+  bank.config.oracle_keys.set(0n, staked_settings.oracle);
+  // MarginfiGroup::add_bank: the count saturates.
+  if (marginfi_group.banks < 65535n) marginfi_group.banks += 1n;
+  marginfi_group.fee_state_cache.last_update = t;
+  validateBankConfig(bank.config);
+  require(stake_pool.owner === SPL_SINGLE_POOL_ID, MarginfiError.StakePoolValidationFailed);
+  require(validator_vote_account.owner === VOTE_PROGRAM_ID, MarginfiError.StakePoolValidationFailed);
+  const pool = poolOf(validator_vote_account.key);
+  const lst = findProgramAddress(["mint", pool], SPL_SINGLE_POOL_ID);
+  const stake = findProgramAddress(["stake", pool], SPL_SINGLE_POOL_ID);
+  const onramp = findProgramAddress(["onramp", pool], SPL_SINGLE_POOL_ID);
+  require(pool === stake_pool.key, MarginfiError.StakePoolValidationFailed);
+  require(lst === bank_mint.key, MarginfiError.StakePoolValidationFailed);
+  require(stake === sol_pool.key, MarginfiError.StakePoolValidationFailed);
+  require(onramp === pool_onramp.key, MarginfiError.StakePoolValidationFailed);
+  require(pool_onramp.owner === NATIVE_STAKE_ID, MarginfiError.StakePoolValidationFailed);
+  bank.integration_acc_1 = validator_vote_account.key;
+  bank.config.oracle_keys.set(1n, bank_mint.key);
+  bank.config.oracle_keys.set(2n, sol_pool.key);
+  bank.config.oracle_keys.set(3n, onramp);
+  // validate_bank_config for a new staked bank: the SOL feed, then the pool's LST mint, stake account and on-ramp.
+  const rem = remainingAccounts();
+  require(rem.length === 4n, MarginfiError.WrongNumberOfOracleAccounts);
+  require(rem.get(0n).key === bank.config.oracle_keys.get(0n), MarginfiError.WrongOracleAccountKeys);
+  const feedErr = pythAccountErr(rem.get(0n));
+  require(feedErr === 0n, feedErr);
+  require(findProgramAddress(["mint", stake_pool.key], SPL_SINGLE_POOL_ID) === bank_mint.key, MarginfiError.StakePoolValidationFailed);
+  require(findProgramAddress(["stake", stake_pool.key], SPL_SINGLE_POOL_ID) === sol_pool.key, MarginfiError.StakePoolValidationFailed);
+  const expOnramp = findProgramAddress(["onramp", stake_pool.key], SPL_SINGLE_POOL_ID);
+  if (bank.config.oracle_keys.get(3n) !== ZERO_KEY) require(bank.config.oracle_keys.get(3n) === expOnramp, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(1n).owner === TOKEN_PROGRAM_ID, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(1n).key === bank_mint.key, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(2n).owner === NATIVE_STAKE_ID, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(2n).key === sol_pool.key, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(3n).owner === NATIVE_STAKE_ID, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(3n).key === expOnramp, MarginfiError.StakePoolValidationFailed);
+  emit<LendingPoolBankCreateEvent>({
+    header: { signer: fee_payer.key, marginfi_group: marginfi_group.key },
+    bank: bank.key,
+    mint: bank_mint.key,
+  });
+}
+
+/** Record a staked bank's validator vote account (anyone; once, idempotent), and its on-ramp when it has none. */
+export function lendingPoolBackfillStakedBankValidatorVoteAccount(bank: Mut<Bank>, validator_vote_account: AccountInfo): void {
+  require(bank.config.asset_tag === BANK_ASSET_TAG_STAKED, MarginfiError.AssetTagMismatch);
+  require(bank.config.oracle_setup === OracleSetup.StakedWithPythPush, MarginfiError.StakePoolValidationFailed);
+  require(validator_vote_account.owner === VOTE_PROGRAM_ID, MarginfiError.StakePoolValidationFailed);
+  const pool = poolOf(validator_vote_account.key);
+  const lst = findProgramAddress(["mint", pool], SPL_SINGLE_POOL_ID);
+  const stake = findProgramAddress(["stake", pool], SPL_SINGLE_POOL_ID);
+  const onramp = findProgramAddress(["onramp", pool], SPL_SINGLE_POOL_ID);
+  require(lst === bank.mint, MarginfiError.StakePoolValidationFailed);
+  require(lst === bank.config.oracle_keys.get(1n), MarginfiError.StakePoolValidationFailed);
+  require(stake === bank.config.oracle_keys.get(2n), MarginfiError.StakePoolValidationFailed);
+  if (bank.config.oracle_keys.get(3n) !== ZERO_KEY) require(onramp === bank.config.oracle_keys.get(3n), MarginfiError.StakePoolValidationFailed);
+  if (bank.integration_acc_1 !== ZERO_KEY) require(bank.integration_acc_1 === validator_vote_account.key, MarginfiError.StakePoolValidationFailed);
+  else bank.integration_acc_1 = validator_vote_account.key;
+  if (bank.config.oracle_keys.get(3n) === ZERO_KEY) bank.config.oracle_keys.set(3n, onramp);
+}
+
+// ---- Scope oracles ------------------------------------------------------------------------------------------------
+
+const SCOPE_PROGRAM_ID = pubkey("HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ");
+/** Scope's OraclePrices: an 8-byte discriminator, the oracle mappings key, then 512 dated prices of 56 bytes. */
+const SCOPE_PRICES_DISCRIMINATOR: u64 = 10571153419667931225n;
+
+/** ScopePriceFeed::check_ais: a Scope OraclePrices account of its exact size, the entry refreshed, its exponent sane. */
+function scopeEntryErr(a: RemainingAccount, entry: u16): u32 {
+  if (a.owner !== SCOPE_PROGRAM_ID) return 6800n;
+  if (a.dataLen < 8n || readData<u64>(a, 0n) !== SCOPE_PRICES_DISCRIMINATOR) return 6800n;
+  if (a.dataLen !== 8n + 32n + 512n * 56n) return 6800n;
+  if (u64(entry) >= 512n) return 6801n;
+  const at = 8n + 32n + u64(entry) * 56n;
+  if (readData<u64>(a, at) === 0n || readData<u64>(a, at + 24n) === 0n) return 6801n;
+  if (readData<u64>(a, at + 8n) >= 24n) return 6801n;
+  return 0n;
+}
+
+/**
+ * Price a bank by a Scope feed entry (governance admin; not a frozen bank, which panics, nor one in same-asset
+ * e-mode): Scope for a regular or SOL bank, ScopeKamino / ScopeJuplend for a Kamino / JupLend one (its venue account
+ * second among the remaining accounts).
+ */
+export function lendingPoolConfigureBankOracleScope(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  oracle: Pubkey,
+  entry_index: u16,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  // "cannot change oracle settings on frozen banks": a panic in the original.
+  require((bank.flags & FREEZE_SETTINGS) !== FREEZE_SETTINGS, MarginfiError.InternalLogicError);
+  require((bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) !== BANK_SAME_ASSET_EMODE_ELIGIBLE, MarginfiError.BadEmodeConfig);
+  const tag = bank.config.asset_tag;
+  // OracleSetup::Scope (18), ScopeKamino (27), ScopeJuplend (28).
+  let code: u8 = 18n;
+  if (tag === 3n) code = 27n;
+  else if (tag === ASSET_TAG_JUPLEND) code = 28n;
+  else require(tag === ASSET_TAG_DEFAULT || tag === ASSET_TAG_SOL, MarginfiError.InvalidOracleSetup);
+  const setup = setupOf(code);
+  bank.config.oracle_setup = setup;
+  bank.config.oracle_keys.set(0n, oracle);
+  bank.config.scope_entry_index = entry_index;
+  bank.config.fixed_price.value = I80F48_ZERO;
+  const rem = remainingAccounts();
+  const venue = setup !== OracleSetup.Scope;
+  require(rem.length === (venue ? 2n : 1n), MarginfiError.WrongNumberOfOracleAccounts);
+  require(rem.get(0n).key === oracle, MarginfiError.WrongOracleAccountKeys);
+  const err = scopeEntryErr(rem.get(0n), entry_index);
+  require(err === 0n, err);
+  if (venue) {
+    if (code === 27n) require(rem.get(1n).key === bank.config.oracle_keys.get(1n), MarginfiError.KaminoReserveValidationFailed);
+    else require(rem.get(1n).key === bank.config.oracle_keys.get(1n), MarginfiError.JuplendLendingValidationFailed);
+  }
+  emit<LendingPoolBankConfigureOracleEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    oracle_setup: code,
+    oracle,
   });
 }

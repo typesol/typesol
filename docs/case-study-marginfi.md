@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing and the monitor archive done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -288,6 +288,17 @@ TypeSOL's `resizeAccount`, Rust's `AccountInfo::resize`). `monitor_archive_initi
 `monitor_archive_upsert_batch` keep the snapshot manager's archive, raw bytes in a large account the client allocated
 (a tag, the meta, an index map, then a ring of 168 hourly snapshots per mint), written with `writeData`.
 
+**Part 5, staked SOL and Scope.** `init_staked_settings`, `edit_staked_settings`, `disable_staked_oracles` and
+`enable_staked_oracle_onramp` (the governance admin: a group's staked-SOL settings, the PDA of the group, checked as the
+original checks them; the oracle flags), `propagate_staked_settings` (anyone: the settings onto a staked bank, a new
+oracle checked), `lending_pool_add_bank_permissionless` (anyone: a bank for a validator's SPL single-pool LST, from the
+settings, with a placeholder curve; the pool, its LST mint, stake account and on-ramp must be the PDAs of the vote
+account, owned as the original wants) and `lending_pool_backfill_staked_bank_validator_vote_account`. The tests write
+the pool's accounts into both ledgers (marginfi reads their owners, addresses and the LST mint; nothing calls the pool
+program). `lending_pool_configure_bank_oracle_scope` prices a bank by a Scope feed entry, Scope's `OraclePrices`
+account checked as the original checks it. Pricing staked banks (the pool's stake per LST) and Scope feeds comes with
+part 5f.
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -363,7 +374,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 978 in
+for the oracles, and 1,022 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -412,7 +423,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (978, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (1,022, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -639,6 +650,9 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `marginfi_account_settle_rebalance_tip`, paid | 72,189 | 36,058 | −50% |
 | `lending_pool_resize_bank_account` | 4,711 | 2,807 | −40% |
 | `monitor_archive_upsert_batch`, two mints | 2,741 | 973 | −65% |
+| `init_staked_settings` | 17,865 | 2,786 | −84% |
+| `lending_pool_add_bank_permissionless` | 77,694 | 19,023 | −76% |
+| `lending_pool_configure_bank_oracle_scope` | 9,597 | 1,225 | −87% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -646,7 +660,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%, rebalances 56–57% (whole transactions), monitor snapshots 28–80% (the least: 20 snapshots, byte by byte);
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%, rebalances 56–57% (whole transactions), monitor snapshots 28–80% (the least: 20 snapshots, byte by byte), staked SOL and Scope 75–87%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
