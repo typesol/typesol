@@ -237,11 +237,13 @@ export abstract class CpiCoreEmitter extends CallEmitter {
    * (both checked against the count, 5104). C expressions for the range, relative to the first remaining account.
    */
   protected remainingRange(node: ts.Expression): { from: string; to: string } | undefined {
-    const n = this.ix!.accounts.length;
+    const sliced = ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice";
+    if (!this.isRemaining(node) && !(sliced && this.isRemaining((node.expression as ts.PropertyAccessExpression).expression))) return undefined;
+    if (!this.ix) this.fail(node, "pass the remaining accounts to a CPI from the instruction; a helper reads them one at a time with .get(i)");
+    const n = this.ix.accounts.length;
     const count = `(params->ka_num - ${n})`;
     if (this.isRemaining(node)) return { from: "0", to: count };
-    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "slice") return undefined;
-    if (!this.isRemaining(node.expression.expression)) return undefined;
+    if (!ts.isCallExpression(node)) return undefined;
     if (node.arguments.length < 1 || node.arguments.length > 2) this.fail(node, "slice(start, end?) takes one or two indexes");
     // Both ends may equal the count (an empty slice at the end).
     const from = this.index(node.arguments[0]!, `${count} + 1`);

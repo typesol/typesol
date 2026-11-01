@@ -13,7 +13,8 @@ codes, and says so here.
   of a deposit, with the account's Initial health over Pyth, Switchboard and fixed prices (oracle errors recorded or
   failing as the original's, e-mode and same-asset e-mode, the isolated tier, the deposit cap's discount), premium
   projection and rate snapshots, the circuit breaker's gate, the liquidation tag, rate limits, receivership,
-  deleverage and Token-2022. Against the binary on mainnet: 123 new transactions (541 in all), the same IDL for all
+  deleverage and Token-2022. Against the binary on mainnet: 177 new transactions (595 in all, an account with 16
+  positions among them), the same IDL for all
   25 ported instructions, and the random runs withdraw through the risk engine; 33–84% fewer compute units on the
   withdrawals that succeed. The fuzzer found how the original records an undecodable oracle's error in the health
   cache (0, the variant's index, not 6000).

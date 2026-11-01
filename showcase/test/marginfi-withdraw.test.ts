@@ -465,6 +465,24 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
     snapshot("written off");
   });
 
+  it("checks an account with 16 positions, past 32 accounts, as the original does", async () => {
+    // 16 banks priced by Pyth: 15 deposits and a debt, 8 + 32 accounts in the withdrawal.
+    const many: Priced[] = [];
+    for (let i = 0; i < 16; i++) many.push(await newBank("pyth", 1_000_000n + BigInt(i) * 10_000n));
+    await user([[many[15]!, 100_000_000_000n]]);
+    const a = await user(many.slice(0, 15).map((b) => [b, 10_000_000n] as [Priced, bigint]));
+    owe(a.account, many[15]!, 52n * 1_000_000n * ONE);
+    editAccount(a.account, [["liquidation_tagged_at", t - 100n, 8]]);
+    tick();
+    await w("16 positions", a, many[3]!, 1_000_000n);
+    await w("16 positions, unhealthy", a, many[3]!, 9_000_000n);
+    // In a flash loan the health check waits for the loan's end: nothing checked, the cache only reset.
+    editAccount(a.account, [["account_flags", 2n, 8]]);
+    await w("in a flash loan", a, many[4]!, 9_000_000n);
+    await w("in a flash loan, no health accounts", a, many[5]!, 9_000_000n, { rest: [] });
+    editAccount(a.account, [["account_flags", 0n, 8]]);
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, b] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());

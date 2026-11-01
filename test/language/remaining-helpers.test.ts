@@ -9,7 +9,7 @@ import path from "node:path";
 import { type Address } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, acct, customError, deployFile, expectOk, fundedSigner, ix, pda, send, SYSTEM_PROGRAM, type Deployed } from "../harness.js";
+import { BN, acct, compileErrors, customError, deployFile, expectOk, fundedSigner, ix, pda, send, SYSTEM_PROGRAM, type Deployed } from "../harness.js";
 
 const SOURCE = `import {
   type Init,
@@ -134,5 +134,17 @@ describe("remaining accounts as helper parameters", () => {
     ]);
     expect(customError(await send(d.svm, payer, [twice]))).toBe(2040);
     expect(Buffer.from(acct(d.svm, c).data).readBigUInt64LE(8)).toBe(6n);
+  });
+
+  it("leaves CPIs over the list to the instruction", () => {
+    const errors = compileErrors(`import { type RemainingAccounts, type Signer, type SystemProgram, invoke, readonly, remainingAccounts } from "typesol";
+function pass(program: SystemProgram, rest: RemainingAccounts): void {
+  invoke(program, [...readonly(rest)], []);
+}
+export function go(user: Signer, program: SystemProgram): void {
+  pass(program, remainingAccounts());
+}
+`);
+    expect(errors).toContain("pass the remaining accounts to a CPI from the instruction");
   });
 });

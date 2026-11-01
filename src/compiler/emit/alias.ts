@@ -127,8 +127,8 @@ export abstract class AliasEmitter extends EmitterBase {
 
   protected helperTakesMutAccounts(node: ts.CallExpression): boolean {
     const h = this.helperOf(node);
-    // A RemainingAccount parameter may be loaded with loadAccountMut inside.
-    return !!h?.params.some((p) => (p.account ? isWritable(p.account) : p.type.kind === "account"));
+    // A RemainingAccount(s) parameter may be loaded with loadAccountMut inside.
+    return !!h?.params.some((p) => (p.account ? isWritable(p.account) : p.type.kind === "account" || p.type.kind === "remaining"));
   }
 
   /**

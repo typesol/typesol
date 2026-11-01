@@ -185,7 +185,7 @@ halt, a frozen bank, the fee state's pause, an account's flags and balances, rat
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 123 in
+for the oracles, and 177 in
 [`showcase/test/marginfi-withdraw.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-withdraw.test.ts)
 for withdrawals and the risk engine. The last two write Pyth and Switchboard accounts byte for byte into both
 ledgers:
@@ -234,7 +234,7 @@ ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals and the risk engine (123).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals and the risk engine (177, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -244,7 +244,8 @@ ledgers:
   hourly limit and the group's daily limit (and the bank missing from the accounts); receivership by a liquidator,
   without a price, at a zero price, at a zero weight; deleverage alone and within and past the day's limit; a
   tokenless bank's remainder; the liquidation tag cleared; premium rates from the collateral mix, projected into
-  health, ratcheted on a stale leg, written off; Token-2022 with a transfer fee, without the mint, all of it.
+  health, ratcheted on a stale leg, written off; an account with 16 positions (40 accounts in the transaction), healthy
+  and not; in a flash loan (no check, the cache reset); Token-2022 with a transfer fee, without the mint, all of it.
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -334,9 +335,10 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_account_withdraw`, premium rates from the collateral mix | 63,359 | 41,192 | −35% |
 | `lending_account_withdraw`, Token-2022 with a transfer fee | 53,306 | 30,561 | −43% |
 | `lending_account_withdraw`, in receivership, by a liquidator | 39,987 | 16,497 | −59% |
+| `lending_account_withdraw`, 16 positions, the tag cleared | 538,631 | 303,481 | −44% |
 
 Across the 125 transactions of the first file that succeed, the port uses 36–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
 In the oracle file, the 72 that succeed use 47–84% fewer; the 76 refused ones 46–93% fewer. In the withdrawal file,
-the 35 that succeed use 33–84% fewer, the 32 refused ones 40–92% fewer; a withdrawal's health check is mostly I80F48
+the 37 that succeed use 33–84% fewer, the 34 refused ones 40–92% fewer; a withdrawal's health check is mostly I80F48
 products and quotients, like accrual.

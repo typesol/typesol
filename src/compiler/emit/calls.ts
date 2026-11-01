@@ -1388,8 +1388,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (argNodes.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);
     // Arguments are evaluated left to right: settle earlier ones when a later one runs statements.
     // A helper that takes accounts may change account data, so account text it gets is copied first.
-    // A RemainingAccount parameter counts: the helper may load and write a struct through it.
-    const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account");
+    // A RemainingAccount(s) parameter counts: the helper may load and write a struct through it.
+    const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining");
     const values: Value[] = [];
     const pieces: (number | string)[] = [];
     h.params.forEach((p, i) => {
@@ -1484,7 +1484,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
    * copy taken at the call (JS passes the object as it was); other helpers cannot write, so a pointer is enough.
    */
   protected snapshotPlace(lv: string, type: FieldType, h: Helper): string {
-    if (!h.params.some((p) => p.account || p.type.kind === "account")) return `(&${lv})`;
+    if (!h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining")) return `(&${lv})`;
     const n = this.fieldBytes(type);
     // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
     const t = this.tmp("argc");

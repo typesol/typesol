@@ -570,7 +570,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           if (rng.chance(75)) h.editBank(target.address, [["config.operational_state", 1n, 1]]);
           // Half the time no interest to accrue first (the accrual steps leave some banks past what accrual can hold).
           if (rng.chance(50)) h.editBank(target.address, [["last_update", t, 8]]);
-          if (rng.chance(6)) editAccount(acct.address, [["account_flags", rng.pick([1n, 16n, 32n, 48n, 64n]), 8]]);
+          if (rng.chance(6)) editAccount(acct.address, [["account_flags", rng.pick([1n, 2n, 16n, 32n, 48n, 64n]), 8]]);
           if (rng.chance(5)) editAccount(acct.address, [["liquidation_tagged_at", t - 10n, 8]]);
           await run(
             label("withdraw"),
