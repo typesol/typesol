@@ -1052,7 +1052,9 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
       [usdc, 500_000_000_000n],
       [sol, 500_000_000_000n],
     ]);
-    const banksOf = (u: User) => healthAccounts(u.account, [], true).filter((a) => banks.some((b) => b.address === a));
+    /** The account's banks for the end: sorted as a withdrawal or repayment leaves them, else as they sit. */
+    const banksOf = (u: User, sorted = false, skip: Address[] = []) =>
+      healthAccounts(u.account, skip, !sorted).filter((a) => banks.some((b) => b.address === a));
     /** An account with 10 SOL against 1,400 USDC (liquidatable), its liquidation record, a receiver with tokens. */
     const setup = async (debt = 1_400n, collateral = 10_000_000_000n) => {
       const e = await user([[sol, collateral]]);
@@ -1107,7 +1109,17 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
       ixs.push(...(o.middle ?? []));
       if (o.end ?? true)
         ixs.push(
-          h.endLiquidation(group.address, c.e.account, c.record, o.endBy ?? receiver, banksOf(c.e), { feePayer: o.feePayer, readonlyRest: o.readonlyRest }),
+          h.endLiquidation(
+            group.address,
+            c.e.account,
+            c.record,
+            o.endBy ?? receiver,
+            banksOf(c.e, !!(o.seize || o.repay || o.repayAll), o.repayAll ? [usdc.address] : []),
+            {
+              feePayer: o.feePayer,
+              readonlyRest: o.readonlyRest,
+            },
+          ),
         );
       return run(
         `receivership: ${label}`,
@@ -1185,6 +1197,7 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editGroup(group.address, [
       ["risk_admin", keyBits(ra.owner.address), 32],
       ["delegate_flow_admin", keyBits(flow.address), 32],
+      ["deleverage_withdraw_window_cache.daily_limit", 0n, 4],
     ]);
     const setup = async (debt: bigint) => {
       const e = await user([[sol, 10_000_000_000n]]);

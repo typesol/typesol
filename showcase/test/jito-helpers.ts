@@ -197,7 +197,8 @@ export function pairOf(so: string, source: string, programId: Address) {
       if (process.env.PAIR_LOG && outcome(a).includes(`code: ${process.env.PAIR_LOG} `))
         console.log(`${label}: original failed\n  ${logs(a).split("\n").slice(-4).join("\n  ")}`);
       for (const w of watch) expect(s.bytes(s.d.svm, w), `${label}: ${w}`).toBe(s.bytes(s.original, w));
-      if (!(a instanceof FailedTransactionMetadata)) {
+      // A --profile build (TYPESOL_PROFILE=1) logs a marker per statement, past the log limit: no events or logs to compare.
+      if (!(a instanceof FailedTransactionMetadata) && !process.env.TYPESOL_PROFILE) {
         expect(events(b), `${label}: events`).toEqual(events(a));
         expect(said(b), `${label}: logs`).toEqual(said(a));
       }
