@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Releases: each GitHub Release gets a manifest (`scripts/release-manifest.ts`): compiler and toolchain versions, the
+  sha256 of every example's and port's binary, IDL and C, the reference binaries and the test corpus. It also gets the
+  previous release's sources built by both packages, with their diff, so "the same binaries" can be checked and
+  redone by anyone (docs/testing.md). 0.37.0 → 0.38.0, checked by hand: all 67 programs of the 0.37.0 sources build to
+  the same binary and IDL.
+
 - Tests: random transactions against the mainnet binaries. `test/verification/fuzz-jito.test.ts` drives Jito's three
   MEV programs and their ports through random tips, receiver and builder changes, epochs, roots, Merkle claims and
   closes (with injected faults); Raydium CLMM's differential test adds a random run of swaps, positions and liquidity

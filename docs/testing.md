@@ -15,3 +15,30 @@ run prints its seed; reproduce with `FUZZ_SEED=<n>`, widen with `FUZZ_RUNS` / `F
 
 Compute-unit and binary-size comparisons with Anchor, native Rust and Pinocchio are in the README
 ([Numbers](../README.md#numbers)).
+
+## Reproducing a release
+
+Each release's GitHub Release carries `manifest.json` (written by `scripts/release-manifest.ts` from the published
+package and the tag's sources):
+
+- the compiler and toolchain versions (clang, platform-tools, Node, TypeScript, the runtime header's sha256);
+- the sha256 of the SBF binary, IDL and C that every program under `examples/` and `test/ports/` builds to;
+- the sha256 of the reference binaries the differential tests run against (`test/programs/`);
+- a hash of the test corpus.
+
+It also carries the previous release's sources built by the previous package and by this one, and their diff
+(`binary-diff.txt`). That is the check behind a changelog line such as "programs that use none of these compile to the
+same binaries". To redo it, or to compare other versions:
+
+```sh
+git worktree add ../typesol-prev v0.37.0          # the sources to build
+npm install --prefix /tmp/a @typesol/cli@0.37.0
+npm install --prefix /tmp/b @typesol/cli@0.38.0
+node scripts/release-manifest.ts --compiler /tmp/a/node_modules/@typesol/cli --sources ../typesol-prev --out a.json
+node scripts/release-manifest.ts --compiler /tmp/b/node_modules/@typesol/cli --sources ../typesol-prev --out b.json
+node scripts/release-manifest.ts --diff a.json b.json
+```
+
+For 0.37.0 → 0.38.0 (run by hand before the manifest job existed): all 67 programs of the 0.37.0 sources build to
+the same binary and IDL with both packages.
+
