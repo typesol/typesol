@@ -148,6 +148,12 @@ There are 300 transactions:
   the admin and by its authority (an extension too short, then a valid one), paid to a position, and what is left
   returned after it ends.
 
+The test also runs a random sequence: swaps (both ways, exact in and out, price limits, thresholds), positions at
+random ranges, and liquidity added and taken out, with a new seed on every run (CI's included) and the same outcome,
+bytes and events required after every step. `FUZZ_SEED=<seed>` reproduces a run's choices and amounts,
+`CLMM_FUZZ_STEPS=<n>` lengthens it. Its transactions may use 1.4M compute units: one early run found a swap that
+the original needs more than 200,000 for, which the default limit would stop before it is compared.
+
 ## Cost
 
 Compute units per transaction, mainnet original against the port, from one run of that test:

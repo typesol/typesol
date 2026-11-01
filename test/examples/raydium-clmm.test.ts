@@ -1625,6 +1625,83 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     expect(await both("swap_router_base_in, too little out", pool.user, [await route(2_000_000_000n, 10n ** 13n)], watch)).toBe(custom(errors.TooLittleOutputReceived!));
   });
 
+  // Random swaps, positions opened, and liquidity added and taken out, in one pool: the same in both. Choices and
+  // amounts come from the seed (keys are fresh each run); reproduce with FUZZ_SEED=<seed>, lengthen with
+  // CLMM_FUZZ_STEPS=<n>. Labels name each step's inputs.
+  it("fuzz: random swaps and liquidity changes behave the same", async () => {
+    const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
+    const STEPS = Number(process.env.CLMM_FUZZ_STEPS ?? 80);
+    let x = (SEED ^ 0x3c6ef372fe94f82bn) & 0xffff_ffff_ffff_ffffn || 1n;
+    const next = () => {
+      x ^= x >> 12n;
+      x ^= (x << 25n) & 0xffff_ffff_ffff_ffffn;
+      x ^= x >> 27n;
+      return (x * 0x2545f4914f6cdd1dn) & 0xffff_ffff_ffff_ffffn;
+    };
+    const int = (n: number) => Number(next() % BigInt(n));
+    const chance = (percent: number) => int(100) < percent;
+    /** 1 to 10^digits, spread evenly over orders of magnitude. */
+    const amount = (digits: number) => {
+      const d = 1 + int(digits);
+      return 1n + (next() % 10n ** BigInt(d));
+    };
+    const keys = new Set(Object.keys(cu));
+    const pool = await liquidPool(97);
+    // The most compute a transaction may use, so a long swap the original needs more than 200,000 CU for still runs
+    // to its end in both (ComputeBudget SetComputeUnitLimit).
+    const budget: Instruction = {
+      programAddress: address("ComputeBudget111111111111111111111111111111"),
+      accounts: [],
+      data: Uint8Array.from([2, ...new Uint8Array(Uint32Array.of(1_400_000).buffer)]),
+    };
+    const run = (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[]) => both(label, payer, [budget, ...ixs], watch);
+    const positions: Position[] = [];
+    const stats: Record<string, Record<string, number>> = {};
+    const count = (op: string, o: string) => ((stats[op] ??= {})[o === "ok" ? "ok" : (/code: (\d+)/.exec(o)?.[1] ?? "other")] = ((stats[op] ??= {})[o === "ok" ? "ok" : (/code: (\d+)/.exec(o)?.[1] ?? "other")] ?? 0) + 1);
+    let time = 1_800_000_000n;
+    for (let step = 0; step < STEPS; step++) {
+      const label = (what: string) => `fuzz step ${step} (seed ${SEED}, tick ${tickOf(pool)}): ${what}`;
+      const op = int(10);
+      time += BigInt(int(600));
+      setTime(time);
+      if (op < 5) {
+        const zeroForOne = chance(50);
+        const exactOut = chance(30);
+        const amt = amount(14);
+        // A price limit near the current price now and then (a sqrt price X64 a few percent away, either side).
+        const sqrt = Buffer.from(acct(original, pool.p.pool).data);
+        const current = sqrt.readBigUInt64LE(253) | (sqrt.readBigUInt64LE(261) << 64n);
+        const limit = chance(20) ? (current * BigInt(90 + int(21))) / 100n : 0n;
+        const threshold = chance(10) ? amount(12) : undefined;
+        const sw = await swap(pool, zeroForOne, amt, { exactOut, limit, threshold });
+        count("swap", await run(label(`swap ${zeroForOne ? "0→1" : "1→0"} ${exactOut ? "out" : "in"} ${amt}, limit ${limit}, threshold ${threshold}`), pool.user, [sw.instruction], sw.watch));
+      } else if (op < 7 || !positions.length) {
+        const a = (int(2001) - 1000) * 60;
+        const b = (int(2001) - 1000) * 60;
+        const [lower, upper] = a < b ? [a, b] : [b, a === b ? b + 60 : a];
+        const liquidity = amount(13);
+        const pos = await openPosition(pool, lower, upper, liquidity);
+        const o = await run(label(`open_position [${lower}, ${upper}) liquidity ${liquidity}`), pool.user, [pos.instruction], pos.watch);
+        count("open_position", o);
+        if (o === "ok") positions.push(pos);
+      } else if (op < 8) {
+        const pos = positions[int(positions.length)]!;
+        const liquidity = amount(13);
+        const [max0, max1] = chance(20) ? [amount(10), amount(10)] : [10n ** 15n, 10n ** 15n];
+        count("increase", await run(label(`increase [${pos.lower}, ${pos.upper}) by ${liquidity}, max ${max0}/${max1}`), pool.user, [increase(pool, pos, liquidity, max0, max1)], pos.watch));
+      } else {
+        const pos = positions[int(positions.length)]!;
+        const held = positionLiquidity(pos);
+        const liquidity = chance(10) ? held + amount(6) : held === 0n ? 0n : (held * BigInt(1 + int(100))) / 100n;
+        const [min0, min1] = chance(10) ? [amount(9), amount(9)] : [0n, 0n];
+        count("decrease", await run(label(`decrease [${pos.lower}, ${pos.upper}) by ${liquidity} of ${held}, min ${min0}/${min1}`), pool.user, [decrease(pool, pos, liquidity, min0, min1)], pos.watch));
+      }
+    }
+    console.log(`clmm fuzz (seed ${SEED}): ${STEPS} steps`, JSON.stringify(stats));
+    for (const k of Object.keys(cu)) if (!keys.has(k)) delete cu[k];
+    setTime(1_800_000_000n);
+  });
+
   it("reports compute units", () => {
     expect(compared).toBeGreaterThan(5);
     console.log(`${compared} transactions compared`);

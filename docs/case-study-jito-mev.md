@@ -117,6 +117,10 @@ There are 150 transactions:
   - a go-live epoch in the future, then the current one;
   - a transfer into last epoch's account.
 
+Besides these, `test/verification/fuzz-jito.test.ts` sends random sequences of the same transactions, honest and
+hostile, to the originals and the ports, with a new seed on every run (CI's included). It requires the same outcome,
+bytes, events and log lines after every step; `FUZZ_SEED=<seed>` reproduces a run, `FUZZ_STEPS=<n>` lengthens it.
+
 ## Cost
 
 Compute units per transaction, mainnet original against the port, from one run of that test:
