@@ -127,7 +127,7 @@ describe("zero-copy shapes", () => {
   it("refuses repr(C) structs whose fields C would place elsewhere, and bad tags", () => {
     const struct = (tags: string, fields: string) =>
       compileErrors(
-        `import { type FixedArray, type u8, type u16, type u32, type u64, type u128, type Pubkey } from "typesol";\n/**\n * ${tags}\n */\nexport interface S {\n${fields}\n}\nexport function f(): void {}\n`,
+        `import { type FixedArray, type u8, type u16, type u32, type u64, type u128, type Pubkey } from "typesol";\n/**\n${tags.includes("@serialization") ? "" : " * @serialization bytemuck\n"} * ${tags}\n */\nexport interface S {\n${fields}\n}\nexport function f(): void {}\n`,
       );
     expect(struct("@repr c", "  a: u8;\n  b: u64;")).toMatch(/S\.b is at byte 1, which C would pad to a multiple of 8/);
     expect(struct("@repr c", "  a: u64;\n  b: u8;")).toMatch(/S is 9 bytes, which C would pad to a multiple of 8/);
@@ -136,6 +136,12 @@ describe("zero-copy shapes", () => {
     expect(struct("@repr c align 8", "  a: u32;")).toMatch(/S is 4 bytes, which C would pad to a multiple of 8/);
     expect(struct("@repr c align 8", "  a: u32;\n  b: FixedArray<u8, 4>;")).toBe("");
     expect(struct("@repr c", "  a: u8;\n  b: FixedArray<u16, 2>;")).toMatch(/S\.b is at byte 1/);
+    // A repr(C) struct that only travels as Borsh (no bytemuck serialization, not held by such a struct): not checked.
+    expect(
+      compileErrors(
+        `import { type u8, type u64 } from "typesol";\n/** @repr c */\nexport interface S {\n  a: u8;\n  b: u64;\n}\nexport function f(): void {}\n`,
+      ),
+    ).toBe("");
     expect(struct("@repr wasm", "  a: u8;")).toMatch(/@repr is c or rust/);
     expect(struct("@serialization", "  a: u8;")).toMatch(/@serialization takes one word/);
     expect(

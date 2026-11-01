@@ -2,12 +2,12 @@ import ts from "typescript";
 import { argIdlName, fieldIdlName, snakeCase } from "./analyze.js";
 import { decodeAddress } from "../keys.js";
 import {
+  type OptionInner,
   type IdlMeta,
   type FieldType,
   type Instruction,
   type ParamKind,
   type ProgramModel,
-  type ScalarType,
   type ValueType,
   fixedVecName,
   isWritable,
@@ -49,7 +49,7 @@ function paramDocs(param: ts.ParameterDeclaration | ts.PropertySignature): { doc
 }
 
 const fstringTypeName = (cap: number) => `FixedString${cap}`;
-const fixedOptionName = (inner: ScalarType | { kind: "struct"; name: string }) => `FixedOption_${optionKey(inner)}`;
+const fixedOptionName = (inner: OptionInner) => `FixedOption_${optionKey(inner)}`;
 const fixedEnumName = (name: string) => `FixedEnum_${name}`;
 
 /**
@@ -77,7 +77,7 @@ function idlMetaFields(m: IdlMeta | undefined): Record<string, unknown> {
 function idlType(t: FieldType | ValueType, borshOption = false): unknown {
   switch (t.kind) {
     case "int":
-      return t.name;
+      return t.f64 ? "f64" : t.name;
     case "bool":
       return "bool";
     case "pubkey":
@@ -235,7 +235,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
             ...docsOf(s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name)),
             type: f.idlBytes
               ? { array: ["u8", f.idlBytes] }
-              : s.layout === "borsh"
+              : s.layout === "borsh" || s.wire === "borsh"
                 ? borshIdlType(f.type)
                 : idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),
           })),
@@ -251,6 +251,7 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         {
           name: e.name,
           ...docsOf(e.node),
+          ...idlMetaFields(e.idlMeta),
           type: {
             kind: "enum",
             variants: e.variants.map((v) =>

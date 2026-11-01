@@ -282,10 +282,18 @@ export class FunctionEmitter extends StatementEmitter {
         // Struct elements are read in place, so check them all now; scalars are checked when read.
         if (!isScalar(elem)) {
           const i = `vi_${a.name}`;
-          const checks = this.validation(`((${fieldC(elem)} *)arg_${a.name}.ptr)[${i}]`, elem, "    ");
+          // An array element (Vec<[u8; 32]>) is addressed by its byte offset; it is checked through its first element.
+          const lv =
+            elem.kind === "array"
+              ? `(*(${storageDecl(elem, "(*)")})(arg_${a.name}.ptr + (uint64_t)${i} * ${size}))`
+              : `((${fieldC(elem)} *)arg_${a.name}.ptr)[${i}]`;
+          const checks = this.validation(lv, elem, "    ");
           if (checks.length) head.push(`  for (uint64_t ${i} = 0; ${i} < arg_${a.name}.len; ${i}++) {`, ...checks, `  }`);
         }
-      } else if (a.type.kind === "structRef" && this.model.structs.get(a.type.struct)!.layout === "borsh") {
+      } else if (
+        a.type.kind === "structRef" &&
+        (this.model.structs.get(a.type.struct)!.layout === "borsh" || this.model.structs.get(a.type.struct)!.wire === "borsh")
+      ) {
         // A @layout borsh struct: Borsh-decoded into its fixed-layout struct, as its accounts are.
         const S = a.type.struct;
         const v = `arg_${a.name}`;

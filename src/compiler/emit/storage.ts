@@ -285,7 +285,8 @@ export abstract class StorageEmitter extends AliasEmitter {
         const idx = this.index(node.arguments[0], `(uint64_t)${l.c}.len`);
         return { lv: `((${fieldC(l.type.elem)} *)${l.c}.ptr)[${idx}]`, type: l.type.elem, writable: false };
       }
-      const base = this.ref(node.expression.expression);
+      let base = this.ref(node.expression.expression);
+      if (base && base.type.kind === "option" && base.type.inner.kind === "array") base = this.someValue(base);
       if (base && (base.type.kind === "array" || base.type.kind === "vec")) {
         if (node.arguments.length !== 1) this.fail(node, "get(index) takes one argument");
         const idx = this.index(node.arguments[0], base.type.kind === "array" ? `${base.type.len}ULL` : vecCount(base.vec!));
@@ -294,6 +295,16 @@ export abstract class StorageEmitter extends AliasEmitter {
       }
     }
     return undefined;
+  }
+
+  /**
+   * The value of an Option<FixedArray> / Option<Struct> place TypeScript has narrowed to Some: the place inside it.
+   * An empty option aborts (5108), the backstop of the narrowing.
+   */
+  protected someValue(r: Ref): Ref {
+    const t = r.type as FieldType & { kind: "option" };
+    this.line(`if (!${r.lv}.some) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: option is empty");`);
+    return this.withFixedVec({ ...r, lv: `${r.lv}.v`, type: t.inner as FieldType, path: undefined, vec: undefined });
   }
 
   /** An SPL COption<Pubkey> (u32 tag + 32 bytes) at `at`, as an Option<Pubkey> value. */
@@ -581,7 +592,15 @@ export abstract class StorageEmitter extends AliasEmitter {
       }
     }
     if (heap) this.fail(valueNode, `expected a ${typeName(target.type)}: a Vec argument or another list of the same elements`);
-    const src = this.ref(valueNode) ?? this.wholeAccount(valueNode);
+    let src = this.ref(valueNode) ?? this.wholeAccount(valueNode);
+    // A narrowed Option<FixedArray> / Option<Struct> place (`x.tiers !== null` before it): its value.
+    if (
+      src &&
+      src.type.kind === "option" &&
+      (src.type.inner.kind === "array" || src.type.inner.kind === "struct") &&
+      sameType(src.type.inner as FieldType, target.type)
+    )
+      src = this.someValue(src);
     if (!src || !sameType(src.type, target.type))
       this.fail(
         valueNode,
@@ -670,7 +689,7 @@ export abstract class StorageEmitter extends AliasEmitter {
       case "enum":
         return scalarSize(t);
       case "option":
-        return 1 + (t.inner.kind === "struct" ? this.fieldBytes(t.inner) : scalarSize(t.inner));
+        return 1 + (t.inner.kind === "struct" || t.inner.kind === "array" ? this.fieldBytes(t.inner as FieldType) : scalarSize(t.inner));
       case "dataEnum":
         return 1 + this.model.dataEnums.get(t.name)!.payload;
       case "fstring":

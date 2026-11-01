@@ -6,8 +6,6 @@ run prints its seed; reproduce with `FUZZ_SEED=<n>`, widen with `FUZZ_RUNS` / `F
 | Check | Oracle | What must hold |
 | --- | --- | --- |
 | `test/verification/fuzz-arith.test.ts` | BigInt | `+ - * / % **`, `& \| ^ << >> ~`, unary minus, comparisons and casts at every width u8…u128 / i8…i128, plus `mulDiv`, `mulDivCeil`, `isqrt`, `min`, `max`, return the same value or abort with the same code (5100/5101/4102), for edge and random inputs |
-| `test/verification/fuzz-u256.test.ts` | BigInt | every `u256` operator, `mulDiv` / `mulDivCeil` with their 512-bit product, comparisons and the checked narrowing casts, on random values: the same value or the same error (5100, 5101, 4102) |
-| `test/verification/fuzz-i80f48.test.ts` | vectors the `fixed` crate (1.28.0) wrote, from `test/fixtures/marginfi/i80f48-oracle` | Marginfi's I80F48 (`examples/marginfi/i80f48.ts`): a BigInt model must give every vector, then the port must give the model's answer on them and on random values (products toward −∞, quotients toward zero, f64 to nearest-even) |
 | `test/verification/fuzz-state.test.ts` | TypeScript state model | random honest + hostile actions on vault and escrow: every outcome as predicted, balances equal the model, SOL conserved up to fees, token supply exactly conserved; random filings/decisions/resets on ledgerbook: Vec contents, account size and rent exemption equal the model |
 | `test/verification/fuzz-layout.test.ts` | TypeScript model | random pushes, pops, sets, in-place additions, moves and clears on an account with two growable Vecs (honest, out of range and by a stranger): the decoded account equals the model after every step; random `loadAccountMut` index pairs over remaining-account lists that repeat accounts: every alias refused (2040), balances conserved |
 | `test/verification/fuzz-jito.test.ts` | Jito's tip payment, tip distribution and priority fee distribution as deployed on mainnet | random sequences of tips, receiver and builder changes, accounts opened over epochs, roots uploaded, Merkle claims (wrong amounts, proofs and signers among them), closes and config changes, with at most one injected fault per transaction: the same outcome, account bytes, events and log lines as the original after every step; keys, amounts and choices all come from the seed |
@@ -20,8 +18,8 @@ Compute-unit and binary-size comparisons with Anchor, native Rust and Pinocchio 
 
 ## Reproducing a release
 
-From the release after 0.38.0 on, each release's GitHub Release carries `manifest.json` (written by
-`scripts/release-manifest.ts` from the published package and the tag's sources; the scripts need Node 22.18 or later):
+Each release's GitHub Release carries `manifest.json` (written by `scripts/release-manifest.ts` from the published
+package and the tag's sources):
 
 - the compiler and toolchain versions (clang, platform-tools, Node, TypeScript, the runtime header's sha256);
 - the sha256 of the SBF binary, IDL and C that every program under `examples/` and `test/ports/` builds to;

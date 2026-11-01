@@ -177,6 +177,8 @@ export function generatePort(idl: PortIdl): PortResult {
         return `${use("FixedString")}<32> /* TODO: capacity; Anchor has a variable String */`;
       }
       if (t === "bytes") return tsType({ vec: "u8" }, where, at, last);
+      // An f64 is held as its bits (no float arithmetic): f64FromBits / f64Bits.
+      if (t === "f64") return use("f64");
       notes.push(`${at}: IDL type "${t}" has no TypeSOL equivalent; left as u64`);
       return `${use("u64")} /* TODO: ${t} */`;
     }
@@ -191,7 +193,8 @@ export function generatePort(idl: PortIdl): PortResult {
     if (t.coption) notes.push(`${at}: a COption (4-byte tag in Anchor); TypeSOL's Option has a 1-byte tag, so this layout differs.`);
     if (t.option || t.coption) {
       const inner = tsType((t.option ?? t.coption)!, where === "variant" ? "variant" : where, at);
-      if (fixed(where))
+      // A struct argument holding Options is Borsh on the wire (as Anchor sends it); account data and variants are fixed.
+      if (fixed(where) && where !== "struct")
         notes.push(`${at}: an Option in ${describe(where)} is fixed-size in TypeSOL (1 + size of T), Borsh (1, or 1 + size) in Anchor: the layout differs.`);
       return `${use("Option")}<${inner}>`;
     }
@@ -228,12 +231,21 @@ export function generatePort(idl: PortIdl): PortResult {
   };
 
   /** A String, Vec or Option at a struct's top level: Borsh-sized in Anchor. */
+  const nestedOption = (t: IdlType, seen = new Set<string>()): boolean => {
+    if (typeof t === "string") return false;
+    if (t.option || t.coption) return true;
+    if (t.array) return nestedOption(t.array[0], seen);
+    const name = t.defined ? (typeof t.defined === "string" ? t.defined : t.defined.name) : undefined;
+    if (!name || seen.has(name)) return false;
+    const def = (idl.types ?? []).find((d) => d.name === name);
+    return !!def && def.type.kind === "struct" && ((def.type.fields ?? []) as IdlField[]).some((f) => nestedOption(f.type, new Set([...seen, name])));
+  };
   const borshOnly = (t: IdlType) => t === "string" || t === "bytes" || (typeof t === "object" && (!!t.vec || !!t.option));
   /** A field's type in a `@layout borsh` struct, or undefined when that layout cannot hold it. Notes the capacities. */
   const borshField = (t: IdlType, at: string): string | undefined => {
     const quiet = at === "";
     const fixedOk = (u: IdlType): boolean => {
-      if (typeof u === "string") return INTS.has(u) || u === "bool" || u === "pubkey" || u === "publicKey";
+      if (typeof u === "string") return INTS.has(u) || u === "bool" || u === "pubkey" || u === "publicKey" || u === "f64";
       if (u.array) return Number.isInteger(Number(u.array[1])) && fixedOk(u.array[0]);
       if (u.defined) {
         const name = definedName(u.defined);
@@ -265,10 +277,20 @@ export function generatePort(idl: PortIdl): PortResult {
       if (!quiet) notes.push(`${at}: set the Vec's capacity to Anchor's #[max_len] (Borsh bytes are kept: @layout borsh)`);
       return `${use("FixedVec")}<${elem}, 8> /* TODO: #[max_len] */`;
     }
+    // A struct with Options inside (Marginfi's event header): Borsh at every depth, its own fields fixed or Options.
+    const nestedOk = (u: IdlType): boolean => {
+      if (typeof u !== "object" || !u.defined) return false;
+      const d = defs.get(definedName(u.defined));
+      if (!d || d.type.kind !== "struct") return false;
+      return ((d.type.fields ?? []) as IdlField[]).every(
+        (f) => fixedOk(f.type) || nestedOk(f.type) || (typeof f.type === "object" && !!f.type.option && (fixedOk(f.type.option) || nestedOk(f.type.option))),
+      );
+    };
     if (typeof t === "object" && t.option) {
-      if (!fixedOk(t.option)) return undefined;
-      return quiet ? "x" : `${use("Option")}<${tsType(t.option, "account", at)}>`;
+      if (!fixedOk(t.option) && !nestedOk(t.option)) return undefined;
+      return quiet ? "x" : `${use("Option")}<${tsType(t.option, "event", at)}>`;
     }
+    if (nestedOk(t)) return quiet ? "x" : tsType(t, "event", at);
     if (!fixedOk(t)) return undefined;
     return quiet ? "x" : tsType(t, "account", at);
   };
@@ -312,7 +334,10 @@ export function generatePort(idl: PortIdl): PortResult {
       // An account struct, or one passed / returned whole, with a String, Vec or Option of its own: `@layout borsh`
       // keeps Anchor's bytes.
       const borshable = accountNames.has(def.name) || (whole.has(def.name) && !nested.has(def.name) && !eventNames.has(def.name));
-      const borsh = borshable && !isTuple(fields) && fields.some((f) => borshOnly(f.type)) && fields.every((f) => borshField(f.type, "") !== undefined);
+      const borsh =
+        (borshable && !isTuple(fields) && fields.some((f) => borshOnly(f.type)) && fields.every((f) => borshField(f.type, "") !== undefined)) ||
+        // An event holding a struct with Options (Marginfi's header { signer: Option<Pubkey> }): Borsh at every depth.
+        (eventNames.has(def.name) && !isTuple(fields) && fields.some((f) => nestedOption(f.type)));
       const tag = accountNames.has(def.name) ? " (account)" : eventNames.has(def.name) ? ` (event: emit<${typeName(def.name)}>({ … }))` : "";
       const doc = def.docs?.length ? esc(def.docs.join(" ")) : `${def.name}${tag}`;
       const typeTags = [...(borsh ? ["@layout borsh"] : []), ...metaTags(def)];
@@ -351,7 +376,7 @@ export function generatePort(idl: PortIdl): PortResult {
           );
           return `{ kind: "${pascal(v.name)}"${fs.map((x) => `; ${x}`).join("")} }`;
         });
-        out.push(`${docs(def.docs)}export type ${typeName(def.name)} =\n  | ${parts.join("\n  | ")};`, "");
+        out.push(`${docs(def.docs, "", metaTags(def))}export type ${typeName(def.name)} =\n  | ${parts.join("\n  | ")};`, "");
       }
     }
   }

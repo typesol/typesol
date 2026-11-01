@@ -52,9 +52,17 @@ export function borshMinSize(s: StructDef, model: Pick<ProgramModel, "structs">)
     const t = f.type;
     if (t.kind === "fstring" || t.kind === "vec" || t.kind === "string") n += 4;
     else if (t.kind === "option" || t.kind === "dataEnum") n += 1;
+    else if (t.kind === "struct" && !borshIdentical(t, model)) n += borshMinSize(model.structs.get(t.name)!, model);
     else n += fixedBytes(t, model);
   }
   return n;
+}
+
+/** A struct (not itself @layout borsh) whose Borsh form is variable: it holds an Option, at any depth. */
+function variableStruct(t: FieldType, model: Pick<ProgramModel, "structs">): StructDef | undefined {
+  if (t.kind !== "struct" || borshIdentical(t, model)) return undefined;
+  const s = model.structs.get(t.name);
+  return s && s.layout !== "borsh" ? s : undefined;
 }
 
 const DESER = `TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: bytes are not a valid Borsh value")`;
@@ -64,7 +72,7 @@ const SER = `TS_FAIL(TS_ERR_DID_NOT_SERIALIZE, "TypeSOL: account data too small 
 export function emitBorshCodecs(model: ProgramModel): string[] {
   const out: string[] = [];
   for (const s of model.structs.values()) {
-    if (s.layout !== "borsh" || s.size === undefined) continue;
+    if ((s.layout !== "borsh" && s.wire !== "borsh") || s.size === undefined) continue;
     let k = 0;
     const tmp = (p: string) => `${p}${k++}`;
 
@@ -88,8 +96,14 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
     };
     // Bounds: the caller checked `len >= MIN` (the smallest Borsh form). Fixed-size pieces then always fit; only a
     // String / Vec / Option payload is checked, against what is left after the fields that follow it still need.
-    const minOf = (t: FieldType) =>
-      t.kind === "fstring" || t.kind === "vec" || t.kind === "string" ? 4 : t.kind === "option" || t.kind === "dataEnum" ? 1 : fixedBytes(t, model);
+    const minOf = (t: FieldType): number =>
+      t.kind === "fstring" || t.kind === "vec" || t.kind === "string"
+        ? 4
+        : t.kind === "option" || t.kind === "dataEnum"
+          ? 1
+          : variableStruct(t, model)
+            ? borshMinSize(variableStruct(t, model)!, model)
+            : fixedBytes(t, model);
     const minAfter = s.fields.map((_, i) => s.fields.slice(i + 1).reduce((n, f) => n + minOf(f.type), 0));
     const need = (n: string, rest: number, pad: string) => `${pad}if (${n} > len - at - ${rest}) ${DESER};`;
     const room = (n: string, rest: number, pad: string) => `${pad}if (${n} > cap - at - ${rest}) ${SER};`;
@@ -143,8 +157,35 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
             `${pad}}`,
           ];
         }
+        case "struct": {
+          // A struct holding Options, nested: its fields one by one, each checked against what is left.
+          const sub = variableStruct(t, model)!;
+          const after = (i: number) => sub.fields.slice(i + 1).reduce((n, f) => n + minOf(f.type), rest);
+          return sub.fields.flatMap((f, i) => {
+            if (borshIdentical(f.type, model)) {
+              const n = fixedBytes(f.type, model);
+              return [
+                need(String(n), after(i), pad),
+                `${pad}ts_memcpy(&${lv}.${f.name}, src + at, ${n});`,
+                `${pad}at += ${n};`,
+                ...validate(f.type, `${lv}.${f.name}`, pad),
+              ];
+            }
+            return unpackVar(f.type, `${lv}.${f.name}`, after(i), pad);
+          });
+        }
         case "option": {
           const tag = tmp("tag");
+          if (variableStruct(t.inner as FieldType, model))
+            return [
+              need("1", rest, pad),
+              `${pad}uint8_t ${tag} = src[at++];`,
+              `${pad}if (${tag} > 1) ${DESER};`,
+              `${pad}${lv}.some = ${tag};`,
+              `${pad}if (${tag}) {`,
+              ...unpackVar(t.inner as FieldType, `${lv}.v`, rest, `${pad}  `),
+              `${pad}}`,
+            ];
           const n = fixedBytes(t.inner as FieldType, model);
           return [
             `${pad}uint8_t ${tag} = src[at++];`,
@@ -240,7 +281,26 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
             `${pad}}`,
           ];
         }
+        case "struct": {
+          const sub = variableStruct(t, model)!;
+          const after = (i: number) => sub.fields.slice(i + 1).reduce((n, f) => n + minOf(f.type), rest);
+          return sub.fields.flatMap((f, i) => {
+            if (borshIdentical(f.type, model)) {
+              const n = fixedBytes(f.type, model);
+              return [room(String(n), after(i), pad), `${pad}ts_memcpy(dst + at, &${lv}.${f.name}, ${n});`, `${pad}at += ${n};`];
+            }
+            return packVar(f.type, `${lv}.${f.name}`, after(i), pad);
+          });
+        }
         case "option": {
+          if (variableStruct(t.inner as FieldType, model))
+            return [
+              room("1", rest, pad),
+              `${pad}dst[at++] = ${lv}.some ? 1 : 0;`,
+              `${pad}if (${lv}.some) {`,
+              ...packVar(t.inner as FieldType, `${lv}.v`, rest, `${pad}  `),
+              `${pad}}`,
+            ];
           const n = fixedBytes(t.inner as FieldType, model);
           return [
             room(`(uint64_t)(${lv}.some ? ${1 + n} : 1)`, rest, pad),

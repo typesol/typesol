@@ -50,7 +50,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   out.push(`#include "typesol_rt.h"`, "");
 
   for (const inner of model.options.values())
-    if (inner.kind !== "struct")
+    if (inner.kind !== "struct" && inner.kind !== "array")
       out.push(`typedef struct __attribute__((packed)) {`, `  uint8_t some;`, `  ${scalarStorageC(inner)} v;`, `} ${optC(inner)};`, "");
   for (const cap of [...model.fstrings].sort((a, b) => a - b))
     out.push(`typedef struct __attribute__((packed)) {`, `  uint32_t len;`, `  uint8_t bytes[${cap}];`, `} TS_FStr${cap};`, "");
@@ -73,6 +73,14 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
       if (emitted.has(name)) return;
       emitted.add(name);
       out.push(`typedef struct __attribute__((packed)) {`, `  uint32_t len;`, `  uint32_t cap;`, `  ${storageDecl(t.elem, `*items`)};`, `} ${name};`, "");
+    }
+    if (t.kind === "option" && t.inner.kind === "array") {
+      const inner = t.inner;
+      const key = `opt:${optC(inner)}`;
+      if (emitted.has(key)) return;
+      deps(inner.elem);
+      emitted.add(key);
+      out.push(`typedef struct __attribute__((packed)) {`, `  uint8_t some;`, `  ${storageDecl(inner.elem, `v[${inner.len}]`)};`, `} ${optC(inner)};`, "");
     }
     if (t.kind === "option" && t.inner.kind === "struct") {
       const key = `opt:${t.inner.name}`;
