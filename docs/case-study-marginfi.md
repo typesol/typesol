@@ -174,40 +174,40 @@ Compute units per transaction, mainnet original against the port, from one run o
 | Instruction | Marginfi (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
 | `init_global_fee_state` | 7,116 | 2,261 | −68% |
-| `marginfi_group_initialize` | 27,404 | 8,347 | −70% |
+| `marginfi_group_initialize` | 27,404 | 7,115 | −74% |
 | `marginfi_group_configure`, five roles | 22,917 | 1,232 | −95% |
 | `propagate_fee_state` | 3,821 | 769 | −80% |
-| `lending_pool_add_bank` (SPL Token) | 91,333 | 18,771 | −79% |
-| `lending_pool_add_bank_with_seed` (Token-2022) | 97,585 | 29,336 | −70% |
-| `lending_pool_accrue_bank_interest`, an empty bank | 4,002 | 1,658 | −59% |
-| `lending_pool_accrue_bank_interest`, 25% utilization over a minute | 40,135 | 23,872 | −41% |
-| `lending_pool_accrue_bank_interest`, 80% utilization over a year | 41,642 | 30,294 | −27% |
-| `lending_pool_accrue_bank_interest`, 98,765,432,101 / 123,456,789,012 | 42,657 | 29,848 | −30% |
-| `lending_pool_configure_bank`, a new curve | 13,716 | 3,995 | −71% |
-| `lending_pool_configure_bank`, circuit breaker on | 12,743 | 4,332 | −66% |
-| `lending_pool_configure_bank`, circuit breaker off during a halt (accrues first) | 33,226 | 20,137 | −39% |
-| `lending_pool_configure_bank`, checked against an e-mode entry | 17,282 | 6,407 | −63% |
+| `lending_pool_add_bank` (SPL Token) | 97,333 | 20,072 | −79% |
+| `lending_pool_add_bank_with_seed` (Token-2022) | 100,585 | 29,973 | −70% |
+| `lending_pool_accrue_bank_interest`, an empty bank | 4,002 | 1,678 | −58% |
+| `lending_pool_accrue_bank_interest`, 25% utilization over a minute | 40,135 | 20,407 | −49% |
+| `lending_pool_accrue_bank_interest`, 80% utilization over a year | 41,642 | 25,296 | −39% |
+| `lending_pool_accrue_bank_interest`, 98,765,432,101 / 123,456,789,012 | 42,657 | 25,416 | −40% |
+| `lending_pool_configure_bank`, a new curve | 13,716 | 3,971 | −71% |
+| `lending_pool_configure_bank`, circuit breaker on | 12,743 | 4,335 | −66% |
+| `lending_pool_configure_bank`, circuit breaker off during a halt (accrues first) | 33,226 | 18,665 | −44% |
+| `lending_pool_configure_bank`, checked against an e-mode entry | 17,282 | 6,410 | −63% |
 | `lending_pool_configure_bank_interest_only`, every field | 25,668 | 840 | −97% |
 | `lending_pool_configure_bank_limits_only` | 9,043 | 448 | −95% |
-| `lending_pool_update_fees_destination_account` | 8,926 | 471 | −95% |
+| `lending_pool_update_fees_destination_account` | 8,926 | 468 | −95% |
 | `marginfi_account_initialize` | 6,550 | 2,556 | −61% |
-| `marginfi_account_initialize_pda` | 13,170 | 4,215 | −68% |
-| `lending_account_deposit`, a new balance | 15,739 | 7,538 | −52% |
-| `lending_account_deposit`, interest accrued first | 51,033 | 32,133 | −37% |
-| `lending_account_deposit`, Token-2022 with a transfer fee | 19,019 | 10,202 | −46% |
-| `lending_account_deposit`, up to the deposit limit | 15,170 | 8,694 | −43% |
-| `lending_account_close_balance`, dust to the insurance fund | 20,236 | 10,889 | −46% |
-| `lending_account_close_balance`, an empty balance | 6,729 | 3,113 | −54% |
-| `marginfi_account_close` | 4,734 | 2,728 | −42% |
-| `lending_account_repay`, part | 50,404 | 33,663 | −33% |
-| `lending_account_repay`, all (rounded up, the balance closed) | 10,997 | 5,370 | −51% |
-| `lending_account_repay`, part, with a premium settled first | 52,678 | 40,024 | −24% |
-| `lending_account_repay`, tokenless, by the risk admin | 25,228 | 16,115 | −36% |
-| `lending_account_repay`, Token-2022 with a transfer fee | 32,985 | 18,136 | −45% |
-| `lending_pool_collect_bank_fees` | 26,598 | 12,941 | −51% |
-| `lending_pool_withdraw_fees` | 13,527 | 2,499 | −82% |
-| `lending_pool_withdraw_insurance` | 13,536 | 2,501 | −82% |
-| `lending_pool_withdraw_fees_permissionless` | 10,773 | 2,389 | −78% |
+| `marginfi_account_initialize_pda` | 8,670 | 3,129 | −64% |
+| `lending_account_deposit`, a new balance | 15,739 | 6,899 | −56% |
+| `lending_account_deposit`, interest accrued first | 51,033 | 27,137 | −47% |
+| `lending_account_deposit`, Token-2022 with a transfer fee | 18,990 | 9,525 | −50% |
+| `lending_account_deposit`, up to the deposit limit | 15,170 | 7,394 | −51% |
+| `lending_account_close_balance`, dust to the insurance fund | 20,236 | 9,349 | −54% |
+| `lending_account_close_balance`, an empty balance | 6,677 | 3,055 | −54% |
+| `marginfi_account_close` | 7,734 | 3,374 | −56% |
+| `lending_account_repay`, part | 50,404 | 28,305 | −44% |
+| `lending_account_repay`, all (rounded up, the balance closed) | 10,997 | 5,054 | −54% |
+| `lending_account_repay`, part, with a premium settled first | 52,678 | 33,682 | −36% |
+| `lending_account_repay`, tokenless, by the risk admin | 25,228 | 13,519 | −46% |
+| `lending_account_repay`, Token-2022 with a transfer fee | 32,985 | 16,255 | −51% |
+| `lending_pool_collect_bank_fees` | 29,598 | 13,619 | −54% |
+| `lending_pool_withdraw_fees` | 13,558 | 2,493 | −82% |
+| `lending_pool_withdraw_insurance` | 13,536 | 2,495 | −82% |
+| `lending_pool_withdraw_fees_permissionless` | 10,773 | 2,378 | −78% |
 
-Across the 125 transactions that succeed, the port uses 24–97% fewer compute units; across the 118 refused ones,
-45–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (24–51%).
+Across the 125 transactions that succeed, the port uses 36–97% fewer compute units; across the 118 refused ones,
+56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).

@@ -356,17 +356,25 @@ static __attribute__((noinline)) void ts_divmod32(const uint32_t *u, int mmax, T
   }
   if (rem) *rem = ts_u256_from32(r);
 }
+/* Two 64-bit values: one 128-bit product. Otherwise schoolbook over the limbs that are not zero (two 88-bit values
+   take 9 products, not 64). */
 static inline bool ts_u256_mul(TsU256 a, TsU256 b, TsU256 *out) {
-  if (ts_u256_fits(a, 128) && ts_u256_fits(b, 128) && ((a.w[1] | b.w[1]) == 0)) {
+  if (((a.w[1] | a.w[2] | a.w[3]) | (b.w[1] | b.w[2] | b.w[3])) == 0) {
     *out = ts_u256_from_u128((unsigned __int128)a.w[0] * b.w[0]);
     return false;
   }
   uint32_t x[8], y[8], r[16];
   ts_u256_to32(a, x);
   ts_u256_to32(b, y);
-  ts_mul32(x, 8, y, 8, r);
+  int n = ts_len32(x, 8), m = ts_len32(y, 8);
+  if (n == 0 || m == 0) {
+    *out = ts_u256_lit(0, 0, 0, 0);
+    return false;
+  }
+  ts_mul32(x, n, y, m, r);
+  for (int i = n + m; i < 16; i++) r[i] = 0;
   *out = ts_u256_from32(r);
-  for (int i = 8; i < 16; i++)
+  for (int i = 8; i < n + m; i++)
     if (r[i]) return true;
   return false;
 }

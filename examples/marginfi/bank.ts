@@ -307,10 +307,7 @@ export function configureBank(bank: Mut<Bank>, c: BankConfigFast, timestamp: i64
     require(bank.config.operational_state !== BankOperationalState.CircuitBroken, MarginfiError.BankCircuitBreakerHalted);
     bank.config.operational_state = next;
   }
-  if (c.interest_rate_config !== null) {
-    const opt: InterestRateConfigOpt = c.interest_rate_config;
-    updateInterestRateConfig(bank, opt);
-  }
+  if (c.interest_rate_config !== null) updateInterestRateConfig(bank, c.interest_rate_config);
   if (c.total_asset_value_init_limit !== null) bank.config.total_asset_value_init_limit = c.total_asset_value_init_limit;
   if (c.liquidation_liquidator_fee !== null) {
     require(c.liquidation_liquidator_fee <= MAX_LIQUIDATION_FEE_U32, MarginfiError.InvalidConfig);
