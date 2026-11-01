@@ -161,40 +161,39 @@ the original needs more than 200,000 for, which the default limit would stop bef
 
 ## Cost
 
-Compute units per transaction, mainnet original against the port, from one run of that test (the two router rows from
-a later run, after routes back through a pool were added):
+Compute units per transaction, mainnet original against the port, from one run of that test:
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `create_pool` | 55,818 | 24,441 | −56% |
-| `create_customizable_pool_v2` | 51,673 | 23,730 | −54% |
-| `open_position_with_token22_nft`, in range | 109,875 | 63,145 | −43% |
-| `open_position` (Metaplex NFT) | 121,451 | 80,854 | −33% |
-| `increase_liquidity_v2` | 39,759 | 15,148 | −62% |
-| `decrease_liquidity_v2` | 40,615 | 15,694 | −61% |
-| `decrease_liquidity_v2`, with a reward paid | 58,766 | 20,180 | −66% |
-| `close_position`, Metaplex NFT | 12,532 | 3,689 | −71% |
+| `create_pool` | 57,318 | 24,806 | −57% |
+| `create_customizable_pool_v2` | 51,673 | 23,724 | −54% |
+| `open_position_with_token22_nft`, in range | 115,875 | 64,208 | −45% |
+| `open_position` (Metaplex NFT) | 113,951 | 76,312 | −33% |
+| `increase_liquidity_v2` | 39,759 | 15,935 | −60% |
+| `decrease_liquidity_v2` | 40,615 | 16,538 | −59% |
+| `decrease_liquidity_v2`, with a reward paid | 58,182 | 20,302 | −65% |
+| `close_position`, Metaplex NFT | 11,032 | 3,366 | −69% |
 | `close_position`, Token-2022 NFT (its mint closed too) | 22,395 | 10,376 | −54% |
-| `swap_v2` | 49,040 | 23,209 | −53% |
-| `swap_v2`, across tick arrays | 55,837 | 29,048 | −48% |
-| `swap_v2`, dynamic fee | 58,924 | 31,228 | −47% |
-| `swap_v2`, through limit orders | 74,417 | 37,989 | −49% |
-| `swap_v2`, the mainnet USDC/CC pool | 52,677 | 27,571 | −48% |
-| `swap` | 51,009 | 21,592 | −58% |
-| `swap_router_base_in`, two hops | 80,365 | 40,846 | −49% |
-| `swap_router_base_in`, four hops through two pools twice | 159,246 | 91,550 | −43% |
-| `open_limit_order` | 35,720 | 10,781 | −70% |
-| `settle_limit_order` | 15,682 | 6,496 | −59% |
-| `initialize_reward` | 23,105 | 9,562 | −59% |
+| `swap_v2` | 49,023 | 22,349 | −54% |
+| `swap_v2`, across tick arrays | 55,837 | 27,517 | −51% |
+| `swap_v2`, dynamic fee | 58,924 | 29,890 | −49% |
+| `swap_v2`, through limit orders | 74,417 | 35,675 | −52% |
+| `swap_v2`, the mainnet USDC/CC pool | 52,677 | 26,536 | −50% |
+| `swap` | 51,009 | 20,902 | −59% |
+| `swap_router_base_in`, two hops | 80,365 | 39,499 | −51% |
+| `swap_router_base_in`, four hops through two pools twice | 159,246 | 88,746 | −44% |
+| `open_limit_order` | 34,220 | 9,951 | −71% |
+| `settle_limit_order` | 15,682 | 6,066 | −61% |
+| `initialize_reward` | 24,605 | 9,640 | −61% |
 | `collect_protocol_fee` | 13,626 | 2,355 | −83% |
 | `update_amm_config` | 3,028 | 491 | −84% |
 
 Opening a position is mostly the token programs', the System Program's and (for a Metaplex NFT) Token Metadata's
 work: the NFT mint, its metadata, the associated token account and the transfers. That work costs the same in both.
 Pool and position creation also vary from run to run with the PDA bump searches of the random keys the test uses, in
-both programs alike. Refusals cost far less; a swap of nothing costs 16,665 against 1,651.
+both programs alike. Refusals cost far less; a swap of nothing costs 16,665 against 1,650.
 
-On size, the port's binary is 566,280 bytes and the deployed original 1,700,160 bytes, for the same 37 instructions.
+On size, the port's binary is 552,656 bytes and the deployed original 1,700,160 bytes, for the same 37 instructions.
 
 ## Where they differ
 

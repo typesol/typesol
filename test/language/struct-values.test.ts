@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, acct, deployFile, expectOk, fundedSigner, ix, pda, send, SYSTEM_PROGRAM, type Deployed } from "../harness.js";
+import { BN, acct, compileErrors, deployFile, expectOk, fundedSigner, ix, pda, send, SYSTEM_PROGRAM, type Deployed } from "../harness.js";
 
 const SOURCE = `import { type FixedArray, type Init, type Mut, type Signer, type SystemProgram, type u8, fixedArray, u64 } from "typesol";
 
@@ -66,5 +66,21 @@ describe("struct values a function holds", () => {
   it("shows a @bytes FixedArray as arrays of bytes in the IDL", () => {
     const store = (d.idl.types ?? []).find((t) => t.name === "Store") as { type: { fields: { name: string; type: unknown }[] } };
     expect(store.type.fields.find((f) => f.name === "bits")?.type).toEqual({ array: [{ array: ["u8", 8] }, 4] });
+  });
+
+  it("keeps a helper's struct parameters read-only, which lets it read the caller's value in place", () => {
+    const errors = compileErrors(`import { type Mut, type u64 } from "typesol";
+export interface T { total: u64 }
+export interface S { sum: u64 }
+function save(store: Mut<S>, t: T): void {
+  t.total = 0n;
+  store.sum = t.total;
+}
+export function run(store: Mut<S>): void {
+  const t: T = { total: 5n };
+  save(store, t);
+}
+`);
+    expect(errors).toContain("read-only");
   });
 });

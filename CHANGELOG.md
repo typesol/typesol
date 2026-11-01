@@ -13,6 +13,8 @@ codes, and says so here.
   withdrawal 2,700 compute units fewer, a health pulse of an empty account 3,400).
 - New: `/** @bytes */` on a FixedArray of integers: the IDL shows each as its bytes (Marginfi's
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
+- Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
+  `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
 - Examples: Marginfi's borrows and health pulses, which completes part 3 of the port: `lending_account_borrow`
   (origination fees, the premium check, rate limits after health) and `lending_account_pulse_health` (three passes
   keeping what each gets to, the indexer flags, the event with the cache). Against the binary on mainnet: 687
