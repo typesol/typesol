@@ -2,9 +2,20 @@
 // crate's user_account.rs @ c5d440f6): finding or opening a balance in a bank, moving shares in and out of it,
 // closing it, the order balances are kept in and the flags indexers read. Amounts and shares are I80F48.
 import { type Account, type Mut, type Pubkey, type i128, type i32, type i64, type u16, type u64, type u8, i64 as toI64, pubkey, require, u64 as toU64 } from "typesol";
-import { BANK_ASSET_TAG_STAKED, LIQ_CACHE_LOCKED_FLAG, PREMIUM_ACTIVE, changeAssetShares, changeLiabilityShares, getAssetShares, getLiabilityShares, liabilityAmount } from "./bank";
+import {
+  BANK_ASSET_TAG_STAKED,
+  LIQ_CACHE_LOCKED_FLAG,
+  PREMIUM_ACTIVE,
+  assetAmount,
+  changeAssetShares,
+  changeLiabilityShares,
+  checkUtilizationRatio,
+  getAssetShares,
+  getLiabilityShares,
+  liabilityAmount,
+} from "./bank";
 import { MarginfiError } from "./errors";
-import { I80F48_ONE, I80F48_ZERO, fxAbs, fxAdd, fxCeil, fxDiv, fxFromU64, fxMul, fxSub, fxToU64 } from "./i80f48";
+import { I80F48_ONE, I80F48_ZERO, fxAbs, fxAdd, fxCeil, fxDiv, fxFromU64, fxInt, fxMul, fxSub, fxToU64 } from "./i80f48";
 import { SECONDS_PER_YEAR, u32ToMilli } from "./interest_rate";
 import { type Bank, type Balance, type MarginfiAccount } from "./state";
 
@@ -19,9 +30,9 @@ export const ACCOUNT_IN_REBALANCE: u64 = 256n;
 
 /** 0.0001 and 1 as I80F48: below the first an amount counts as zero, below the second a balance side as empty. */
 export const ZERO_AMOUNT_THRESHOLD: i128 = 28147497671n;
-const EMPTY_BALANCE_THRESHOLD: i128 = 281474976710656n;
+export const EMPTY_BALANCE_THRESHOLD: i128 = 281474976710656n;
 const MAX_COSTLY_POSITIONS = 4n;
-const ZERO_KEY = pubkey("11111111111111111111111111111111");
+export const ZERO_KEY = pubkey("11111111111111111111111111111111");
 
 /** How a balance may grow: BalanceIncreaseType. */
 export const INCREASE_ANY: u8 = 0n;
@@ -117,7 +128,7 @@ function costly(tag: u8): boolean {
 }
 
 /** Balance::claim_premium: the premium accrued at the balance's snapshot rate since its last update, booked. */
-function claimPremium(account: Mut<MarginfiAccount>, i: u64, liability: i128, activatedAt: i64, now: u64): void {
+export function claimPremium(account: Mut<MarginfiAccount>, i: u64, liability: i128, activatedAt: i64, now: u64): void {
   const b = account.lending_account.balances.get(i);
   let elapsed = 0n;
   if (b.last_update !== 0n) {
@@ -134,7 +145,7 @@ function claimPremium(account: Mut<MarginfiAccount>, i: u64, liability: i128, ac
   b.premium_outstanding.value = fxAdd(b.premium_outstanding.value, pending);
   b.last_update = now;
 }
-function writeOffPremium(account: Mut<MarginfiAccount>, i: u64): void {
+export function writeOffPremium(account: Mut<MarginfiAccount>, i: u64): void {
   const b = account.lending_account.balances.get(i);
   b.premium_outstanding.value = I80F48_ZERO;
   b.premium_rate_snapshot = 0n;
@@ -416,4 +427,86 @@ export function repayAll(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>,
   const insurance = fxAdd(fxSub(rounded, owed), assets);
   closeBalanceInternal(account, i, bank, inReceivership, insurance);
   return { amount: fxToU64(rounded), shares };
+}
+
+/** BalanceDecreaseType */
+export const DECREASE_WITHDRAW_ONLY: u8 = 0n;
+export const DECREASE_BORROW_ONLY: u8 = 1n;
+export const DECREASE_BYPASS_BORROW_LIMIT: u8 = 2n;
+
+/**
+ * BankAccountWrapper::decrease_balance_internal: `amount` comes out of the balance's assets first, then becomes a
+ * liability; `kind` limits it to one side (withdraw-only, borrow-only) or lets it past the borrow limit (and the
+ * utilization check). The premium is claimed at the debt before the change. Returns the shares moved: asset shares
+ * burned for a withdrawal, liability shares minted otherwise.
+ */
+export function decreaseBalance(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>, amount: i128, kind: u8, now: u64): i128 {
+  const before = account.lending_account.balances.get(i);
+  const hadAssets = before.asset_shares.value > ZERO_AMOUNT_THRESHOLD;
+  const hadLiabs = before.liability_shares.value > ZERO_AMOUNT_THRESHOLD;
+  const liabilityShares0 = before.liability_shares.value;
+  const stalePremium = before.premium_outstanding.value !== I80F48_ZERO || before.premium_rate_snapshot !== 0n;
+  if ((bank.flags & PREMIUM_ACTIVE) !== 0n && hadLiabs) claimPremium(account, i, liabilityAmount(bank, liabilityShares0), bank.premium_activated_at, now);
+  else if (stalePremium) writeOffPremium(account, i);
+  const b = account.lending_account.balances.get(i);
+  const current = assetAmount(bank, b.asset_shares.value);
+  let assetDecrease = current < amount ? current : amount;
+  const over = fxSub(amount, current);
+  let liabilityIncrease = over > I80F48_ZERO ? over : I80F48_ZERO;
+  if (kind === DECREASE_WITHDRAW_ONLY) {
+    require(isZeroWithTolerance(liabilityIncrease), MarginfiError.OperationWithdrawOnly);
+    liabilityIncrease = I80F48_ZERO;
+  } else if (kind === DECREASE_BORROW_ONLY) {
+    require(isZeroWithTolerance(assetDecrease), MarginfiError.OperationBorrowOnly);
+    assetDecrease = I80F48_ZERO;
+  }
+  let assetShares = I80F48_ZERO;
+  if (assetDecrease > I80F48_ZERO) {
+    assetShares = getAssetShares(bank, assetDecrease);
+    // A share value past 2^48 would let a tiny withdrawal burn no shares.
+    require(assetShares > I80F48_ZERO, MarginfiError.IllegalBalanceState);
+    b.asset_shares.value = fxAdd(b.asset_shares.value, -assetShares);
+    changeAssetShares(bank, -assetShares, false);
+  }
+  let liabilityShares = I80F48_ZERO;
+  if (liabilityIncrease > I80F48_ZERO) {
+    liabilityShares = getLiabilityShares(bank, liabilityIncrease);
+    b.liability_shares.value = fxAdd(b.liability_shares.value, liabilityShares);
+    changeLiabilityShares(bank, liabilityShares, kind === DECREASE_BYPASS_BORROW_LIMIT);
+  }
+  if (kind !== DECREASE_BYPASS_BORROW_LIMIT) checkUtilizationRatio(bank);
+  const hasAssets = b.asset_shares.value > ZERO_AMOUNT_THRESHOLD;
+  const hasLiabs = b.liability_shares.value > ZERO_AMOUNT_THRESHOLD;
+  if (!hadAssets && hasAssets) bank.lending_position_count = saturatingAdd(bank.lending_position_count);
+  if (hadAssets && !hasAssets) bank.lending_position_count = saturatingSub(bank.lending_position_count);
+  if (!hadLiabs && hasLiabs) bank.borrowing_position_count = saturatingAdd(bank.borrowing_position_count);
+  if (hadLiabs && !hasLiabs) bank.borrowing_position_count = saturatingSub(bank.borrowing_position_count);
+  return kind === DECREASE_WITHDRAW_ONLY ? assetShares : liabilityShares;
+}
+
+/**
+ * BankAccountWrapper::withdraw_all: the whole deposit (more than 0.0001, with no liability left), its whole tokens
+ * paid out and the fraction to the insurance fund, the balance closed. Returns the tokens and the shares burned.
+ */
+export function withdrawAll(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>, inReceivership: boolean): Repaid {
+  const b = account.lending_account.balances.get(i);
+  const shares = b.asset_shares.value;
+  const current = assetAmount(bank, shares);
+  const liability = liabilityAmount(bank, b.liability_shares.value);
+  require(current > ZERO_AMOUNT_THRESHOLD, MarginfiError.NoAssetFound);
+  require(isZeroWithTolerance(liability), MarginfiError.NoAssetFound);
+  const whole = fxInt(current);
+  const fraction = fxSub(current, whole);
+  closeBalanceInternal(account, i, bank, inReceivership, fraction);
+  checkUtilizationRatio(bank);
+  return { amount: fxToU64(whole), shares };
+}
+
+/** LendingAccount::has_liabilities: an active balance owing a share or more. */
+export function hasLiabilities(account: Account<MarginfiAccount>): boolean {
+  for (let i = 0n; i < 16n; i++) {
+    const b = account.lending_account.balances.get(i);
+    if (b.active !== 0n && b.liability_shares.value >= EMPTY_BALANCE_THRESHOLD) return true;
+  }
+  return false;
 }

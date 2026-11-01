@@ -635,6 +635,28 @@ export function marginfiPair() {
       ]),
       rest,
     );
+  const withdraw = (
+    group: Address,
+    account: Address,
+    authority: KeyPairSigner,
+    bank: BankRef,
+    to: Address,
+    amount: bigint,
+    opts: { all?: boolean | null; program?: Address; rest?: Address[] } = {},
+  ) =>
+    withRest(
+      s.ix("lending_account_withdraw", { amount: new BN(amount.toString()), withdraw_all: opts.all ?? null }, [
+        { address: group },
+        { address: account, writable: true },
+        { address: authority.address, signer: authority },
+        { address: bank.address, writable: true },
+        { address: to, writable: true },
+        { address: bank.v.liquidityAuth },
+        { address: bank.v.liquidity, writable: true },
+        { address: opts.program ?? TOKEN_PROGRAM },
+      ]),
+      opts.rest ?? [],
+    );
   const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
 
@@ -648,6 +670,7 @@ export function marginfiPair() {
     configureOracle,
     setOraclePrice,
     pulse,
+    withdraw,
     createAta,
     repay,
     ata,

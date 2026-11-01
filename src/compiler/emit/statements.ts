@@ -1052,7 +1052,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const type = declared ?? v.type;
       if (type.kind === "remaining") {
         if (mutable) this.fail(d, "bind remainingAccounts() with const");
-        this.scopes.at(-1)!.set(name, { c: "", type, mutable: false });
+        this.scopes.at(-1)!.set(name, { c: v.c, type, mutable: false });
         continue;
       }
       if ((type.kind === "account" || type.kind === "structRef") && mutable) this.fail(d, "bind accounts with const");

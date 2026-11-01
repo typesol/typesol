@@ -33,7 +33,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     const parts: ({ kind: "meta"; c: string } | Spread)[] = [];
     for (const el of a[1].elements) {
       if (ts.isSpreadElement(el)) {
-        if (!this.ix) this.fail(el, "remainingAccounts() is only available in instructions");
+        if (!this.ix) this.fail(el, "pass the remaining accounts to a CPI from the instruction; a helper reads them one at a time with .get(i)");
         const inner = el.expression;
         const fnName = ts.isCallExpression(inner) ? this.exportName(inner.expression) : undefined;
         const wrapped = ts.isCallExpression(inner) && (fnName === "readonly" || fnName === "writable") && inner.arguments.length === 1;

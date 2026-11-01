@@ -540,8 +540,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return undefined;
       }
       case "remainingAccounts":
-        if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions");
-        return { c: "", type: { kind: "remaining" } };
+        if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions; pass it to a helper that takes RemainingAccounts");
+        return { c: String(this.ix.accounts.length), type: { kind: "remaining" } };
       case "readData":
         return this.readData(node);
       case "bigEndian":
@@ -1004,6 +1004,16 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return { name, count };
   }
 
+  /** The index of the first remaining account among the instruction's accounts, as C: a constant, or a helper's parameter. */
+  protected remainingBase(node: ts.Expression): string {
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      if (l?.type.kind === "remaining" && l.c) return l.c;
+    }
+    if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions; pass it to a helper that takes RemainingAccounts");
+    return String(this.ix.accounts.length);
+  }
+
   /** `remainingAccounts()` or a const bound to it. */
   protected isRemaining(node: ts.Expression): boolean {
     if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "remaining";
@@ -1110,9 +1120,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       node.expression.name.text === "get" &&
       this.isRemaining(node.expression.expression)
     ) {
-      if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions");
       if (node.arguments.length !== 1) this.fail(node, "get(index) takes one argument");
-      const n = this.ix.accounts.length;
+      const n = this.remainingBase(node.expression.expression);
       const idx = this.index(node.arguments[0], `(uint64_t)(params->ka_num - ${n})`);
       const t = this.tmp("acct");
       this.line(`TsAccount *${t} = params->ka[${n} + ${idx}];`);
@@ -1379,8 +1388,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (argNodes.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);
     // Arguments are evaluated left to right: settle earlier ones when a later one runs statements.
     // A helper that takes accounts may change account data, so account text it gets is copied first.
-    // A RemainingAccount parameter counts: the helper may load and write a struct through it.
-    const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account");
+    // A RemainingAccount(s) parameter counts: the helper may load and write a struct through it.
+    const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining");
     const values: Value[] = [];
     const pieces: (number | string)[] = [];
     h.params.forEach((p, i) => {
@@ -1475,7 +1484,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
    * copy taken at the call (JS passes the object as it was); other helpers cannot write, so a pointer is enough.
    */
   protected snapshotPlace(lv: string, type: FieldType, h: Helper): string {
-    if (!h.params.some((p) => p.account || p.type.kind === "account")) return `(&${lv})`;
+    if (!h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining")) return `(&${lv})`;
     const n = this.fieldBytes(type);
     // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
     const t = this.tmp("argc");

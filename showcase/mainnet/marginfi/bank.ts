@@ -1,7 +1,7 @@
 // Marginfi's bank (programs/marginfi/src/state/bank.rs, bank_config.rs and bank_cache.rs @ c5d440f6): creating one
 // from its compact config, checking a config, the interest accrual and the rate cache. Amounts and share values are
 // I80F48 (showcase/mainnet/marginfi/i80f48.ts).
-import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, i64 as toI64, u32 as toU32, u64 as toU64, u8 as toU8 } from "typesol";
+import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, i128 as toI128, i64 as toI64, u32 as toU32, u64 as toU64, u8 as toU8 } from "typesol";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import { MarginfiError } from "./errors";
 import {
@@ -23,6 +23,8 @@ import {
   fxSub,
   fxToF64Bits,
   fxToU64,
+  exp10Fx,
+  fxToI64Wrapping,
   fxToU64Wrapping,
   fxWrappingDiv,
   fxWrappingMul,
@@ -505,8 +507,8 @@ export function validateBankState(bank: Mut<Bank>, kind: u8, haltSafe: boolean, 
   }
 }
 
-/** RateLimitWindow::maybe_advance_window, then record_inflow (an enabled window): an inflow gives back capacity. */
-function windowInflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLimitWindow {
+/** RateLimitWindow::maybe_advance_window (an enabled window): one window on, or a fresh one after two. */
+function windowAdvance(w: RateLimitWindow, timestamp: i64): RateLimitWindow {
   let start = w.window_start;
   let prev = w.prev_window_outflow;
   let cur = w.cur_window_outflow;
@@ -527,14 +529,133 @@ function windowInflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLimi
       }
     }
   }
+  return { max_outflow: w.max_outflow, window_duration: w.window_duration, window_start: start, prev_window_outflow: prev, cur_window_outflow: cur };
+}
+/** record_inflow (an enabled window): an inflow gives back capacity. */
+function windowInflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLimitWindow {
+  const a = windowAdvance(w, timestamp);
   const inflow: i64 = amount <= 9223372036854775807n ? i64Of(amount) : 9223372036854775807n;
   return {
-    max_outflow: w.max_outflow,
-    window_duration: w.window_duration,
-    window_start: start,
-    prev_window_outflow: prev,
-    cur_window_outflow: saturatingSubI64(cur, inflow),
+    max_outflow: a.max_outflow,
+    window_duration: a.window_duration,
+    window_start: a.window_start,
+    prev_window_outflow: a.prev_window_outflow,
+    cur_window_outflow: saturatingSubI64(a.cur_window_outflow, inflow),
   };
+}
+
+/**
+ * remaining_capacity_from_state: the cap less this window's net outflow and the last window's, weighted by the part
+ * of it still inside the sliding window (a cap past i64::MAX allows nothing).
+ */
+function windowCapacity(max: u64, duration: u64, start: i64, prev: i64, cur: i64, timestamp: i64): i64 {
+  if (max > 9223372036854775807n) return 0n;
+  const m = toI64(max);
+  if (duration === 0n) return m;
+  const elapsed = saturatingSubI64(timestamp, start);
+  if (elapsed < 0n) return 0n;
+  const e = toU64(elapsed);
+  if (e >= duration) return m;
+  // i128 products: the full i64 range stays representable (the original saturates, which cannot happen here).
+  const weighted = (toI128(prev) * toI128(duration - e)) / toI128(duration);
+  const left = toI128(m) - (weighted + toI128(cur));
+  if (left > 9223372036854775807n) return 9223372036854775807n;
+  if (left < -9223372036854775808n) return -9223372036854775808n;
+  return toI64(left);
+}
+/** effective_remaining_capacity: as if the window had advanced, without writing it (an overflowing span saturates). */
+function windowEffectiveCapacity(w: RateLimitWindow, timestamp: i64): i64 {
+  let start = w.window_start;
+  let prev = w.prev_window_outflow;
+  let cur = w.cur_window_outflow;
+  if (w.window_duration !== 0n) {
+    const elapsed = saturatingSubI64(timestamp, start);
+    if (elapsed >= 0n) {
+      const e = toU64(elapsed);
+      const twice = w.window_duration > 9223372036854775807n ? 18446744073709551615n : w.window_duration * 2n;
+      if (e >= twice) {
+        start = timestamp;
+        prev = 0n;
+        cur = 0n;
+      } else if (e >= w.window_duration) {
+        start = saturatingAddI64(start, i64Wrap(w.window_duration));
+        prev = cur;
+        cur = 0n;
+      }
+    }
+  }
+  return windowCapacity(w.max_outflow, w.window_duration, start, prev, cur, timestamp);
+}
+/** RateLimitWindow::try_record_outflow (an enabled window, already checked for room): the outflow counted. */
+function windowOutflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLimitWindow {
+  const a = windowAdvance(w, timestamp);
+  require(amount <= 9223372036854775807n, MarginfiError.InternalLogicError);
+  const n = toI64(amount);
+  require(n <= windowCapacity(a.max_outflow, a.window_duration, a.window_start, a.prev_window_outflow, a.cur_window_outflow, timestamp), MarginfiError.InternalLogicError);
+  return {
+    max_outflow: a.max_outflow,
+    window_duration: a.window_duration,
+    window_start: a.window_start,
+    prev_window_outflow: a.prev_window_outflow,
+    cur_window_outflow: saturatingAddI64(a.cur_window_outflow, n),
+  };
+}
+
+/** check_utilization_ratio: a bank may not owe more than it holds. */
+export function checkUtilizationRatio(bank: Mut<Bank>): void {
+  require(assetAmount(bank, bank.total_asset_shares.value) >= liabilityAmount(bank, bank.total_liability_shares.value), MarginfiError.IllegalUtilizationRatio);
+}
+
+/**
+ * record_withdrawal_outflow: outside flash loans, receiverships, deleverages and rebalances, a withdrawal or borrow
+ * must fit the bank's hourly and daily windows (and is counted in them); with the group's limits on, its value at
+ * `price` must fit the group's windows, and it is reported for the flow admin.
+ */
+export function recordWithdrawalOutflow(
+  groupLimited: boolean,
+  amount: u64,
+  price: i128,
+  bank: Mut<Bank>,
+  group: Account<MarginfiGroup>,
+  groupKey: Pubkey,
+  bankKey: Pubkey,
+  accountFlags: u64,
+  timestamp: i64,
+): void {
+  // ACCOUNT_IN_FLASHLOAN | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_REBALANCE
+  if ((accountFlags & 306n) !== 0n) return;
+  const hourlyOn = bank.rate_limiter.hourly.max_outflow > 0n;
+  const dailyOn = bank.rate_limiter.daily.max_outflow > 0n;
+  if (hourlyOn || dailyOn) {
+    if (hourlyOn) bank.rate_limiter.hourly = windowAdvance(bank.rate_limiter.hourly, timestamp);
+    if (dailyOn) bank.rate_limiter.daily = windowAdvance(bank.rate_limiter.daily, timestamp);
+    const fits = amount <= 9223372036854775807n;
+    if (hourlyOn) {
+      const w = bank.rate_limiter.hourly;
+      require(fits && toI64(amount) <= windowCapacity(w.max_outflow, w.window_duration, w.window_start, w.prev_window_outflow, w.cur_window_outflow, timestamp), MarginfiError.BankHourlyRateLimitExceeded);
+    }
+    if (dailyOn) {
+      const w = bank.rate_limiter.daily;
+      require(fits && toI64(amount) <= windowCapacity(w.max_outflow, w.window_duration, w.window_start, w.prev_window_outflow, w.cur_window_outflow, timestamp), MarginfiError.BankDailyRateLimitExceeded);
+    }
+    if (hourlyOn) bank.rate_limiter.hourly = windowOutflow(bank.rate_limiter.hourly, amount, timestamp);
+    if (dailyOn) bank.rate_limiter.daily = windowOutflow(bank.rate_limiter.daily, amount, timestamp);
+  }
+  if (!groupLimited) return;
+  require(price > I80F48_ZERO, MarginfiError.InvalidRateLimitPrice);
+  require(bank.mint_decimals < 24n, MarginfiError.InternalLogicError);
+  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(amount), price), exp10Fx(toU64(bank.mint_decimals))));
+  if (group.rate_limiter.hourly.max_outflow > 0n) require(value <= windowEffectiveCapacity(group.rate_limiter.hourly, timestamp), MarginfiError.GroupHourlyRateLimitExceeded);
+  if (group.rate_limiter.daily.max_outflow > 0n) require(value <= windowEffectiveCapacity(group.rate_limiter.daily, timestamp), MarginfiError.GroupDailyRateLimitExceeded);
+  emit<RateLimitFlowEvent>({
+    group: groupKey,
+    bank: bankKey,
+    mint: bank.mint,
+    flow_direction: 0n,
+    native_amount: amount,
+    mint_decimals: bank.mint_decimals,
+    current_timestamp: timestamp,
+  });
 }
 function i64Of(n: u64): i64 {
   return toI64(n);
@@ -735,6 +856,27 @@ function updateCircuitBreaker(bank: Mut<Bank>, timestamp: i64, slot: u64, curren
   if (shift > maxShift) shift = maxShift;
   reference += shift;
   bank.cb_reference_price.value = reference;
+}
+
+/**
+ * Bank::cb_price_gate: an enabled breaker refuses a price that moved from its EMA reference past the first tier
+ * (beyond the confidence band), or from its window reference past the long window's caps (CircuitBreakerPriceJump).
+ */
+export function cbPriceGateErr(bank: Account<Bank>, price: i128, conf: i128): u32 {
+  if ((bank.flags & CIRCUIT_BREAKER_ENABLED) !== CIRCUIT_BREAKER_ENABLED) return 0n;
+  const confidence = conf > 0n ? conf : 0n;
+  const reference = bank.cb_reference_price.value;
+  const threshold = bank.config.cb_deviation_bps_tiers.get(0n);
+  if (reference > CB_MIN_REF_PRICE && threshold > 0n && cbConfidenceAdjustedDeviationBps(price, reference, confidence) >= toU64(threshold)) return 6604n;
+  const windowRef = bank.cb_window_reference_price.value;
+  if (windowRef > CB_MIN_REF_PRICE) {
+    const maxUp = orDefault(toU64(bank.config.cb_window_max_up_bps), CB_WINDOW_MAX_UP_BPS);
+    const maxDown = orDefault(toU64(bank.config.cb_window_max_down_bps), CB_WINDOW_MAX_DOWN_BPS);
+    const up = price - windowRef - confidence;
+    const down = windowRef - price - confidence;
+    if (cbDeviationBps(up > 0n ? up : 0n, windowRef) >= maxUp || cbDeviationBps(down > 0n ? down : 0n, windowRef) >= maxDown) return 6604n;
+  }
+  return 0n;
 }
 
 /**

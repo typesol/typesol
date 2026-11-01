@@ -49,6 +49,11 @@ import {
 import {
   ACCOUNT_DISABLED,
   ACCOUNT_FROZEN,
+  ACCOUNT_IN_FLASHLOAN,
+  DECREASE_WITHDRAW_ONLY,
+  decreaseBalance,
+  hasLiabilities,
+  withdrawAll,
   ACCOUNT_IN_RECEIVERSHIP,
   ACCOUNT_IN_DELEVERAGE,
   ACCOUNT_IN_ORDER_EXECUTION,
@@ -87,6 +92,8 @@ import {
   configureBank,
   initBank,
   recordDepositInflow,
+  recordWithdrawalOutflow,
+  saturatingSubI64,
   remainingDepositCapacity,
   totalLiquidationFee,
   updateBankCache,
@@ -98,12 +105,26 @@ import {
 } from "./bank";
 import { MarginfiError } from "./errors";
 import {
+  REQ_INITIAL,
+  REQ_MAINTENANCE,
+  cachePrice,
+  calcValue,
+  cbPriceGate,
+  healthComponents,
+  lowPrice,
+  riskTiersErr,
+  updatePremiumSnapshots,
+  writeHealthCache,
+} from "./risk";
+import {
   type InterestRateConfigOpt,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
   type LendingAccountPremiumSettledEvent,
   type LendingAccountRepayEvent,
+  type LendingAccountWithdrawEvent,
+  type DeleverageWithdrawFlowEvent,
   type LendingPoolBankCollectFeesEvent,
   type LendingPoolBankConfigureOracleEvent,
   type LendingPoolBankSetOraclePriceEvent,
@@ -112,7 +133,7 @@ import {
   type MarginfiGroupConfigureEvent,
   type MarginfiGroupCreateEvent,
 } from "./events";
-import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxSub, fxToF64Bits, fxToU64 } from "./i80f48";
+import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxSub, fxToF64Bits, fxToU32Wrapping, fxToU64 } from "./i80f48";
 import {
   ASSET_TAG_DEFAULT,
   ASSET_TAG_SOL,
@@ -129,6 +150,8 @@ import {
 import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
 import { type Bank, type FeeState, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState, OracleSetup } from "./state";
 
+/** Anchor takes as many accounts as the runtime passes: a withdrawal's health check reads a bank and its oracle per balance. */
+export const MAX_ACCOUNTS = 255n;
 const SYSTEM_PROGRAM_ID = pubkey("11111111111111111111111111111111");
 const MAX_PREMIUM_ENTRIES = 64n;
 
@@ -859,6 +882,146 @@ export function lendingAccountDeposit(
   });
   sortBalances(marginfi_account);
   syncIndexerFlags(marginfi_account);
+}
+
+// ---- withdrawals -----------------------------------------------------------------------------------------------------
+
+/**
+ * Take a deposit out: `amount` (before a Token-2022 transfer fee), or all of it with `withdraw_all` (the balance
+ * closed, the fraction of a token to the insurance fund). Then the account's health: its Initial health with the
+ * banks and oracles after the instruction's accounts (one [bank, oracle] group per balance), the circuit breaker's
+ * gate while it owes anything, and its premium rates; the bank's price cache last.
+ */
+export function lendingAccountWithdraw(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+  destination_token_account: Mut<TokenAccount>,
+  bank_liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  amount: u64,
+  withdraw_all: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group) || (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n, MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, true, true, true), MarginfiError.Unauthorized);
+  constraint(bank, isMarginfiAssetTag(bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  constraint(
+    bank,
+    !((marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n && bank.config.asset_weight_init.value === I80F48_ZERO),
+    MarginfiError.LiquidationPremiumTooHigh,
+  );
+  const t = now();
+  const all = withdraw_all !== null && withdraw_all;
+  // maybe_take_bank_mint: a Token-2022 bank's mint comes first among the remaining accounts; the banks and oracles
+  // the health checks read come after it.
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  const start: u64 = t22 ? 1n : 0n;
+  // ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_ORDER_EXECUTION | ACCOUNT_IN_REBALANCE: the health check waits for the end
+  // of the outer instruction.
+  const deferred = (marginfi_account.account_flags & 400n) !== 0n;
+  // Taking out a deposit from an account that owes nothing is risk-free, so a halted bank allows it.
+  validateBankState(bank, FAILS_IN_PAUSED_STATE, !hasLiabilities(marginfi_account), t);
+  const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
+  let price = I80F48_ZERO;
+  if (deferred || groupLimited) {
+    const p = lowPrice(bank, bank.key, remainingAccounts(), start, t);
+    require(p.err === 0n, p.err);
+    if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
+    price = p.v;
+  }
+  accrueInterest(bank, group, bank.key, t);
+  const i = findBalance(marginfi_account, bank.key);
+  require(i >= 0n, MarginfiError.BankAccountNotFound);
+  let paid: u64 = 0n;
+  let shares = I80F48_ZERO;
+  if (all) {
+    const w = withdrawAll(marginfi_account, u64(i), bank, (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n);
+    paid = w.amount;
+    shares = w.shares;
+  } else {
+    paid = t22 ? amount + transferFeeInverse(remainingAccounts().get(0n), amount) : amount;
+    shares = decreaseBalance(marginfi_account, u64(i), bank, fxFromU64(paid), DECREASE_WITHDRAW_ONLY, u64(t));
+  }
+  // After a deleverage's tokenless repayments, what is left in the vault is all there is.
+  if ((bank.flags & TOKENLESS_REPAYMENTS_COMPLETE) !== 0n && liquidity_vault.amount < paid) paid = liquidity_vault.amount;
+  recordWithdrawalOutflow(groupLimited, paid, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  if ((marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n) {
+    // check_deleverage_withdraw_limit: the day's deleveraged value, in whole dollars (wrapped to u32), under the cap.
+    const value = calcValue(fxFromU64(paid), price, bank.mint_decimals, I80F48_ZERO, false);
+    require(value.err === 0n, value.err);
+    const usd = fxToU32Wrapping(value.v);
+    const window = group.deleverage_withdraw_window_cache;
+    const today: u32 = saturatingSubI64(t, window.last_daily_reset_timestamp) >= 86400n ? 0n : window.withdrawn_today;
+    const projected: u32 = today > 4294967295n - usd ? 4294967295n : today + usd;
+    require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
+    emit<DeleverageWithdrawFlowEvent>({ group: group.key, bank: bank.key, mint: bank.mint, outflow_usd: usd, current_timestamp: t });
+  }
+  marginfi_account.last_update = u64(t);
+  const bump = bank.liquidity_vault_authority_bump;
+  if (t22)
+    invoke(
+      token_program,
+      [writable(liquidity_vault), readonly(remainingAccounts().get(0n)), writable(destination_token_account), readonlySigner(bank_liquidity_vault_authority)],
+      [u8(12n), paid, decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      token_program,
+      [writable(liquidity_vault), writable(destination_token_account), readonlySigner(bank_liquidity_vault_authority)],
+      [u8(3n), paid],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  updateBankCache(bank, group, t);
+  emit<LendingAccountWithdrawEvent>({
+    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: paid,
+    close_balance: all,
+    share_amount: { value: shares },
+  });
+  sortBalances(marginfi_account);
+  syncIndexerFlags(marginfi_account);
+  if (!deferred) {
+    // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
+    const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
+    const h = healthComponents(marginfi_account, group, remainingAccounts(), start, REQ_INITIAL, true, t);
+    if (!flash) {
+      require(h.err === 0n, h.err);
+      require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), start);
+      require(tiers === 0n, tiers);
+      // A tagged account healthy at Maintenance (spot prices) loses its tag; any error there keeps it.
+      if (marginfi_account.liquidation_tagged_at !== 0n) {
+        const m = healthComponents(marginfi_account, group, remainingAccounts(), start, REQ_MAINTENANCE, false, t);
+        if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
+      }
+    }
+    writeHealthCache(marginfi_account, h, t, !flash);
+    if (hasLiabilities(marginfi_account)) {
+      const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, t);
+      require(gate === 0n, gate);
+    }
+    updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
+  }
+  const p = cachePrice(bank, bank.key, remainingAccounts(), start, t);
+  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
 }
 
 // ---- repayments and fees -------------------------------------------------------------------------------------------

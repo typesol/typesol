@@ -8,7 +8,7 @@
 import { type Account, type RemainingAccount, type i128, type i32, type i64, type u32, type u64, type u8, i64 as toI64, pubkey, readData, require, u64 as toU64 } from "typesol";
 import { ASSET_TAG_JUPLEND, BANK_ASSET_TAG_STAKED, saturatingAddI64, saturatingSubI64 } from "./bank";
 import { MarginfiError } from "./errors";
-import { type Fx, I80F48_ONE, fxFromI128Wrapping, fxFromI64, fxFromU64, fxMin, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
+import { type Fx, exp10Fx, fxFromI128Wrapping, fxFromI64, fxFromU64, fxMin, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
 import { U32_MAX_FX } from "./interest_rate";
 import { type Bank, OracleSetup } from "./state";
 
@@ -21,7 +21,7 @@ const ASSET_TAG_SOLEND: u8 = 5n;
 
 /** A Pyth account that does not Borsh-decode: the original fails with ProgramError::BorshIoError (not a custom code). */
 export const ERR_BORSH: u32 = 1n;
-const WRONG_NUMBER_OF_ORACLE_ACCOUNTS: u32 = 6051n;
+export const WRONG_NUMBER_OF_ORACLE_ACCOUNTS: u32 = 6051n;
 const WRONG_ORACLE_ACCOUNT_KEYS: u32 = 6052n;
 const INVALID_ORACLE_SETUP: u32 = 6025n;
 const ORACLE_NOT_SETUP: u32 = 6031n;
@@ -214,7 +214,7 @@ export interface PriceConf {
   source_time: i64;
 }
 
-function feedErr(err: u32): Feed {
+export function feedErr(err: u32): Feed {
   return { err, kind: 0n, price: 0n, conf: 0n, ema_price: 0n, ema_conf: 0n, exponent: 0n, publish_time: 0n, value: 0n, source_time: 0n };
 }
 
@@ -294,10 +294,7 @@ function switchboardAccountErr(a: RemainingAccount): u32 {
 
 /** pyth_price_components_to_i80f48: x scaled by 10^exponent (|exponent| of 24 or more panics, indexing EXP_10_I80F48). */
 function pythScaled(x: i128, exponent: i32): Fx {
-  const e = exponent < 0n ? -exponent : exponent;
-  require(e < 24n, MarginfiError.InternalLogicError);
-  let scale: i128 = I80F48_ONE;
-  for (let i: i32 = 0n; i < e; i++) scale = scale * 10n;
+  const scale = exp10Fx(toU64(exponent < 0n ? -toI64(exponent) : toI64(exponent)));
   if (exponent === 0n) return { err: 0n, v: x };
   if (exponent < 0n) return fxTryDiv(x, scale);
   return fxTryMul(x, scale);

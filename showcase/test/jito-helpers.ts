@@ -182,6 +182,9 @@ export function pairOf(so: string, source: string, programId: Address) {
         return "failed";
       }
       expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
+      // PAIR_LOG=<code>: where the original failed with that code (its last log lines).
+      if (process.env.PAIR_LOG && outcome(a).includes(`code: ${process.env.PAIR_LOG} `))
+        console.log(`${label}: original failed\n  ${logs(a).split("\n").slice(-4).join("\n  ")}`);
       for (const w of watch) expect(s.bytes(s.d.svm, w), `${label}: ${w}`).toBe(s.bytes(s.original, w));
       if (!(a instanceof FailedTransactionMetadata)) {
         expect(events(b), `${label}: events`).toEqual(events(a));
