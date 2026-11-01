@@ -20,5 +20,10 @@ Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Sol
 | `mpl_noop.so` | `mnoopTCrg4p8ry25e4bcWA9XZjbNjMTfgYVGGEdRsf3` | metaplex-foundation/mpl-account-compression (noop) | Apache-2.0 | no (fetch) | `10d275edf5a3181eb4ac187c07d37efd0279c7a6fe0cb222b1ac97804bc14b8b` |
 | `mpl_bubblegum.so` | `BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY` | metaplex-foundation/mpl-bubblegum | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `e054423179cc57281d5c2fc9fdb7e3cfcf2ef70cdbb0c4d36ab52696e51157b1` |
 
+Other third-party data in `test/fixtures/` (not binaries):
+
+- `test/fixtures/marginfi/`: Marginfi v2's on-chain IDL (`marginfi.idl.json`, from MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA, version 0.1.12) and three of its mainnet accounts (`mainnet/`: the main group, a USDC bank, the fee state), read from mainnet on 2026-11-01. mrgnlabs/marginfi-v2 is Apache-2.0. `i80f48-vectors.json` was written by `i80f48-oracle/` with the `fixed` crate (MIT or Apache-2.0).
+- `test/fixtures/clmm/`: Raydium CLMM's on-chain IDL and the mainnet USDC/CC pool's accounts (raydium-io/raydium-clmm, Apache-2.0).
+
 Tests that need a missing binary are skipped. The binaries change when their upstream programs are upgraded on devnet,
 so a fresh fetch may hash differently; TypeSOL only relies on their public instruction layouts.
