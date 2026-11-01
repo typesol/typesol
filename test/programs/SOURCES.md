@@ -1,7 +1,7 @@
 # Third-party program binaries
 
 Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Solana devnet (program data account,
-45-byte header removed) on 2026-10-22/23 (the mpl-account-compression pair on 2026-10-28; `coral_multisig.so` from mainnet on 2026-10-29; the Jito programs from mainnet on 2026-10-31); `scripts/fetch-programs.sh [cluster]` downloads them again.
+45-byte header removed) on 2026-10-22/23 (the mpl-account-compression pair on 2026-10-28; `coral_multisig.so` from mainnet on 2026-10-29; the Jito programs from mainnet on 2026-10-31; `marginfi_v2.so` from mainnet on 2026-11-01); `scripts/fetch-programs.sh [cluster]` downloads them again.
 
 | File | Program id | Upstream | License | In the repository | sha256 (as dumped) |
 | --- | --- | --- | --- | --- | --- |
@@ -14,6 +14,7 @@ Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Sol
 | `jito_tip_payment.so` | `T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt` | jito-foundation/jito-programs (mev-programs/programs/tip-payment; deployed in slot 337435036, the program of #143, unchanged at ce1dfb6), dumped from **mainnet** on 2026-10-31, cut at the ELF's end | Apache-2.0 | yes | `b1683b137ed0bf659a1069eaac51abaea317c9cc285cb3a8ba421d42a61b85f7` |
 | `jito_tip_distribution.so` | `4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7` | jito-foundation/jito-programs (mev-programs/programs/tip-distribution; deployed in slot 403585576, ce1dfb6), dumped from **mainnet** on 2026-10-31, cut at the ELF's end | Apache-2.0 | yes | `006e729446735a07ff98a2cbd694d42c55fe2077f94bbfa261aaa90798c2759f` |
 | `jito_priority_fee_distribution.so` | `Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3` | jito-foundation/jito-programs (mev-programs/programs/priority-fee-distribution; deployed in slot 406218562, ce1dfb6), dumped from **mainnet** on 2026-10-31, cut at the ELF's end | Apache-2.0 | yes | `e3ca488b516ded8973d1a2bebd3e8eed0bb465f8a3a947efc89bbeaa83331734` |
+| `marginfi_v2.so` | `MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA` | mrgnlabs/marginfi-v2 (programs/marginfi 0.1.12, c5d440f6; deployed in slot 456093551), dumped from **mainnet** on 2026-11-01, cut at the ELF's end | Apache-2.0 | yes | `6f8184ac9c0d8bf5b48caa13111e307a8fd8d09fa51f08f7cda9c5ce766ba702` |
 | `mpl_token_metadata.so` | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | metaplex-foundation/mpl-token-metadata | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `31f0a627dba051a938de650464e55cc5397a4be0fd496929c1f9cf02fe5e9011` |
 | `mpl_core.so` | `CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d` | metaplex-foundation/mpl-core | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `7e033fd24ce189d9e7dc2600152c6c88ce80d662deeeb7ecc64f0c8437867cf7` |
 | `mpl_account_compression.so` | `mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW` | metaplex-foundation/mpl-account-compression (Bubblegum V2 trees) | Apache-2.0 | no (fetch) | `3586e2852ea61311611e3941bb3af037aaf495b2f38503049b40b89065226fd4` |

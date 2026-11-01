@@ -1,5 +1,6 @@
-// Shared by the Jito differential tests (test/examples/jito-mev.test.ts, written cases) and the Jito fuzzer
-// (test/verification/fuzz-jito.test.ts, random cases): each original and its port side by side, compared.
+// Shared by the Jito differential tests (test/examples/jito-mev.test.ts, written cases), the Jito fuzzer
+// (test/verification/fuzz-jito.test.ts, random cases) and Marginfi's (test/examples/marginfi.test.ts): each original and
+// its port side by side, compared.
 import {
   type Address,
   type Instruction,
@@ -14,6 +15,7 @@ import {
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 import { web3 } from "@anchor-lang/core";
@@ -79,7 +81,7 @@ export function merkle(leaves: [Address, bigint][]) {
   };
 }
 
-/** One original and its port side by side: send to both and compare. */
+/** One original and its port side by side: send to both and compare. `source`: a file of examples/jito-mev, or an absolute path. */
 export function pairOf(so: string, source: string, programId: Address) {
   const s = {
     d: undefined as unknown as Deployed,
@@ -87,7 +89,7 @@ export function pairOf(so: string, source: string, programId: Address) {
     cu: {} as Record<string, [bigint, bigint]>,
     compared: 0,
     async load() {
-      s.d = await deployFile(port(source), { programId });
+      s.d = await deployFile(isAbsolute(source) ? source : port(source), { programId });
       s.original = new LiteSVM();
       s.original.addProgramFromFile(programId, program(so));
       s.epoch(900n);
@@ -161,11 +163,15 @@ export function pairOf(so: string, source: string, programId: Address) {
       const info = vm.getAccount(a);
       return info.exists ? `${info.lamports} ${info.programAddress} ${Buffer.from(info.data).toString("hex")}` : "missing";
     },
-    /** Send to both: the same outcome, account bytes and events. `failing`: the original panics, so only both failing is required. */
-    async both(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing = false) {
+    /**
+     * Send to both: the same outcome, account bytes and events. `failing`: the original panics, so only both failing is
+     * required; "if-panics": that, when the original fails without an error code (a fuzzer's input that hits a panic).
+     */
+    async both(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing: boolean | "if-panics" = false) {
       const [a, b] = [await send(s.original, payer, ixs), await send(s.d.svm, payer, ixs)];
       s.compared++;
       const logs = (r: Result) => meta(r).logs().join("\n");
+      if (failing === "if-panics") failing = a instanceof FailedTransactionMetadata && !outcome(a).includes("InstructionErrorCustom");
       if (failing) {
         expect(a instanceof FailedTransactionMetadata && b instanceof FailedTransactionMetadata, `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(
           true,

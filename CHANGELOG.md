@@ -6,6 +6,25 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's group and bank administration (part 2 of the port, docs/case-study-marginfi.md): eleven
+  instructions, from the fee state and groups to adding banks (SPL Token and Token-2022, with or without a seed),
+  configuring them (operational states, curves, liquidation fees, the circuit breaker, e-mode checks, frozen banks)
+  and accruing interest with the group's, insurance and program fees. Checked against the binary on mainnet
+  (test/programs/marginfi_v2.so): the same outcome, account bytes and events on 115 transactions, and on random runs
+  (`test/verification/fuzz-marginfi.test.ts`); 27–97% fewer compute units on the ones that succeed.
+- Changed: the creates an instruction's body starts with now run before the other accounts' constraints, as Anchor
+  creates `init` accounts first. A transaction that breaks both fails with Anchor's code (Marginfi's fuzzer found one:
+  adding a bank at a taken address, signed by someone else). Programs that start with a create and have other
+  constraints compile differently: here examples/raydium-cp-swap, raydium-clmm, jito-mev's two distribution programs
+  and eleven ports under test/ports/tokens; their tests against the mainnet binaries pass as before.
+- Changed: accounts of a zero-copy type (`@serialization bytemuck`) are checked as Anchor's `AccountLoader` checks
+  them: the owner first (3007, also for an account never created, where `Account<T>` gives 3012), then a
+  discriminator to read (3001, new) and match (3002), then the size (3003). No other program here has such an account,
+  so only examples/marginfi compiles differently from this.
+- New: `Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">` checks the sysvar's address as
+  Anchor's `address = …` constraint does (2012, in constraint order) instead of 3008; another address there is a
+  compile error.
+
 - Repository: a NOTICE for the third-party material the tests use (Apache-2.0 program binaries in test/programs, with
   the licence text, and the Marginfi and Raydium fixtures); a test that every committed binary is the one SOURCES.md
   records (sha256); `scripts/fetch-programs.sh` reports fetched binaries whose hash differs.

@@ -38,6 +38,7 @@
 #define TS_ERR_DUPLICATE_MUT 2040          /* ConstraintDuplicateMutableAccount */
 #define TS_ERR_ALREADY_INITIALIZED 3000    /* AccountDiscriminatorAlreadySet */
 #define TS_ERR_INIT_PAYER 4101             /* TryingToInitPayerAsProgramAccount */
+#define TS_ERR_DISC_NOT_FOUND 3001         /* AccountDiscriminatorNotFound */
 #define TS_ERR_DISCRIMINATOR 3002          /* AccountDiscriminatorMismatch */
 #define TS_ERR_ACCOUNT_TOO_SMALL 3003      /* AccountDidNotDeserialize */
 #define TS_ERR_DID_NOT_SERIALIZE 3004      /* AccountDidNotSerialize */
@@ -708,6 +709,18 @@ static inline uint64_t ts_check_program_account(const TsAccount *a, const SolPub
   if (!ts_key_eq(&a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
   if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
   if (!ts_mem_eq(a->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
+  return SUCCESS;
+}
+
+/* A zero-copy (`@serialization bytemuck`) account, as Anchor's AccountLoader checks one: owner, then a discriminator to
+   read and match, with no "not initialized" case. Anchor's load() then panics on data shorter than the struct; this
+   refuses it (3003). */
+static inline uint64_t ts_check_loader_account(const TsAccount *a, const SolPubkey *program_id, const uint8_t disc[8],
+                                               uint64_t size) {
+  if (!ts_key_eq(&a->owner, program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");
+  if (a->data_len < 8) TS_FAIL(TS_ERR_DISC_NOT_FOUND, "TypeSOL: account has no discriminator");
+  if (!ts_mem_eq(a->data, disc, 8)) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: account discriminator mismatch");
+  if (a->data_len < 8 + size) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");
   return SUCCESS;
 }
 

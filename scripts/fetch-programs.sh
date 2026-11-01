@@ -30,6 +30,7 @@ trimmed() {
 trimmed T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt jito_tip_payment.so
 trimmed 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 jito_tip_distribution.so
 trimmed Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3 jito_priority_fee_distribution.so
+trimmed MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA marginfi_v2.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded.
 for f in *.so; do

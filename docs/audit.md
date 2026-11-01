@@ -73,8 +73,9 @@ them.
   Marginfi's I80F48 against vectors the `fixed` crate wrote; honest and hostile action sequences against state models
   with value conservation; account layout with two growable Vecs and aliasing through remaining accounts. Each run
   prints its seed (`FUZZ_SEED`), `pnpm fuzz` runs them wide.
-- **Random transactions against mainnet binaries**: Jito's three MEV programs (`test/verification/fuzz-jito.test.ts`)
-  and Raydium CLMM (the `fuzz:` case of its differential test) take random sequences of honest and hostile
+- **Random transactions against mainnet binaries**: Jito's three MEV programs (`test/verification/fuzz-jito.test.ts`),
+  Marginfi's administration and interest (`test/verification/fuzz-marginfi.test.ts`) and Raydium CLMM (the `fuzz:`
+  case of its differential test) take random sequences of honest and hostile
   transactions, in the original and the port alike, with the same outcome, account bytes and events required after
   every step. A new seed on every run, CI's included.
 - **Ported programs**: all 46 programs of solana-developers/program-examples, run through their original tests' flows

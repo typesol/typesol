@@ -23,6 +23,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount) |
 | 0 (from the System Program) | an `Init` / `create` on an address already in use (AccountAlreadyInUse): the System Program refuses it, as under Anchor's `init` |
 | 3000 | `initAccount<T>` on an account whose discriminator is already set (AccountDiscriminatorAlreadySet) |
+| 3001 | a zero-copy (`@serialization bytemuck`) account with fewer than 8 bytes of data (AccountDiscriminatorNotFound) |
 | 3002 | discriminator mismatch (AccountDiscriminatorMismatch) |
 | 3003 | data too small, not an initialized token account / mint, a read past the end, or a `@layout borsh` account whose bytes are not a valid Borsh value (AccountDidNotDeserialize) |
 | 3004 | a `@layout borsh` account too small for the value it would now hold (AccountDidNotSerialize) |
@@ -32,7 +33,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 3008 / 3009 | wrong program address / not executable (InvalidProgramId / InvalidProgramExecutable) |
 | 3010 | account must sign (AccountNotSigner; also a new keypair account a `create(payer, null, …)` makes) |
 | 3011 | a `SystemAccount` owned by another program (AccountNotSystemOwned) |
-| 3012 | account not initialized: empty system account where a program account was expected (AccountNotInitialized) |
+| 3012 | account not initialized: empty system account where a program account was expected (AccountNotInitialized; not for zero-copy accounts, which Anchor's AccountLoader reports as 3007) |
 | 3016 | account would grow more than 10 KiB in one instruction, or grow without a payer (AccountReallocExceedsLimit) |
 | 4101 | an `Init` / `create` whose payer is the account being created (TryingToInitPayerAsProgramAccount) |
 | 4102 | cast overflow (InvalidNumericConversion) |
@@ -64,7 +65,8 @@ A transaction can break several checks; it fails with the first. Within each acc
 the order Anchor's generated code runs them, so a transaction gets the same code under both:
 
 1. The account count (3005), then each account in parameter order: its type, signer (3010), `Mut` (2000), owner,
-   discriminator and size of a program account (3007 / 3012 / 3002 / 3003), token account or mint, program address.
+   discriminator and size of a program account (3007 / 3012 / 3002 / 3003; a zero-copy one as Anchor's AccountLoader:
+   3007 / 3001 / 3002, then 3003), token account or mint, program address.
 2. Two writable parameters naming one account (2040).
 3. The instruction's arguments (102).
 4. Each account in parameter order, its constraints in Anchor's order: seeds (2006), associated token account (owner
