@@ -228,7 +228,12 @@ turns on, the original's warning when it turns off), `lending_pool_clear_circuit
 admin: interest first, the halt reset, the references too if asked), `lending_pool_backfill_bank_is_t22_flag`
 (anyone: a seed that derives the bank under the mainnet program, IS_T22 from a Token-2022 mint),
 `lending_pool_close_bank` (the admin: a bank made to close with no positions, or forced; no shares or emissions left
-either way; its rent to the admin).
+either way; its rent to the admin), `lending_pool_configure_bank_gov` (the governance admin: weights, risk tier, asset
+tag, the oracle's confidence cap and age, the freeze and tokenless flags, the operational state only back to
+Operational; a frozen bank takes none, with the original's warning), `lending_pool_collect_bank_premium_fees`
+(anyone: the collected premium, in whole tokens and as much as the vault holds, to the premium wallet's token
+account). `super_admin_deposit` and `super_admin_withdraw` panic in the mainnet build once their accounts and the
+durable-nonce check pass (they are for staging and localnet), and so does the port.
 
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
@@ -305,7 +310,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 643 in
+for the oracles, and 666 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -354,7 +359,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (643, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (666, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -416,7 +421,11 @@ byte into both ledgers:
   order, an initial weight over maintenance, a tag twice, past the caps, none, one) and their copy; premium tags (by
   someone else, on, on again, off with its warning, off again); the breaker cleared (by someone else, by the admin,
   reseeding); backfills (the wrong mint, nothing, another bank's seed, its own, a Token-2022 mint); closes (by someone
-  else, with deposits, forced, not made to close, forced, an empty bank).
+  else, with deposits, forced, not made to close, forced, an empty bank); the governance admin's bank settings (by
+  someone else, paused, weights, an initial weight over maintenance, isolated with weights and without, back to
+  Operational, tokenless, frozen, ignored while frozen); premium sweeps (no premium wallet, someone else's account, a
+  fraction left, only the fraction, more than the vault holds); super-admin moves (by someone else, on the mainnet
+  build).
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -557,6 +566,8 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_pool_configure_group_premium`, a new pair | 5,558 | 1,155 | −79% |
 | `lending_pool_configure_bank_emode`, three entries sorted | 79,762 | 10,384 | −87% |
 | `lending_pool_close_bank` | 4,530 | 2,498 | −45% |
+| `lending_pool_configure_bank_gov`, weights | 42,109 | 11,196 | −73% |
+| `lending_pool_collect_bank_premium_fees` | 18,080 | 7,158 | −60% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
