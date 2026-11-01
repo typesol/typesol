@@ -14,6 +14,7 @@ import {
   type Mint,
   type TokenAccount,
   type TokenInterface,
+  type i128,
   type u16,
   type InstructionsSysvar,
   type HasOne,
@@ -27,6 +28,8 @@ import {
   type u32,
   constraint,
   emit,
+  f64FromBits,
+  findProgramAddress,
   invoke,
   programId,
   readData,
@@ -46,7 +49,14 @@ import {
   ACCOUNT_DISABLED,
   ACCOUNT_FROZEN,
   ACCOUNT_IN_RECEIVERSHIP,
+  ACCOUNT_IN_DELEVERAGE,
+  ACCOUNT_IN_ORDER_EXECUTION,
   INCREASE_DEPOSIT_ONLY,
+  INCREASE_REPAY_ONLY,
+  balanceSide,
+  claimBalancePremium,
+  repayAll,
+  settlePremium,
   assetTagsCompatible,
   canBeClosed,
   closeBalance,
@@ -64,6 +74,7 @@ import {
   BANK_SEED_KNOWN,
   CIRCUIT_BREAKER_ENABLED,
   FAILS_IF_PAUSED_OR_REDUCE_STATE,
+  FAILS_IN_PAUSED_STATE,
   FREEZE_SETTINGS,
   IS_T22,
   TOKENLESS_REPAYMENTS_ALLOWED,
@@ -86,12 +97,15 @@ import {
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
+  type LendingAccountPremiumSettledEvent,
+  type LendingAccountRepayEvent,
+  type LendingPoolBankCollectFeesEvent,
   type LendingPoolBankCreateEvent,
   type MarginfiAccountCreateEvent,
   type MarginfiGroupConfigureEvent,
   type MarginfiGroupCreateEvent,
 } from "./events";
-import { I80F48_ONE, fxFromU64 } from "./i80f48";
+import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxSub, fxToF64Bits, fxToU64 } from "./i80f48";
 import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
 import { type Bank, type FeeState, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState } from "./state";
 
@@ -667,19 +681,16 @@ export function lendingAccountDeposit(
   constraint(bank, (bank.flags & TOKENLESS_REPAYMENTS_ALLOWED) === 0n, MarginfiError.BankReduceOnly);
   const t = now();
   // maybe_take_bank_mint: a Token-2022 bank's mint comes first among the remaining accounts.
-  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
   let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
   if (t22) {
-    const rest = remainingAccounts();
-    require(rest.length > 0n, MarginfiError.T22MintRequired);
-    const mint = rest.get(0n);
-    require(mint.key === bank.mint, MarginfiError.T22MintRequired);
-    // InterfaceAccount<Mint>: owned by a token program, an initialized mint (with extensions: tagged a mint).
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(mint.owner === TOKEN_PROGRAM_ID || mint.owner === TOKEN_2022_ID, MarginfiError.T22MintRequired);
-    require(n >= 82n && n !== 355n && !(n > 82n && n <= 165n), MarginfiError.T22MintRequired);
-    require(readData<u8>(mint, 45n) === 1n, MarginfiError.T22MintRequired);
-    require(n === 82n || readData<u8>(mint, 165n) === 1n, MarginfiError.T22MintRequired);
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
     decimals = readData<u8>(mint, 44n);
   }
   require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
@@ -712,4 +723,309 @@ export function lendingAccountDeposit(
   });
   sortBalances(marginfi_account);
   syncIndexerFlags(marginfi_account);
+}
+
+// ---- repayments and fees -------------------------------------------------------------------------------------------
+
+const ATA_PROGRAM_ID = pubkey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+/** One thousandth (0.0001 × 10) as I80F48: below it a bank's liabilities count as gone. */
+const TOKENLESS_DONE_THRESHOLD: i128 = 281474976710n;
+const TOKENLESS_REPAYMENTS_COMPLETE: u64 = 64n;
+
+/**
+ * maybe_take_bank_mint's checks on the first remaining account under Token-2022: the bank's mint, owned by a token
+ * program, an initialized mint (with extensions: tagged a mint). `initialized` and `kind` are its bytes 45 and 165.
+ */
+function mintOk(bankMint: Pubkey, key: Pubkey, owner: Pubkey, n: u64, initialized: u8, kind: u8): boolean {
+  if (key !== bankMint) return false;
+  if (owner !== TOKEN_PROGRAM_ID && owner !== TOKEN_2022_ID) return false;
+  if (n < 82n || n === 355n || (n > 82n && n <= 165n)) return false;
+  return initialized === 1n && (n === 82n || kind === 1n);
+}
+
+/**
+ * Lend back a liability: `amount` settles the booked premium first, then repays principal (never more than owed),
+ * or `repay_all` repays all of it, rounded up, and closes the balance. The risk admin may repay a bank allowing
+ * tokenless repayments with nothing (repay_all only), writing the premium off.
+ */
+export function lendingAccountRepay(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+  signer_token_account: Mut<AccountInfo>,
+  liquidity_vault: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  amount: u64,
+  repay_all: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group) || (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n, MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, true, true, false), MarginfiError.Unauthorized);
+  constraint(bank, isMarginfiAssetTag(bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  const t = now();
+  const all = repay_all !== null && repay_all;
+  const flags = marginfi_account.account_flags;
+  require((flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  if ((flags & ACCOUNT_IN_ORDER_EXECUTION) !== 0n) require(all, MarginfiError.OrderLiabilityNotClosed);
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  validateBankState(bank, FAILS_IN_PAUSED_STATE, true, t);
+  accrueInterest(bank, group, bank.key, t);
+  const inReceivership = (flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n;
+  const tokenless = authority.key === group.risk_admin && (bank.flags & TOKENLESS_REPAYMENTS_ALLOWED) !== 0n && all;
+  const found = findBalance(marginfi_account, bank.key);
+  require(found >= 0n, MarginfiError.BankAccountNotFound);
+  const i = u64(found);
+  const collectedBefore = bank.collected_premium_outstanding.value;
+  claimBalancePremium(marginfi_account, i, bank, u64(t));
+  const outstandingBefore = marginfi_account.lending_account.balances.get(i).premium_outstanding.value;
+  let repaid = amount;
+  let shares = I80F48_ZERO;
+  if (all) {
+    const r = repayAll(marginfi_account, i, bank, inReceivership, !tokenless, u64(t));
+    repaid = r.amount;
+    shares = r.shares;
+  } else {
+    const settled = settlePremium(marginfi_account, i, bank, fxFromU64(amount));
+    shares = increaseBalance(marginfi_account, i, bank, fxSub(fxFromU64(amount), settled), INCREASE_REPAY_ONLY, u64(t));
+    const left = marginfi_account.lending_account.balances.get(i).liability_shares.value;
+    require(left <= I80F48_ZERO || left >= I80F48_ONE, MarginfiError.IllegalBalanceState);
+    if (balanceSide(marginfi_account, i) === 0n) marginfi_account.lending_account.balances.get(i).tag = 0n;
+  }
+  const settledNow = fxSub(bank.collected_premium_outstanding.value, collectedBefore);
+  const writtenOff = tokenless ? outstandingBefore : I80F48_ZERO;
+  const remaining = marginfi_account.lending_account.balances.get(i).premium_outstanding.value;
+  marginfi_account.last_update = u64(t);
+  recordDepositInflow(bank, group, group.key, bank.key, marginfi_account.account_flags, repaid, t);
+  if (!tokenless) {
+    if (t22) {
+      const mint = remainingAccounts().get(0n);
+      invoke(
+        token_program,
+        [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(authority)],
+        [u8(12n), repaid + transferFeeInverse(mint, repaid), decimals],
+      );
+    } else invoke(token_program, [writable(signer_token_account), writable(liquidity_vault), readonlySigner(authority)], [u8(3n), repaid]);
+  }
+  const liabs = bank.total_liability_shares.value;
+  if ((bank.flags & TOKENLESS_REPAYMENTS_ALLOWED) !== 0n && (liabs < 0n ? -liabs : liabs) < TOKENLESS_DONE_THRESHOLD)
+    bank.flags |= TOKENLESS_REPAYMENTS_COMPLETE;
+  updateBankCache(bank, group, t);
+  emit<LendingAccountRepayEvent>({
+    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    bank: bank.key, mint: bank.mint, amount: repaid, close_balance: all, share_amount: { value: shares } });
+  if (settledNow > I80F48_ZERO || writtenOff > I80F48_ZERO)
+    emit<LendingAccountPremiumSettledEvent>({
+      header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+      bank: bank.key,
+      mint: bank.mint,
+      premium_settled: f64FromBits(fxToF64Bits(settledNow)),
+      premium_written_off: f64FromBits(fxToF64Bits(writtenOff)),
+      premium_outstanding_remaining: f64FromBits(fxToF64Bits(remaining)),
+    });
+  sortBalances(marginfi_account);
+  syncIndexerFlags(marginfi_account);
+}
+
+/**
+ * Move a bank's outstanding fees out of its liquidity vault, as far as the vault holds them (whole tokens): the
+ * insurance fees to the insurance vault, the group's to the fee vault, the program's to the fee wallet's associated
+ * token account (permissionless).
+ */
+export function lendingPoolCollectBankFees(
+  group: Account<MarginfiGroup>,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Seeds<Mut<TokenAccount>, ["liquidity_vault", "@bank"], "@bank.liquidity_vault_bump">,
+  insurance_vault: Seeds<Mut<TokenAccount>, ["insurance_vault", "@bank"], "@bank.insurance_vault_bump">,
+  fee_vault: Seeds<Mut<TokenAccount>, ["fee_vault", "@bank"], "@bank.fee_vault_bump">,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  fee_ata: Mut<TokenAccount>,
+  token_program: TokenInterface,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  const ata = findProgramAddress([fee_state.global_fee_wallet, token_program.key, bank.mint], ATA_PROGRAM_ID);
+  require(fee_ata.key === ata, MarginfiError.InvalidFeeAta);
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  let available = fxFromU64(liquidity_vault.amount);
+  const insuranceOwed = bank.collected_insurance_fees_outstanding.value;
+  const insurance = fxInt(insuranceOwed < available ? insuranceOwed : available);
+  const insuranceLeft = fxSub(insuranceOwed, insurance);
+  bank.collected_insurance_fees_outstanding.value = insuranceLeft;
+  available = fxSub(available, insurance);
+  const groupOwed = bank.collected_group_fees_outstanding.value;
+  const groupFees = fxInt(groupOwed < available ? groupOwed : available);
+  const groupLeft = fxSub(groupOwed, groupFees);
+  available = fxSub(available, groupFees);
+  // Asserts in the original (negative outstanding fees would get there).
+  require(available >= I80F48_ZERO, MarginfiError.MathError);
+  bank.collected_group_fees_outstanding.value = groupLeft;
+  const bump = bank.liquidity_vault_authority_bump;
+  if (t22)
+    invoke(
+      token_program,
+      [writable(liquidity_vault), readonly(remainingAccounts().get(0n)), writable(fee_vault), readonlySigner(liquidity_vault_authority)],
+      [u8(12n), fxToU64(groupFees), decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else invoke(token_program, [writable(liquidity_vault), writable(fee_vault), readonlySigner(liquidity_vault_authority)], [u8(3n), fxToU64(groupFees)], ["liquidity_vault_auth", bank.key, bump]);
+  if (t22)
+    invoke(
+      token_program,
+      [writable(liquidity_vault), readonly(remainingAccounts().get(0n)), writable(insurance_vault), readonlySigner(liquidity_vault_authority)],
+      [u8(12n), fxToU64(insurance), decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else invoke(token_program, [writable(liquidity_vault), writable(insurance_vault), readonlySigner(liquidity_vault_authority)], [u8(3n), fxToU64(insurance)], ["liquidity_vault_auth", bank.key, bump]);
+  const programOwed = bank.collected_program_fees_outstanding.value;
+  const programFees = fxInt(programOwed < available ? programOwed : available);
+  const programLeft = fxSub(programOwed, programFees);
+  available = fxSub(available, programFees);
+  require(available >= I80F48_ZERO, MarginfiError.MathError);
+  bank.collected_program_fees_outstanding.value = programLeft;
+  if (t22)
+    invoke(
+      token_program,
+      [writable(liquidity_vault), readonly(remainingAccounts().get(0n)), writable(fee_ata), readonlySigner(liquidity_vault_authority)],
+      [u8(12n), fxToU64(programFees), decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else invoke(token_program, [writable(liquidity_vault), writable(fee_ata), readonlySigner(liquidity_vault_authority)], [u8(3n), fxToU64(programFees)], ["liquidity_vault_auth", bank.key, bump]);
+  emit<LendingPoolBankCollectFeesEvent>({
+    header: { signer: null, marginfi_group: group.key },
+    bank: bank.key,
+    mint: liquidity_vault.mint,
+    group_fees_collected: f64FromBits(fxToF64Bits(groupFees)),
+    group_fees_outstanding: f64FromBits(fxToF64Bits(groupLeft)),
+    insurance_fees_collected: f64FromBits(fxToF64Bits(insurance)),
+    insurance_fees_outstanding: f64FromBits(fxToF64Bits(insuranceLeft)),
+  });
+}
+
+/** Withdraw from a bank's fee vault (admin only). */
+export function lendingPoolWithdrawFees(
+  group: HasOne<Account<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  bank: HasOne<Account<Bank>, "group", MarginfiError.InvalidGroup>,
+  admin: Signer,
+  fee_vault: Seeds<Mut<TokenAccount>, ["fee_vault", "@bank"], "@bank.fee_vault_bump">,
+  fee_vault_authority: Seeds<AccountInfo, ["fee_vault_auth", "@bank"], "@bank.fee_vault_authority_bump">,
+  dst_token_account: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  checkNoDurableNonce(instruction_sysvar);
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  if (t22)
+    invoke(
+      token_program,
+      [writable(fee_vault), readonly(remainingAccounts().get(0n)), writable(dst_token_account), readonlySigner(fee_vault_authority)],
+      [u8(12n), amount, decimals],
+      ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
+    );
+  else invoke(token_program, [writable(fee_vault), writable(dst_token_account), readonlySigner(fee_vault_authority)], [u8(3n), amount], ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump]);
+}
+
+/** Withdraw from a bank's insurance vault (admin only). */
+export function lendingPoolWithdrawInsurance(
+  group: HasOne<Account<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  bank: HasOne<Account<Bank>, "group", MarginfiError.InvalidGroup>,
+  admin: Signer,
+  insurance_vault: Seeds<Mut<TokenAccount>, ["insurance_vault", "@bank"], "@bank.insurance_vault_bump">,
+  insurance_vault_authority: Seeds<AccountInfo, ["insurance_vault_auth", "@bank"], "@bank.insurance_vault_authority_bump">,
+  dst_token_account: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  checkNoDurableNonce(instruction_sysvar);
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  if (t22)
+    invoke(
+      token_program,
+      [writable(insurance_vault), readonly(remainingAccounts().get(0n)), writable(dst_token_account), readonlySigner(insurance_vault_authority)],
+      [u8(12n), amount, decimals],
+      ["insurance_vault_auth", bank.key, bank.insurance_vault_authority_bump],
+    );
+  else invoke(token_program, [writable(insurance_vault), writable(dst_token_account), readonlySigner(insurance_vault_authority)], [u8(3n), amount], ["insurance_vault_auth", bank.key, bank.insurance_vault_authority_bump]);
+}
+
+/** Send a bank's fee vault (up to `amount`) to the fees destination the admin set (permissionless). */
+export function lendingPoolWithdrawFeesPermissionless(
+  group: Account<MarginfiGroup>,
+  bank: HasOne<HasOne<Account<Bank>, "group", MarginfiError.InvalidGroup>, "fees_destination_account", MarginfiError.InvalidFeesDestinationAccount>,
+  fee_vault: Seeds<Mut<TokenAccount>, ["fee_vault", "@bank"], "@bank.fee_vault_bump">,
+  fee_vault_authority: Seeds<AccountInfo, ["fee_vault_auth", "@bank"], "@bank.fee_vault_authority_bump">,
+  fees_destination_account: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  const held = fee_vault.amount;
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  if (t22)
+    invoke(
+      token_program,
+      [writable(fee_vault), readonly(remainingAccounts().get(0n)), writable(fees_destination_account), readonlySigner(fee_vault_authority)],
+      [u8(12n), amount < held ? amount : held, decimals],
+      ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
+    );
+  else invoke(token_program, [writable(fee_vault), writable(fees_destination_account), readonlySigner(fee_vault_authority)], [u8(3n), amount < held ? amount : held], ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump]);
 }

@@ -37,7 +37,7 @@ describe("Marginfi v2 port against the mainnet binary", () => {
     const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as Idl;
     const strip = (v: unknown) => JSON.parse(JSON.stringify(v, (k, x) => (k === "docs" ? undefined : x)));
     // Accounts with their writable / signer flags, PDA seeds, relations and addresses; discriminators; arguments.
-    expect(s.d.idl.instructions.length).toBe(16);
+    expect(s.d.idl.instructions.length).toBe(21);
     for (const ix of s.d.idl.instructions) expect(strip(ix), ix.name).toEqual(strip(onchain.instructions.find((o) => o.name === ix.name)));
     for (const e of s.d.idl.events ?? []) expect(e, e.name).toEqual(onchain.events!.find((o) => o.name === e.name));
   });
@@ -543,5 +543,191 @@ describe("Marginfi v2 port against the mainnet binary", () => {
     editAccount(a, [["active_orders", 0n, 1]]);
     expect(await run("close account", user, [await h.accountClose(a, user)], [a, user.address])).toBe("ok");
     await run("close account: pda, emptied", user, [await h.accountClose(p0, user)], [p0, user.address]);
+  });
+
+  it("takes repayments and moves fees as the original does", async () => {
+    const group = await generateKeyPairSigner();
+    const g = group.address;
+    await run("repay group init", admin, [groupInit(group, admin)], [g]);
+    const usdc = await mint(TOKEN_PROGRAM, 6);
+    const [ix1, bank] = await addBank(g, admin, usdc, TOKEN_PROGRAM, bankConfig());
+    expect(await run("repay: add bank", admin, [ix1], watchBank(bank, g))).toBe("ok");
+    const b = bank.address;
+    const editAccount = edit("MarginfiAccount");
+    /** An I80F48 field of an account as the original holds it. */
+    const read128 = (at: Address, type: string, path: string) => {
+      const data = Buffer.from((s.original.getAccount(at) as { data: Uint8Array }).data);
+      const o = offsetOf(type, path);
+      return data.readBigInt64LE(o + 8) * (1n << 64n) + data.readBigUInt64LE(o);
+    };
+    // A lender's deposit fills the vault.
+    const lender = await s.funded();
+    const lenderAcct = await generateKeyPairSigner();
+    expect(await run("repay: lender account", lender, [h.accountInit(g, lenderAcct, lender)], [lenderAcct.address])).toBe("ok");
+    const lenderFrom = await tokenAccount(usdc, lender.address, 1_000_000_000_000n);
+    expect(await run("repay: lender deposit", lender, [h.deposit(g, lenderAcct.address, lender, b, lenderFrom, bank.v.liquidity, 500_000_000_000n)], [b])).toBe("ok");
+
+    // A borrower whose liability (borrows are not ported yet) is written into both: the balance and the bank's total.
+    const borrower = await s.funded();
+    const from = await tokenAccount(usdc, borrower.address, 1_000_000_000_000n);
+    const owing = async (label: string, shares: bigint) => {
+      const k = await generateKeyPairSigner();
+      expect(await run(`repay: ${label} account`, borrower, [h.accountInit(g, k, borrower)], [k.address])).toBe("ok");
+      editAccount(k.address, [
+        ["lending_account.balances[0].active", 1n, 1],
+        ["lending_account.balances[0].bank_pk", BigInt("0x" + Buffer.from(new web3.PublicKey(b).toBytes()).reverse().toString("hex")), 32],
+        ["lending_account.balances[0].liability_shares", shares, 16],
+        ["lending_account.balances[0].last_update", 1_800_000_000n, 8],
+      ]);
+      editBank(b, [["total_liability_shares", read128(b, "Bank", "total_liability_shares") + shares, 16]]);
+      return k.address;
+    };
+    const rp = (account: Address, amount: bigint, opts: Parameters<typeof h.repay>[7] = {}, by = borrower) =>
+      h.repay(g, account, by, b, from, bank.v.liquidity, amount, opts);
+    const watch = (account: Address) => [account, b, bank.v.liquidity, from];
+    setTime(1_800_600_000n);
+    const a = await owing("borrower", 100_000_000n * ONE);
+    expect(await run("repay: part", borrower, [rp(a, 1_234_567n)], watch(a))).toBe("ok");
+    await run("repay: more than owed", borrower, [rp(a, 200_000_000n)], watch(a));
+    await run("repay: not the authority", lender, [rp(a, 1_000n, {}, lender)], watch(a));
+    await run("repay: another bank's vault", borrower, [h.repay(g, a, borrower, b, from, bank.v.fee, 1_000n)], watch(a));
+    setTime(1_800_700_000n);
+    await run("repay: after interest", borrower, [rp(a, 5_000_000n)], watch(a));
+    await run("repay: leaving dust shares", borrower, [rp(a, 0n, { all: false })], watch(a));
+    const left = read128(a, "MarginfiAccount", "lending_account.balances[0].liability_shares");
+    const value = read128(b, "Bank", "liability_share_value");
+    const owedTokens = (left * value) >> 96n;
+    await run("repay: all but under one share", borrower, [rp(a, owedTokens - 1n)], watch(a), "if-panics");
+    expect(await run("repay: all", borrower, [rp(a, 0n, { all: true })], watch(a))).toBe("ok");
+    await run("repay: all again (closed)", borrower, [rp(a, 0n, { all: true })], watch(a));
+    await run("repay: no balance", borrower, [rp(lenderAcct.address, 1n, {}, lender)], watch(lenderAcct.address));
+    await run("repay: all of an asset balance", lender, [h.repay(g, lenderAcct.address, lender, b, lenderFrom, bank.v.liquidity, 0n, { all: true })], [lenderAcct.address, b]);
+
+    // Account and bank states.
+    const c = await owing("states", 50_000_000n * ONE);
+    editAccount(c, [["account_flags", 1n, 8]]);
+    await run("repay: disabled", borrower, [rp(c, 1_000n)], watch(c));
+    editAccount(c, [["account_flags", 128n, 8]]);
+    await run("repay: order execution, part", borrower, [rp(c, 1_000n)], watch(c));
+    await run("repay: order execution, by a keeper", lender, [rp(c, 1_000n, { all: false }, lender)], watch(c));
+    editAccount(c, [["account_flags", 16n, 8]]);
+    await run("repay: receivership, by a liquidator", lender, [h.repay(g, c, lender, b, lenderFrom, bank.v.liquidity, 1_000n)], [c, b, lenderFrom]);
+    await run("repay: receivership, by its owner", borrower, [rp(c, 1_000n)], watch(c));
+    editAccount(c, [["account_flags", 64n, 8]]);
+    await run("repay: frozen, by its owner", borrower, [rp(c, 1_000n)], watch(c));
+    editAccount(c, [["account_flags", 0n, 8]]);
+    for (const [state, name] of [
+      [0n, "paused"],
+      [2n, "reduce only"],
+      [3n, "killed"],
+      [6n, "circuit broken"],
+    ] as const) {
+      editBank(b, [["config.operational_state", state, 1], ["cb_pre_break_state", 2n, 1]]);
+      await run(`repay: bank ${name}`, borrower, [rp(c, 1_000n)], watch(c));
+    }
+    editBank(b, [["config.operational_state", 1n, 1]]);
+    // The protocol paused: refused, unless the account is being deleveraged.
+    await run("repay: propagate a pause", admin, [s.ix("propagate_fee_state", {}, [{ address: feeState }, { address: g, writable: true }])], [g]);
+    setTime(1_799_999_000n + 100n);
+    editBank(b, [["last_update", 1_799_999_000n, 8]]);
+    await run("repay: protocol paused", borrower, [rp(c, 1_000n)], watch(c));
+    editAccount(c, [["account_flags", 32n, 8]]);
+    await run("repay: protocol paused, deleveraging", borrower, [rp(c, 1_000n)], watch(c));
+    editAccount(c, [["account_flags", 0n, 8]]);
+    editGroup(g, [["panic_state_cache.pause_flags", 0n, 1]]);
+    setTime(1_800_800_000n);
+
+    // Premiums: a premium-active bank books what the balance's snapshot rate earned, and repayments settle it first.
+    editBank(b, [["flags", 16n | 8192n, 8], ["premium_activated_at", 1_800_000_000n, 8]]);
+    const p = await owing("premium", 80_000_000n * ONE);
+    editAccount(p, [["lending_account.balances[0].premium_rate_snapshot", 4_294_967_295n / 50n, 4]]);
+    await run("repay: premium, part", borrower, [rp(p, 10_000n)], watch(p));
+    setTime(1_800_900_000n);
+    await run("repay: premium, more than the premium", borrower, [rp(p, 5_000_000n)], watch(p));
+    setTime(1_801_000_000n);
+    await run("repay: premium, all", borrower, [rp(p, 0n, { all: true })], watch(p));
+    editBank(b, [["flags", 16n, 8]]);
+    // Tokenless: the risk admin clears a debt with nothing, the premium written off; done once the bank owes nothing.
+    const risk = await s.funded();
+    editGroup(g, [["risk_admin", BigInt("0x" + Buffer.from(new web3.PublicKey(risk.address).toBytes()).reverse().toString("hex")), 32]]);
+    editBank(b, [["flags", 16n | 32n | 8192n, 8]]);
+    const tl = await owing("tokenless", 30_000_000n * ONE);
+    editAccount(tl, [
+      ["lending_account.balances[0].premium_rate_snapshot", 4_294_967_295n / 20n, 4],
+      ["lending_account.balances[0].premium_outstanding", 77n * ONE, 16],
+    ]);
+    // The risk admin acts on an account in a deleverage (receivership): it may repay for it.
+    editAccount(tl, [["account_flags", 16n | 32n, 8]]);
+    await run("repay: tokenless, part", risk, [rp(tl, 1_000n, {}, risk)], watch(tl));
+    editAccount(tl, [["account_flags", 0n, 8]]);
+    await run("repay: tokenless, by its owner", borrower, [rp(tl, 0n, { all: true })], watch(tl));
+    const tl2 = await owing("tokenless 2", 10_000_000n * ONE);
+    editAccount(tl2, [["lending_account.balances[0].premium_outstanding", 5n * ONE, 16]]);
+    editAccount(tl2, [["account_flags", 16n | 32n, 8]]);
+    await run("repay: tokenless, all", risk, [rp(tl2, 0n, { all: true }, risk)], watch(tl2));
+    editBank(b, [["flags", 16n, 8]]);
+
+    // Token-2022 with a transfer fee: the repayment arrives net of it.
+    const feeMint = await h.feeMint(6, 100, 50_000n);
+    const [ix2, t22] = await addBank(g, admin, feeMint, TOKEN_2022, bankConfig());
+    expect(await run("repay: add Token-2022 bank", admin, [ix2], watchBank(t22, g))).toBe("ok");
+    const t22From = await h.t22Account(feeMint, borrower.address, 1n << 50n);
+    const k = await generateKeyPairSigner();
+    expect(await run("repay: Token-2022 account", borrower, [h.accountInit(g, k, borrower)], [k.address])).toBe("ok");
+    editAccount(k.address, [
+      ["lending_account.balances[0].active", 1n, 1],
+      ["lending_account.balances[0].bank_pk", BigInt("0x" + Buffer.from(new web3.PublicKey(t22.address).toBytes()).reverse().toString("hex")), 32],
+      ["lending_account.balances[0].liability_shares", 9_000_000n * ONE, 16],
+    ]);
+    editBank(t22.address, [["total_liability_shares", 9_000_000n * ONE, 16], ["total_asset_shares", 20_000_000n * ONE, 16]]);
+    const t22rp = (amount: bigint, all: boolean | null, rest: Address[]) =>
+      h.repay(g, k.address, borrower, t22.address, t22From, t22.v.liquidity, amount, { all, program: TOKEN_2022, rest });
+    await run("repay Token-2022: no mint", borrower, [t22rp(1_000n, null, [])], [k.address, t22.address]);
+    expect(await run("repay Token-2022: part", borrower, [t22rp(123_457n, null, [feeMint])], [k.address, t22.address, t22.v.liquidity, t22From])).toBe("ok");
+    expect(await run("repay Token-2022: all", borrower, [t22rp(0n, true, [feeMint])], [k.address, t22.address, t22.v.liquidity, t22From])).toBe("ok");
+
+    // Fees: accrue some, then collect them out of the liquidity vault and withdraw them.
+    editBank(b, [["total_liability_shares", 300_000_000_000n * ONE, 16]]);
+    setTime(1_810_000_000n);
+    expect(await run("fees: accrue", admin, [accrue(g, b)], [b])).toBe("ok");
+    const feeAta = h.tokenAccountAt(await h.ata(feeWallet, usdc), usdc, feeWallet);
+    const feeWatch = [b, bank.v.liquidity, bank.v.insurance, bank.v.fee, feeAta];
+    await run("fees: collect to the wrong account", lender, [h.collectFees(g, bank, lenderFrom)], feeWatch);
+    expect(await run("fees: collect", lender, [h.collectFees(g, bank, feeAta)], feeWatch)).toBe("ok");
+    await run("fees: collect again (nothing owed)", lender, [h.collectFees(g, bank, feeAta)], feeWatch);
+    // More owed than the vault holds: whole tokens, insurance first, then the group, then the program.
+    editBank(b, [
+      ["collected_insurance_fees_outstanding", 400_000_000_000n * ONE + ONE / 3n, 16],
+      ["collected_group_fees_outstanding", 300_000_000_000n * ONE, 16],
+      ["collected_program_fees_outstanding", 200_000_000_000n * ONE, 16],
+    ]);
+    await run("fees: collect more than the vault holds", lender, [h.collectFees(g, bank, feeAta)], feeWatch);
+    editBank(b, [["collected_group_fees_outstanding", -5n * ONE, 16]]);
+    await run("fees: collect a negative balance", lender, [h.collectFees(g, bank, feeAta)], feeWatch, "if-panics");
+    editBank(b, [["collected_group_fees_outstanding", 0n, 16]]);
+    const dst = await tokenAccount(usdc, admin.address);
+    await run("fees: withdraw, not the admin", lender, [h.withdrawVault("fees", g, bank, lender, dst, 10n)], [bank.v.fee, dst]);
+    expect(await run("fees: withdraw", admin, [h.withdrawVault("fees", g, bank, admin, dst, 1_000n)], [bank.v.fee, dst])).toBe("ok");
+    await run("fees: withdraw more than there is", admin, [h.withdrawVault("fees", g, bank, admin, dst, 1n << 60n)], [bank.v.fee, dst]);
+    await run("fees: withdraw, durable nonce", admin, [h.withdrawVault("fees", g, bank, admin, dst, 1n), advanceNonce(admin)], [bank.v.fee, dst]);
+    expect(await run("insurance: withdraw", admin, [h.withdrawVault("insurance", g, bank, admin, dst, 2_000n)], [bank.v.insurance, dst])).toBe("ok");
+    await run("insurance: withdraw, not the admin", lender, [h.withdrawVault("insurance", g, bank, lender, dst, 1n)], [bank.v.insurance, dst]);
+    // Permissionless: only to the destination the admin set, capped at what the vault holds.
+    const dest = await tokenAccount(usdc, admin.address);
+    await run("fees permissionless: no destination set", lender, [h.withdrawFeesPermissionless(g, bank, dest, 10n)], [bank.v.fee, dest]);
+    expect(await run("fees: set the destination", admin, [h.updateFeesDestination(g, b, admin, dest)], [b])).toBe("ok");
+    await run("fees permissionless: another account", lender, [h.withdrawFeesPermissionless(g, bank, dst, 10n)], [bank.v.fee, dst]);
+    expect(await run("fees permissionless", lender, [h.withdrawFeesPermissionless(g, bank, dest, 500n)], [bank.v.fee, dest])).toBe("ok");
+    expect(await run("fees permissionless: more than there is", lender, [h.withdrawFeesPermissionless(g, bank, dest, 1n << 60n)], [bank.v.fee, dest])).toBe("ok");
+    // Token-2022: the mint among the remaining accounts, the fee taken from each transfer.
+    editBank(t22.address, [
+      ["collected_insurance_fees_outstanding", 1_000n * ONE, 16],
+      ["collected_group_fees_outstanding", 2_000n * ONE, 16],
+      ["collected_program_fees_outstanding", 3_000n * ONE, 16],
+    ]);
+    const t22Ata = await h.ata(feeWallet, feeMint, TOKEN_2022);
+    await run("fees Token-2022: collect, no fee ATA", lender, [h.collectFees(g, t22, t22Ata, TOKEN_2022, [feeMint])], [t22.address]);
+    const t22Dst = await h.t22Account(feeMint, admin.address);
+    await run("fees Token-2022: withdraw, no mint", admin, [h.withdrawVault("fees", g, t22, admin, t22Dst, 1n, TOKEN_2022)], [t22.v.fee, t22Dst]);
   });
 });

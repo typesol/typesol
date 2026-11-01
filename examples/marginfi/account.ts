@@ -4,7 +4,7 @@
 import { type Account, type Mut, type Pubkey, type i128, type i32, type i64, type u16, type u64, type u8, i64 as toI64, pubkey, require, u64 as toU64 } from "typesol";
 import { BANK_ASSET_TAG_STAKED, LIQ_CACHE_LOCKED_FLAG, PREMIUM_ACTIVE, changeAssetShares, changeLiabilityShares, getAssetShares, getLiabilityShares, liabilityAmount } from "./bank";
 import { MarginfiError } from "./errors";
-import { I80F48_ONE, I80F48_ZERO, fxAbs, fxAdd, fxDiv, fxFromU64, fxMul, fxSub } from "./i80f48";
+import { I80F48_ONE, I80F48_ZERO, fxAbs, fxAdd, fxCeil, fxDiv, fxFromU64, fxMul, fxSub, fxToU64 } from "./i80f48";
 import { SECONDS_PER_YEAR, u32ToMilli } from "./interest_rate";
 import { type Bank, type Balance, type MarginfiAccount } from "./state";
 
@@ -357,4 +357,63 @@ export function assetTagsCompatible(bank: Mut<Bank>, account: Mut<MarginfiAccoun
   if (defaultLike && hasStaked) return false;
   if (bankTag === BANK_ASSET_TAG_STAKED && hasDefault) return false;
   return true;
+}
+
+/**
+ * BankAccountWrapper::claim_premium: the premium accrued since the balance's last update, booked; written off instead
+ * on a bank without active premiums or a balance without a liability.
+ */
+export function claimBalancePremium(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>, now: u64): void {
+  const b = account.lending_account.balances.get(i);
+  const shares = b.liability_shares.value;
+  const stale = b.premium_outstanding.value !== I80F48_ZERO || b.premium_rate_snapshot !== 0n;
+  if ((bank.flags & PREMIUM_ACTIVE) === 0n || shares <= ZERO_AMOUNT_THRESHOLD) {
+    if (stale) writeOffPremium(account, i);
+    return;
+  }
+  const liability = liabilityAmount(bank, shares);
+  claimPremium(account, i, liability, bank.premium_activated_at, now);
+}
+
+/** settle_premium: up to `max` of the booked premium moves to the bank's collected premium. Returns what moved. */
+export function settlePremium(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>, max: i128): i128 {
+  const b = account.lending_account.balances.get(i);
+  const outstanding = b.premium_outstanding.value;
+  const lower = outstanding < max ? outstanding : max;
+  const settled = lower > I80F48_ZERO ? lower : I80F48_ZERO;
+  if (settled > I80F48_ZERO) {
+    b.premium_outstanding.value = fxSub(outstanding, settled);
+    bank.collected_premium_outstanding.value = fxAdd(bank.collected_premium_outstanding.value, settled);
+  }
+  return settled;
+}
+
+/** What repay_all owes and burns: the token amount (rounded up) and the liability shares the balance held. */
+export interface Repaid {
+  amount: u64;
+  shares: i128;
+}
+
+/**
+ * BankAccountWrapper::repay_all: the whole liability (with the booked premium, unless written off) rounded up to a
+ * token; the rounding and any asset dust go to the insurance fund, and the balance closes.
+ */
+export function repayAll(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>, inReceivership: boolean, settle: boolean, now: u64): Repaid {
+  claimBalancePremium(account, i, bank, now);
+  const b = account.lending_account.balances.get(i);
+  const shares = b.liability_shares.value;
+  const liability = liabilityAmount(bank, shares);
+  const assets = fxMul(b.asset_shares.value, bank.asset_share_value.value);
+  require(liability > ZERO_AMOUNT_THRESHOLD, MarginfiError.NoLiabilityFound);
+  require(isZeroWithTolerance(assets), MarginfiError.NoLiabilityFound);
+  const premium = b.premium_outstanding.value;
+  let owed = liability;
+  if (settle && premium > I80F48_ZERO) {
+    bank.collected_premium_outstanding.value = fxAdd(bank.collected_premium_outstanding.value, premium);
+    owed = fxAdd(liability, premium);
+  }
+  const rounded = fxCeil(owed);
+  const insurance = fxAdd(fxSub(rounded, owed), assets);
+  closeBalanceInternal(account, i, bank, inReceivership, insurance);
+  return { amount: fxToU64(rounded), shares };
 }
