@@ -106,4 +106,5 @@ Each holds for every instruction of every program the compiler accepts. A break 
 ## Status
 
 The compiler and runtime have had internal security reviews; the findings of the latest are fixed in 0.25.0
-(CHANGELOG). There has been no external audit yet: see [audit.md](audit.md).
+(CHANGELOG). The releases after it have not had such a review yet, and there has been no external audit: see
+[audit.md](audit.md).
