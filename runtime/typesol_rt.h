@@ -756,6 +756,44 @@ static inline uint64_t ts_claim_mut_at(TsParams *params, uint64_t at) {
   return SUCCESS;
 }
 
+/* A loadAccountMut inside a loop whose view cannot outlive the iteration: the claim's index is kept in `*slot`, so the
+   iteration's end can drop it (ts_release_mut) and the next iteration may load the same account again.
+   A remaining account may be passed more than once here (a route through one pool twice): its slots share one record,
+   and the claim bit is the last slot's, so two live views of it are still refused. It may not also be one of the
+   instruction's own accounts (`declared`: their count), whose views last the whole instruction. */
+static inline uint64_t ts_claim_mut_rec(TsParams *params, const TsAccount *a, uint64_t *slot, uint64_t declared) {
+  uint64_t seen = 0, at = 0, first = (uint64_t)-1;
+  for (uint64_t i = 0; i < params->ka_num; i++)
+    if (params->ka[i] == a) {
+      seen++, at = i;
+      if (first == (uint64_t)-1) first = i;
+    }
+  if (seen > 1 && first < declared) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account passed more than once");
+#if TS_MAX_ACCOUNTS > 64
+  if (params->loaded_mut[at >> 6] >> (at & 63) & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
+  params->loaded_mut[at >> 6] |= (uint64_t)1 << (at & 63);
+#else
+  if (params->loaded_mut >> at & 1) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: account already loaded with loadAccountMut");
+  params->loaded_mut |= (uint64_t)1 << at;
+#endif
+  *slot = at;
+  return SUCCESS;
+}
+static inline uint64_t ts_claim_mut_at_rec(TsParams *params, uint64_t at, uint64_t *slot) {
+  TS_TRY(ts_claim_mut_at(params, at));
+  *slot = at;
+  return SUCCESS;
+}
+static inline void ts_release_mut(TsParams *params, uint64_t *slot) {
+  if (*slot == (uint64_t)-1) return;
+#if TS_MAX_ACCOUNTS > 64
+  params->loaded_mut[*slot >> 6] &= ~((uint64_t)1 << (*slot & 63));
+#else
+  params->loaded_mut &= ~((uint64_t)1 << *slot);
+#endif
+  *slot = (uint64_t)-1;
+}
+
 static inline uint64_t ts_check_address(const TsAccount *a, const SolPubkey *expected) {
   if (!ts_key_eq(&a->key, expected)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: unexpected program address");
   return SUCCESS;
