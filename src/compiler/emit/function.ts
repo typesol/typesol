@@ -290,8 +290,16 @@ export class FunctionEmitter extends StatementEmitter {
       } else if (a.type.kind === "vecArg") {
         const elem = a.type.elem;
         const size = this.fieldBytes(elem);
+        if (a.type.optional) {
+          // Borsh Option<Vec<T>>: a tag byte, then the Vec when Some. None is an empty view with a NULL pointer.
+          need("1");
+          head.push(`  TS_VecArg arg_${a.name};`, `  arg_${a.name}.ptr = NULL;`, `  arg_${a.name}.len = 0;`);
+          head.push(`  uint8_t arg_${a.name}__tag = *(${at});`, `  off += 1;`);
+          head.push(`  if (arg_${a.name}__tag > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid option argument");`);
+          head.push(`  if (arg_${a.name}__tag == 1) {`);
+        } else head.push(`  TS_VecArg arg_${a.name};`);
         need("4");
-        head.push(`  TS_VecArg arg_${a.name};`, `  arg_${a.name}.len = (uint32_t)ts_read_le(${at}, 4);`, `  off += 4;`);
+        head.push(`  arg_${a.name}.len = (uint32_t)ts_read_le(${at}, 4);`, `  off += 4;`);
         if (a.type.cap !== undefined)
           head.push(`  if (arg_${a.name}.len > ${a.type.cap}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: more elements than the FixedVec argument holds");`);
         need(`(uint64_t)arg_${a.name}.len * ${size}`);
@@ -307,6 +315,7 @@ export class FunctionEmitter extends StatementEmitter {
           const checks = this.validation(lv, elem, "    ");
           if (checks.length) head.push(`  for (uint64_t ${i} = 0; ${i} < arg_${a.name}.len; ${i}++) {`, ...checks, `  }`);
         }
+        if (a.type.optional) head.push(`  }`);
       } else if (
         a.type.kind === "structRef" &&
         (this.model.structs.get(a.type.struct)!.layout === "borsh" || this.model.structs.get(a.type.struct)!.wire === "borsh")

@@ -2305,4 +2305,132 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await eligible("usdc back", gov, usdc.address, true);
     editGroup(group.address, [["governance_admin", govWas, 32]]);
   });
+  it("keeps bank metadata, and refuses clones, as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sm = await mint(TOKEN_PROGRAM, 6);
+    const [seededIx, seeded] = await addBank(group.address, admin, sm, TOKEN_PROGRAM, bankConfig(), { seed: 3n });
+    await run("add a seeded bank", admin, [seededIx], [seeded.address]);
+    const other = await s.funded();
+    const mdAdmin = await s.funded();
+    editGroup(group.address, [["metadata_admin", keyBits(mdAdmin.address), 32]]);
+    const metadataOf = async (bank: Address) => (await pda(PROGRAM, ["metadata", bank]))[0];
+    // Opening metadata (anyone pays): the bank may not exist yet; a seeded bank must be its own PDA.
+    const open = async (label: string, bank: Address) =>
+      run(
+        `init metadata: ${label}`,
+        other,
+        [
+          s.ix("init_bank_metadata", {}, [
+            { address: bank },
+            { address: other.address, signer: other, writable: true },
+            { address: await metadataOf(bank), writable: true },
+            { address: SYSTEM },
+          ] as never),
+        ],
+        [await metadataOf(bank)],
+      );
+    await open("a bank", usdc.address);
+    await open("again", usdc.address);
+    await open("a seeded bank", seeded.address);
+    await open("a bank to come", (await generateKeyPairSigner()).address);
+    await open("an account that is no bank", group.address);
+    const fake = await newBank("pyth", 1_000_000n);
+    editBank(fake.address, [["flags", 256n, 8]]);
+    await open("a seed known, not its PDA", fake.address);
+    // Writing it (the metadata admin): each field when given, zero-filled, the index of its last byte kept.
+    const bytes = (x: string | number) => (typeof x === "number" ? Buffer.alloc(x, 0x41) : Buffer.from(x));
+    const write = async (label: string, by: KeyPairSigner, bank: Address, ticker: Buffer | null, description: Buffer | null, md?: Address) => {
+      const metadata = md ?? (await metadataOf(bank));
+      return run(
+        `write metadata: ${label}`,
+        by,
+        [
+          s.ix("write_bank_metadata", { ticker, description }, [
+            { address: group.address },
+            { address: bank },
+            { address: by.address, signer: by, writable: true },
+            { address: metadata, writable: true },
+            { address: INSTRUCTIONS },
+          ] as never),
+        ],
+        [metadata],
+      );
+    };
+    await write("by someone else", other, usdc.address, bytes("USDC"), null);
+    await write("both", mdAdmin, usdc.address, bytes("USDC"), bytes("US Dollar Coin"));
+    await write("a shorter ticker only", mdAdmin, usdc.address, bytes("US"), null);
+    await write("an empty description", mdAdmin, usdc.address, null, bytes(0));
+    await write("an empty ticker", mdAdmin, usdc.address, bytes(0), bytes("dollars"));
+    await write("nothing", mdAdmin, usdc.address, null, null);
+    await write("both at their caps", mdAdmin, usdc.address, bytes(64), bytes(128));
+    await write("a ticker too long", mdAdmin, usdc.address, bytes(65), null);
+    await write("a description too long", mdAdmin, usdc.address, bytes("X"), bytes(129));
+    await write("another bank's metadata", mdAdmin, usdc.address, bytes("X"), null, await metadataOf(seeded.address));
+    await write("a seeded bank", mdAdmin, seeded.address, bytes("SEED"), bytes("seeded"));
+    editBank(usdc.address, [["flags", 256n, 8]]);
+    await write("a seed known, not its PDA", mdAdmin, usdc.address, bytes("X"), null);
+    editBank(usdc.address, [["flags", 0n, 8]]);
+    // Before the bank exists: the metadata of the PDA a seed will give.
+    const um = await mint(TOKEN_PROGRAM, 6);
+    const seedBytes = (n: bigint) => {
+      const b = Buffer.alloc(8);
+      b.writeBigUInt64LE(n);
+      return new Uint8Array(b);
+    };
+    const [upcoming] = await pda(PROGRAM, [group.address, um, seedBytes(9n)]);
+    await open("a seeded bank to come", upcoming);
+    const preInit = async (label: string, by: KeyPairSigner, seed: bigint, ticker: Buffer | null, description: Buffer | null) =>
+      run(
+        `write metadata before the bank: ${label}`,
+        by,
+        [
+          s.ix("write_bank_metadata_pre_init", { bank_seed: new BN(seed.toString()), ticker, description }, [
+            { address: group.address },
+            { address: um },
+            { address: upcoming },
+            { address: by.address, signer: by, writable: true },
+            { address: await metadataOf(upcoming), writable: true },
+            { address: INSTRUCTIONS },
+          ] as never),
+        ],
+        [await metadataOf(upcoming)],
+      );
+    await preInit("by someone else", other, 9n, bytes("NEW"), null);
+    await preInit("another seed", mdAdmin, 8n, bytes("NEW"), null);
+    await preInit("written", mdAdmin, 9n, bytes("NEW"), bytes("a bank to come"));
+    await preInit("a ticker too long", mdAdmin, 9n, bytes(65), null);
+    editGroup(group.address, [["metadata_admin", 0n, 32]]);
+    // Clones of mainnet banks exist only on staging and localnet builds: the mainnet build panics.
+    const cm = await mint(TOKEN_PROGRAM, 6);
+    const [cloneAt] = await pda(PROGRAM, [group.address, cm, seedBytes(1n)]);
+    const v = await h.vaults(cloneAt);
+    const clone = (label: string, by: KeyPairSigner, failing: boolean | "if-panics") =>
+      run(
+        `clone bank: ${label}`,
+        by,
+        [
+          s.ix("lending_pool_clone_bank", { bank_seed: new BN(1) }, [
+            { address: group.address, writable: true },
+            { address: by.address, signer: by, writable: true },
+            { address: admin.address, signer: admin, writable: true },
+            { address: cm },
+            { address: usdc.address },
+            { address: cloneAt, writable: true },
+            { address: v.liquidityAuth },
+            { address: v.liquidity, writable: true },
+            { address: v.insuranceAuth },
+            { address: v.insurance, writable: true },
+            { address: v.feeAuth },
+            { address: v.fee, writable: true },
+            { address: TOKEN_PROGRAM },
+            { address: SYSTEM },
+            { address: INSTRUCTIONS },
+          ] as never),
+        ],
+        [cloneAt, group.address],
+        failing,
+      );
+    await clone("by someone else", other, false);
+    await clone("on the mainnet build", admin, true);
+  });
 });

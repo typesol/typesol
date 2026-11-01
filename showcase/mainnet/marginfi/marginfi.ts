@@ -32,7 +32,9 @@ import {
   type Signer,
   type SystemProgram,
   type u32,
+  type Vec,
   constraint,
+  loadAccount,
   currentSlot,
   fixedArray,
   loadAccountMut,
@@ -257,6 +259,7 @@ import {
   type MarginfiAccount,
   type MarginfiGroup,
   type SameAssetEmodeRegistry,
+  type BankMetadata,
   type WrappedI80F48,
   BankOperationalState,
   OracleSetup,
@@ -3782,4 +3785,113 @@ export function lendingPoolSetBankSameAssetEmodeEligibility(
     mint: bank.mint,
     enabled,
   });
+}
+
+// ---- bank metadata and clones -------------------------------------------------------------------------------------
+
+const BANK_DISCRIMINATOR: u64 = 13574203538458161550n;
+
+/**
+ * Open a bank's metadata, the PDA ["metadata", bank] (anyone pays). The bank may not exist yet; when it is a bank of
+ * this program whose seed is known, it must be the PDA of its group, mint and seed.
+ */
+export function initBankMetadata(
+  bank: AccountInfo,
+  fee_payer: Mut<Signer>,
+  metadata: Init<BankMetadata>,
+  system_program: SystemProgram,
+): void {
+  const bump = metadata.create(fee_payer, ["metadata", bank.key]);
+  if (bank.dataLen > 0n && bank.owner === programId() && bank.dataLen >= 8n + 3904n && readData<u64>(bank, 0n) === BANK_DISCRIMINATOR) {
+    const b = loadAccount<Bank>(bank);
+    if ((b.flags & BANK_SEED_KNOWN) !== 0n)
+      require(findProgramAddress([b.group, b.mint, b.bank_seed], programId()) === bank.key, MarginfiError.InvalidBankAccount);
+  }
+  metadata.bank = bank.key;
+  metadata.bump = bump;
+}
+
+/** A ticker (at most 64 bytes) zero-filled into the metadata, the index of its last byte kept. */
+function writeTicker(metadata: Mut<BankMetadata>, ticker: Vec<u8>): void {
+  if (ticker.length > 64n) {
+    log(`too long got ${ticker.length} cap is: 64`);
+    require(false, MarginfiError.MetadataTooLong);
+  }
+  for (let i = 0n; i < 64n; i++) metadata.ticker.set(i, i < ticker.length ? ticker.get(i) : 0n);
+  metadata.end_ticker_byte = ticker.length === 0n ? 0n : u8(ticker.length - 1n);
+}
+
+/** A description (at most 128 bytes), as a ticker. */
+function writeDescription(metadata: Mut<BankMetadata>, description: Vec<u8>): void {
+  if (description.length > 128n) {
+    log(`too long got ${description.length} cap is: 128`);
+    require(false, MarginfiError.MetadataTooLong);
+  }
+  for (let i = 0n; i < 128n; i++) metadata.description.set(i, i < description.length ? description.get(i) : 0n);
+  metadata.end_description_byte = description.length === 0n ? 0n : u16(description.length - 1n);
+}
+
+/** Write an existing bank's ticker and description (the metadata admin); a seeded bank must be its own PDA. */
+export function writeBankMetadata(
+  group: HasOne<Account<MarginfiGroup>, "metadata_admin">,
+  bank: HasOne<Account<Bank>, "group">,
+  metadata_admin: Mut<Signer>,
+  metadata: HasOne<Mut<BankMetadata>, "bank">,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  ticker: Option<Vec<u8>>,
+  description: Option<Vec<u8>>,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  if ((bank.flags & BANK_SEED_KNOWN) !== 0n)
+    require(findProgramAddress([bank.group, bank.mint, bank.bank_seed], programId()) === bank.key, MarginfiError.InvalidBankAccount);
+  if (ticker !== null) writeTicker(metadata, ticker);
+  if (description !== null) writeDescription(metadata, description);
+}
+
+/** Write the ticker and description of a seeded bank that may not exist yet (the metadata admin). */
+export function writeBankMetadataPreInit(
+  group: HasOne<Account<MarginfiGroup>, "metadata_admin">,
+  bank_mint: AccountInfo,
+  bank: Seeds<AccountInfo, ["@group", "@bank_mint", "@bank_seed"]>,
+  metadata_admin: Mut<Signer>,
+  metadata: HasOne<Mut<BankMetadata>, "bank">,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_seed: u64,
+  ticker: Option<Vec<u8>>,
+  description: Option<Vec<u8>>,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  if (ticker !== null) writeTicker(metadata, ticker);
+  if (description !== null) writeDescription(metadata, description);
+}
+
+/**
+ * lending_pool_clone_bank: staging and localnet builds only (a mainnet bank copied for testing). The mainnet build
+ * panics once the bank and its vaults are created and the durable-nonce check passes.
+ */
+export function lendingPoolCloneBank(
+  marginfi_group: HasOne<Mut<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Mut<Signer>,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  source_bank: AccountInfo,
+  bank: Init<Bank>,
+  liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<AccountInfo, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<AccountInfo, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_seed: u64,
+): void {
+  bank.create(fee_payer, [marginfi_group.key, bank_mint.key, bank_seed]);
+  liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  checkNoDurableNonce(instruction_sysvar);
+  // "Staging or localnet only!"
+  require(false, MarginfiError.InternalLogicError);
 }
