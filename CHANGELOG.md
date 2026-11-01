@@ -6,6 +6,24 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: examples/marginfi begins a port of Marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6, Apache-2.0; on mainnet
+  as MFv2hWf3… with the same 124 instructions, version 0.1.12 in its on-chain IDL). This first part has no
+  instructions yet: its 255 errors (from the on-chain IDL), its I80F48 fixed-point arithmetic and its 12 zero-copy
+  accounts with the 32 types they hold. The arithmetic gives the bits the `fixed` crate (1.28.0) gives, checked
+  against vectors that crate wrote (test/fixtures/marginfi/i80f48-oracle) and on random values. The accounts read
+  mainnet's group, a bank and the fee state as Anchor decodes them, and the IDL describes all 44 types as the
+  on-chain IDL does.
+- New: `/** @code 6200 */` on an error enum member gives it that code, the members after it continuing from there
+  (Anchor's `Variant = 200`). `require("…")` errors come after the highest code. `typesol port` keeps an IDL's codes
+  this way.
+- New: `/** @repr c */` (`packed`, `align N`; `@repr rust` on enums) and `/** @serialization bytemuck */` put an Anchor
+  zero-copy type's repr and serialization in the IDL. An unpacked `@repr c` struct must have its fields where C puts
+  them; a field that C would pad is a compile error.
+- New: `/** @bytes */` on an integer field shows it in the IDL as `[u8; N]` (an `i128` for Marginfi's
+  `WrappedI80F48 { value: [u8; 16] }`); `/** @idlName _pad0 */` names a field in the IDL where the source cannot (a
+  leading underscore); a `key_` or `lamports_` field is `key` / `lamports` in the IDL. `typesol port` writes these
+  tags from the IDL, so a ported zero-copy account's IDL is the original's.
+
 ## 0.38.0 — 2026-11-01
 
 Raydium CLMM ported in full, and Jito's three MEV programs ported, each checked against its mainnet binary. The

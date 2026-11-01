@@ -9,7 +9,7 @@
  * data enum, a COption) it says so in a note and a comment.
  */
 import { createHash } from "node:crypto";
-import { cNameProblem } from "../compiler/analyze.js";
+import { ACCOUNT_MEMBERS, cNameProblem, fieldIdlName } from "../compiler/analyze.js";
 
 type IdlType =
   | string
@@ -24,6 +24,8 @@ interface IdlTypeDef {
   docs?: string[];
   type: { kind: string; fields?: (IdlField | IdlType)[]; variants?: { name: string; fields?: (IdlField | IdlType)[] }[] };
   generics?: unknown[];
+  serialization?: string;
+  repr?: { kind: string; packed?: boolean; align?: number };
 }
 interface IdlAccountItem {
   name: string;
@@ -271,7 +273,17 @@ export function generatePort(idl: PortIdl): PortResult {
     return quiet ? "x" : tsType(t, "account", at);
   };
   const esc = (s: string) => s.replace(/\*\//g, "* /");
-  const docs = (lines: string[] | undefined, pad = "") => (lines?.length ? `${pad}/** ${esc(lines.join(" "))} */\n` : "");
+  const docs = (lines: string[] | undefined, pad = "", tags: string[] = []) =>
+    tags.length
+      ? `${pad}/**\n${lines?.length ? `${pad} * ${esc(lines.join(" "))}\n` : ""}${tags.map((t) => `${pad} * ${t}\n`).join("")}${pad} */\n`
+      : lines?.length
+        ? `${pad}/** ${esc(lines.join(" "))} */\n`
+        : "";
+  // What an Anchor IDL says of a zero-copy type (repr, serialization), kept as tags so the port's IDL says it too.
+  const metaTags = (def: IdlTypeDef) => [
+    ...(def.serialization ? [`@serialization ${def.serialization}`] : []),
+    ...(def.repr ? [`@repr ${def.repr.kind}${def.repr.packed ? " packed" : ""}${def.repr.align ? ` align ${def.repr.align}` : ""}`] : []),
+  ];
   const out: string[] = [];
 
   // Constants: integer literals and strings; expressions are left to port by hand.
@@ -303,22 +315,27 @@ export function generatePort(idl: PortIdl): PortResult {
       const borsh = borshable && !isTuple(fields) && fields.some((f) => borshOnly(f.type)) && fields.every((f) => borshField(f.type, "") !== undefined);
       const tag = accountNames.has(def.name) ? " (account)" : eventNames.has(def.name) ? ` (event: emit<${typeName(def.name)}>({ … }))` : "";
       const doc = def.docs?.length ? esc(def.docs.join(" ")) : `${def.name}${tag}`;
-      out.push(borsh ? `/**\n * ${doc}\n * @layout borsh\n */` : `/** ${doc} */`);
+      const typeTags = [...(borsh ? ["@layout borsh"] : []), ...metaTags(def)];
+      out.push(typeTags.length ? `/**\n * ${doc}\n${typeTags.map((t) => ` * ${t}\n`).join("")} */` : `/** ${doc} */`);
       out.push(`export interface ${typeName(def.name)} {`);
       const seen = new Set<string>();
       fields.forEach((f, i) => {
         let n = ident(f.name, true);
+        // An account member's name (key, lamports) is held as key_, which the IDL still calls key.
+        if (ACCOUNT_MEMBERS.has(n)) n = `${n}_`;
         while (seen.has(n)) n = `${n}2`;
         seen.add(n);
         const ty = borsh ? borshField(f.type, `${def.name}.${f.name}`)! : tsType(f.type, where, `${def.name}.${f.name}`, i === fields.length - 1);
-        out.push(`${docs(f.docs, "  ")}  ${n}: ${ty};`);
+        // The IDL's own name where TypeSOL's would differ (_pad0, integration_acc_1).
+        const tags = fieldIdlName(n) === f.name ? [] : [`@idlName ${f.name}`];
+        out.push(`${docs(f.docs, "  ", tags)}  ${n}: ${ty};`);
       });
       out.push("}", "");
     } else {
       const variants = def.type.variants ?? [];
       if (variants.every((v) => !v.fields?.length)) {
         out.push(
-          `${docs(def.docs)}export enum ${typeName(def.name)} {`,
+          `${docs(def.docs, "", metaTags(def))}export enum ${typeName(def.name)} {`,
           ...variants.map((v) => `  ${ident(v.name, true).replace(/^[a-z]/, (c) => c.toUpperCase())},`),
           "}",
           "",
@@ -339,15 +356,13 @@ export function generatePort(idl: PortIdl): PortResult {
     }
   }
 
-  // Errors: TypeSOL numbers them 6000 + their index. NotPorted, last, marks the instructions still to write, so the
-  // codes of the program's own errors do not move.
-  const errors = idl.errors ?? [];
+  // Errors: TypeSOL numbers them from 6000 in order; `/** @code N */` keeps an IDL code that skips ahead. NotPorted,
+  // last, marks the instructions still to write, so the codes of the program's own errors do not move.
+  const errors = [...(idl.errors ?? [])].sort((a, b) => a.code - b.code);
   const program = typeName(pascal(idl.metadata?.name ?? "program"));
   const errorEnum = `${program}Error`;
-  if (!errors.every((e, i) => e.code === 6000 + i))
-    notes.push(
-      `errors: TypeSOL numbers an error enum from 6000 in order; the IDL's codes (${errors.map((e) => e.code).join(", ")}) differ, so clients see other codes`,
-    );
+  if (errors.some((e, i) => e.code < 6000 || (i > 0 && e.code === errors[i - 1]!.code)))
+    notes.push(`errors: codes below 6000 or repeated in the IDL (${errors.map((e) => e.code).join(", ")}) cannot be kept, so clients see other codes`);
   const memberNames = new Set<string>();
   const member = (name: string) => {
     // RequireFailedN is TypeSOL's own name for require("message") errors; it is reserved in source.
@@ -356,7 +371,13 @@ export function generatePort(idl: PortIdl): PortResult {
     memberNames.add(n);
     return n;
   };
-  const errorLines = errors.map((e) => `  ${member(e.name)} = ${JSON.stringify(e.msg ?? e.name)},`);
+  let nextCode = 6000;
+  const errorLines = errors.flatMap((e) => {
+    const skip = e.code > nextCode ? [`  /** @code ${e.code} */`] : [];
+    nextCode = Math.max(nextCode, e.code) + 1;
+    // An error without a message has none in TypeSOL's IDL either.
+    return [...skip, `  ${member(e.name)} = ${JSON.stringify(e.msg ?? "")},`];
+  });
   const notPorted = member("NotPorted");
   out.push(`export enum ${errorEnum} {`, ...errorLines, `  ${notPorted} = "This instruction is not ported yet",`, "}", "");
 

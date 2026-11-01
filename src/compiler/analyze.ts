@@ -29,6 +29,7 @@ import {
   type ScalarType,
   type StructDef,
   type StructField,
+  type IdlMeta,
   type ValueType,
   isScalar,
   scalarSize,
@@ -40,12 +41,15 @@ export const LIB_PATH = fileURLToPath(new URL("../../lib/typesol.d.ts", import.m
 /** Names a struct field may not use because account parameters already expose them. */
 const RESERVED_FIELDS = new Set(["create", "equals", "get", "set", "length"]);
 /** Members every account parameter has (`acct.key`, `acct.isSigner`, …): a struct held in an account cannot use them. */
-const ACCOUNT_MEMBERS = new Set(["key", "lamports", "dataLen", "isSigner", "isWritable", "pdaBump"]);
+export const ACCOUNT_MEMBERS = new Set(["key", "lamports", "dataLen", "isSigner", "isWritable", "pdaBump"]);
 /** A struct used as account data: none of its fields may shadow an account member. */
 export function checkAccountMembers(s: StructDef, at: ts.Node, reporter: Reporter): void {
   const clash = s.fields.find((f) => ACCOUNT_MEMBERS.has(f.name));
   if (clash)
-    reporter.fail(at, `${s.name}.${clash.name}: "${clash.name}" is an account member (acct.${clash.name}); rename the field to hold ${s.name} in an account`);
+    reporter.fail(
+      at,
+      `${s.name}.${clash.name}: "${clash.name}" is an account member (acct.${clash.name}); rename the field to hold ${s.name} in an account (${clash.name}_ keeps the name "${snakeCase(clash.name)}" in the IDL)`,
+    );
 }
 
 /**
@@ -209,6 +213,38 @@ export function snakeCase(name: string): string {
  * argument of one name (`authority`); TypeScript cannot, so the argument is written with a trailing underscore
  * (`authority_`) and recorded without it.
  */
+/** `/** @repr c *\/` (packed, align N) / `@repr rust` and `/** @serialization bytemuck *\/` on a type: see IdlMeta. */
+function idlMetaOf(decl: ts.Node, reporter: Reporter): IdlMeta | undefined {
+  const text = (name: string) => {
+    const tag = ts.getJSDocTags(decl).find((t) => t.tagName.text === name);
+    return tag ? { tag, words: (typeof tag.comment === "string" ? tag.comment : "").trim().split(/\s+/).filter(Boolean) } : undefined;
+  };
+  const repr = text("repr");
+  const serialization = text("serialization");
+  if (!repr && !serialization) return undefined;
+  const meta: IdlMeta = {};
+  if (repr) {
+    const [kind, ...rest] = repr.words;
+    if (kind !== "c" && kind !== "rust") reporter.fail(repr.tag, "@repr is c or rust, then optionally packed and align N: @repr c align 8");
+    meta.repr = { kind };
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "packed") meta.repr.packed = true;
+      else if (rest[i] === "align" && /^\d+$/.test(rest[i + 1] ?? "")) meta.repr.align = Number(rest[++i]);
+      else reporter.fail(repr.tag, `@repr: unknown "${rest[i]}" (packed, align N)`);
+    }
+  }
+  if (serialization) {
+    if (serialization.words.length !== 1) reporter.fail(serialization.tag, "@serialization takes one word: bytemuck, bytemuckunsafe, …");
+    meta.serialization = serialization.words[0];
+  }
+  return meta;
+}
+
+/** A struct field's IDL name: snake_case, and an account member's name plus "_" (`key_`) without the "_". */
+export function fieldIdlName(name: string): string {
+  return name.endsWith("_") && ACCOUNT_MEMBERS.has(name.slice(0, -1)) ? snakeCase(name.slice(0, -1)) : snakeCase(name);
+}
+
 export function argIdlName(name: string, accountNames: readonly string[]): string {
   const base = snakeCase(name);
   if (base.length > 1 && base.endsWith("_") && !base.endsWith("__") && accountNames.some((a) => snakeCase(a) === base.slice(0, -1))) return base.slice(0, -1);
@@ -422,7 +458,17 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
             const members = new Map<string, ErrorDef>();
             for (const m of stmt.members) {
               if (!m.initializer || !ts.isStringLiteral(m.initializer)) reporter.fail(m, 'error enum members need a string message: Name = "message"');
-              const def = { code: 6000 + errors.length, name: m.name.getText(file), msg: m.initializer.text };
+              // Codes run on from the last one; `/** @code 6200 */` sets a member's (Anchor's `Variant = 200`), and the
+              // members after it continue from there.
+              let code = errors.length ? errors[errors.length - 1]!.code + 1 : 6000;
+              const tag = ts.getJSDocTags(m).find((t) => t.tagName.text === "code");
+              if (tag) {
+                const text = typeof tag.comment === "string" ? tag.comment.trim() : "";
+                if (!/^\d+$/.test(text) || Number(text) < code || Number(text) > 4_294_967_295)
+                  reporter.fail(m, `@code must be a number from ${code} up (codes only go up, and start at 6000)`);
+                code = Number(text);
+              }
+              const def = { code, name: m.name.getText(file), msg: m.initializer.text };
               // Names identify errors in the IDL: they must be unique across the program.
               if (errors.some((e) => e.name === def.name)) reporter.fail(m, `error "${def.name}" is already declared; error names are program-wide`);
               if (/^RequireFailed\d+$/.test(def.name)) reporter.fail(m, `"${def.name}" is reserved for require("...") messages`);
@@ -439,7 +485,8 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               variants.push(m.name.getText(file));
             });
             if (variants.length === 0 || variants.length > 256) reporter.fail(stmt, "enums need 1..256 variants");
-            enums.set(stmt.name.text, { name: stmt.name.text, variants });
+            const idlMeta = idlMetaOf(stmt, reporter);
+            enums.set(stmt.name.text, { name: stmt.name.text, variants, ...(idlMeta ? { idlMeta } : {}) });
           }
         } else if (ts.isFunctionDeclaration(stmt)) {
           // Exported functions of the entry file are instructions; everything else is a helper.
@@ -1042,7 +1089,14 @@ function analyzeStructs(
         const problem = cNameProblem(name);
         if (problem) reporter.fail(m.name, problem);
         const type = fieldType(m.type);
-        fields.push({ name, type, node: m });
+        // `/** @bytes */`: an integer the IDL describes as its bytes (Marginfi's WrappedI80F48 { value: [u8; 16] }).
+        const bytesTag = ts.getJSDocTags(m).find((t) => t.tagName.text === "bytes");
+        if (bytesTag && type.kind !== "int") reporter.fail(bytesTag, "@bytes is for integer fields: the IDL then shows the integer's bytes, [u8; N]");
+        const idlBytes = bytesTag && type.kind === "int" ? Number(/\d+/.exec(type.name)![0]) / 8 : undefined;
+        const nameTag = ts.getJSDocTags(m).find((t) => t.tagName.text === "idlName");
+        const idlName = typeof nameTag?.comment === "string" ? nameTag.comment.trim() : undefined;
+        if (nameTag && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(idlName ?? "")) reporter.fail(nameTag, "@idlName takes the field's name in the IDL: @idlName _pad0");
+        fields.push({ name, type, node: m, ...(idlBytes ? { idlBytes } : {}), ...(idlName ? { idlName } : {}) });
       }
       checkSnakeDuplicates(
         decl.members.map((m) => ({ name: (m.name as ts.Identifier).text, node: m })),
@@ -1063,7 +1117,10 @@ function analyzeStructs(
       // field keeps a fixed offset; the IDL lists the fields in this stored order.
       const stored = layoutText === "borsh" ? fields : [...fields.filter((f) => !growable(f)), ...fields.filter(growable)];
       for (const f of stored) delete f.node;
+      const idlMeta = idlMetaOf(decl, reporter);
+      if (idlMeta?.repr && layoutText === "borsh") reporter.fail(decl.name, "@repr describes a zero-copy (fixed layout) struct, not a @layout borsh one");
       structs.set(name, {
+        ...(idlMeta ? { idlMeta } : {}),
         name,
         fields: stored,
         size: undefined,
@@ -1185,6 +1242,49 @@ function analyzeStructs(
       }
     }
   };
+  // A `@repr c` struct that is not packed is Rust's repr(C): each field at a multiple of its alignment and the size a
+  // multiple of the struct's. TypeSOL stores fields back to back, so that holds only when C would add no padding.
+  const alignOf = (t: FieldType, at: ts.Node): number => {
+    switch (t.kind) {
+      case "int": {
+        const bytes = Number(/\d+/.exec(t.name)![0]) / 8;
+        if (bytes > 8)
+          reporter.fail(
+            at,
+            `a ${t.name} field in a repr(C) zero-copy struct: its alignment differs between targets; hold it as /** @bytes */ in a struct of its own (Marginfi's WrappedI80F48) or mark the struct packed`,
+          );
+        return bytes;
+      }
+      case "array":
+        return alignOf(t.elem, at);
+      case "struct": {
+        const inner = structs.get(t.name);
+        return inner ? Math.max(inner.idlMeta?.repr?.align ?? 1, ...inner.fields.map((f) => (f.idlBytes ? 1 : alignOf(f.type, at)))) : 1;
+      }
+      case "bool":
+      case "pubkey":
+      case "enum":
+        return 1;
+      default:
+        return reporter.fail(at, "a zero-copy struct holds integers, booleans, Pubkeys, unit enums, fixed arrays and other such structs");
+    }
+  };
+  const zeroCopyOffsets = (s: StructDef, align?: number) => {
+    let offset = 0;
+    let max = align ?? 1;
+    for (const f of s.fields) {
+      const align = f.idlBytes ? 1 : alignOf(f.type, s.node);
+      max = Math.max(max, align);
+      if (offset % align !== 0)
+        reporter.fail(
+          s.node.name,
+          `${s.name}.${f.name} is at byte ${offset}, which C would pad to a multiple of ${align}: add the padding field repr(C) has there, or mark it packed`,
+        );
+      offset += sizeOf(f.type, s.node)!;
+    }
+    if (offset % max !== 0)
+      reporter.fail(s.node.name, `${s.name} is ${offset} bytes, which C would pad to a multiple of ${max}: add the trailing padding field repr(C) has`);
+  };
   const visit = (s: StructDef) => {
     if (state.get(s.name) === "done") return;
     if (state.get(s.name) === "visiting") reporter.fail(s.node.name, `struct ${s.name} contains itself`);
@@ -1198,6 +1298,7 @@ function analyzeStructs(
       total = total === undefined || fsz === undefined ? undefined : total + fsz;
     }
     s.size = total;
+    if (s.idlMeta?.repr?.kind === "c" && !s.idlMeta.repr.packed) zeroCopyOffsets(s, s.idlMeta.repr.align);
     if (total !== undefined && total + 8 > MAX_ACCOUNT_SIZE)
       reporter.fail(s.node.name, `${s.name} is ${total + 8} bytes with its discriminator; Solana accounts are at most ${MAX_ACCOUNT_SIZE} bytes`);
     // Growable Vecs (stored last, see above): the first one's length and elements end the C struct; the others follow

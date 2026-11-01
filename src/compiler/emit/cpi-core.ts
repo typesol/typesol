@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { argIdlName, snakeCase } from "../analyze.js";
+import { argIdlName, fieldIdlName, snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
 import { accountLimit, MAX_SEEDS, U64, type Value, isStable, cString, scalarStorageC, optC } from "./shared.js";
 import { CallEmitter } from "./calls.js";
@@ -127,7 +127,7 @@ export abstract class CpiCoreEmitter extends CallEmitter {
       if (a && el.name.text === "key") return { kind: "account", path: snakeCase(a.name) };
       if (a && (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded")) {
         const f = a.kind.struct.fields.find((x) => x.name === el.name.text);
-        if (f && isScalar(f.type)) return { kind: "account", path: `${snakeCase(a.name)}.${snakeCase(f.name)}`, account: a.kind.struct.name };
+        if (f && isScalar(f.type)) return { kind: "account", path: `${snakeCase(a.name)}.${f.idlName ?? fieldIdlName(f.name)}`, account: a.kind.struct.name };
       }
     }
     return undefined;

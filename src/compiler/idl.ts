@@ -1,7 +1,8 @@
 import ts from "typescript";
-import { argIdlName, snakeCase } from "./analyze.js";
+import { argIdlName, fieldIdlName, snakeCase } from "./analyze.js";
 import { decodeAddress } from "../keys.js";
 import {
+  type IdlMeta,
   type FieldType,
   type Instruction,
   type ParamKind,
@@ -63,6 +64,14 @@ function borshIdlType(t: FieldType): unknown {
   // A data enum in a Borsh struct is the Borsh enum itself (tag, then the variant's fields).
   if (t.kind === "dataEnum") return { defined: { name: t.name } };
   return idlType(t);
+}
+
+/** An IDL type's serialization and repr, as an Anchor IDL lists them (before `type`). */
+function idlMetaFields(m: IdlMeta | undefined): Record<string, unknown> {
+  return {
+    ...(m?.serialization ? { serialization: m.serialization } : {}),
+    ...(m?.repr ? { repr: { kind: m.repr.kind, ...(m.repr.packed ? { packed: true } : {}), ...(m.repr.align ? { align: m.repr.align } : {}) } } : {}),
+  };
 }
 
 function idlType(t: FieldType | ValueType, borshOption = false): unknown {
@@ -218,16 +227,25 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
       ...usedStructs.map((s) => ({
         name: s.name,
         ...docsOf(s.node),
+        ...idlMetaFields(s.idlMeta),
         type: {
           kind: "struct",
           fields: s.fields.map((f) => ({
-            name: snakeCase(f.name),
+            name: f.idlName ?? fieldIdlName(f.name),
             ...docsOf(s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name)),
-            type: s.layout === "borsh" ? borshIdlType(f.type) : idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),
+            type: f.idlBytes
+              ? { array: ["u8", f.idlBytes] }
+              : s.layout === "borsh"
+                ? borshIdlType(f.type)
+                : idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),
           })),
         },
       })),
-      ...[...model.enums.values()].map((e) => ({ name: e.name, type: { kind: "enum", variants: e.variants.map((v) => ({ name: v })) } })),
+      ...[...model.enums.values()].map((e) => ({
+        name: e.name,
+        ...idlMetaFields(e.idlMeta),
+        type: { kind: "enum", variants: e.variants.map((v) => ({ name: v })) },
+      })),
       // A variable enum (it holds strings) only exists in Borsh: no fixed account-data form to describe.
       ...[...model.dataEnums.values()].flatMap((e) => [
         {

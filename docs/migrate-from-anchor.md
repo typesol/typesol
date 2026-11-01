@@ -101,7 +101,8 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | --- | --- |
 | `pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()>` | `export function deposit(owner: Mut<Signer>, vault: Mut<Vault>, …, amount: u64): void` |
 | `-> Result<u64>` / a struct | `: u64` / a struct: sent as return data, listed in the IDL |
-| `#[error_code] enum MyError { #[msg("…")] X }` | `export enum MyError { X = "…" }` (codes from 6000, in order; `X = ""` for a variant without `#[msg]`) |
+| `#[error_code] enum MyError { #[msg("…")] X }` | `export enum MyError { X = "…" }` (codes from 6000, in order; `X = ""` for a variant without `#[msg]`; `/** @code 6200 */` before a member for Anchor's `Y = 200`) |
+| `#[account(zero_copy)]`, `#[repr(C)]` types with `_pad` fields and `WrappedI80F48` | a fixed-layout struct with `/** @serialization bytemuck */` and `/** @repr c */`, `/** @idlName _pad0 */` on the padding, `/** @bytes */ value: i128` for the wrapped number ([language.md](language.md)) |
 | `require!(c, MyError::X)`, `err!(MyError::X)` | `require(c, MyError.X)`, `require(false, MyError.X)` |
 | `require_keys_eq!(a, b)`, `err!(ErrorCode::AccountDidNotDeserialize)` (Anchor's own codes) | `require(a === b, AnchorError.RequireKeysEqViolated)` (or your own error), `require(false, AnchorError.AccountDidNotDeserialize)` |
 | `init_if_needed` + `extensions::…` on a mint | `mint.createIfNeeded(…, { metadataPointer: {…}, … })`: an existing mint is checked as Anchor checks it (2024–2039) |
