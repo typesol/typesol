@@ -620,6 +620,49 @@ function windowOutflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLim
   };
 }
 
+/** GroupRateLimiter::record_inflow: each enabled window gets the inflow's capacity back. */
+export function recordGroupInflow(group: Mut<MarginfiGroup>, amount: u64, timestamp: i64): void {
+  if (group.rate_limiter.hourly.max_outflow > 0n) group.rate_limiter.hourly = windowInflow(group.rate_limiter.hourly, amount, timestamp);
+  if (group.rate_limiter.daily.max_outflow > 0n) group.rate_limiter.daily = windowInflow(group.rate_limiter.daily, amount, timestamp);
+}
+
+/** GroupRateLimiter::try_record_outflow: the outflow must fit each enabled window (hourly first), then counts in both. */
+export function recordGroupOutflow(group: Mut<MarginfiGroup>, amount: u64, timestamp: i64): void {
+  const hourlyOn = group.rate_limiter.hourly.max_outflow > 0n;
+  const dailyOn = group.rate_limiter.daily.max_outflow > 0n;
+  if (hourlyOn) group.rate_limiter.hourly = windowAdvance(group.rate_limiter.hourly, timestamp);
+  if (dailyOn) group.rate_limiter.daily = windowAdvance(group.rate_limiter.daily, timestamp);
+  const fits = amount <= 9223372036854775807n;
+  if (hourlyOn) {
+    const w = group.rate_limiter.hourly;
+    require(fits &&
+      toI64(amount) <=
+        windowCapacity(
+          w.max_outflow,
+          w.window_duration,
+          w.window_start,
+          w.prev_window_outflow,
+          w.cur_window_outflow,
+          timestamp,
+        ), MarginfiError.GroupHourlyRateLimitExceeded);
+  }
+  if (dailyOn) {
+    const w = group.rate_limiter.daily;
+    require(fits &&
+      toI64(amount) <=
+        windowCapacity(
+          w.max_outflow,
+          w.window_duration,
+          w.window_start,
+          w.prev_window_outflow,
+          w.cur_window_outflow,
+          timestamp,
+        ), MarginfiError.GroupDailyRateLimitExceeded);
+  }
+  if (hourlyOn) group.rate_limiter.hourly = windowOutflow(group.rate_limiter.hourly, amount, timestamp);
+  if (dailyOn) group.rate_limiter.daily = windowOutflow(group.rate_limiter.daily, amount, timestamp);
+}
+
 /** check_utilization_ratio: a bank may not owe more than it holds. */
 export function checkUtilizationRatio(bank: Mut<Bank>): void {
   require(assetAmount(bank, bank.total_asset_shares.value) >= liabilityAmount(bank, bank.total_liability_shares.value), MarginfiError.IllegalUtilizationRatio);

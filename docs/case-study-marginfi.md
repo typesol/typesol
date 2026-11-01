@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans and account administration done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -209,6 +209,17 @@ keypair or the PDA `marginfi_account_initialize_pda` uses, takes the old one's b
 authority; the old one is emptied, disabled and points at it), `admin_close_account` (anyone, an empty account idle
 for 60 days with no orders, record or rebalance fee pool, its rent to the global fee wallet).
 
+**Part 5, group and fee state administration.** `config_group_fee` and `edit_fee_state_premium` (the global fee
+admin); `panic_pause` (the global fee admin or the pause delegate: 6 hours, extended while running, at most 3 a day
+and 4 in a row), `panic_unpause` (the global fee admin) and `panic_unpause_permissionless` (anyone, once a pause has
+run out); `marginfi_group_set_governance_admin` (the admin the first time, the governance admin after);
+`configure_bank_rate_limits` and `configure_group_rate_limits` (the admin or the limit admin, each window restarted);
+`update_group_rate_limiter` (the flow admin's aggregated flows: in sequence and slot order, at most 1,500 slots old,
+an inflow giving capacity back, an outflow within the windows); `lending_pool_configure_group_premium` (the admin:
+the premium matrix kept sorted by collateral and liability tag, at most 64 pairs, a rate of 0 removing one).
+`edit_global_fee_state` and `marginfi_group_configure_gov` take `Option<WrappedI80F48>` arguments, which TypeSOL
+does not accept as instruction arguments yet (inside a struct argument it does); they come with that.
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -281,9 +292,9 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 537 in
+for the oracles, and 591 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
-for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
+for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
@@ -330,7 +341,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account administration and the risk engine (537, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration and the risk engine (591, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -379,7 +390,14 @@ byte into both ledgers:
   emissions destination (frozen, by the authority, by someone else); indexer flags (two accounts, one read-only, a
   bank, none); transfers (by someone else, to the wrong fee wallet, in a flash loan, with balances, again, to a PDA,
   with a third-party id outside its program, with an open id); closes (active lately, the wrong wallet, with a
-  balance, a rebalance fee pool left, idle 61 days).
+  balance, a rebalance fee pool left, idle 61 days). The group's program fees (by someone else, off, on), the premium
+  wallet; pauses (by someone else, an unpause unpaused, a pause, an early permissionless unpause, extended, a third,
+  a fourth in a day, an unpause by someone else and by the admin, the next day, expired, again); the governance admin
+  (to nobody, by someone else, handed over and back, the first by the admin); rate limits for a bank and the group
+  (by someone else, past i64, set, off); the flow admin's updates (by someone else, empty, slots reversed, in the
+  future, out of sequence, an inflow past i64, an outflow, an old slot, past the hourly limit, an inflow then an
+  outflow, stale); the premium matrix (by someone else, an empty tag, past the highest rate, three pairs in sorted
+  places, a new rate, removals, one already gone).
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -515,6 +533,9 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `transfer_to_new_account`, with balances | 12,906 | 7,259 | −44% |
 | `transfer_to_new_account_pda` | 15,008 | 7,831 | −48% |
 | `admin_close_account` | 5,755 | 3,591 | −38% |
+| `panic_pause` | 7,188 | 863 | −88% |
+| `update_group_rate_limiter`, an outflow | 5,152 | 1,397 | −73% |
+| `lending_pool_configure_group_premium`, a new pair | 5,558 | 1,155 | −79% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -522,7 +543,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%;
+38–86%, group and fee state administration 73–95%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.

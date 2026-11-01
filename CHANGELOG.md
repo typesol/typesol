@@ -15,6 +15,11 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's group and fee state administration: `config_group_fee`, `edit_fee_state_premium`, the panic
+  pause (`panic_pause`, `panic_unpause`, `panic_unpause_permissionless`), `marginfi_group_set_governance_admin`,
+  `configure_bank_rate_limits`, `configure_group_rate_limits`, `update_group_rate_limiter` and
+  `lending_pool_configure_group_premium`. Against the binary on mainnet: 1,009 transactions, the same IDL for all 58
+  ported instructions. 73–95% fewer compute units.
 - Examples: Marginfi's account administration: `marginfi_account_set_freeze`,
   `marginfi_account_update_emissions_destination_account`, `sync_indexer_flags`, `transfer_to_new_account`,
   `transfer_to_new_account_pda` and `admin_close_account`. Against the binary on mainnet: 955 transactions, the same IDL
