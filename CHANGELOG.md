@@ -15,6 +15,10 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's bank administration, part three: `lending_pool_emissions_deposit` (refusing fee and hook
+  mints, as the original does), `lending_pool_init_same_asset_emode_registry` and
+  `lending_pool_set_bank_same_asset_emode_eligibility`. Against the binary on mainnet: 1,140 transactions, the same IDL
+  for all 73 ported instructions.
 - Examples: Marginfi's bank administration, part two: `lending_pool_configure_bank_gov`,
   `lending_pool_collect_bank_premium_fees`, `super_admin_deposit` and `super_admin_withdraw` (which panic in the
   mainnet build, as the original does). Against the binary on mainnet: 1,084 transactions, the same IDL for all 70

@@ -48,6 +48,8 @@ import {
   remainingAccounts,
   transferFee,
   transferFeeInverse,
+  transferFeeBasisPoints,
+  transferHookProgram,
   writable,
   log,
   now,
@@ -58,6 +60,7 @@ import {
   u8,
 } from "typesol";
 import {
+  ZERO_KEY,
   ACCOUNT_DISABLED,
   ACCOUNT_FROZEN,
   ACCOUNT_IN_FLASHLOAN,
@@ -177,6 +180,7 @@ import {
 } from "./risk";
 import {
   type InterestRateConfigOpt,
+  type LendingPoolBankSetSameAssetEmodeEligibilityEvent,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
@@ -211,6 +215,7 @@ import {
   I80F48_ONE,
   I80F48_ZERO,
   fxAdd,
+  fxDiv,
   fxFrac,
   fxFromU64,
   fxInt,
@@ -251,6 +256,7 @@ import {
   type LiquidationRecord,
   type MarginfiAccount,
   type MarginfiGroup,
+  type SameAssetEmodeRegistry,
   type WrappedI80F48,
   BankOperationalState,
   OracleSetup,
@@ -3624,4 +3630,156 @@ export function lendingPoolWithdrawFeesPermissionless(
       [u8(3n), amount < held ? amount : held],
       ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
     );
+}
+
+// ---- emissions and same-asset e-mode ------------------------------------------------------------------------------
+
+/** The share supply a bank needs before it takes emissions: a floor on how far one deposit can move the share value. */
+const MIN_EMISSIONS_SHARE_SUPPLY: i128 = 295147905179352825856n; // 2^20 in I80F48
+
+/**
+ * Give a bank's depositors same-mint emissions (permissionless): the tokens go straight into the liquidity vault and
+ * raise the asset share value. Mints with a transfer fee or a transfer hook are refused.
+ */
+export function lendingPoolEmissionsDeposit(
+  group: Account<MarginfiGroup>,
+  bank: HasOne<
+    HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "mint", MarginfiError.InvalidEmissionsMint>,
+    "liquidity_vault",
+    MarginfiError.InvalidLiquidityVault
+  >,
+  mint: Mint,
+  emissions_funding_account: Mut<AccountInfo>,
+  depositor: Mut<Signer>,
+  liquidity_vault: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(bank, isMarginfiAssetTag(bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  if (amount === 0n) return;
+  const t = now();
+  validateBankState(bank, FAILS_IF_PAUSED_OR_REDUCE_STATE, true, t);
+  require(transferFeeBasisPoints(mint) === 0n, MarginfiError.InvalidTransfer);
+  require(transferHookProgram(mint) === null, MarginfiError.InvalidTransfer);
+  const shares = bank.total_asset_shares.value;
+  require(shares >= MIN_EMISSIONS_SHARE_SUPPLY, MarginfiError.EmissionsUpdateError);
+  accrueInterest(bank, group, bank.key, t);
+  invoke(
+    token_program,
+    [writable(emissions_funding_account), readonly(mint), writable(liquidity_vault), readonlySigner(depositor)],
+    [u8(12n), amount, mint.decimals],
+  );
+  bank.asset_share_value.value = fxDiv(fxAdd(assetAmount(bank, shares), fxFromU64(amount)), shares);
+  updateBankCache(bank, group, t);
+  log(`Deposited ${amount} same-bank emissions into liquidity vault`);
+}
+
+/** Create the group's same-asset e-mode registry, the PDA ["same_asset_emode_registry", group] (governance admin). */
+export function lendingPoolInitSameAssetEmodeRegistry(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Mut<Signer>,
+  same_asset_emode_registry: Init<SameAssetEmodeRegistry>,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  const bump = same_asset_emode_registry.create(governance_admin, ["same_asset_emode_registry", group.key]);
+  checkNoDurableNonce(instruction_sysvar);
+  same_asset_emode_registry.key_ = same_asset_emode_registry.key;
+  same_asset_emode_registry.group = group.key;
+  same_asset_emode_registry.group_count = 0n;
+  same_asset_emode_registry.bank_count = 0n;
+  same_asset_emode_registry.bump = bump;
+}
+
+/** List a bank in the registry under its (mint, oracle_keys[0]) group, adding the group when it is new. */
+function addSameAssetEmodeBank(registry: Mut<SameAssetEmodeRegistry>, bankKey: Pubkey, mint: Pubkey, oracleKey: Pubkey): void {
+  const banks = u64(registry.bank_count);
+  let listed = false;
+  for (let i = 0n; i < banks; i++) if (registry.banks.get(i).bank === bankKey) listed = true;
+  if (listed) return;
+  const groups = u64(registry.group_count);
+  let index = groups;
+  for (let i = 0n; i < groups; i++)
+    if (index === groups && registry.groups.get(i).mint === mint && registry.groups.get(i).oracle_key === oracleKey) index = i;
+  if (index === groups) {
+    require(index < 32n, MarginfiError.BadEmodeConfig);
+    registry.groups.get(index).mint = mint;
+    registry.groups.get(index).oracle_key = oracleKey;
+    registry.group_count += 1n;
+  }
+  require(banks < 128n, MarginfiError.BadEmodeConfig);
+  const entry = registry.banks.get(banks);
+  entry.bank = bankKey;
+  entry.group_index = u8(index);
+  for (let k = 0n; k < 7n; k++) entry.padding.set(k, 0n);
+  registry.bank_count += 1n;
+}
+
+/**
+ * Take a bank out of the registry: the last entry moves into its place, and a group left empty is replaced by the last
+ * group (its banks re-pointed).
+ */
+function removeSameAssetEmodeBank(registry: Mut<SameAssetEmodeRegistry>, bankKey: Pubkey): void {
+  const banks = u64(registry.bank_count);
+  let at = banks;
+  for (let i = 0n; i < banks; i++) if (at === banks && registry.banks.get(i).bank === bankKey) at = i;
+  if (at === banks) return;
+  const removed = registry.banks.get(at).group_index;
+  const last = banks - 1n;
+  const to = registry.banks.get(at);
+  const from = registry.banks.get(last);
+  to.bank = from.bank;
+  to.group_index = from.group_index;
+  for (let k = 0n; k < 7n; k++) to.padding.set(k, from.padding.get(k));
+  from.bank = ZERO_KEY;
+  from.group_index = 0n;
+  for (let k = 0n; k < 7n; k++) from.padding.set(k, 0n);
+  registry.bank_count -= 1n;
+  let members = 0n;
+  for (let i = 0n; i < last; i++) if (registry.banks.get(i).group_index === removed) members += 1n;
+  if (members > 0n) return;
+  const gone = u64(removed);
+  const lastGroup = u64(registry.group_count) - 1n;
+  registry.groups.get(gone).mint = registry.groups.get(lastGroup).mint;
+  registry.groups.get(gone).oracle_key = registry.groups.get(lastGroup).oracle_key;
+  registry.groups.get(lastGroup).mint = ZERO_KEY;
+  registry.groups.get(lastGroup).oracle_key = ZERO_KEY;
+  registry.group_count -= 1n;
+  if (gone !== lastGroup)
+    for (let i = 0n; i < last; i++) if (u64(registry.banks.get(i).group_index) === lastGroup) registry.banks.get(i).group_index = removed;
+}
+
+/**
+ * Opt a bank in or out of same-asset e-mode (governance admin): eligible banks need a Pyth push or Switchboard pull
+ * feed and oracle_keys[0]; the registry lists them by (mint, oracle) group. Frozen banks are refused.
+ */
+export function lendingPoolSetBankSameAssetEmodeEligibility(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  same_asset_emode_registry: HasOne<
+    Seeds<Mut<SameAssetEmodeRegistry>, ["same_asset_emode_registry", "@group"]>,
+    "group",
+    MarginfiError.InvalidGroup
+  >,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  enabled: boolean,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require((bank.flags & FREEZE_SETTINGS) === 0n, MarginfiError.Unauthorized);
+  if (enabled) {
+    require(feedFamily(bank.config.oracle_setup) !== 0n, MarginfiError.BadEmodeConfig);
+    require(bank.config.oracle_keys.get(0n) !== ZERO_KEY, MarginfiError.BadEmodeConfig);
+    addSameAssetEmodeBank(same_asset_emode_registry, bank.key, bank.mint, bank.config.oracle_keys.get(0n));
+  } else removeSameAssetEmodeBank(same_asset_emode_registry, bank.key);
+  if (enabled) bank.flags |= BANK_SAME_ASSET_EMODE_ELIGIBLE;
+  else bank.flags &= ~BANK_SAME_ASSET_EMODE_ELIGIBLE;
+  checkSameAssetFee(bank, group);
+  emit<LendingPoolBankSetSameAssetEmodeEligibilityEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank.mint,
+    enabled,
+  });
 }

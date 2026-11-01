@@ -388,6 +388,27 @@ export function marginfiPair() {
     }
     return m.address;
   };
+  /** A Token-2022 mint with a transfer hook naming `hookProgram`, created through Token-2022 in both. */
+  const hookMint = async (decimals: number, hookProgram: Address) => {
+    const m = await s.key();
+    const space = t22.getMintSize([{ __kind: "TransferHook", authority: admin.address, programId: hookProgram }] as never);
+    const ixs = [
+      getCreateAccountInstruction({
+        payer: admin,
+        newAccount: m,
+        lamports: s.original.minimumBalanceForRentExemption(BigInt(space)),
+        space,
+        programAddress: TOKEN_2022,
+      }),
+      t22.getInitializeTransferHookInstruction({ mint: m.address, authority: admin.address, programId: hookProgram }) as Instruction,
+      t22.getInitializeMint2Instruction({ mint: m.address, decimals, mintAuthority: admin.address }) as Instruction,
+    ];
+    for (const vm of s.vms()) {
+      const r = await send(vm, admin, ixs);
+      if (r instanceof FailedTransactionMetadata) throw new Error(`hook mint: ${String(r.err())}`);
+    }
+    return m.address;
+  };
   /** A Token-2022 token account of `m` (with its extensions' room) owned by `owner`, through Token-2022 in both. */
   const t22Account = async (m: Address, owner: Address, amount = 0n) => {
     const a = await s.key();
@@ -844,6 +865,7 @@ export function marginfiPair() {
     sysvar,
     tokenAccount,
     feeMint,
+    hookMint,
     t22Account,
     accountInit,
     accountPda,

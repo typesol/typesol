@@ -233,7 +233,13 @@ tag, the oracle's confidence cap and age, the freeze and tokenless flags, the op
 Operational; a frozen bank takes none, with the original's warning), `lending_pool_collect_bank_premium_fees`
 (anyone: the collected premium, in whole tokens and as much as the vault holds, to the premium wallet's token
 account). `super_admin_deposit` and `super_admin_withdraw` panic in the mainnet build once their accounts and the
-durable-nonce check pass (they are for staging and localnet), and so does the port.
+durable-nonce check pass (they are for staging and localnet), and so does the port. `lending_pool_emissions_deposit` (anyone: same-mint
+tokens straight into the liquidity vault, the asset share value raised by them after accrual; refused for mints with
+a transfer fee or a transfer hook, and below 2^20 asset shares), `lending_pool_init_same_asset_emode_registry` and
+`lending_pool_set_bank_same_asset_emode_eligibility` (the governance admin: the group's registry PDA, and a bank in or
+out of it under its (mint, `oracle_keys[0]`) group, removed by moving the last entry into its place and an emptied
+group by moving the last group into its, as the original does; Pyth push or Switchboard pull feeds only, not frozen
+banks).
 
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
@@ -310,7 +316,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 666 in
+for the oracles, and 722 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -359,7 +365,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (666, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (722, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -568,6 +574,9 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_pool_close_bank` | 4,530 | 2,498 | −45% |
 | `lending_pool_configure_bank_gov`, weights | 42,109 | 11,196 | −73% |
 | `lending_pool_collect_bank_premium_fees` | 18,080 | 7,158 | −60% |
+| `lending_pool_emissions_deposit` | 12,486 | 5,070 | −59% |
+| `lending_pool_init_same_asset_emode_registry` | 9,301 | 2,314 | −75% |
+| `lending_pool_set_bank_same_asset_emode_eligibility` | 7,346 | 1,677 | −77% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -575,7 +584,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%;
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
