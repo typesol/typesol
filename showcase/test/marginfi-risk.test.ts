@@ -2003,7 +2003,133 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     const [freshIx, fresh] = await addBank(group.address, gov, fm, TOKEN_PROGRAM, bankConfig());
     await run("add an empty bank", admin, [freshIx], [fresh.address]);
     await close("an empty bank", admin, fresh.address, false);
+    // The governance admin's bank settings: weights, tier, tag, oracle limits, flags; only back to Operational.
+    const govCfg = (label: string, by: KeyPairSigner, bank: Priced, c: Record<string, unknown>) =>
+      call(
+        `bank gov: ${label}`,
+        "lending_pool_configure_bank_gov",
+        by,
+        {
+          bank_config_opt: {
+            asset_weight_init: null,
+            asset_weight_maint: null,
+            liability_weight_init: null,
+            liability_weight_maint: null,
+            operational_state: null,
+            risk_tier: null,
+            asset_tag: null,
+            oracle_max_confidence: null,
+            oracle_max_age: null,
+            tokenless_repayments_allowed: null,
+            freeze_settings: null,
+            ...c,
+          },
+        },
+        [{ address: group.address }, { address: by.address, signer: by }, { address: bank.address, writable: true }, { address: INSTRUCTIONS }],
+        [bank.address],
+      );
+    const w = (n: bigint) => fx(ratio(n, 100n));
+    await govCfg("by someone else", other, sol, { asset_weight_init: w(60n) });
+    await govCfg("paused", gov, sol, { operational_state: { Paused: {} } });
+    await govCfg("weights", gov, sol, {
+      asset_weight_init: w(60n),
+      asset_weight_maint: w(70n),
+      liability_weight_init: w(140n),
+      liability_weight_maint: w(130n),
+    });
+    await govCfg("an initial weight over maintenance", gov, sol, { asset_weight_init: w(80n), asset_weight_maint: w(70n) });
+    await govCfg("isolated with weights", gov, usdc, { risk_tier: { Isolated: {} } });
+    await govCfg("tier, tag and oracle limits", gov, usdc, {
+      risk_tier: { Isolated: {} },
+      asset_weight_init: w(0n),
+      asset_weight_maint: w(0n),
+      asset_tag: 0,
+      oracle_max_confidence: 1_000,
+      oracle_max_age: 60,
+    });
+    editBank(usdc.address, [["config.operational_state", 0n, 1]]);
+    await govCfg("back to operational", gov, usdc, { operational_state: { Operational: {} }, risk_tier: { Collateral: {} } });
+    await govCfg("tokenless repayments", gov, usdc, { tokenless_repayments_allowed: true });
+    await govCfg("frozen", gov, usdc, { freeze_settings: true, tokenless_repayments_allowed: false });
+    await govCfg("ignored while frozen", gov, usdc, { asset_weight_init: w(10n) });
+    editBank(usdc.address, [["flags", 0n, 8]]);
     editGroup(group.address, [["governance_admin", govWas, 32]]);
+  });
+
+  it("collects premium fees, and refuses super-admin moves, as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    await user([[usdc, 500_000_000n]]);
+    const other = await s.funded();
+    const premiumWallet = await s.funded();
+    const wallet = await h.createAta(premiumWallet.address, usdc.mint, TOKEN_PROGRAM);
+    const sweep = (label: string, to: Address, extra: { address: Address }[] = []) =>
+      run(
+        `premium fees: ${label}`,
+        other,
+        [
+          {
+            ...s.ix("lending_pool_collect_bank_premium_fees", {}, [
+              { address: group.address },
+              { address: usdc.address, writable: true },
+              { address: usdc.v.liquidityAuth },
+              { address: usdc.v.liquidity, writable: true },
+              { address: h.feeState },
+              { address: to, writable: true },
+              { address: TOKEN_PROGRAM },
+            ]),
+          },
+        ],
+        [usdc.address, usdc.v.liquidity, to],
+      );
+    const pwAt = offsetOf("FeeState", "premium_wallet");
+    const pwWas = BigInt(
+      "0x" +
+        Buffer.from(data(h.feeState).subarray(pwAt, pwAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    h.edit("FeeState")(h.feeState, [["premium_wallet", 0n, 32]]);
+    await sweep("no premium wallet", wallet);
+    h.edit("FeeState")(h.feeState, [["premium_wallet", keyBits(premiumWallet.address), 32]]);
+    const otherAta = await h.createAta(other.address, usdc.mint, TOKEN_PROGRAM);
+    await sweep("someone else's account", otherAta);
+    editBank(usdc.address, [["collected_premium_outstanding", 1_234n * ONE + ONE / 3n, 16]]);
+    await sweep("part of a token left", wallet);
+    await sweep("nothing left but the fraction", wallet);
+    editBank(usdc.address, [["collected_premium_outstanding", 900_000_000_000n * ONE, 16]]);
+    await sweep("more than the vault holds", wallet);
+    h.edit("FeeState")(h.feeState, [["premium_wallet", pwWas, 32]]);
+    // Super-admin deposits and withdrawals exist only on staging and localnet builds.
+    const sup = (
+      label: string,
+      name: string,
+      by: KeyPairSigner,
+      accounts: { address: Address; writable?: boolean; signer?: KeyPairSigner }[],
+      failing: boolean,
+    ) => run(`${name}: ${label}`, by, [s.ix(name, { amount: new BN(5) }, accounts as never)], [usdc.address], failing);
+    const depositAccounts = (by: KeyPairSigner) => [
+      { address: group.address },
+      { address: by.address, signer: by },
+      { address: usdc.address, writable: true },
+      { address: wallet, writable: true },
+      { address: usdc.v.liquidity, writable: true },
+      { address: TOKEN_PROGRAM },
+      { address: INSTRUCTIONS },
+    ];
+    await sup("by someone else", "super_admin_deposit", other, depositAccounts(other), false);
+    await sup("on the mainnet build", "super_admin_deposit", admin, depositAccounts(admin), true);
+    const withdrawAccounts = (by: KeyPairSigner) => [
+      { address: group.address },
+      { address: by.address, signer: by },
+      { address: usdc.address, writable: true },
+      { address: wallet, writable: true },
+      { address: usdc.v.liquidityAuth },
+      { address: usdc.v.liquidity, writable: true },
+      { address: TOKEN_PROGRAM },
+      { address: INSTRUCTIONS },
+    ];
+    await sup("by someone else", "super_admin_withdraw", other, withdrawAccounts(other), false);
+    await sup("on the mainnet build", "super_admin_withdraw", admin, withdrawAccounts(admin), true);
   });
 
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {

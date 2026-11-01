@@ -99,7 +99,7 @@ import {
   refreshIndexerFlags,
   clearLendingAccount,
 } from "./account";
-import { type BankConfigCompact, type BankConfigFast } from "./args";
+import { type BankConfigCompact, type BankConfigFast, type BankConfigGov } from "./args";
 import {
   ASSET_TAG_JUPLEND,
   BANK_ASSET_TAG_STAKED,
@@ -136,6 +136,7 @@ import {
   validateBankConfig,
   validateBankState,
   validateEmodeEntries,
+  configureBankGov,
   resetCbRuntimeState,
   CLOSE_ENABLED_FLAG,
 } from "./bank";
@@ -185,6 +186,7 @@ import {
   type LendingAccountBorrowEvent,
   type LendingAccountLiquidateEvent,
   type LiquidationReceiverEvent,
+  type LendingPoolPremiumFeesCollectedEvent,
   type CircuitBreakerClearedEvent,
   type LendingPoolBankPremiumConfigureEvent,
   type SetGovernanceAdminEvent,
@@ -3083,6 +3085,169 @@ export function lendingPoolCloseBank(
   }
   require(isZeroWithTolerance(bank.total_asset_shares.value) && isZeroWithTolerance(bank.total_liability_shares.value), MarginfiError.BankCannotClose);
   require(isZeroWithTolerance(bank.emissions_remaining.value), MarginfiError.BankCannotClose);
+}
+
+/**
+ * Send a bank's collected premium to the premium wallet's token account (anyone): as much as the vault holds, in whole
+ * tokens.
+ */
+export function lendingPoolCollectBankPremiumFees(
+  group: Account<MarginfiGroup>,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Seeds<Mut<TokenAccount>, ["liquidity_vault", "@bank"], "@bank.liquidity_vault_bump">,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  premium_ata: Mut<TokenAccount>,
+  token_program: TokenInterface,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  require(fee_state.premium_wallet !== SYSTEM_PROGRAM_ID, MarginfiError.PremiumWalletNotSet);
+  require(premium_ata.key === findProgramAddress([fee_state.premium_wallet, token_program.key, bank.mint], ATA_PROGRAM_ID), MarginfiError.InvalidPremiumAta);
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
+    decimals = readData<u8>(mint, 44n);
+  }
+  const available = fxFromU64(liquidity_vault.amount);
+  const outstanding = bank.collected_premium_outstanding.value;
+  const amount = fxInt(outstanding < available ? outstanding : available);
+  const left = fxSub(outstanding, amount);
+  bank.collected_premium_outstanding.value = left;
+  const tokens = fxToU64(amount);
+  const bump = bank.liquidity_vault_authority_bump;
+  if (t22)
+    invoke(
+      token_program,
+      [writable(liquidity_vault), readonly(remainingAccounts().get(0n)), writable(premium_ata), readonlySigner(liquidity_vault_authority)],
+      [u8(12n), tokens, decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      token_program,
+      [writable(liquidity_vault), writable(premium_ata), readonlySigner(liquidity_vault_authority)],
+      [u8(3n), tokens],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  emit<LendingPoolPremiumFeesCollectedEvent>({
+    header: { signer: null, marginfi_group: group.key },
+    bank: bank.key,
+    mint: liquidity_vault.mint,
+    premium_collected: f64FromBits(fxToF64Bits(amount)),
+    premium_outstanding: f64FromBits(fxToF64Bits(left)),
+  });
+}
+
+/**
+ * super_admin_deposit: staging and localnet builds only. The mainnet build panics once the accounts and the durable
+ * nonce check pass.
+ */
+export function superAdminDeposit(
+  group: HasOne<Account<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  admin: Signer,
+  bank: HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+  admin_token_account: Mut<AccountInfo>,
+  liquidity_vault: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  amount: u64,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DEFAULT || bank.config.asset_tag === ASSET_TAG_SOL);
+  checkNoDurableNonce(instruction_sysvar);
+  // "Staging or localnet only!"
+  require(false, MarginfiError.InternalLogicError);
+}
+
+/** super_admin_withdraw: as super_admin_deposit, the mainnet build panics. */
+export function superAdminWithdraw(
+  group: HasOne<Account<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  admin: Signer,
+  bank: HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+  destination_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  amount: u64,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DEFAULT || bank.config.asset_tag === ASSET_TAG_SOL);
+  checkNoDurableNonce(instruction_sysvar);
+  // "Staging or localnet only!"
+  require(false, MarginfiError.InternalLogicError);
+}
+
+/**
+ * Configure a bank's risk settings (the governance admin): its weights, risk tier, asset tag, oracle confidence cap
+ * and age, the freeze and tokenless flags; the operational state only back to Operational. A bank with frozen
+ * settings takes none of them (with the original's warning).
+ */
+export function lendingPoolConfigureBankGov(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_config_opt: BankConfigGov,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  const c = bank_config_opt;
+  require(c.operational_state === null || c.operational_state === BankOperationalState.Operational, MarginfiError.InvalidGovernanceBankOperationalState);
+  if ((bank.flags & FREEZE_SETTINGS) === FREEZE_SETTINGS) {
+    log("WARN: Only deposit+borrow limits updated. Other settings IGNORED for frozen banks!");
+    emit<LendingPoolBankConfigureFrozenEvent>({
+      header: { signer: governance_admin.key, marginfi_group: group.key },
+      bank: bank.key,
+      mint: bank.mint,
+      deposit_limit: bank.config.deposit_limit,
+      borrow_limit: bank.config.borrow_limit,
+    });
+    return;
+  }
+  configureBankGov(bank, c);
+  validateEmodeEntries(bank, totalLiquidationFee(bank), group.emode_max_init_leverage, group.emode_max_maint_leverage);
+  emit<LendingPoolBankConfigureEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank.mint,
+    config: {
+      asset_weight_init: c.asset_weight_init,
+      asset_weight_maint: c.asset_weight_maint,
+      liability_weight_init: c.liability_weight_init,
+      liability_weight_maint: c.liability_weight_maint,
+      deposit_limit: null,
+      borrow_limit: null,
+      operational_state: c.operational_state,
+      interest_rate_config: null,
+      risk_tier: c.risk_tier,
+      asset_tag: c.asset_tag,
+      total_asset_value_init_limit: null,
+      oracle_max_confidence: c.oracle_max_confidence,
+      oracle_max_age: c.oracle_max_age,
+      permissionless_bad_debt_settlement: null,
+      freeze_settings: c.freeze_settings,
+      tokenless_repayments_allowed: c.tokenless_repayments_allowed,
+      liquidation_liquidator_fee: null,
+      liquidation_insurance_fee: null,
+      circuit_breaker_enabled: null,
+      cb_deviation_bps_tiers: null,
+      cb_tier_durations_seconds: null,
+      cb_escalation_window_mult: null,
+      cb_ema_alpha_bps: null,
+      cb_window_seconds: null,
+      cb_window_max_up_bps: null,
+      cb_window_max_down_bps: null,
+    },
+  });
 }
 
 // ---- repayments and fees -------------------------------------------------------------------------------------------

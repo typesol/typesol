@@ -74,3 +74,23 @@ export interface BankConfigFast {
   cb_window_max_up_bps: Option<u16>;
   cb_window_max_down_bps: Option<u16>;
 }
+
+/**
+ * Configuration fields controlled by the slow, timelocked governance admin.
+ *
+ * `operational_state`, when present, may only restore a bank to `Operational`.
+ * @layout borsh
+ */
+export interface BankConfigGov {
+  asset_weight_init: Option<WrappedI80F48>;
+  asset_weight_maint: Option<WrappedI80F48>;
+  liability_weight_init: Option<WrappedI80F48>;
+  liability_weight_maint: Option<WrappedI80F48>;
+  operational_state: Option<BankOperationalState>;
+  risk_tier: Option<RiskTier>;
+  asset_tag: Option<u8>;
+  oracle_max_confidence: Option<u32>;
+  oracle_max_age: Option<u16>;
+  tokenless_repayments_allowed: Option<boolean>;
+  freeze_settings: Option<boolean>;
+}

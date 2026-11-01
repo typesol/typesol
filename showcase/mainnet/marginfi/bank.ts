@@ -20,7 +20,7 @@ import {
   u64 as toU64,
   u8 as toU8,
 } from "typesol";
-import { type BankConfigCompact, type BankConfigFast } from "./args";
+import { type BankConfigCompact, type BankConfigFast, type BankConfigGov } from "./args";
 import { MarginfiError } from "./errors";
 import {
   type CircuitBreakerAutoBrokenEvent,
@@ -380,6 +380,35 @@ export function configureBank(bank: Mut<Bank>, c: BankConfigFast, timestamp: i64
   if (c.cb_window_seconds !== null) bank.config.cb_window_seconds = c.cb_window_seconds;
   if (c.cb_window_max_up_bps !== null) bank.config.cb_window_max_up_bps = c.cb_window_max_up_bps;
   if (c.cb_window_max_down_bps !== null) bank.config.cb_window_max_down_bps = c.cb_window_max_down_bps;
+  validateBankConfig(bank.config);
+  if ((bank.flags & CIRCUIT_BREAKER_ENABLED) === CIRCUIT_BREAKER_ENABLED) validateCircuitBreaker(bank.config);
+}
+
+/**
+ * Bank::configure with the governance admin's fields (BankConfigGov into BankConfigOpt): weights, the operational
+ * state (as for the fast admin), risk tier, asset tag, the oracle's confidence cap and age, the freeze and tokenless
+ * flags; then the config's checks.
+ */
+export function configureBankGov(bank: Mut<Bank>, c: BankConfigGov): void {
+  if (c.asset_weight_init !== null) bank.config.asset_weight_init.value = c.asset_weight_init.value;
+  if (c.asset_weight_maint !== null) bank.config.asset_weight_maint.value = c.asset_weight_maint.value;
+  if (c.liability_weight_init !== null) bank.config.liability_weight_init.value = c.liability_weight_init.value;
+  if (c.liability_weight_maint !== null) bank.config.liability_weight_maint.value = c.liability_weight_maint.value;
+  if (c.operational_state !== null) {
+    const next = c.operational_state;
+    require(!(bank.config.asset_tag === ASSET_TAG_JUPLEND && bank.config.operational_state === BankOperationalState.Uninitialized), MarginfiError.Unauthorized);
+    require(next !== BankOperationalState.KilledByBankruptcy &&
+      next !== BankOperationalState.Uninitialized &&
+      next !== BankOperationalState.CircuitBroken, MarginfiError.Unauthorized);
+    require(bank.config.operational_state !== BankOperationalState.CircuitBroken, MarginfiError.BankCircuitBreakerHalted);
+    bank.config.operational_state = next;
+  }
+  if (c.risk_tier !== null) bank.config.risk_tier = c.risk_tier;
+  if (c.asset_tag !== null) bank.config.asset_tag = c.asset_tag;
+  if (c.oracle_max_confidence !== null) bank.config.oracle_max_confidence = c.oracle_max_confidence;
+  if (c.oracle_max_age !== null) bank.config.oracle_max_age = c.oracle_max_age;
+  if (c.freeze_settings !== null) setFlag(bank, c.freeze_settings, FREEZE_SETTINGS);
+  if (c.tokenless_repayments_allowed !== null) setFlag(bank, c.tokenless_repayments_allowed, TOKENLESS_REPAYMENTS_ALLOWED);
   validateBankConfig(bank.config);
   if ((bank.flags & CIRCUIT_BREAKER_ENABLED) === CIRCUIT_BREAKER_ENABLED) validateCircuitBreaker(bank.config);
 }
