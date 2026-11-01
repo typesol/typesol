@@ -83,6 +83,10 @@ export type FieldType =
 export interface StructField {
   name: string;
   type: FieldType;
+  /** `/** @bytes *\/` on an integer field: the IDL describes it as [u8; N] (its little-endian bytes, as stored). */
+  idlBytes?: number;
+  /** `/** @idlName _pad0 *\/`: the field's name in the IDL, where the source cannot use it (Rust's `_pad0`). */
+  idlName?: string;
   /** The declaration, while the struct is being analyzed (for messages). */
   node?: ts.Node;
 }
@@ -111,6 +115,8 @@ export interface StructDef {
    * Anchor's bytes, where strings, Vecs and Options take only what they hold).
    */
   layout: "fixed" | "borsh";
+  /** `/** @repr … *\/` and `/** @serialization … *\/`: what the IDL says of an Anchor zero-copy type (see IdlMeta). */
+  idlMeta?: IdlMeta;
   /**
    * A @layout borsh struct with a `string` field or a data enum carrying strings: they are views of the bytes it was
    * read from, so it is an argument, return value or event, never account data.
@@ -318,6 +324,17 @@ export interface DataEnumDef {
 export interface EnumDef {
   name: string;
   variants: string[];
+  idlMeta?: IdlMeta;
+}
+
+/**
+ * The repr and serialization an Anchor IDL records for a type (`/** @repr c *\/`, `@repr c packed`, `@repr c align 8`,
+ * `@repr rust`; `/** @serialization bytemuck *\/`), kept in the port's IDL. A repr(C) struct that is not packed must
+ * have its fields where C puts them, since TypeSOL stores fields back to back.
+ */
+export interface IdlMeta {
+  repr?: { kind: "c" | "rust"; packed?: boolean; align?: number };
+  serialization?: string;
 }
 
 export interface ErrorDef {

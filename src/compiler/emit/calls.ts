@@ -1492,7 +1492,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (ts.isStringLiteral(node)) {
       const existing = this.model.errors.find((e) => e.msg === node.text && e.name.startsWith("RequireFailed"));
       if (existing) return existing;
-      const def = { code: 6000 + this.model.errors.length, name: `RequireFailed${this.model.errors.length}`, msg: node.text };
+      const code = Math.max(5999, ...this.model.errors.map((e) => e.code)) + 1;
+      const def = { code, name: `RequireFailed${code - 6000}`, msg: node.text };
       this.model.errors.push(def);
       return def;
     }
