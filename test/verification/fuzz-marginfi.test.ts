@@ -10,7 +10,8 @@ import { describe, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM } from "../harness.js";
 import { Rng } from "../fuzz-rng.js";
 import { report } from "../jito-helpers.js";
-import { ONE, U32_MAX, bankConfig, fx, marginfiPair } from "../marginfi-helpers.js";
+import { ONE, U32_MAX, bankConfig, fx, marginfiPair, offsetOf } from "../marginfi-helpers.js";
+import { web3 } from "@anchor-lang/core";
 
 const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
 const STEPS = Number(process.env.FUZZ_STEPS ?? 150);
@@ -107,32 +108,52 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       [h.configure(group.address, h.admin, { new_curve_admin: curveAdmin.address, new_limit_admin: limitAdmin.address })],
       [group.address],
     );
-    const mints = [await h.mint(TOKEN_PROGRAM, 6), await h.mint(TOKEN_2022, 9)];
-    const banks: Address[] = [];
+    const feeMint = await h.feeMint(6, rng.int(500), BigInt(rng.int(1_000_000)));
+    const mints = [
+      { mint: await h.mint(TOKEN_PROGRAM, 6), program: TOKEN_PROGRAM },
+      { mint: await h.mint(TOKEN_2022, 9), program: TOKEN_2022 },
+      { mint: feeMint, program: TOKEN_2022 },
+    ];
+    type FuzzBank = Awaited<ReturnType<typeof h.addBank>>[1] & { mint: (typeof mints)[number] };
+    const banks: FuzzBank[] = [];
     let t = 1_800_000_000n;
     h.setTime(t);
     // Banks that exist, so the steps have something to work on (random configs may be refused).
     while (banks.length < 3) {
-      const m = rng.pick(mints);
-      const [ix, b] = await h.addBank(
-        group.address,
-        h.admin,
-        m,
-        m === mints[0] ? TOKEN_PROGRAM : TOKEN_2022,
-        bankConfig({}, { ...curve(), points: curve().points.map((p) => p) }),
-        {},
-      );
-      if ((await run(`add bank ${banks.length}`, h.admin, [ix], h.watchBank(b, group.address))) === "ok") banks.push(b.address);
+      const m = mints[banks.length]!;
+      const [ix, b] = await h.addBank(group.address, h.admin, m.mint, m.program, bankConfig({}, { ...curve(), points: curve().points.map((p) => p) }), {});
+      if ((await run(`add bank ${banks.length}`, h.admin, [ix], h.watchBank(b, group.address))) === "ok") banks.push({ ...b, mint: m });
     }
     const other = await s.funded();
     const signer = (want: KeyPairSigner): KeyPairSigner => (rng.chance(5) ? other : want);
+    // Users, each with marginfi accounts and a funded token account per mint.
+    const users = [await s.funded(), await s.funded()];
+    const wallets = new Map<string, Address>();
+    for (const u of users)
+      for (const m of mints)
+        wallets.set(
+          `${u.address}:${m.mint}`,
+          m.mint === feeMint ? await h.t22Account(m.mint, u.address, 1n << 60n) : await h.tokenAccount(m.mint, u.address, 1n << 60n, m.program),
+        );
+    const accounts: { address: Address; owner: KeyPairSigner }[] = [];
+    const openAccount = async (label: string) => {
+      const owner = rng.pick(users);
+      const k = await generateKeyPairSigner();
+      if ((await run(label, owner, [h.accountInit(group.address, k, signer(owner), owner)], [k.address])) === "ok")
+        accounts.push({ address: k.address, owner });
+    };
+    while (accounts.length < 3) await openAccount(`account ${accounts.length}`);
+    const editAccount = h.edit("MarginfiAccount");
+    /** An amount across scales: dust, ordinary, large. */
+    const amount = (): bigint => [rng.next() % 10n, rng.next() % 100_000n, rng.next() % 1_000_000_000n, rng.next() % (1n << 50n)][rng.int(4)]!;
 
     for (let step = 0; step < STEPS; step++) {
       const label = (what: string) => `step ${step} (seed ${SEED}): ${what}`;
-      const b = rng.pick(banks);
+      const bank = rng.pick(banks);
+      const b = bank.address;
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       h.setTime(t);
-      switch (rng.int(9)) {
+      switch (rng.int(14)) {
         case 0:
         case 1:
         case 2: {
@@ -246,15 +267,68 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
         case 7: {
           // A new bank, its config random (often refused).
           const m = rng.pick(mints);
-          const [ix, nb] = await h.addBank(
-            group.address,
-            signer(h.admin),
-            m,
-            m === mints[0] ? TOKEN_PROGRAM : TOKEN_2022,
-            randomConfig(),
-            rng.chance(50) ? { seed: rng.next() % 4n } : {},
+          const [ix, nb] = await h.addBank(group.address, signer(h.admin), m.mint, m.program, randomConfig(), rng.chance(50) ? { seed: rng.next() % 4n } : {});
+          if ((await run(label("add bank"), h.admin, [ix], h.watchBank(nb, group.address))) === "ok") banks.push({ ...nb, mint: m });
+          break;
+        }
+        case 9:
+        case 10:
+        case 11: {
+          // A deposit: any account, bank and amount; now and then a wrong signer, flag or Token-2022 mistake.
+          const acct = rng.pick(accounts);
+          const by = signer(acct.owner);
+          const from = wallets.get(`${acct.owner.address}:${bank.mint.mint}`)!;
+          const t22 = bank.mint.program === TOKEN_2022;
+          const rest = t22 ? (rng.chance(90) ? [bank.mint.mint] : rng.chance(50) ? [] : [mints[0]!.mint]) : [];
+          if (rng.chance(8)) editAccount(acct.address, [["account_flags", rng.pick([1n, 16n, 64n, 256n]), 8]]);
+          const watch = [acct.address, b, bank.v.liquidity, from];
+          await run(
+            label("deposit"),
+            by,
+            [
+              h.deposit(group.address, acct.address, by, b, from, bank.v.liquidity, amount(), {
+                upToLimit: rng.chance(30) ? rng.chance(70) : null,
+                program: bank.mint.program,
+                rest,
+              }),
+            ],
+            watch,
+            "if-panics",
           );
-          if ((await run(label("add bank"), h.admin, [ix], h.watchBank(nb, group.address))) === "ok") banks.push(nb.address);
+          editAccount(acct.address, [["account_flags", 0n, 8]]);
+          break;
+        }
+        case 12: {
+          // Close a balance, often after its assets are written down to dust.
+          const acct = rng.pick(accounts);
+          if (rng.chance(60)) {
+            const data = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+            for (let i = 0; i < 16; i++) {
+              const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].bank_pk`);
+              if (data.subarray(at, at + 32).equals(Buffer.from(new web3.PublicKey(b).toBytes())))
+                editAccount(acct.address, [[`lending_account.balances[${i}].asset_shares`, rng.chance(50) ? 0n : rng.next() % (ONE / 1000n), 16]]);
+            }
+          }
+          await run(label("close balance"), signer(acct.owner), [h.closeBalance(group.address, acct.address, acct.owner, b)], [acct.address, b], "if-panics");
+          break;
+        }
+        case 13: {
+          // Open an account, or close one (most still hold balances and are refused).
+          if (rng.chance(50) || accounts.length < 2) await openAccount(label("account init"));
+          else {
+            const i = rng.int(accounts.length);
+            const acct = accounts[i]!;
+            if (
+              (await run(
+                label("close account"),
+                acct.owner,
+                [await h.accountClose(acct.address, signer(acct.owner), acct.owner)],
+                [acct.address, acct.owner.address],
+                "if-panics",
+              )) === "ok"
+            )
+              accounts.splice(i, 1);
+          }
           break;
         }
         default: {

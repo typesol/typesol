@@ -8,7 +8,7 @@ import { I80F48_ONE, I80F48_ZERO, fxAdd, fxDiv, fxFromU64, fxMul } from "./i80f4
 import { type InterestRateConfig, type MarginfiGroup } from "./state";
 
 /** 31,536,000 seconds, as I80F48. */
-const SECONDS_PER_YEAR: i128 = 8876594865547247616000n; // 31536000n << 48n
+export const SECONDS_PER_YEAR: i128 = 8876594865547247616000n; // 31536000n << 48n
 const U32_MAX_FX: i128 = 1208925819333154197995520n; // u32::MAX as I80F48: 4294967295n << 48n
 const TEN: i128 = 2814749767106560n; // 10n << 48n
 const HUNDRED: i128 = 28147497671065600n; // 100n << 48n

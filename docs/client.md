@@ -61,7 +61,7 @@ Kit's own transaction functions work with the instructions as well; `sendInstruc
 
 | | |
 | --- | --- |
-| `<program>.<instruction>(accounts, args)` | Builds the `Instruction`. Accounts with a fixed address and PDAs whose seeds are constants, arguments or other accounts' keys are optional and filled in; pass one to override. An optional account passed as `null` is left out (sent as the program id, the convention TypeSOL and Anchor share); left undefined, it is filled in like any other. |
+| `<program>.<instruction>(accounts, args)` | Builds the `Instruction`. Accounts with a fixed address and PDAs whose seeds are constants, arguments (an Option one with its default too: Anchor's `id.unwrap_or(0)`) or other accounts' keys are optional and filled in; pass one to override. An optional account passed as `null` is left out (sent as the program id, the convention TypeSOL and Anchor share); left undefined, it is filled in like any other. |
 | `<program>.<instruction>(accounts, args, remaining?)` | The same, with remaining accounts appended in order (kit `AccountMeta`s). |
 | `<program>.accounts.<Name>` | `decode(bytes)`, `encode(value)`, `fetch(rpc, address)`, `fetchMaybe(rpc, address)`, `fetchMultiple(rpc, addresses)`, `fetchAll(rpc, filters?)` (getProgramAccounts by discriminator, plus `{ offset, bytes }` filters), `watch(rpcSubscriptions, address, { abortSignal })`, `discriminator`. `decode` checks the discriminator. |
 | `<program>.pdas.<account>(seeds)` | The PDA (address and bump) for each account an instruction derives, also one seeded from its own fields (from the field values). |

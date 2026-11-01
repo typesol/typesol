@@ -5,7 +5,10 @@ import { type Address, type Instruction, type KeyPairSigner, address, generateKe
 import { web3 } from "@anchor-lang/core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { BN, TOKEN_PROGRAM, pda } from "./harness.js";
+import { FailedTransactionMetadata } from "litesvm";
+import * as t22 from "@solana-program/token-2022";
+import { getCreateAccountInstruction } from "@solana-program/system";
+import { BN, TOKEN_2022, TOKEN_PROGRAM, pda, send } from "./harness.js";
 import { SYSTEM, key, pairOf } from "./jito-helpers.js";
 
 export const PROGRAM = address("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA");
@@ -41,11 +44,15 @@ const sizeOf = (t: IdlType): number => {
   const d = IDL.types.find((x) => x.name === t.defined.name)!;
   return d.type.kind === "enum" ? 1 : d.type.fields!.reduce((n, f) => n + sizeOf(f.type), 0);
 };
-/** The byte offset of `path` (fields separated by dots) in an account of type `account`, discriminator included. */
+/**
+ * The byte offset of `path` in an account of type `account`, discriminator included: fields separated by dots, an
+ * array element as `name[i]` (`lending_account.balances[3].asset_shares`).
+ */
 export const offsetOf = (account: string, path: string) => {
   let at = 8;
   let type: IdlType = { defined: { name: account } };
-  for (const name of path.split(".")) {
+  for (const part of path.split(".")) {
+    const [, name, index] = /^(\w+)(?:\[(\d+)\])?$/.exec(part)!;
     const d = IDL.types.find((x) => x.name === (type as { defined: { name: string } }).defined.name)!;
     let found = false;
     for (const f of d.type.fields!) {
@@ -57,6 +64,11 @@ export const offsetOf = (account: string, path: string) => {
       at += sizeOf(f.type);
     }
     if (!found) throw new Error(`no field ${name} in ${d.name}`);
+    if (index !== undefined) {
+      const elem: IdlType = (type as { array: [IdlType, number] }).array[0];
+      at += sizeOf(elem) * Number(index);
+      type = elem;
+    }
   }
   return at;
 };
@@ -283,15 +295,138 @@ export function marginfiPair() {
   });
   const sysvar = { address: INSTRUCTIONS };
   /** A token account of `m` owned by `owner` (165 bytes, SPL Token), written straight into both. */
-  const tokenAccount = async (m: Address, owner: Address) => {
+  const tokenAccount = async (m: Address, owner: Address, amount = 0n, program: Address = TOKEN_PROGRAM) => {
     const a = (await generateKeyPairSigner()).address;
     const data = Buffer.alloc(165);
     key(m).copy(data, 0);
     key(owner).copy(data, 32);
+    data.writeBigUInt64LE(amount, 64);
     data[108] = 1;
     for (const vm of s.vms())
-      vm.setAccount({ address: a, data: new Uint8Array(data), executable: false, lamports: lamports(2_039_280n), programAddress: TOKEN_PROGRAM, space: 165n });
+      vm.setAccount({ address: a, data: new Uint8Array(data), executable: false, lamports: lamports(2_039_280n), programAddress: program, space: 165n });
     return a;
+  };
+  /** A Token-2022 mint with a transfer fee (basis points, maximum), created through Token-2022 in both. */
+  const feeMint = async (decimals: number, basisPoints: number, maximumFee: bigint) => {
+    const m = await generateKeyPairSigner();
+    const exts = [
+      {
+        __kind: "TransferFeeConfig" as const,
+        transferFeeConfigAuthority: admin.address,
+        withdrawWithheldAuthority: admin.address,
+        withheldAmount: 0n,
+        olderTransferFee: { epoch: 0n, maximumFee, transferFeeBasisPoints: basisPoints },
+        newerTransferFee: { epoch: 0n, maximumFee, transferFeeBasisPoints: basisPoints },
+      },
+    ];
+    const space = t22.getMintSize(exts as never);
+    const ixs = [
+      getCreateAccountInstruction({
+        payer: admin,
+        newAccount: m,
+        lamports: s.original.minimumBalanceForRentExemption(BigInt(space)),
+        space,
+        programAddress: TOKEN_2022,
+      }),
+      t22.getInitializeTransferFeeConfigInstruction({
+        mint: m.address,
+        transferFeeConfigAuthority: admin.address,
+        withdrawWithheldAuthority: admin.address,
+        transferFeeBasisPoints: basisPoints,
+        maximumFee,
+      }),
+      t22.getInitializeMint2Instruction({ mint: m.address, decimals, mintAuthority: admin.address }) as Instruction,
+    ];
+    for (const vm of s.vms()) {
+      const r = await send(vm, admin, ixs);
+      if (r instanceof FailedTransactionMetadata) throw new Error(`fee mint: ${String(r.err())}`);
+    }
+    return m.address;
+  };
+  /** A Token-2022 token account of `m` (with its extensions' room) owned by `owner`, through Token-2022 in both. */
+  const t22Account = async (m: Address, owner: Address, amount = 0n) => {
+    const a = await generateKeyPairSigner();
+    const space = 182;
+    const ixs: Instruction[] = [
+      getCreateAccountInstruction({
+        payer: admin,
+        newAccount: a,
+        lamports: s.original.minimumBalanceForRentExemption(BigInt(space)),
+        space,
+        programAddress: TOKEN_2022,
+      }),
+      t22.getInitializeAccount3Instruction({ account: a.address, mint: m, owner }) as Instruction,
+    ];
+    if (amount > 0n) ixs.push(t22.getMintToInstruction({ mint: m, token: a.address, mintAuthority: admin, amount }) as Instruction);
+    for (const vm of s.vms()) {
+      const r = await send(vm, admin, ixs);
+      if (r instanceof FailedTransactionMetadata) throw new Error(`t22 account: ${String(r.err())}\n${r.meta().logs().join("\n")}`);
+    }
+    return a.address;
+  };
+
+  // Marginfi accounts and deposits.
+  const accountInit = (group: Address, account: KeyPairSigner, authority: KeyPairSigner, payer: KeyPairSigner = authority) =>
+    s.ix("marginfi_account_initialize", {}, [
+      { address: group },
+      { address: account.address, signer: account, writable: true },
+      { address: authority.address, signer: authority },
+      { address: payer.address, signer: payer, writable: true },
+      { address: SYSTEM },
+    ]);
+  /** The PDA ["marginfi_account", group, authority, index (u16 LE), third-party id (u16 LE)]. */
+  const accountPda = async (group: Address, authority: Address, index: number, thirdParty: number) =>
+    (await pda(PROGRAM, ["marginfi_account", group, authority, new Uint8Array(le(BigInt(index), 2)), new Uint8Array(le(BigInt(thirdParty), 2))]))[0];
+  const accountInitPda = (
+    group: Address,
+    account: Address,
+    authority: KeyPairSigner,
+    index: number,
+    thirdParty: number | null,
+    payer: KeyPairSigner = authority,
+  ) =>
+    s.ix("marginfi_account_initialize_pda", { account_index: index, third_party_id: thirdParty }, [
+      { address: group },
+      { address: account, writable: true },
+      { address: authority.address, signer: authority },
+      { address: payer.address, signer: payer, writable: true },
+      { address: INSTRUCTIONS },
+      { address: SYSTEM },
+    ]);
+  const accountClose = async (account: Address, authority: KeyPairSigner, payer: KeyPairSigner = authority) =>
+    s.ix("marginfi_account_close", {}, [
+      { address: account, writable: true },
+      { address: authority.address, signer: authority },
+      { address: payer.address, signer: payer, writable: true },
+      { address: (await pda(PROGRAM, ["rebalance_fee_pool", account]))[0] },
+    ]);
+  const closeBalance = (group: Address, account: Address, authority: KeyPairSigner, bank: Address) =>
+    s.ix("lending_account_close_balance", {}, [
+      { address: group },
+      { address: account, writable: true },
+      { address: authority.address, signer: authority },
+      { address: bank, writable: true },
+    ]);
+  const deposit = (
+    group: Address,
+    account: Address,
+    authority: KeyPairSigner,
+    bank: Address,
+    from: Address,
+    vault: Address,
+    amount: bigint,
+    opts: { upToLimit?: boolean | null; program?: Address; rest?: Address[] } = {},
+  ): Instruction => {
+    const ix = s.ix("lending_account_deposit", { amount: new BN(amount.toString()), deposit_up_to_limit: opts.upToLimit ?? null }, [
+      { address: group },
+      { address: account, writable: true },
+      { address: authority.address, signer: authority },
+      { address: bank, writable: true },
+      { address: from, writable: true },
+      { address: vault, writable: true },
+      { address: opts.program ?? TOKEN_PROGRAM },
+    ]);
+    return { ...ix, accounts: [...ix.accounts!, ...(opts.rest ?? []).map((address) => ({ address, role: 0 }) as never)] };
   };
 
   return {
@@ -330,5 +465,13 @@ export function marginfiPair() {
     irOpt,
     sysvar,
     tokenAccount,
+    feeMint,
+    t22Account,
+    accountInit,
+    accountPda,
+    accountInitPda,
+    accountClose,
+    closeBalance,
+    deposit,
   };
 }
