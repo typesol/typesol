@@ -11,6 +11,11 @@ codes, and says so here.
   previous release's sources built by both packages, with their diff, so "the same binaries" can be checked and
   redone by anyone (docs/testing.md). 0.37.0 → 0.38.0, checked by hand: all 67 programs of the 0.37.0 sources build to
   the same binary and IDL.
+- New: a `loadAccountMut` view declared in a loop body ends with its iteration, so a later iteration may load the
+  same account again. `loadAccountMut<Dup<T>>` there also lets a remaining account be passed more than once, one view
+  at a time (without `Dup<…>` a repeat is still refused, 2040). Raydium CLMM's `swap_router_base_in` uses it: routes
+  back through a pool now run as on mainnet (two more transactions in its differential test). Only programs with
+  `loadAccountMut` in a loop compile differently (here examples/airdrop.ts and examples/raydium-clmm).
 
 - Tests: random transactions against the mainnet binaries. `test/verification/fuzz-jito.test.ts` drives Jito's three
   MEV programs and their ports through random tips, receiver and builder changes, epochs, roots, Merkle claims and

@@ -1162,7 +1162,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
 
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
   protected loadAccount(node: ts.CallExpression, mut: boolean): Value {
-    const targ = node.typeArguments?.[0];
+    let targ = node.typeArguments?.[0];
+    // loadAccountMut<Dup<T>>: the account may be passed more than once among the remaining accounts (a route back
+    // through one pool), loaded once per loop iteration; two live views of it are still refused.
+    const dup = !!targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) && targ.typeName.text === "Dup" && targ.typeArguments?.length === 1;
+    if (dup) {
+      if (!mut) this.fail(node, "Dup<…> is for loadAccountMut (loadAccount reads, any number of times)");
+      targ = (targ as ts.TypeReferenceNode).typeArguments![0];
+    }
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s || s.size === undefined) this.fail(node, "loadAccount needs an account struct type: loadAccount<MyStruct>(account)");
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: declare it as an instruction parameter (remaining accounts are read in place)`);
@@ -1186,7 +1193,15 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (s.vec) for (const l of vecLenCheck(s, h, `((TSS_${s.name} *)(${h}->data + 8))`, "")) this.line(l);
     if (mut) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
-      this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
+      const slot = this.claimSlots.get(node);
+      // Repeats may come only after the instruction's own accounts, and only for Dup<…>: otherwise any repeat is refused.
+      const declared = dup && this.ix ? String(this.ix.accounts.length) : "params->ka_num";
+      if (dup && (param !== undefined || !slot)) this.fail(node, "loadAccountMut<Dup<T>> is for remaining accounts loaded in a loop (one view per iteration)");
+      if (slot)
+        this.line(
+          param === undefined ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, ${declared}));` : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
+        );
+      else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
     }
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: mut } };
   }

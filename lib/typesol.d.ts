@@ -177,8 +177,10 @@ export declare function remainingAccounts(): RemainingAccounts;
  * Read a struct of this program from a remaining account or an `AccountInfo` parameter (Anchor's
  * `AccountLoader::try_from` on an `UncheckedAccount`): owner, discriminator and size are checked.
  * `loadAccountMut` also requires it to be writable, not aliased by another writable account, and not already loaded
- * with `loadAccountMut` in this instruction (2040). The result is also the account (`.key`, `.lamports`), and passes
- * to a helper that takes `Account<T>` / `Mut<T>`.
+ * with `loadAccountMut` in this instruction (2040). A `const` view declared in a loop body ends with its iteration,
+ * so a later iteration may load the account again; `loadAccountMut<Dup<T>>` there also lets a remaining account be
+ * passed more than once (a route back through one pool), one view at a time. The result is also the account (`.key`,
+ * `.lamports`), and passes to a helper that takes `Account<T>` / `Mut<T>`.
  */
 export declare function loadAccount<T>(account: RemainingAccount | AccountInfo): Account<T>;
 export declare function loadAccountMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;

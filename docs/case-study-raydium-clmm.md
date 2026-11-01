@@ -81,6 +81,10 @@ The swap needed nothing new:
   hop's pool, config, vaults and token accounts from the remaining accounts, and moves tokens with `invoke`.
 - **The router's account count.** It takes more accounts than TypeSOL's default 32, so the program declares
   `MAX_ACCOUNTS = 255n`. That keeps its CPI account lists on the heap, which adds about 3% to a swap.
+- **Routes back through a pool.** A route may pass one pool's accounts again (there and back, or A → B → B → A).
+  The router loads each hop's pool, observation, tick arrays and bitmap extension with `loadAccountMut<Dup<T>>`
+  inside its loop. A view declared in a loop body ends with the iteration, so the next hop loads the pool again and
+  sees what the earlier hop did to it, as in the original. Two live views of one account are still refused.
 
 ## How it was checked
 
@@ -105,7 +109,7 @@ and the port into another. Both use the same program id and the same clock, and 
 **Comparison.** For each transaction, the test requires the same outcome (success, or the same error down to the
 code), the same lamports, owner and data for every account involved, and the same events byte for byte.
 
-There are 300 transactions:
+There are 302 transactions:
 
 - **Configs and pools.**
   - `create_pool` with SPL Token and Token-2022 transfer-fee mints, the mainnet config and a pre-funded vault.
@@ -131,7 +135,8 @@ There are 300 transactions:
   - Fees owed and reward streams paid out; arrays past the pool's own bitmap, on both sides.
   - Refusals: slippage, tick order and spacing, wrong arrays, another owner's NFT, closing with liquidity left.
 - **Swaps.**
-  - `swap`, `swap_v2` and a two-hop `swap_router_base_in`; both directions, by input and by output, across ticks and
+  - `swap`, `swap_v2`, a two-hop `swap_router_base_in`, and routes back through a pool (there and back in one pool;
+    four hops through two pools twice); both directions, by input and by output, across ticks and
     tick arrays, to a price limit.
   - Fee modes, protocol and fund fees collected, a dynamic fee across its filter and decay periods.
   - Limit orders filled at a tick while a reward stream accrues.
@@ -156,7 +161,8 @@ the original needs more than 200,000 for, which the default limit would stop bef
 
 ## Cost
 
-Compute units per transaction, mainnet original against the port, from one run of that test:
+Compute units per transaction, mainnet original against the port, from one run of that test (the two router rows from
+a later run, after routes back through a pool were added):
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
@@ -175,7 +181,8 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `swap_v2`, through limit orders | 74,417 | 37,989 | −49% |
 | `swap_v2`, the mainnet USDC/CC pool | 52,677 | 27,571 | −48% |
 | `swap` | 51,009 | 21,592 | −58% |
-| `swap_router_base_in`, two hops | 80,365 | 42,150 | −48% |
+| `swap_router_base_in`, two hops | 80,365 | 40,846 | −49% |
+| `swap_router_base_in`, four hops through two pools twice | 159,246 | 91,550 | −43% |
 | `open_limit_order` | 35,720 | 10,781 | −70% |
 | `settle_limit_order` | 15,682 | 6,496 | −59% |
 | `initialize_reward` | 23,105 | 9,562 | −59% |
@@ -205,10 +212,9 @@ On size, the port's binary is 566,280 bytes and the deployed original 1,700,160 
 - **Duplicate tick arrays in a swap.** The original loads every tick array it is given before it starts, so one passed
   twice fails at once. The port loads an array when the swap reaches it. Passed twice but never reached, it does
   not fail.
-- **The same pool twice in a route.** `swap_router_base_in` through one pool twice works in the original. The port
-  loads each hop's pool mutably and refuses a second load of one account (2040).
-- **Two limit-order fills that empty extension arrays in one swap.** Each needs the extension writable. The port loads
-  it for each such flip, and a second load in one instruction is refused (2040).
+- **Two limit-order fills that empty extension arrays in one swap.** Each needs the extension writable. The port now
+  loads it within the tick array's loop iteration, so a second flip in a later array is allowed. No test sets this
+  case up against the original yet.
 - **IDL.**
   - For the Metaplex NFTs' associated token account, the original's IDL lists the SPL Token program as a constant
     seed. The port's lists the `token_program` account (fixed to that address) in `open_position`, and nothing in

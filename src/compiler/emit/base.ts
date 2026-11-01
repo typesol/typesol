@@ -55,6 +55,8 @@ export abstract class EmitterBase {
   protected readonly inlining = new Set<ts.Node>();
   /** Enclosing loops, innermost last; each has a `continue` label. */
   protected readonly loops: string[] = [];
+  /** loadAccountMut calls whose claim a loop drops at each iteration's end: the C variable that records it. */
+  protected readonly claimSlots = new Map<ts.Node, string>();
   protected readonly ix: Instruction | undefined;
   protected readonly helper: Helper | undefined;
   /** Type names in effect (a generic helper expanded where it is called binds its type parameters here). */
@@ -489,7 +491,7 @@ export abstract class EmitterBase {
   protected abstract eachElement(
     list: ts.Expression,
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void;
 }
