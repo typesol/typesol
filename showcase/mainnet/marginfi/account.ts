@@ -305,6 +305,15 @@ export function balanceSide(account: Mut<MarginfiAccount>, i: u64): u8 {
 
 /** MarginfiAccount::sync_indexer_flags: what the balances say about the account, and that it was active now. */
 export function syncIndexerFlags(account: Mut<MarginfiAccount>): void {
+  syncBalanceDerived(account);
+  const f = account.indexer_flags;
+  f.was_active_30d = 1n;
+  f.was_active_60d = 1n;
+  if (f.is_lending_only === 1n && (account.account_flags & ACCOUNT_IN_RECEIVERSHIP) === 0n) account.liquidation_tagged_at = 0n;
+}
+
+/** IndexerFlags::sync_balance_derived: emptiness, lending only, one borrow, the kinds of positions. */
+export function syncBalanceDerived(account: Mut<MarginfiAccount>): void {
   let liabilities = 0n;
   let any = false;
   let staked = false;
@@ -332,9 +341,6 @@ export function syncIndexerFlags(account: Mut<MarginfiAccount>): void {
   f.has_drift = drift ? 1n : 0n;
   f.has_juplend = juplend ? 1n : 0n;
   if (liabilities === 0n) f.has_isolated = 0n;
-  f.was_active_30d = 1n;
-  f.was_active_60d = 1n;
-  if (f.is_lending_only === 1n && (account.account_flags & ACCOUNT_IN_RECEIVERSHIP) === 0n) account.liquidation_tagged_at = 0n;
 }
 
 /** MarginfiAccount::can_be_closed: no balance with a side, not disabled, frozen, in a flash loan or receivership. */

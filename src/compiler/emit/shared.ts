@@ -106,6 +106,8 @@ export interface Local {
   closure?: Closure;
   /** `const t = loadAccount<T>(acct)` / `loadAccountMut`: the account it views (a `TsAccount *`), to pass to helpers. */
   loaded?: { handle: string; struct: string; mut: boolean };
+  /** A struct value this function holds itself (a literal, or what a helper returned): never account data. */
+  owned?: boolean;
 }
 
 /** A closure and the scopes it was declared in (its free names resolve there, wherever it is called). */

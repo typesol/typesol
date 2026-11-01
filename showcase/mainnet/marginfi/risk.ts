@@ -466,27 +466,21 @@ export function healthComponents(
   scratch: boolean,
   t: i64,
 ): Health {
-  const prices = fixedArray<u64, 16>(0n);
-  const sValue = fixedArray<i128, 16>(0n);
-  const sActivated = fixedArray<i64, 16>(0n);
-  const sTag = fixedArray<u16, 16>(0n);
-  const sIndex = fixedArray<u8, 16>(0n);
-  const sFlags = fixedArray<u8, 16>(0n);
   const h: Health = {
     err: 0n,
     assets: I80F48_ZERO,
     liabs: I80F48_ZERO,
     err_index: NO_INDEX,
     internal_err: 0n,
-    prices,
+    prices: fixedArray<u64, 16>(0n),
     emode_boosted: false,
     s_count: 0n,
     s_complete: false,
-    s_value: sValue,
-    s_activated: sActivated,
-    s_tag: sTag,
-    s_index: sIndex,
-    s_flags: sFlags,
+    s_value: fixedArray<i128, 16>(0n),
+    s_activated: fixedArray<i64, 16>(0n),
+    s_tag: fixedArray<u16, 16>(0n),
+    s_index: fixedArray<u8, 16>(0n),
+    s_flags: fixedArray<u8, 16>(0n),
   };
   if ((acc.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n) {
     h.err = 6037n;
@@ -668,6 +662,16 @@ export function riskTiersErr(acc: Account<MarginfiAccount>, rest: RemainingAccou
 
 // ---- premium snapshots ------------------------------------------------------------------------------------------
 
+/** PremiumScratch::refresh_unavailable: an incomplete pass while the account owes a premium-active bank. */
+export function premiumRefreshUnavailable(h: Health): boolean {
+  if (h.s_complete) return false;
+  for (let e = 0n; e < toU64(h.s_count); e++) {
+    const f = h.s_flags.get(e);
+    if ((f & SCRATCH_LIABILITY) !== 0n && (f & SCRATCH_PREMIUM_ACTIVE) !== 0n) return true;
+  }
+  return false;
+}
+
 /** MarginfiGroup::find_premium_rate: Rust's binary search over the sorted (collateral, liability) entries. */
 export function findPremiumRate(group: Account<MarginfiGroup>, collateral: u16, liability: u16): u32 {
   if (collateral === 0n || liability === 0n) return 0n;
@@ -840,10 +844,7 @@ export function writeHealthCache(acc: Mut<MarginfiAccount>, h: Health, t: i64, r
   c.timestamp = t;
   c.flags = ran ? HEALTH_HEALTHY | HEALTH_ENGINE_OK : HEALTH_ENGINE_OK;
   c.mrgn_err = 0n;
-  for (let p = 0n; p < 16n; p++) {
-    const bits = ran ? h.prices.get(p) : 0n;
-    for (let j = 0n; j < 8n; j++) c.prices.get(p).set(j, toU8((bits >> (j * 8n)) & 255n));
-  }
+  for (let p = 0n; p < 16n; p++) c.prices.set(p, ran ? h.prices.get(p) : 0n);
   const found = ran && h.err_index !== NO_INDEX;
   c.internal_err = found ? h.internal_err : 0n;
   c.err_index = found ? h.err_index : 0n;
@@ -854,4 +855,60 @@ export function writeHealthCache(acc: Mut<MarginfiAccount>, h: Health, t: i64, r
   c.internal_bankruptcy_err = 0n;
   for (let j = 0n; j < 32n; j++) c.reserved0.set(j, 0n);
   for (let j = 0n; j < 16n; j++) c.reserved1.set(j, 0n);
+}
+
+// ---- pulse_health -----------------------------------------------------------------------------------------------
+
+/** MarginfiError::is_oracle_error (a code MarginfiError::from does not know is InternalLogicError, not one). */
+export function isOracleError(code: u32): boolean {
+  switch (code) {
+    case 6005n: // MissingPythOrBankAccount
+    case 6006n: // MissingPythAccount
+    case 6007n: // MissingBankAccount
+    case 6008n: // InvalidBankAccount
+    case 6048n: // StakePoolValidationFailed
+    case 6049n: // SwitchboardStalePrice
+    case 6050n: // PythPushStalePrice
+    case 6051n: // WrongNumberOfOracleAccounts
+    case 6052n: // WrongOracleAccountKeys
+    case 6055n: // OracleMaxConfidenceExceeded
+    case 6056n: // PythPushInsufficientVerificationLevel
+    case 6059n: // SwitchboardWrongAccountOwner
+    case 6060n: // PythPushInvalidAccount
+    case 6061n: // SwitchboardInvalidAccount
+    case 6076n: // PythPushInvalidWindowSize
+    case 6092n: // ZeroSupplyInStakePool
+    case 6136n: // MarinadeStateValidationFailed
+    case 6137n: // ExponentVaultValidationFailed
+    case 6139n: // StakePoolStale
+    case 6206n: // ReserveStale
+    case 6322n: // DriftSpotMarketStale
+    case 6411n: // SolendReserveStale
+    case 6504n: // JuplendLendingStale
+    case 6800n: // ScopeInvalidAccount
+    case 6801n: // ScopeInvalidEntry
+    case 6802n: // ScopeStalePrice
+      return true;
+  }
+  return false;
+}
+
+/** compute_has_isolated_liability_flag: 1 when a liability is in an isolated bank (the same walk; errors as values). */
+export function hasIsolatedLiability(acc: Account<MarginfiAccount>, rest: RemainingAccounts): Count {
+  let found = false;
+  let at = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    if (at >= rest.length) return { err: INVALID_BANK_ACCOUNT, n: 0n };
+    const loadErr = loaderErr(rest.get(at));
+    if (loadErr !== 0n) return { err: loadErr, n: 0n };
+    const bank = loadAccount<Bank>(rest.get(at));
+    if (bank.key !== b.bank_pk) return { err: INVALID_BANK_ACCOUNT, n: 0n };
+    const per = accountsPerBank(bank);
+    if (per.err !== 0n) return { err: per.err, n: 0n };
+    if (b.liability_shares.value >= EMPTY_BALANCE_THRESHOLD && bank.config.risk_tier === RiskTier.Isolated) found = true;
+    at += per.n;
+  }
+  return { err: 0n, n: found ? 1n : 0n };
 }

@@ -437,8 +437,24 @@ export abstract class StorageEmitter extends AliasEmitter {
     return { lv: `(*d_${a.name})`, type: { kind: "struct", name: a.kind.struct.name }, writable: false };
   }
 
-  protected writeAggregate(target: Ref, valueNode: ts.Expression): void {
-    if (ts.isParenthesizedExpression(valueNode)) return this.writeAggregate(target, valueNode.expression);
+  /**
+   * Write an aggregate value into `target`. `fresh`: the target is a value just declared (or a temporary), which no
+   * expression can read yet, so a literal is built in it directly rather than in a temporary first.
+   */
+  protected writeAggregate(target: Ref, valueNode: ts.Expression, fresh = false): void {
+    if (ts.isParenthesizedExpression(valueNode)) return this.writeAggregate(target, valueNode.expression, fresh);
+    // `fixedArray<T, N>(fill)` as a field's value: filled in place.
+    if (target.type.kind === "array" && ts.isCallExpression(valueNode) && this.exportName(valueNode.expression) === "fixedArray") {
+      const [elemNode, lenNode] = valueNode.typeArguments ?? [];
+      const elem = elemNode && resolveScalarType(elemNode, this.scope);
+      const len = lenNode && ts.isLiteralTypeNode(lenNode) && ts.isNumericLiteral(lenNode.literal) ? Number(lenNode.literal.text) : NaN;
+      if (!elem || !sameType(elem, target.type.elem) || len !== target.type.len || valueNode.arguments.length !== 1)
+        this.fail(valueNode, `expected fixedArray<${typeName(target.type.elem)}, ${target.type.len}>(fill)`);
+      const fill = this.expect(this.expr(valueNode.arguments[0], elem), elem, valueNode.arguments[0]);
+      const i = this.tmp("i");
+      this.line(`for (uint64_t ${i} = 0; ${i} < ${len}; ${i}++) ${this.writeStorage({ lv: `${target.lv}[${i}]`, type: elem, writable: true }, fill.c)};`);
+      return;
+    }
     if (target.type.kind === "option" && target.type.inner.kind === "struct") {
       if (valueNode.kind === ts.SyntaxKind.NullKeyword) {
         this.line(`${target.lv}.some = 0;`);
@@ -530,19 +546,20 @@ export abstract class StorageEmitter extends AliasEmitter {
         else this.fail(p, "use plain `field: value` entries");
       }
       for (const k of given.keys()) if (!s.fields.some((f) => f.name === k)) this.fail(valueNode, `${s.name} has no field "${k}"`);
-      // Build in a temporary so `p = { x: p.y, y: p.x }` reads the old values.
-      const tmp = this.tmp("st");
-      this.line(`TSS_${s.name} ${tmp};`);
+      // Build in a temporary so `p = { x: p.y, y: p.x }` reads the old values (a fresh target has none to read).
+      const tmp = fresh ? undefined : this.tmp("st");
+      if (tmp) this.line(`TSS_${s.name} ${tmp};`);
+      const into = tmp ?? target.lv;
       for (const f of s.fields) if (!given.has(f.name)) this.fail(valueNode, `missing field "${f.name}" of ${s.name}`);
       // Fields are evaluated in source order, as in JS, straight into the temporary.
       for (const [name, e] of given) {
         const f = s.fields.find((x) => x.name === name)!;
-        const sub: Ref = { lv: `${tmp}.${f.name}`, type: f.type, writable: true };
+        const sub: Ref = { lv: `${into}.${f.name}`, type: f.type, writable: true };
         const vt = this.storageValueType(f.type);
         if (vt) this.line(this.writeStorage(sub, this.expect(this.expr(e, vt), vt, e).c) + ";");
-        else this.writeAggregate(sub, e);
+        else this.writeAggregate(sub, e, true);
       }
-      this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      if (tmp) this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
     if (ts.isConditionalExpression(valueNode)) {

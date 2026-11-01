@@ -1,12 +1,13 @@
 // Random sequences of Marginfi's group and bank administration against the program deployed on mainnet
 // (test/programs/marginfi_v2.so) and showcase/mainnet/marginfi, side by side (showcase/test/marginfi-helpers.ts): every transaction must
 // have the same outcome, account bytes and events in both. Bank configs, interest curves, fees, balances, clocks and
-// the circuit breaker's state come from the seed: reproduce a failure with FUZZ_SEED=<seed>; lengthen with FUZZ_STEPS=<n>.
+// the circuit breaker's state come from the seed, and so do the keys: reproduce a failure with FUZZ_SEED=<seed>;
+// lengthen with FUZZ_STEPS=<n>.
 //
 // Borrows are not ported yet: the fuzzer writes a bank's asset and liability shares into both, then accrues. Oracles
 // are Pyth and Switchboard accounts it writes into both, their prices a random walk with jumps; withdrawals run the
 // risk engine over them. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
-import { type Address, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
+import { type Address, type KeyPairSigner } from "@solana/kit";
 import { describe, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM } from "../../test/harness.js";
 import { Rng } from "./fuzz-rng.js";
@@ -99,7 +100,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       );
 
     await run("init fee state", h.admin, [h.initFeeState(h.admin, h.feeWallet)], [h.feeState]);
-    const group = await generateKeyPairSigner();
+    const group = await s.key();
     await run("group init", h.admin, [h.groupInit(group, h.admin)], [group.address]);
     const curveAdmin = await s.funded();
     const limitAdmin = await s.funded();
@@ -139,7 +140,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
     const accounts: { address: Address; owner: KeyPairSigner }[] = [];
     const openAccount = async (label: string) => {
       const owner = rng.pick(users);
-      const k = await generateKeyPairSigner();
+      const k = await s.key();
       if ((await run(label, owner, [h.accountInit(group.address, k, signer(owner), owner)], [k.address])) === "ok")
         accounts.push({ address: k.address, owner });
     };
@@ -168,7 +169,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
     const feedsOf = async (b: Address) => {
       let f = feeds.get(b);
       if (!f) {
-        f = { pyth: (await generateKeyPairSigner()).address, swb: (await generateKeyPairSigner()).address, price: 100_000_000n };
+        f = { pyth: (await s.key()).address, swb: (await s.key()).address, price: 100_000_000n };
         feeds.set(b, f);
       }
       return f;
@@ -205,7 +206,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(25)) {
+      switch (rng.int(30)) {
         case 0:
         case 1:
         case 2: {
@@ -386,7 +387,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
         case 14: {
           // A liability, written into both: a fresh account owing a random amount in this bank.
           const owner = rng.pick(users);
-          const k = await generateKeyPairSigner();
+          const k = await s.key();
           if ((await run(label("borrower init"), owner, [h.accountInit(group.address, k, owner)], [k.address])) !== "ok") break;
           const shares = (amount() + 2n) * ONE + (rng.next() % ONE);
           editAccount(k.address, [
@@ -585,6 +586,88 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
             [acct.address, target.address, target.v.liquidity, target.v.insurance, to],
             "if-panics",
           );
+          editAccount(acct.address, [["account_flags", 0n, 8]]);
+          break;
+        }
+        case 25:
+        case 26:
+        case 27: {
+          // A borrow: the account's banks and the one it borrows from, with their oracles, as the client sends them
+          // (now and then short or with extras); origination fees and the group's program fee rate now and then.
+          const acct = rng.pick(accounts);
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const keys = new Set<Address>();
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (hb) keys.add(hb.address);
+          }
+          keys.add(b);
+          const sorted = [...keys].sort((x, y) => Buffer.compare(Buffer.from(new web3.PublicKey(y).toBytes()), Buffer.from(new web3.PublicKey(x).toBytes())));
+          let rest: Address[] = [];
+          for (const k of sorted) {
+            const f = await feedsOf(k);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(k, "Bank", "config.oracle_setup") & 0xffn;
+            rest.push(...(setup === 8n ? [k] : [k, setup === 4n ? f.swb : f.pyth]));
+          }
+          if (rest.length && rng.chance(5)) rest = rest.slice(0, rest.length - 1);
+          if (rng.chance(5)) rest.push(other.address);
+          if (rng.chance(75)) h.editBank(b, [["config.operational_state", 1n, 1]]);
+          if (rng.chance(50)) h.editBank(b, [["last_update", t, 8]]);
+          if (rng.chance(20)) h.editBank(b, [["config.interest_rate_config.protocol_origination_fee", rng.next() % (ONE / 20n), 16]]);
+          if (rng.chance(10)) h.editGroup(group.address, [["fee_state_cache.program_fee_rate", rng.next() % ONE, 16]]);
+          if (rng.chance(6)) editAccount(acct.address, [["account_flags", rng.pick([1n, 2n, 16n, 64n]), 8]]);
+          const t22 = bank.mint.program === TOKEN_2022;
+          const by = signer(acct.owner);
+          const to = wallets.get(`${acct.owner.address}:${bank.mint.mint}`)!;
+          if (
+            (await run(
+              label("borrow"),
+              by,
+              [
+                h.borrow(group.address, acct.address, by, bank, to, rng.chance(70) ? rng.next() % 100_000_000n : amount(), {
+                  program: bank.mint.program,
+                  rest: [...(t22 && rng.chance(95) ? [bank.mint.mint] : []), ...rest],
+                }),
+              ],
+              [acct.address, b, bank.v.liquidity, to],
+              "if-panics",
+            )) === "ok"
+          )
+            borrowers.push({ address: acct.address, owner: acct.owner, bank });
+          editAccount(acct.address, [["account_flags", 0n, 8]]);
+          break;
+        }
+        case 28:
+        case 29: {
+          // Pulse an account's health (anyone): its banks and oracles in the order its balances sit, now and then
+          // short, reversed or with extras, its flags and tag now and then set.
+          const pool = [...accounts, ...borrowers];
+          if (!pool.length) break;
+          const acct = rng.pick(pool);
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const groups: Address[][] = [];
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (!hb) continue;
+            const f = await feedsOf(hb.address);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(hb.address, "Bank", "config.oracle_setup") & 0xffn;
+            groups.push(setup === 8n ? [hb.address] : [hb.address, setup === 4n ? f.swb : f.pyth]);
+          }
+          if (groups.length > 1 && rng.chance(5)) groups.reverse();
+          let rest = groups.flat();
+          if (rest.length && rng.chance(5)) rest = rest.slice(0, rest.length - 1);
+          if (rng.chance(5)) rest.push(other.address);
+          if (rng.chance(8)) editAccount(acct.address, [["account_flags", rng.pick([2n, 16n]), 8]]);
+          if (rng.chance(10)) editAccount(acct.address, [["liquidation_tagged_at", t - 10n, 8]]);
+          await run(label("pulse health"), other, [h.pulseHealth(acct.address, group.address, rest)], [acct.address], "if-panics");
           editAccount(acct.address, [["account_flags", 0n, 8]]);
           break;
         }

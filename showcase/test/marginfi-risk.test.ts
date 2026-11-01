@@ -1,7 +1,8 @@
-// Marginfi part 3b against the mainnet binary: withdrawals (lending_account_withdraw) and the risk engine they run:
-// Initial health over Pyth, Switchboard and fixed prices, the oracle errors it records or fails on, the isolated
-// tier, e-mode, the deposit cap's discount, premiums, the liquidation tag, the circuit breaker's gate, rate limits,
-// receivership and deleverage paths, Token-2022. Liabilities are written into both programs (borrows come in 3c).
+// Marginfi part 3 against the mainnet binary: withdrawals and borrows (lending_account_withdraw, lending_account_borrow)
+// and the risk engine they run: Initial health over Pyth, Switchboard and fixed prices, the oracle errors it records or
+// fails on, the isolated tier, e-mode, the deposit cap's discount, premiums, the liquidation tag, the circuit breaker's
+// gate, rate limits, receivership and deleverage paths, origination fees, Token-2022. Most debts are written into both
+// programs directly, to set up the withdrawals; the borrows make their own.
 import { type Address, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { afterAll, beforeAll, describe, it } from "vitest";
@@ -11,7 +12,7 @@ import { ONE, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-h
 
 type Bank = Awaited<ReturnType<ReturnType<typeof marginfiPair>["addBank"]>>[1];
 
-describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
+describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and the risk engine", () => {
   const h = marginfiPair();
   const { s, run, initFeeState, groupInit, mint, addBank, editBank, editGroup, setPyth, setSwb, setClock } = h;
   let admin: KeyPairSigner;
@@ -50,9 +51,13 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
     return p;
   };
   const byAddress = (a: Address) => banks.find((b) => b.address === a)!;
+  const byKind = (kind: Priced["kind"]) => banks.find((b) => b.kind === kind && b.program === TOKEN_PROGRAM)!;
 
-  /** The account's [bank, oracle] groups in balance order (descending bank key), leaving out `skip`. */
-  const healthAccounts = (account: Address, skip: Address[] = []) => {
+  /**
+   * The account's [bank, oracle] groups in balance order, leaving out `skip`: sorted by descending bank key, as the
+   * balances are after a withdrawal or borrow sorts them, or (`asStored`) as they sit in the account now.
+   */
+  const healthAccounts = (account: Address, skip: Address[] = [], asStored = false) => {
     const d = data(account);
     const keys: Address[] = [];
     for (let i = 0; i < 16; i++) {
@@ -62,7 +67,7 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
       const b = banks.find((x) => keyBytes(x.address).equals(k));
       if (b && !skip.includes(b.address)) keys.push(b.address);
     }
-    keys.sort((x, y) => Buffer.compare(keyBytes(y), keyBytes(x)));
+    if (!asStored) keys.sort((x, y) => Buffer.compare(keyBytes(y), keyBytes(x)));
     return keys.flatMap((k) => {
       const b = byAddress(k);
       return b.oracle ? [k, b.oracle] : [k];
@@ -138,6 +143,33 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
     );
   };
 
+  const b = (
+    label: string,
+    u: User,
+    bank: Priced,
+    amount: bigint,
+    opts: { rest?: Address[]; by?: KeyPairSigner; to?: Address; failing?: boolean | "if-panics"; extra?: Address[] } = {},
+  ) => {
+    refresh();
+    const by = opts.by ?? u.owner;
+    const to = opts.to ?? u.wallets.get(bank.address)!;
+    // The health accounts after the borrow: the bank joins the account's balances if it is new there.
+    const keys = new Set([...healthAccounts(u.account).filter((x) => banks.some((y) => y.address === x)), bank.address]);
+    const sorted = [...keys].sort((x, y) => Buffer.compare(keyBytes(y), keyBytes(x)));
+    const groups = sorted.flatMap((k) => {
+      const p = byAddress(k);
+      return p.oracle ? [k, p.oracle] : [k];
+    });
+    const rest = opts.rest ?? [...(bank.program === TOKEN_2022 ? [bank.mint] : []), ...groups, ...(opts.extra ?? [])];
+    return run(
+      `borrow: ${label}`,
+      by,
+      [h.borrow(group.address, u.account, by, bank, to, amount, { program: bank.program, rest })],
+      [u.account, bank.address, bank.v.liquidity, to, ...banks.map((x) => x.address)],
+      opts.failing ?? false,
+    );
+  };
+
   beforeAll(async () => {
     await h.load();
     admin = h.admin;
@@ -146,7 +178,7 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
     setClock(t, slot);
     await run("group init", admin, [groupInit(group, admin)], [group.address]);
   });
-  afterAll(() => report("marginfi-withdraw", s));
+  afterAll(() => report("marginfi-risk", s));
 
   it("takes deposits out, checking the account's health, as the original does", async () => {
     const usdc = await newBank("pyth", 1_000_000n);
@@ -483,19 +515,218 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals", () => {
     editAccount(a.account, [["account_flags", 0n, 8]]);
   });
 
+  it("lends as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    const gold = await newBank("fixed", 2_000_000n);
+    const iso = await newBank("pyth", 3_000_000n, { risk_tier: { Isolated: {} }, asset_weight_init: fx(0n), asset_weight_maint: fx(0n) });
+    await user([
+      [usdc, 500_000_000_000n],
+      [sol, 500_000_000_000n],
+      [gold, 500_000_000_000n],
+      [iso, 500_000_000_000n],
+    ]);
+    const a = await user([[sol, 10_000_000_000n]]);
+    tick();
+    // Against 10 SOL ($750 at Initial): borrows that fit, then one that does not.
+    await b("USDC", a, usdc, 100_000_000n);
+    await b("more USDC", a, usdc, 200_000_000n);
+    await b("past health", a, usdc, 500_000_000n);
+    await b("health accounts left out", a, usdc, 1n, { rest: [] });
+    await b("not the authority", a, usdc, 1n, { by: admin });
+    await b("against its own deposit", a, sol, 1_000_000n);
+    await b("gold too", a, gold, 1_000_000n);
+    // Refusals by account and bank state.
+    editAccount(a.account, [["account_flags", 1n, 8]]);
+    await b("disabled account", a, usdc, 1n);
+    editAccount(a.account, [["account_flags", 16n, 8]]);
+    await b("in receivership", a, usdc, 1n);
+    editAccount(a.account, [["account_flags", 64n, 8]]);
+    await b("frozen account", a, usdc, 1n);
+    editAccount(a.account, [["account_flags", 0n, 8]]);
+    for (const [label, state] of [
+      ["paused bank", 0n],
+      ["reduce-only bank", 2n],
+      ["killed bank", 3n],
+      ["borrowing-power reduce-only bank", 5n],
+    ] as const) {
+      editBank(usdc.address, [["config.operational_state", state, 1]]);
+      await b(label, a, usdc, 1n);
+    }
+    editBank(usdc.address, [["config.operational_state", 1n, 1]]);
+    editBank(usdc.address, [["flags", 32n, 8]]);
+    await b("tokenless bank", a, usdc, 1n);
+    editBank(usdc.address, [["flags", 0n, 8]]);
+    editBank(usdc.address, [["config.borrow_limit", 350_000_000n, 8]]);
+    await b("past the borrow limit", a, usdc, 100_000_000n);
+    editBank(usdc.address, [["config.borrow_limit", 1_000_000_000_000n, 8]]);
+    await b("more than the vault", a, gold, 900_000_000_000n);
+    // A share worth two tokens: one token is half a share, which the original refuses as dust.
+    const d = await user([[sol, 1_000_000_000n]]);
+    editBank(gold.address, [["liability_share_value", 2n * ONE, 16]]);
+    await b("dust shares", d, gold, 1n);
+    editBank(gold.address, [["liability_share_value", ONE, 16]]);
+    // Isolated: only one liability, and the account is flagged.
+    const e = await user([[sol, 10_000_000_000n]]);
+    await b("isolated", e, iso, 1_000_000n);
+    await b("isolated and another", e, usdc, 1_000_000n);
+    // Origination fees: the bank's, split with the program at the group's cached rate.
+    editBank(usdc.address, [["config.interest_rate_config.protocol_origination_fee", ratio(1n, 100n), 16]]);
+    await b("with an origination fee", a, usdc, 10_000_000n);
+    editGroup(group.address, [["fee_state_cache.program_fee_rate", ratio(1n, 4n), 16]]);
+    await b("origination fee split with the program", a, usdc, 10_000_000n);
+    editBank(usdc.address, [["config.interest_rate_config.protocol_origination_fee", 0n, 16]]);
+    // The group's rate limit prices the borrow after the health check; a fixed price of 0 cannot be limited.
+    editGroup(group.address, [
+      ["rate_limiter.daily.max_outflow", 50n, 8],
+      ["rate_limiter.daily.window_duration", 86400n, 8],
+      ["rate_limiter.daily.window_start", t, 8],
+    ]);
+    await b("group limit, within", a, usdc, 1_000_000n);
+    await b("group limit, past", a, usdc, 60_000_000n);
+    await run("gold at zero", admin, [h.setOraclePrice(group.address, admin, gold.address, 0n, 8)], [gold.address]);
+    await b("group limit, a price of 0", a, gold, 1_000_000n);
+    editGroup(group.address, [["rate_limiter.daily.max_outflow", 0n, 8]]);
+    await run("gold back", admin, [h.setOraclePrice(group.address, admin, gold.address, 2n * ONE, 8)], [gold.address]);
+    // Premium-active debt needs every collateral priced.
+    editGroup(group.address, [
+      ["premium_settings.entry_count", 1n, 2],
+      ["premium_entries[0].collateral_tag", 5n, 2],
+      ["premium_entries[0].liability_tag", 9n, 2],
+      ["premium_entries[0].rate", 40_000_000n, 4],
+    ]);
+    editBank(sol.address, [["premium_tag", 5n, 2]]);
+    editBank(usdc.address, [
+      ["premium_tag", 9n, 2],
+      ["flags", 8192n, 8],
+      ["premium_activated_at", t - 100n, 8],
+    ]);
+    const g = await user([
+      [sol, 10_000_000_000n],
+      [gold, 1_000_000_000n],
+    ]);
+    tick();
+    await b("premium-active debt", g, usdc, 10_000_000n);
+    tick();
+    refresh();
+    setSwb(sol.oracle!, { value: sol.price * 10n ** 12n, lastUpdate: t - 1000n });
+    await run(
+      "borrow: premium-active debt, a stale collateral oracle",
+      g.owner,
+      [h.borrow(group.address, g.account, g.owner, usdc, g.wallets.get(usdc.address)!, 1_000_000n, { rest: healthAccounts(g.account) })],
+      [g.account, usdc.address],
+    );
+    editBank(usdc.address, [["flags", 0n, 8]]);
+    // The protocol paused.
+    editGroup(group.address, [
+      ["panic_state_cache.pause_flags", 1n, 1],
+      ["panic_state_cache.pause_start_timestamp", t - 10n, 8],
+    ]);
+    await b("protocol paused", a, usdc, 1n);
+    editGroup(group.address, [["panic_state_cache.pause_flags", 0n, 1]]);
+  });
+
+  it("pulses accounts' health as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    const gold = await newBank("fixed", 2_000_000n);
+    const iso = await newBank("pyth", 3_000_000n, { risk_tier: { Isolated: {} }, asset_weight_init: fx(0n), asset_weight_maint: fx(0n) });
+    /** The original's health cache after a pulse (MARGINFI_VERBOSE): flags, the three error codes, liquidatable. */
+    const cacheOf = (u: User) => {
+      if (!process.env.MARGINFI_VERBOSE) return;
+      const d = data(u.account);
+      const at = (f: string) => offsetOf("MarginfiAccount", f);
+      console.log(
+        `  flags ${d.readUInt32LE(at("health_cache.flags"))} mrgn ${d.readUInt32LE(at("health_cache.mrgn_err"))} internal ${d.readUInt32LE(at("health_cache.internal_err"))} liq ${d.readUInt32LE(at("health_cache.internal_liq_err"))} bankruptcy ${d.readUInt32LE(at("health_cache.internal_bankruptcy_err"))} liquidatable ${d[at("indexer_flags.was_liquidatable")]} underwater ${d[at("indexer_flags.was_underwater")]} isolated ${d[at("indexer_flags.has_isolated")]} active30 ${d[at("indexer_flags.was_active_30d")]} tag ${d.readBigInt64LE(at("liquidation_tagged_at"))}`,
+      );
+    };
+    const pulse = async (label: string, u: User, rest?: Address[]) => {
+      refresh();
+      await run(`pulse health: ${label}`, admin, [h.pulseHealth(u.account, group.address, rest ?? healthAccounts(u.account, [], true))], [u.account]);
+      cacheOf(u);
+    };
+    const empty = await user([]);
+    tick();
+    await pulse("an empty account", empty);
+    const a = await user([[sol, 10_000_000_000n]]);
+    owe(a.account, usdc, 300n * 1_000_000n * ONE);
+    await pulse("healthy", a);
+    owe(a.account, usdc, 650n * 1_000_000n * ONE);
+    await pulse("Initial health short, Maintenance fine", a);
+    owe(a.account, usdc, 1_400n * 1_000_000n * ONE);
+    await pulse("liquidatable", a);
+    editAccount(a.account, [["liquidation_tagged_at", t - 10n, 8]]);
+    owe(a.account, usdc, 100n * 1_000_000n * ONE);
+    await pulse("healthy again, the tag cleared", a);
+    // Bankrupt: debt and next to nothing left.
+    const z = await user([[gold, 10_000n]]);
+    owe(z.account, usdc, 5n * 1_000_000n * ONE);
+    await pulse("bankrupt", z);
+    // Oracle trouble: a stale collateral oracle (recorded), a stale liability oracle (the engine fails).
+    const c = await user([
+      [sol, 10_000_000_000n],
+      [gold, 1_000_000_000n],
+    ]);
+    owe(c.account, usdc, 100n * 1_000_000n * ONE);
+    tick();
+    refresh();
+    setSwb(sol.oracle!, { value: sol.price * 10n ** 12n, lastUpdate: t - 1000n });
+    await run("pulse health: a stale collateral oracle", admin, [h.pulseHealth(c.account, group.address, healthAccounts(c.account, [], true))], [c.account]);
+    cacheOf(c);
+    setPyth(usdc.oracle!, { price: 1_000_000n, conf: 1000n, expo: -6, publishTime: t - 1000n });
+    await run("pulse health: a stale liability oracle too", admin, [h.pulseHealth(c.account, group.address, healthAccounts(c.account, [], true))], [c.account]);
+    cacheOf(c);
+    await pulse("accounts left out", c, []);
+    await pulse("an oracle left out", c, healthAccounts(c.account, [], true).slice(0, -1));
+    // Isolated debt, a flash loan, an account idle for 45 days.
+    const e = await user([[sol, 10_000_000_000n]]);
+    owe(e.account, iso, 10n * 1_000_000n * ONE);
+    await pulse("isolated debt", e);
+    editAccount(e.account, [["account_flags", 2n, 8]]);
+    await pulse("in a flash loan", e);
+    editAccount(e.account, [
+      ["account_flags", 0n, 8],
+      ["last_update", t - 45n * 86_400n, 8],
+    ]);
+    await pulse("idle for 45 days", e);
+    // Premium-active debt: the crank refreshes the rate (and does nothing on an incomplete pass).
+    editGroup(group.address, [
+      ["premium_settings.entry_count", 1n, 2],
+      ["premium_entries[0].collateral_tag", 5n, 2],
+      ["premium_entries[0].liability_tag", 9n, 2],
+      ["premium_entries[0].rate", 40_000_000n, 4],
+    ]);
+    editBank(sol.address, [["premium_tag", 5n, 2]]);
+    editBank(usdc.address, [
+      ["premium_tag", 9n, 2],
+      ["flags", 8192n, 8],
+      ["premium_activated_at", t - 1000n, 8],
+    ]);
+    const g = await user([[sol, 10_000_000_000n]]);
+    owe(g.account, usdc, 100n * 1_000_000n * ONE);
+    tick(3600n);
+    await pulse("premium rates refreshed", g);
+    editBank(usdc.address, [["flags", 0n, 8]]);
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
-    const [ix, b] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());
-    await run("add t22 bank", admin, [ix], [b.address]);
+    const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());
+    await run("add t22 bank", admin, [ix], [tb.address]);
     const oracle = (await generateKeyPairSigner()).address;
-    const p: Priced = { ...b, oracle, kind: "pyth", price: 1_000_000n, decimals: 6, mint: m, program: TOKEN_2022 };
+    const p: Priced = { ...tb, oracle, kind: "pyth", price: 1_000_000n, decimals: 6, mint: m, program: TOKEN_2022 };
     banks.push(p);
     refresh();
-    await run("t22 oracle", admin, [h.configureOracle(group.address, admin, b.address, 3, oracle, [oracle])], [b.address]);
+    await run("t22 oracle", admin, [h.configureOracle(group.address, admin, tb.address, 3, oracle, [oracle])], [tb.address]);
     const a = await user([[p, 1_000_000_000n]]);
     tick();
     await w("t22 with fee", a, p, 100_000_000n);
     await w("t22 no mint", a, p, 1n, { rest: [] });
     await w("t22 all", a, p, 0n, { all: true });
+    await user([[p, 500_000_000n]]);
+    const c = await user([[byKind("swb"), 10_000_000_000n]]);
+    tick();
+    await b("t22 with fee", c, p, 10_000_000n);
+    await b("t22 no mint", c, p, 1n, { rest: [] });
   });
 });

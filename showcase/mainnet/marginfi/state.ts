@@ -474,8 +474,11 @@ export interface HealthCache {
   flags: u32;
   /** If the engine errored, look here for the error code. If the engine returns ok, you may also check here to see if the risk engine rejected this tx (3009). */
   mrgn_err: u32;
-  /** Each price corresponds to that index of Balances in the LendingAccount. Useful for debugging or liquidator consumption, to determine how a user's position is priced internally. * An f64 stored as bytes */
-  prices: FixedArray<FixedArray<u8, 8>, 16>;
+  /**
+   * Each price corresponds to that index of Balances in the LendingAccount. Useful for debugging or liquidator consumption, to determine how a user's position is priced internally. * An f64 stored as bytes
+   * @bytes
+   */
+  prices: FixedArray<u64, 16>;
   /** Errors in asset oracles are ignored (with prices treated as zero). If you see a zero price and the `ORACLE_OK` flag is not set, check here to see what error was ignored internally. */
   internal_err: u32;
   /** Index in `balances` where `internal_err` appeared */

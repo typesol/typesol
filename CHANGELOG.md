@@ -6,6 +6,19 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: a struct a function holds itself (a literal, or what a helper returned) passes to a helper that takes
+  accounts in place instead of being copied first (only account data can change under a helper); a struct literal
+  fills a new `const` directly instead of a temporary; `fixedArray<T, N>(fill)` may be a struct field's value in a
+  literal. Programs with struct literals build to different binaries: here raydium-clmm and marginfi (a Marginfi
+  withdrawal 2,700 compute units fewer, a health pulse of an empty account 3,400).
+- New: `/** @bytes */` on a FixedArray of integers: the IDL shows each as its bytes (Marginfi's
+  `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
+- Examples: Marginfi's borrows and health pulses, which completes part 3 of the port: `lending_account_borrow`
+  (origination fees, the premium check, rate limits after health) and `lending_account_pulse_health` (three passes
+  keeping what each gets to, the indexer flags, the event with the cache). Against the binary on mainnet: 687
+  transactions, the same IDL for all 27 ported instructions; the fuzzer borrows and pulses too, and its keys now come
+  from its seed, so `FUZZ_SEED` reproduces a run exactly. 41–47% fewer compute units on borrows, 15–64% on pulses.
+
 - New: helpers take the remaining accounts as a list. A `RemainingAccounts` parameter (`remainingAccounts()` at the
   call) gives the helper `.length` and `.get(i)` over the same accounts, to read, load or pass on to another helper,
   as a risk engine walks one [bank, oracle] group per position.
