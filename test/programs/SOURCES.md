@@ -23,8 +23,8 @@ Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Sol
 
 Other third-party data in `test/fixtures/` (not binaries):
 
-- `test/fixtures/marginfi/`: Marginfi v2's on-chain IDL (`marginfi.idl.json`, from MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA, version 0.1.12) and three of its mainnet accounts (`mainnet/`: the main group, a USDC bank, the fee state), read from mainnet on 2026-11-01. mrgnlabs/marginfi-v2 is Apache-2.0. `i80f48-vectors.json` was written by `i80f48-oracle/` with the `fixed` crate (MIT or Apache-2.0).
-- `test/fixtures/clmm/`: Raydium CLMM's on-chain IDL and the mainnet USDC/CC pool's accounts (raydium-io/raydium-clmm, Apache-2.0).
+- `showcase/test/fixtures/marginfi/`: Marginfi v2's on-chain IDL (`marginfi.idl.json`, from MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA, version 0.1.12) and three of its mainnet accounts (`mainnet/`: the main group, a USDC bank, the fee state), read from mainnet on 2026-11-01. mrgnlabs/marginfi-v2 is Apache-2.0. `i80f48-vectors.json` was written by `i80f48-oracle/` with the `fixed` crate (MIT or Apache-2.0).
+- `showcase/test/fixtures/clmm/`: Raydium CLMM's on-chain IDL and the mainnet USDC/CC pool's accounts (raydium-io/raydium-clmm, Apache-2.0).
 
 The Apache-2.0 licence text is in `LICENSE-Apache-2.0.txt`; the repository's `NOTICE` lists this material.
 `test/verification/third-party.test.ts` checks every committed binary against its sha256 here, and

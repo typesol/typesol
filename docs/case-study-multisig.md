@@ -3,8 +3,8 @@
 This page ports a program that holds real authority on mainnet:
 [coral-xyz/multisig](https://github.com/coral-xyz/multisig) (`programs/multisig/src/lib.rs`, Anchor 0.25, Apache-2.0),
 deployed at `msigUdDBsR4zSUYqYEDrc1LcgtmuSDDM7KxpRUXNC6U`. The port is
-[`examples/multisig.ts`](https://github.com/typesol/typesol/blob/main/examples/multisig.ts). Instead of a twin built for the occasion, it is checked against the
-binary that runs on mainnet: [`test/examples/multisig.test.ts`](https://github.com/typesol/typesol/blob/main/test/examples/multisig.test.ts) runs both under the
+[`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol/typesol/blob/main/showcase/mainnet/multisig/multisig.ts). Instead of a twin built for the occasion, it is checked against the
+binary that runs on mainnet: [`showcase/test/multisig.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/multisig.test.ts) runs both under the
 same program id and compares every outcome and every account byte. See
 [case-study-escrow.md](case-study-escrow.md) for a token program and [Migrate from Anchor](migrate-from-anchor.md) for
 the general reference.

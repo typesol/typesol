@@ -54,7 +54,9 @@ describe("typesol port", () => {
     });
 
   it("keeps Marginfi's zero-copy accounts as its on-chain IDL describes them (repr, serialization, _pad and key fields)", () => {
-    const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as AnyIdl & {
+    const onchain = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../showcase/test/fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8"),
+    ) as AnyIdl & {
       types: { name: string }[];
     };
     // Its accounts and the types they hold; the instructions are not part of this check.
@@ -80,7 +82,9 @@ describe("typesol port", () => {
   });
 
   it("ports Marginfi's whole IDL: every type and every instruction's arguments as on chain", () => {
-    const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as AnyIdl & {
+    const onchain = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../showcase/test/fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8"),
+    ) as AnyIdl & {
       types: { name: string; type: unknown }[];
       events?: unknown[];
     };

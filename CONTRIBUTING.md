@@ -20,7 +20,7 @@ a constraint or an error code.
 - Changes to generated C: review `UPDATE_GOLDEN=1 pnpm test test/language/diagnostics.test.ts` output before committing it.
 - Changes touching funds-related checks: add a negative test (the attack fails, with the expected error code).
 - A language change that lets a PARTIAL port of program-examples get closer to the original: update the port
-  and its row in [test/ports/README.md](test/ports/README.md).
+  and its row in [showcase/program-examples/README.md](showcase/program-examples/README.md).
 - `pnpm smoke` against a local validator (`scripts/localnet.sh`) for changes to CPIs, deploy or IDL tooling.
 - Changes to generated code or the runtime: measure them with [typesol/benchmarks](https://github.com/typesol/benchmarks)
   pointed at your checkout (`TYPESOL_REPO=<checkout> node run.ts` and `node official.ts`, after `pnpm build`), before

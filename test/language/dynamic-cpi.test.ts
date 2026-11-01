@@ -1,4 +1,4 @@
-// What the coral-xyz/multisig port needed (examples/multisig.ts runs against the original in test/examples): a CPI
+// What the coral-xyz/multisig port needed (showcase/mainnet/multisig/multisig.ts runs against the original in test/examples): a CPI
 // decided at run time (invokeInstruction), Signed<…> (Anchor's `signer` constraint), Zeroed<…> of a @layout borsh
 // struct and its Anchor order (2013 first), a Seeds bump stored in another account ("@acct.field"), a Vec copied whole
 // into a FixedVec, and account-member names allowed in structs that are not account data.

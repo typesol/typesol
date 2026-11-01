@@ -335,11 +335,20 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`relay.ts`](examples/relay.ts), [`caller.ts`](examples/caller.ts) | generic `invoke`, PDA-signed transfers, return data |
 | [`profiles.ts`](examples/profiles.ts) | nested structs, FixedString, events |
 | [`orderbook/`](examples/orderbook) | a three-file, 28 KiB zero-copy limit order book |
-| [`raydium-cp-swap/`](examples/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
-| [`raydium-clmm/`](examples/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
-| [`jito-mev/`](examples/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
-| [`marginfi/`](examples/marginfi) | Marginfi v2, in progress: I80F48 fixed-point arithmetic, zero-copy accounts, group and bank administration, interest, accounts, deposits, repayments and fees, checked against the mainnet binary; oracles, the risk engine, borrows and liquidations to come |
-| [`multisig.ts`](examples/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
+
+### Showcase: ports checked against mainnet
+
+[`showcase/`](showcase) holds programs ported from Anchor and checked against the binaries deployed on mainnet (same
+outcomes, account bytes and events; [`showcase/test`](showcase/test)), and the ports of all 46
+[solana-developers/program-examples](showcase/program-examples/README.md).
+
+| | |
+| --- | --- |
+| [`raydium-cp-swap/`](showcase/mainnet/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
+| [`raydium-clmm/`](showcase/mainnet/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
+| [`jito-mev/`](showcase/mainnet/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
+| [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2, in progress: I80F48 fixed-point arithmetic, zero-copy accounts, group and bank administration, interest, accounts, deposits, repayments and fees, checked against the mainnet binary; oracles, the risk engine, borrows and liquidations to come |
+| [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status
 

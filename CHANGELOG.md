@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Repository: the ports moved out of `examples/` and `test/` into `showcase/`: `showcase/mainnet/` (Raydium CP-Swap
+  and CLMM, Jito's MEV programs, Marginfi, coral-xyz/multisig), `showcase/program-examples/` (was `test/ports/`) and
+  `showcase/test/` (their tests, fuzzers, helpers and fixtures). `examples/` keeps the small programs the templates
+  come from. CI runs the compiler's tests (`pnpm test:core`) and the showcase (`pnpm test:showcase`) as separate jobs.
+  The release manifest and the codegen snapshot read both layouts, so older tags still build.
+
 - Faster: `u256` multiplication (and so I80F48 products, `mulDiv`) multiplies only the 32-bit limbs that are not
   zero: two 88-bit values take 9 products instead of 64. A Marginfi I80F48 product went from about 700 to about 380
   compute units, and an interest accrual from 30,292 to 25,296 (against the original's 41,642); across Marginfi's

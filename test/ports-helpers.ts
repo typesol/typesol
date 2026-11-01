@@ -1,4 +1,4 @@
-// Shared helpers for the ports of solana-developers/program-examples (test/ports/**/*.ts, test/porting/ports-*.test.ts).
+// Shared helpers for the ports of solana-developers/program-examples (showcase/program-examples/**/*.ts, showcase/test/porting/ports-*.test.ts).
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as t22 from "@solana-program/token-2022";
 import { getTokenDecoder } from "@solana-program/token";
@@ -9,9 +9,9 @@ import { TOKEN_PROGRAM, deployFile, expectOk, send, type Deployed } from "./harn
 
 export const METADATA_PROGRAM = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
-/** Compile `test/ports/<file>` and load it at the original program's declared address. */
+/** Compile `showcase/program-examples/<file>` and load it at the original program's declared address. */
 export function deployPort(file: string, programId: string, opts: { svm?: LiteSVM } = {}): Promise<Deployed> {
-  return deployFile(fileURLToPath(new URL(`./ports/${file}`, import.meta.url)), { programId: address(programId), svm: opts.svm });
+  return deployFile(fileURLToPath(new URL(`../showcase/program-examples/${file}`, import.meta.url)), { programId: address(programId), svm: opts.svm });
 }
 
 /** A System CreateAccount instruction: how a client allocates a Zeroed<T> account (or a keypair-signed mint). */

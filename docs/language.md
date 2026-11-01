@@ -189,7 +189,7 @@ invokeInstruction(transaction.programId, transaction.accounts, transaction.data,
 - every account in the fourth argument (`remainingAccounts()` or a slice) is handed to the runtime, which finds each
   meta's account there by key: one that is missing fails the call, as under Rust.
 - the runtime checks the privileges: a meta may be a signer or writable only as the transaction passed that account,
-  or as a PDA of this program the seeds (fifth argument) sign for. See `examples/multisig.ts`.
+  or as a PDA of this program the seeds (fifth argument) sign for. See `showcase/mainnet/multisig/multisig.ts`.
 
 Typed calls from an IDL: `typesol cpi other.json --out other_cpi.ts` writes one helper per instruction
 (`vaultDeposit(program, owner, vault, systemProgram, amount, seeds)`), with the account flags, discriminator and

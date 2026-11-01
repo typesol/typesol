@@ -30,7 +30,16 @@ const walk = (dir: string) => {
     else if (p.endsWith(".ts") && !p.endsWith(".test.ts") && !p.endsWith(".d.ts")) files.push(p);
   }
 };
-for (const d of ["examples", "test/fixtures", "test/ports", "test/anchor-twins"]) {
+// showcase/program-examples and its fixtures moved to showcase/ after 0.38.0; both layouts are walked so older checkouts still work.
+for (const d of [
+  "examples",
+  "test/fixtures",
+  "showcase/program-examples",
+  "test/anchor-twins",
+  "showcase/mainnet",
+  "showcase/program-examples",
+  "showcase/test/fixtures",
+]) {
   try {
     walk(path.join(root, d));
   } catch {

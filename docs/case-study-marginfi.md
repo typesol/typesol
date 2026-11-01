@@ -15,7 +15,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 3 | Oracles, the risk engine, withdrawals and borrows | to come |
 | 4 | Liquidation and bankruptcy | to come |
 
-The files are in [`examples/marginfi`](https://github.com/typesol/typesol/tree/main/examples/marginfi):
+The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
 | File | Holds |
 | --- | --- |
@@ -107,7 +107,7 @@ After each, the balances are sorted by bank key and the indexer flags recomputed
 
 ## How it is checked
 
-[`test/examples/marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/test/examples/marginfi.test.ts) loads
+[`showcase/test/marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi.test.ts) loads
 the binary dumped from mainnet on 2026-11-01 (sha256 in
 [`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)), cut where the
 ELF ends. The original runs in one LiteSVM and the port in another, under the same program id and with the same clock.
@@ -151,7 +151,7 @@ There are 244 transactions:
   durable nonce; the insurance vault likewise; the permissionless withdrawal with no destination set, to another
   account, in part and capped at the vault.
 
-Besides these, [`test/verification/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/test/verification/fuzz-marginfi.test.ts)
+Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
 way), fees, balances across scales, clock jumps, frozen banks, circuit-breaker settings and halts, accounts opened and
 closed, deposits into SPL Token, Token-2022 and transfer-fee banks at every scale, balances closed after being written

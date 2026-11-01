@@ -69,7 +69,8 @@ jobs:
           key: programs-v1
       - name: Fetch program binaries (public devnet, with retries)
         run: for i in 1 2 3; do bash scripts/fetch-programs.sh devnet && break; sleep 20; done
-      - run: pnpm test
+      # The compiler's own tests; the ports checked against mainnet binaries run in the showcase job.
+      - run: pnpm test:core
       - name: Pack, install the tarball into a scaffolded project, typecheck and test it
         run: |
           npm pack --pack-destination /tmp
@@ -82,6 +83,47 @@ jobs:
           npx typesol build
           npx tsc -p tsconfig.json
           npm test
+
+  showcase:
+    # The ports under showcase/: Raydium, Jito, Marginfi and coral-xyz/multisig against their mainnet binaries
+    # (test/programs), with their fuzzers, and the program-examples ports.
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Cache Agave CLI and platform-tools
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/share/solana
+            ~/.cache/solana
+          key: agave-3.1.10-tools-${{ runner.os }}
+      - name: Install Agave CLI
+        run: |
+          [ -x ~/.local/share/solana/install/active_release/bin/solana ] || sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install platform-tools (the clang TypeSOL compiles with)
+        run: |
+          sdk=~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf
+          for i in 1 2 3 4; do
+            [ -x "$sdk/dependencies/platform-tools/llvm/bin/clang" ] && break
+            cargo-build-sbf --install-only --tools-version v1.52 || sleep $((i * 15))
+          done
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Cache third-party program binaries
+        uses: actions/cache@v6
+        with:
+          path: test/programs/mpl_*.so
+          key: programs-v1
+      - name: Fetch program binaries (public devnet, with retries)
+        run: for i in 1 2 3; do bash scripts/fetch-programs.sh devnet && break; sleep 20; done
+      - run: pnpm test:showcase
 
   differential:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
