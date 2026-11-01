@@ -7,8 +7,8 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 100 / 101 / 102 | instruction data missing / unknown instruction / malformed arguments (InstructionMissing / FallbackNotFound / DidNotDeserialize) |
 | 2000 | a `Mut<…>` / `Init<…>` account passed read-only (ConstraintMut) |
 | 2001 | HasOne constraint failed (ConstraintHasOne) |
-| 2003 | a `constraint(acct, condition)` without its own error failed (ConstraintRaw) |
 | 2002 | a `Signed<…>` account (or the event authority) did not sign (ConstraintSigner) |
+| 2003 | a `constraint(acct, condition)` without its own error failed (ConstraintRaw) |
 | 2004 | Owner constraint failed (ConstraintOwner) |
 | 2005 | Zeroed account is not rent-exempt (ConstraintRentExempt) |
 | 2006 | PDA seeds mismatch (ConstraintSeeds) |

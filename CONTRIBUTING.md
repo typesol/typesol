@@ -52,7 +52,9 @@ compiler:
 4. Publishing to npm (as `@typesol/cli`) is separate and manual: run the **release** workflow (Actions → release → Run
    workflow) with the version. It checks out the tag, builds and tests it, checks that it matches `package.json`, and
    publishes through npm trusted publishing (no stored token; the package trusts that workflow and its `npm`
-   environment). Tags and GitHub Releases never publish on their own.
+   environment). Tags and GitHub Releases never publish on their own. After publishing it builds the release manifest
+   (`scripts/release-manifest.ts`) and attaches it, with the previous release's sources built by both packages and
+   their diff, to the GitHub Release: create the Release (step 3) before running the workflow.
 
 ## Code style
 
