@@ -1375,3 +1375,113 @@ export interface Moved {
   seized: i128;
   repaid: i128;
 }
+
+// ---- orders -----------------------------------------------------------------------------------------------------
+
+/** What get_tagged_account_health_components gives: equity values of the tagged balances and how many of each side. */
+export interface Tagged {
+  err: u32;
+  assets: i128;
+  liabs: i128;
+  asset_count: u64;
+  liab_count: u64;
+}
+
+/**
+ * get_tagged_account_health_components: the equity value of the balances tagged `tag1` or `tag2` (an order's), live
+ * prices, premium projected on liabilities. Every active balance's bank is checked against `rest`; only the tagged ones
+ * read their oracles.
+ */
+export function taggedHealth(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, tag1: u16, tag2: u16, t: i64): Tagged {
+  const out: Tagged = { err: 0n, assets: I80F48_ZERO, liabs: I80F48_ZERO, asset_count: 0n, liab_count: 0n };
+  const r = reconcileEmode(acc, group, rest, 0n, rest.length, REQ_EQUITY, false);
+  const now = toU64(t);
+  let at = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    if (at >= rest.length) {
+      out.err = INVALID_BANK_ACCOUNT;
+      return out;
+    }
+    const loadErr = loaderErr(rest.get(at));
+    if (loadErr !== 0n) {
+      out.err = loadErr;
+      return out;
+    }
+    const bank = loadAccount<Bank>(rest.get(at));
+    if (bank.key !== b.bank_pk) {
+      out.err = INVALID_BANK_ACCOUNT;
+      return out;
+    }
+    const per = accountsPerBank(bank);
+    if (per.err !== 0n) {
+      out.err = per.err;
+      return out;
+    }
+    if (b.tag !== tag1 && b.tag !== tag2) {
+      at += per.n;
+      continue;
+    }
+    if (rest.length < at + per.n) {
+      out.err = WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+      return out;
+    }
+    const f = feedAt(bank, rest, at + 1n, per.n - 1n, t);
+    const assets = b.asset_shares.value;
+    const liabs = b.liability_shares.value;
+    require(assets < EMPTY_BALANCE_THRESHOLD || liabs < EMPTY_BALANCE_THRESHOLD, MarginfiError.InternalLogicError);
+    const side: u8 = liabs >= EMPTY_BALANCE_THRESHOLD ? 2n : assets >= EMPTY_BALANCE_THRESHOLD ? 1n : 0n;
+    const leg: Leg =
+      side === 1n
+        ? assetLeg(bank, f, REQ_EQUITY, r, assets, false, false)
+        : side === 2n
+          ? liabilityLeg(bank, f, REQ_EQUITY, liabs, false)
+          : { err: 0n, value: I80F48_ZERO, price: I80F48_ZERO, premium: I80F48_ZERO, code: 0n };
+    if (leg.err !== 0n) {
+      out.err = leg.err;
+      return out;
+    }
+    let premium = I80F48_ZERO;
+    if ((bank.flags & PREMIUM_ACTIVE) !== 0n && side === 2n) {
+      const debt = fxTryMul(liabs, bank.liability_share_value.value);
+      const total =
+        debt.err !== 0n
+          ? debt
+          : accruedPremium(debt.v, b.premium_rate_snapshot, b.premium_outstanding.value, premiumElapsed(b.last_update, bank.premium_activated_at, now));
+      if (total.err !== 0n) {
+        out.err = total.err;
+        return out;
+      }
+      if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
+        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, REQ_EQUITY), true);
+        if (v.err !== 0n) {
+          out.err = v.err;
+          return out;
+        }
+        premium = v.v;
+      }
+    }
+    const liab = fxTryAdd(side === 2n ? leg.value : I80F48_ZERO, premium);
+    if (liab.err !== 0n) {
+      out.err = liab.err;
+      return out;
+    }
+    if (side === 1n) out.asset_count += 1n;
+    if (side === 2n) out.liab_count += 1n;
+    const a = fxTryAdd(out.assets, side === 1n ? leg.value : I80F48_ZERO);
+    if (a.err !== 0n) {
+      out.err = a.err;
+      return out;
+    }
+    const l = fxTryAdd(out.liabs, liab.v);
+    if (l.err !== 0n) {
+      out.err = l.err;
+      return out;
+    }
+    out.assets = a.v;
+    out.liabs = l.v;
+    at += per.n;
+  }
+  return out;
+}

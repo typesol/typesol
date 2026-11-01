@@ -2574,4 +2574,148 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
       vm.setAccount({ address: v.account, data: new Uint8Array(0), executable: false, lamports: lamports(0n), programAddress: SYSTEM, space: 0n });
     await keeperClose("its account closed", v.account, [fixed.address, sol.address]);
   });
+  it("executes orders as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, {}, 9);
+    await user([[sol, 100_000_000_000n]]);
+    const executor = await s.funded();
+    const exUsdc = await h.tokenAccount(usdc.mint, executor.address, 0n);
+    const exSol = await h.tokenAccount(sol.mint, executor.address, 100_000_000_000n);
+    const orderOf = async (account: Address, keys: Address[]) => {
+      const sorted = keys.map(keyBytes).sort(Buffer.compare);
+      return (await pda(PROGRAM, ["order", account, new Uint8Array(createHash("sha256").update(Buffer.concat(sorted)).digest())]))[0];
+    };
+    const slip = Number(U32_MAX / 100n);
+    const place = async (label: string, u: User, trigger: unknown) =>
+      run(
+        `place order: ${label}`,
+        u.owner,
+        [
+          s.ix("marginfi_account_place_order", { bank_keys: [usdc.address, sol.address].map((k) => new web3.PublicKey(k)), trigger }, [
+            { address: group.address },
+            { address: u.account, writable: true },
+            { address: u.owner.address, signer: u.owner, writable: true },
+            { address: u.owner.address, signer: u.owner },
+            { address: await orderOf(u.account, [usdc.address, sol.address]), writable: true },
+            { address: h.feeState },
+            { address: h.feeWallet, writable: true },
+            { address: SYSTEM },
+          ] as never),
+        ],
+        [u.account],
+      );
+    /** A borrower of 1 SOL against 1,000 USDC, with an order on the pair. */
+    const borrower = async (trigger: unknown) => {
+      const u = await user([[usdc, 1_000_000_000n]]);
+      tick();
+      await b("for an order", u, sol, 1_000_000_000n);
+      await place("for execution", u, trigger);
+      return u;
+    };
+    type Step = "withdraw" | "repay";
+    /**
+     * start, then the executor's withdrawal of `take` USDC and repayment of all the SOL (as `steps` lists them), then
+     * end; `extra` goes before the start or after the end, to break the sandwich.
+     */
+    const execute = async (
+      label: string,
+      u: User,
+      take: bigint,
+      opts: { steps?: Step[]; before?: Instruction[]; also?: Instruction[]; after?: Instruction[]; by?: KeyPairSigner; recipient?: Address } = {},
+    ) => {
+      refresh();
+      const order = await orderOf(u.account, [usdc.address, sol.address]);
+      const [record] = await pda(PROGRAM, ["execute_order", order]);
+      const by = opts.by ?? executor;
+      const restNow = healthAccounts(u.account, [], true);
+      const start = withRest(
+        s.ix("marginfi_account_start_execute_order", {}, [
+          { address: group.address },
+          { address: u.account, writable: true },
+          { address: executor.address, signer: executor, writable: true },
+          { address: executor.address },
+          { address: order, writable: true },
+          { address: record, writable: true },
+          { address: INSTRUCTIONS },
+          { address: SYSTEM },
+        ] as never),
+        restNow,
+      );
+      const steps = opts.steps ?? ["repay", "withdraw"];
+      const middle = steps.map((st) =>
+        st === "withdraw"
+          ? h.withdraw(group.address, u.account, executor, usdc, exUsdc, take, { rest: restNow })
+          : h.repay(group.address, u.account, executor, sol.address, exSol, sol.v.liquidity, 0n, { all: true }),
+      );
+      const restAfter = steps.includes("repay") ? healthAccounts(u.account, [sol.address], true) : restNow;
+      const end = withRest(
+        s.ix("marginfi_account_end_execute_order", {}, [
+          { address: group.address },
+          { address: u.account, writable: true },
+          { address: by.address, signer: by },
+          { address: opts.recipient ?? executor.address, writable: true },
+          { address: order, writable: true },
+          { address: record, writable: true },
+          { address: h.feeState },
+        ] as never),
+        restAfter,
+      );
+      return run(
+        `execute order: ${label}`,
+        executor,
+        [...(opts.before ?? []), start, ...middle, ...(opts.also ?? []), end, ...(opts.after ?? [])],
+        [u.account, order, record, usdc.address, sol.address, usdc.v.liquidity, sol.v.liquidity, exUsdc, exSol, executor.address],
+      );
+    };
+    const sl = (threshold: bigint) => ({ StopLoss: { threshold: fx(threshold), max_slippage: slip } });
+    const tp = (threshold: bigint) => ({ TakeProfit: { threshold: fx(threshold), max_slippage: slip } });
+    const both = (stop: bigint, take: bigint) => ({ Both: { stop_loss: fx(stop), take_profit: fx(take), max_slippage: slip } });
+    // A stop loss at 800: not met at 850 net; met once SOL is at 250.
+    const a = await borrower(sl(800n * ONE));
+    await execute("stop loss not met", a, 155_000_000n);
+    sol.price = 250_000_000n;
+    tick();
+    await execute("the debt left open", a, 100_000_000n, { steps: ["withdraw"] });
+    await execute("too much taken", a, 300_000_000n);
+    await execute("by another executor", a, 250_000_000n, { by: await s.funded() });
+    await execute("an instruction after the end", a, 250_000_000n, { after: [h.accrue(group.address, usdc.address)] });
+    await execute("an instruction before the start", a, 250_000_000n, { before: [h.accrue(group.address, usdc.address)] });
+    await execute("stop loss", a, 255_000_000n);
+    await execute("again", a, 1n);
+    sol.price = 150_000_000n;
+    // A take profit at 800 (850 net): met, and the most the executor may keep is the fee state's maximum fee.
+    const c = await borrower(tp(800n * ONE));
+    tick();
+    await execute("take profit, past the maximum fee", c, 400_000_000n);
+    await execute("take profit", c, 155_000_000n);
+    // Both: under the stop loss after SOL rises; above the take profit after it falls.
+    const d = await borrower(both(700n * ONE, 900n * ONE));
+    tick();
+    await execute("both, between the two", d, 155_000_000n);
+    sol.price = 50_000_000n;
+    tick();
+    await execute("both, above the take profit", d, 55_000_000n);
+    sol.price = 150_000_000n;
+    const e = await borrower(both(700n * ONE, 900n * ONE));
+    sol.price = 400_000_000n;
+    tick();
+    await execute("both, under the stop loss", e, 405_000_000n);
+    sol.price = 150_000_000n;
+    // A balance outside the order touched in the middle: the record catches it.
+    const other = await newBank("pyth", 1_000_000n);
+    const f = await user([
+      [usdc, 1_000_000_000n],
+      [other, 100_000_000n],
+    ]);
+    tick();
+    await b("for an order", f, sol, 1_000_000_000n);
+    await place("for execution", f, sl(900n * ONE));
+    const exOther = await h.tokenAccount(other.mint, executor.address, 0n);
+    tick();
+    await execute("another balance touched", f, 155_000_000n, {
+      also: [h.withdraw(group.address, f.account, executor, other, exOther, 1_000_000n, { rest: healthAccounts(f.account, [], true) })],
+    });
+    await execute("the other balance left alone", f, 155_000_000n);
+    refresh();
+  });
 });

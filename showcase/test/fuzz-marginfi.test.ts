@@ -149,6 +149,8 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
     const editAccount = h.edit("MarginfiAccount");
     /** Accounts holding a liability (written into both: borrows are not ported yet), and the bank it is in. */
     const borrowers: { address: Address; owner: KeyPairSigner; bank: FuzzBank }[] = [];
+    /** Orders placed so far (they may have been closed since). */
+    const placed: { account: Address; keys: Address[] }[] = [];
     const feeAtas = new Map<string, Address>();
     for (const m of mints) feeAtas.set(m.mint, await h.createAta(h.feeWallet, m.mint, m.program));
     const destinations = new Map<string, Address>();
@@ -207,7 +209,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(38)) {
+      switch (rng.int(39)) {
         case 0:
         case 1:
         case 2: {
@@ -1000,6 +1002,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           const by = signer(acct.owner);
           if (rng.chance(50)) {
             const keys = rng.chance(5) ? [any()] : [any(), any()];
+            const placedKeys = [...keys];
             const sorted = keys.map((k) => Buffer.from(new web3.PublicKey(k).toBytes())).sort(Buffer.compare);
             const [order] = await pda(PROGRAM, ["order", acct.address, new Uint8Array(createHash("sha256").update(Buffer.concat(sorted)).digest())]);
             const level = () => (rng.chance(5) ? 0n : rng.next() % (1n << 60n));
@@ -1011,7 +1014,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
                 : kind === 1
                   ? { TakeProfit: { threshold: fx(level()), max_slippage: Number(slip) } }
                   : { Both: { stop_loss: fx(level()), take_profit: fx(level()), max_slippage: Number(slip) } };
-            await run(
+            const placedResult = await run(
               label("place order"),
               by,
               [
@@ -1029,6 +1032,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
               [acct.address, order, h.feeWallet],
               "if-panics",
             );
+            if (placedResult === "ok") placed.push({ account: acct.address, keys: placedKeys });
           } else {
             const keys = rng.chance(30) ? null : held.filter(() => rng.chance(50)).concat(rng.chance(10) ? [rng.pick(banks).address] : []);
             await run(
@@ -1045,6 +1049,71 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
               "if-panics",
             );
           }
+          break;
+        }
+        case 38: {
+          // An order run with nothing in between: the start and the end over two of the account's banks (an order there
+          // or not), the health accounts as the balances sit, the feeds now and then rewritten.
+          const withOrder = [...borrowers, ...accounts].filter((a) => placed.some((o) => o.account === a.address));
+          const acct = withOrder.length && rng.chance(80) ? rng.pick(withOrder) : borrowers.length && rng.chance(70) ? rng.pick(borrowers) : rng.pick(accounts);
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const held: Address[] = [];
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (hb) held.push(hb.address);
+          }
+          if (held.length === 0) break;
+          const rest: Address[] = [];
+          for (const k of held) {
+            const f = await feedsOf(k);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(k, "Bank", "config.oracle_setup") & 0xffn;
+            rest.push(...(setup === 8n ? [k] : [k, setup === 4n ? f.swb : f.pyth]));
+          }
+          const known = placed.filter((o) => o.account === acct.address);
+          const pair = known.length && rng.chance(80) ? rng.pick(known).keys : [rng.pick(held), rng.pick(held)];
+          const keys = pair.map((k) => Buffer.from(new web3.PublicKey(k).toBytes())).sort(Buffer.compare);
+          const [order] = await pda(PROGRAM, ["order", acct.address, new Uint8Array(createHash("sha256").update(Buffer.concat(keys)).digest())]);
+          const [record] = await pda(PROGRAM, ["execute_order", order]);
+          const ex = rng.pick(users);
+          const withRest = (ix: ReturnType<typeof s.ix>) => ({
+            ...ix,
+            accounts: [...ix.accounts!, ...(rng.chance(90) ? rest : rest.slice(1)).map((address) => ({ address, role: 0 }) as never)],
+          });
+          await run(
+            label("execute order"),
+            ex,
+            [
+              withRest(
+                s.ix("marginfi_account_start_execute_order", {}, [
+                  { address: group.address },
+                  { address: acct.address, writable: true },
+                  { address: ex.address, signer: ex, writable: true },
+                  { address: ex.address },
+                  { address: order, writable: true },
+                  { address: record, writable: true },
+                  { address: INSTRUCTIONS },
+                  { address: SYSTEM },
+                ] as never),
+              ),
+              withRest(
+                s.ix("marginfi_account_end_execute_order", {}, [
+                  { address: group.address },
+                  { address: acct.address, writable: true },
+                  { address: ex.address, signer: ex },
+                  { address: ex.address, writable: true },
+                  { address: order, writable: true },
+                  { address: record, writable: true },
+                  { address: h.feeState },
+                ] as never),
+              ),
+            ],
+            [acct.address, order, record],
+            "if-panics",
+          );
           break;
         }
         default: {

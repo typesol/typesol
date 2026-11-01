@@ -365,7 +365,7 @@ export function sortBalances(account: Mut<MarginfiAccount>): void {
 }
 
 /** Balance::get_side: 0 none, 1 assets, 2 liabilities. Both sides at 1 share or more trips the original's assert. */
-export function balanceSide(account: Mut<MarginfiAccount>, i: u64): u8 {
+export function balanceSide(account: Account<MarginfiAccount>, i: u64): u8 {
   const b = account.lending_account.balances.get(i);
   const assets = b.asset_shares.value;
   const liabilities = b.liability_shares.value;
