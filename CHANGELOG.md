@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's order execution, `marginfi_account_start_execute_order` and
+  `marginfi_account_end_execute_order` (a sandwich: the executor withdraws and repays in between). Against the binary
+  on mainnet: 1,265 transactions, the same IDL for all 83 ported instructions.
 - New: `Option<Vec<T>>` event fields (given `null`, such an argument or a list), and a nested struct written as a
   literal in an event goes out as Borsh (its Options one byte when empty), as Anchor emits Marginfi's
   `SetKeeperCloseFlagsEvent`.

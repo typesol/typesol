@@ -174,6 +174,7 @@ import {
   BANKRUPT_THRESHOLD,
   hasIsolatedLiability,
   healthComponents,
+  taggedHealth,
   isOracleError,
   REQ_EQUITY,
   HEALTH_ENGINE_OK,
@@ -258,7 +259,7 @@ import {
   validateOracleCount,
   validatesFeedAccount,
 } from "./oracle";
-import { PROGRAM_FEES_ENABLED, basisToU32, u32ToBasis, validateInterestRateConfig } from "./interest_rate";
+import { PROGRAM_FEES_ENABLED, basisToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
 import {
   type EmodeEntry,
   type Bank,
@@ -269,6 +270,7 @@ import {
   type SameAssetEmodeRegistry,
   type BankMetadata,
   type Order,
+  type ExecuteOrderRecord,
   OrderTriggerType,
   type WrappedI80F48,
   BankOperationalState,
@@ -4109,4 +4111,160 @@ export function marginfiAccountSetKeeperCloseFlags(
     },
     bank_keys: bank_keys_opt,
   });
+}
+
+// ---- order execution ----------------------------------------------------------------------------------------------
+
+const IX_START_EXECUTE_ORDER: u64 = 16199480533725234689n;
+const IX_END_EXECUTE_ORDER: u64 = 6030975731231894131n;
+
+/**
+ * Start executing an order (anyone, as its executor): its trigger met at the tagged balances' net equity value (a
+ * stop loss records that value as the level to hold), the account marked as executing so the executor may withdraw
+ * and repay as its authority, and a record of the other balances, to be checked unchanged at the end. The end must be
+ * the last instruction.
+ */
+export function marginfiAccountStartExecuteOrder(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  fee_payer: Mut<Signer>,
+  executor: AccountInfo,
+  order: HasOne<Mut<Order>, "marginfi_account">,
+  execute_record: Init<ExecuteOrderRecord>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  system_program: SystemProgram,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, orderStateOk(marginfi_account, false), MarginfiError.UnexpectedOrderExecutionState);
+  execute_record.create(fee_payer, ["execute_order", order.key]);
+  const t = now();
+  marginfi_account.account_flags |= ACCOUNT_IN_ORDER_EXECUTION;
+  const rest = remainingAccounts();
+  const gate = cbPriceGate(marginfi_account, rest, 0n, rest.length, t);
+  require(gate === 0n, gate);
+  const tag1 = order.tags.get(0n);
+  const tag2 = order.tags.get(1n);
+  const q = taggedHealth(marginfi_account, group, rest, tag1, tag2, t);
+  require(q.err === 0n, q.err);
+  require(q.asset_count + q.liab_count === 2n, MarginfiError.LendingAccountBalanceNotFound);
+  require(q.asset_count === 1n && q.liab_count === 1n, MarginfiError.InvalidAssetOrLiabilitiesCount);
+  const net = fxTrySub(q.assets, q.liabs);
+  require(net.err === 0n, net.err);
+  if (order.trigger === OrderTriggerType.StopLoss) {
+    require(net.v <= order.stop_loss.value, MarginfiError.OrderTriggerNotMet);
+    order.stop_loss.value = net.v;
+  } else if (order.trigger === OrderTriggerType.TakeProfit) {
+    require(net.v >= order.take_profit.value, MarginfiError.OrderTriggerNotMet);
+  } else {
+    require(net.v <= order.stop_loss.value || net.v >= order.take_profit.value, MarginfiError.OrderTriggerNotMet);
+    order.stop_loss.value = net.v;
+  }
+  // ExecuteOrderRecord::initialize: the active balances outside the order with a side, in order.
+  execute_record.order = order.key;
+  execute_record.executor = executor.key;
+  let n = 0n;
+  let inactive: u8 = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = marginfi_account.lending_account.balances.get(i);
+    if (b.active === 0n) {
+      inactive += 1n;
+      continue;
+    }
+    if (b.tag !== 0n && (b.tag === tag1 || b.tag === tag2)) continue;
+    const side = balanceSide(marginfi_account, i);
+    if (side === 0n) continue;
+    require(n < 14n, MarginfiError.IllegalBalanceState);
+    const rec = execute_record.balance_states.get(n);
+    rec.bank = b.bank_pk;
+    rec.tag = b.tag;
+    rec.is_asset = side === 1n ? 1n : 0n;
+    rec.shares.value = side === 1n ? b.asset_shares.value : b.liability_shares.value;
+    n += 1n;
+  }
+  execute_record.order_start_health.value = net.v;
+  execute_record.inactive_balance_count = inactive;
+  execute_record.active_balance_count = u8(n);
+  validateReceivership(instruction_sysvar, IX_START_EXECUTE_ORDER, IX_END_EXECUTE_ORDER);
+}
+
+/**
+ * End executing an order (its executor): the order's liability repaid in full, what is left of its collateral within
+ * the order's slippage of the trigger level (a take profit also within the fee state's maximum fee of where it
+ * started), every other balance as it was, the account no less healthy unless it is healthy; then the account's
+ * health cache and premium snapshots refreshed, and the order and the record closed to whom the executor names.
+ */
+export function marginfiAccountEndExecuteOrder(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  executor: Signer,
+  fee_recipient: Mut<AccountInfo>,
+  order: CloseTo<HasOne<Mut<Order>, "marginfi_account">, "fee_recipient">,
+  execute_record: CloseTo<HasOne<HasOne<Mut<ExecuteOrderRecord>, "order">, "executor">, "fee_recipient">,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, orderStateOk(marginfi_account, true), MarginfiError.UnexpectedOrderExecutionState);
+  require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
+  const t = now();
+  const rest = remainingAccounts();
+  const h = healthComponents(marginfi_account, group, rest, 0n, rest.length, REQ_MAINTENANCE, false, true, t);
+  require(h.err === 0n, h.err);
+  const health = fxTrySub(h.assets, h.liabs);
+  require(health.err === 0n, health.err);
+  const healthy = health.v >= I80F48_ZERO;
+  const q = taggedHealth(marginfi_account, group, rest, order.tags.get(0n), order.tags.get(1n), t);
+  require(q.err === 0n, q.err);
+  resetHealthCache(
+    marginfi_account,
+    t,
+    3n,
+    (healthy ? HEALTH_HEALTHY : 0n) | HEALTH_ENGINE_OK | (h.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n),
+  );
+  marginfi_account.health_cache.asset_value_maint.value = h.assets;
+  marginfi_account.health_cache.liability_value_maint.value = h.liabs;
+  if (h.err_index !== 255n) {
+    marginfi_account.health_cache.err_index = h.err_index;
+    marginfi_account.health_cache.internal_err = h.internal_err;
+  }
+  const gate = cbPriceGate(marginfi_account, rest, 0n, rest.length, t);
+  require(gate === 0n, gate);
+  require(q.liab_count === 0n, MarginfiError.OrderLiabilityNotClosed);
+  const net = q.assets;
+  const slippage = fxTrySub(I80F48_ONE, u32ToCenti(order.max_slippage));
+  require(slippage.err === 0n, slippage.err);
+  const maxFee = fxTrySub(I80F48_ONE, fee_state.order_execution_max_fee.value);
+  require(maxFee.err === 0n, maxFee.err);
+  const start = execute_record.order_start_health.value;
+  const takeProfit = order.trigger === OrderTriggerType.TakeProfit || (order.trigger === OrderTriggerType.Both && start >= order.take_profit.value);
+  if (takeProfit) {
+    const allowedTp = fxTryMul(order.take_profit.value, slippage.v);
+    require(allowedTp.err === 0n, allowedTp.err);
+    const allowedDiff = fxTryMul(start, maxFee.v);
+    require(allowedDiff.err === 0n, allowedDiff.err);
+    require(net >= allowedDiff.v && net >= allowedTp.v, MarginfiError.OrderExecutionOverWithdrawal);
+  } else {
+    const allowedSl = fxTryMul(order.stop_loss.value, slippage.v);
+    require(allowedSl.err === 0n, allowedSl.err);
+    require(net >= allowedSl.v, MarginfiError.OrderExecutionOverWithdrawal);
+  }
+  // ExecuteOrderRecord::check_health_and_verify_unchanged (one order balance closed).
+  require(start <= net || healthy, MarginfiError.WorseHealthPostExecution);
+  let inactive = 0n;
+  for (let i = 0n; i < 16n; i++) if (marginfi_account.lending_account.balances.get(i).active === 0n) inactive += 1n;
+  const count = u64(execute_record.active_balance_count);
+  for (let r = 0n; r < count; r++) {
+    const rec = execute_record.balance_states.get(r);
+    const at = balanceIndex(marginfi_account, rec.bank);
+    const b = marginfi_account.lending_account.balances.get(at);
+    const side = balanceSide(marginfi_account, at);
+    require(side !== 0n, MarginfiError.IllegalBalanceState);
+    require(rec.is_asset === (side === 1n ? 1n : 0n), MarginfiError.IllegalBalanceState);
+    require(rec.tag === b.tag, MarginfiError.IllegalBalanceState);
+    require(rec.shares.value === (side === 1n ? b.asset_shares.value : b.liability_shares.value), MarginfiError.IllegalBalanceState);
+  }
+  require(u64(execute_record.inactive_balance_count) + 1n === inactive, MarginfiError.IllegalBalanceState);
+  if (healthy) marginfi_account.liquidation_tagged_at = 0n;
+  updatePremiumSnapshots(marginfi_account, group, h, u64(t), false);
+  marginfi_account.account_flags &= ~ACCOUNT_IN_ORDER_EXECUTION;
+  if (marginfi_account.active_orders > 0n) marginfi_account.active_orders -= 1n;
 }

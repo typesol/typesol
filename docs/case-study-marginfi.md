@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing and closing orders done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -255,8 +255,14 @@ the two bank keys in byte order, so a pair has one; the fee state's flat fee to 
 `marginfi_account_set_keeper_close_flags` (untag the named balances, or all of them) and
 `marginfi_account_keeper_close_order` (anyone, once a tagged balance is gone or untagged, or the account is closed).
 The original hashes any number of bank keys for the order's address and wants two afterwards; the port wants two
-first, so only a transaction wrong in that and in another way fails differently. Executing orders (start and end, a
-sandwich like receivership) comes next.
+first, so only a transaction wrong in that and in another way fails differently. `marginfi_account_start_execute_order`
+and `marginfi_account_end_execute_order` run an order in a sandwich like receivership's (the same instruction rules):
+the start checks the trigger at the equity value of the order's two tagged balances (a stop loss keeps that value as
+the level to hold), marks the account as executing so the executor may withdraw and repay as its authority, and
+records every other balance; the end wants the order's liability repaid in full and what is left within the order's
+slippage of the level (a take profit also within the fee state's maximum fee of where it started), every recorded
+balance as it was, the account no less healthy unless it is healthy, then refreshes the health cache and premium
+snapshots and closes the order and the record to whom the executor names. Rebalance orders come next.
 
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
@@ -333,7 +339,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 803 in
+for the oracles, and 847 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -382,7 +388,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (803, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (847, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -601,6 +607,7 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `marginfi_account_close_order` | 4,142 | 1,355 | −67% |
 | `marginfi_account_set_keeper_close_flags`, one bank | 3,094 | 1,083 | −65% |
 | `marginfi_account_keeper_close_order` | 2,709 | 1,403 | −48% |
+| an order executed (start, withdraw, repay, end), stop loss | 158,349 | 70,948 | −55% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -608,7 +615,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%;
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions);
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
