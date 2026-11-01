@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Repository: a NOTICE for the third-party material the tests use (Apache-2.0 program binaries in test/programs, with
+  the licence text, and the Marginfi and Raydium fixtures); a test that every committed binary is the one SOURCES.md
+  records (sha256); `scripts/fetch-programs.sh` reports fetched binaries whose hash differs.
+
 - Releases: each GitHub Release gets a manifest (`scripts/release-manifest.ts`): compiler and toolchain versions, the
   sha256 of every example's and port's binary, IDL and C, the reference binaries and the test corpus. It also gets the
   previous release's sources built by both packages, with their diff, so "the same binaries" can be checked and
