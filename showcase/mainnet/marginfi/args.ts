@@ -1,6 +1,6 @@
 // Marginfi's instruction argument types (type-crate/src/types of mrgnlabs/marginfi-v2 @ c5d440f6), as the on-chain IDL
 // (test/fixtures/marginfi/marginfi.idl.json) describes them: Borsh on the wire, as Anchor decodes them.
-import { type FixedArray, type Option, type u16, type u32, type u64, type u8 } from "typesol";
+import { type FixedArray, type Option, type Pubkey, type u16, type u32, type u64, type u8 } from "typesol";
 import { type InterestRateConfigOpt } from "./events";
 import { type BankOperationalState, type RatePoint, type RiskTier, type WrappedI80F48 } from "./state";
 
@@ -104,3 +104,14 @@ export type OrderTrigger =
   | { kind: "StopLoss"; threshold: WrappedI80F48; max_slippage: u32 }
   | { kind: "TakeProfit"; threshold: WrappedI80F48; max_slippage: u32 }
   | { kind: "Both"; stop_loss: WrappedI80F48; take_profit: WrappedI80F48; max_slippage: u32 };
+
+/** StakedSettingsConfig: the settings every staked-SOL bank of a group starts from. */
+export interface StakedSettingsConfig {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  risk_tier: RiskTier;
+}

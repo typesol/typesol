@@ -4,7 +4,7 @@
 // gate, rate limits, receivership and deleverage paths, origination fees, Token-2022. Most debts are written into both
 // programs directly, to set up the withdrawals; the borrows make their own.
 import { createHash } from "node:crypto";
-import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
@@ -3280,5 +3280,265 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await intoC("into c while b pays more", [[0, 2, 50n * ONE]], { withdraw: 50_000_000n, deposit: 50_000_000n });
     await intoB("past the budget", [[0, 1, 150n * ONE]], { withdraw: 150_000_000n, deposit: 150_000_000n });
     await intoB("within the budget, no tip", [[0, 1, 80n * ONE]], { withdraw: 80_000_000n, deposit: 80_000_000n });
+  });
+  it("keeps staked-SOL settings and banks, and Scope oracles, as the original does", async () => {
+    const SINGLE_POOL = address("SVSPxpvHdN29nkVg9rPapPNDddN5DipNLRUFhyjFThE");
+    const STAKE = address("Stake11111111111111111111111111111111111111");
+    const VOTE = address("Vote111111111111111111111111111111111111111");
+    const SCOPE = address("HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ");
+    const regular = await newBank("pyth", 1_000_000n);
+    const scopeBank = await newBank("fixed", 1_000_000n);
+    const gov = await s.funded();
+    const other = await s.funded();
+    const govAt = offsetOf("MarginfiGroup", "governance_admin");
+    const govWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(govAt, govAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    editGroup(group.address, [["governance_admin", keyBits(gov.address), 32]]);
+    const [settings] = await pda(PROGRAM, ["staked_settings", group.address]);
+    const solOracle = (await generateKeyPairSigner()).address;
+    setPyth(solOracle, { price: 150_000_000n, conf: 100_000n, expo: -6, publishTime: t });
+    const w = (n: bigint) => fx(ratio(n, 100n));
+    const init = (label: string, by: KeyPairSigner, c: Record<string, unknown>) =>
+      run(
+        `staked settings: ${label}`,
+        by,
+        [
+          s.ix(
+            "init_staked_settings",
+            {
+              settings: {
+                oracle: new web3.PublicKey(solOracle),
+                asset_weight_init: w(80n),
+                asset_weight_maint: w(90n),
+                deposit_limit: new BN(1_000_000_000_000),
+                total_asset_value_init_limit: new BN(0),
+                oracle_max_age: 60,
+                risk_tier: { Collateral: {} },
+                ...c,
+              },
+            },
+            [
+              { address: group.address },
+              { address: by.address, signer: by },
+              { address: other.address, signer: other, writable: true },
+              { address: settings, writable: true },
+              { address: SYSTEM },
+              { address: INSTRUCTIONS },
+            ] as never,
+          ),
+        ],
+        [settings],
+      );
+    await init("by someone else", other, {});
+    await init("maintenance under initial", gov, { asset_weight_maint: w(70n) });
+    await init("isolated with weights", gov, { risk_tier: { Isolated: {} } });
+    await init("created", gov, {});
+    await init("again", gov, {});
+    const edit = (label: string, by: KeyPairSigner, c: Record<string, unknown>) =>
+      run(
+        `edit staked settings: ${label}`,
+        by,
+        [
+          s.ix(
+            "edit_staked_settings",
+            {
+              settings: {
+                oracle: null,
+                asset_weight_init: null,
+                asset_weight_maint: null,
+                deposit_limit: null,
+                total_asset_value_init_limit: null,
+                oracle_max_age: null,
+                risk_tier: null,
+                ...c,
+              },
+            },
+            [{ address: group.address }, { address: by.address, signer: by }, { address: settings, writable: true }, { address: INSTRUCTIONS }] as never,
+          ),
+        ],
+        [settings],
+      );
+    await edit("by someone else", other, { deposit_limit: new BN(5) });
+    await edit("nothing", gov, {});
+    await edit("weights and limits", gov, { asset_weight_init: w(70n), deposit_limit: new BN(2_000_000_000_000), oracle_max_age: 90 });
+    await edit("a weight over 1", gov, { asset_weight_maint: w(110n) });
+    const flagsOf = (label: string, name: string, by: KeyPairSigner) =>
+      run(
+        `${name}: ${label}`,
+        by,
+        [
+          s.ix(name, {}, [
+            { address: group.address },
+            { address: by.address, signer: by },
+            { address: settings, writable: true },
+            { address: INSTRUCTIONS },
+          ] as never),
+        ],
+        [settings],
+      );
+    await flagsOf("by someone else", "disable_staked_oracles", other);
+    await flagsOf("off", "disable_staked_oracles", gov);
+    await flagsOf("on, with the on-ramp", "enable_staked_oracle_onramp", gov);
+    // A validator's SPL single pool, its accounts written straight into both: the pool, its LST mint, stake account
+    // and on-ramp (marginfi reads their owners and addresses, and the LST mint).
+    const pool = async () => {
+      const vote = (await generateKeyPairSigner()).address;
+      h.put(vote, Buffer.alloc(3762), VOTE);
+      const [stakePool] = await pda(SINGLE_POOL, ["pool", vote]);
+      const [lst] = await pda(SINGLE_POOL, ["mint", stakePool]);
+      const [solPool] = await pda(SINGLE_POOL, ["stake", stakePool]);
+      const [onramp] = await pda(SINGLE_POOL, ["onramp", stakePool]);
+      h.put(stakePool, Buffer.alloc(33), SINGLE_POOL);
+      const m = Buffer.alloc(82);
+      m.writeUInt32LE(1, 0);
+      keyBytes(admin.address).copy(m, 4);
+      m.writeBigUInt64LE(1_000_000_000_000n, 36);
+      m[44] = 9;
+      m[45] = 1;
+      h.put(lst, m, TOKEN_PROGRAM);
+      h.put(solPool, Buffer.alloc(200), STAKE);
+      h.put(onramp, Buffer.alloc(200), STAKE);
+      return { vote, stakePool, lst, solPool, onramp };
+    };
+    const addStaked = async (
+      label: string,
+      p: Awaited<ReturnType<typeof pool>>,
+      o: { seed?: bigint; rest?: Address[]; stakePool?: Address; onramp?: Address } = {},
+    ) => {
+      const seed = o.seed ?? 0n;
+      const le = Buffer.alloc(8);
+      le.writeBigUInt64LE(seed);
+      const [bankAt] = await pda(PROGRAM, [group.address, p.lst, new Uint8Array(le)]);
+      const v = await h.vaults(bankAt);
+      const r = await run(
+        `add staked bank: ${label}`,
+        other,
+        [
+          withRest(
+            s.ix("lending_pool_add_bank_permissionless", { bank_seed: new BN(seed.toString()) }, [
+              { address: group.address, writable: true },
+              { address: settings },
+              { address: other.address, signer: other, writable: true },
+              { address: p.lst },
+              { address: p.solPool },
+              { address: o.onramp ?? p.onramp },
+              { address: o.stakePool ?? p.stakePool },
+              { address: p.vote },
+              { address: bankAt, writable: true },
+              { address: v.liquidityAuth },
+              { address: v.liquidity, writable: true },
+              { address: v.insuranceAuth },
+              { address: v.insurance, writable: true },
+              { address: v.feeAuth },
+              { address: v.fee, writable: true },
+              { address: TOKEN_PROGRAM },
+              { address: SYSTEM },
+            ] as never),
+            o.rest ?? [solOracle, p.lst, p.solPool, p.onramp],
+          ),
+        ],
+        [group.address, bankAt, v.liquidity, v.insurance, v.fee],
+      );
+      return { r, bankAt };
+    };
+    const p1 = await pool();
+    const p2 = await pool();
+    await addStaked("another pool's stake pool", p1, { stakePool: p2.stakePool });
+    await addStaked("another pool's on-ramp", p1, { onramp: p2.onramp });
+    await addStaked("too few oracle accounts", p1, { rest: [solOracle, p1.lst, p1.solPool] });
+    await addStaked("the wrong SOL oracle", p1, { rest: [p2.lst, p1.lst, p1.solPool, p1.onramp] });
+    const { bankAt: staked } = await addStaked("a staked bank", p1);
+    await addStaked("the same seed again", p1);
+    await addStaked("a second seed", p1, { seed: 1n });
+    // Vote-account backfill: idempotent with the bank's own, refused for another pool's.
+    const backfill = (label: string, bank: Address, vote: Address) =>
+      run(
+        `backfill vote account: ${label}`,
+        other,
+        [s.ix("lending_pool_backfill_staked_bank_validator_vote_account", {}, [{ address: bank, writable: true }, { address: vote }] as never)],
+        [bank],
+      );
+    await backfill("its own", staked, p1.vote);
+    await backfill("another pool's", staked, p2.vote);
+    await backfill("not a vote account", staked, other.address);
+    editBank(staked, [
+      ["integration_acc_1", 0n, 32],
+      ["config.oracle_keys[3]", 0n, 32],
+    ]);
+    await backfill("unset", staked, p1.vote);
+    await backfill("a bank that is not staked", regular.address, p1.vote);
+    // Propagation (anyone): the settings onto a staked bank of the group; a new oracle is checked.
+    const propagate = (label: string, bank: Address, rest: Address[] = []) =>
+      run(
+        `propagate staked settings: ${label}`,
+        other,
+        [
+          withRest(
+            s.ix("propagate_staked_settings", {}, [{ address: group.address }, { address: settings }, { address: bank, writable: true }] as never),
+            rest,
+          ),
+        ],
+        [bank],
+      );
+    await propagate("unchanged oracle", staked);
+    await propagate("not a staked bank", regular.address);
+    const solOracle2 = (await generateKeyPairSigner()).address;
+    setPyth(solOracle2, { price: 151_000_000n, conf: 100_000n, expo: -6, publishTime: t });
+    await edit("a new oracle", gov, { oracle: new web3.PublicKey(solOracle2) });
+    await propagate("a new oracle, not given", staked);
+    await propagate("a new oracle", staked, [solOracle2]);
+    // Scope oracles (governance admin): an OraclePrices account of Scope's, the bank's entry refreshed.
+    const scopeAt = async (entry: number, value: bigint, exp: bigint, ts: bigint, o: { owner?: Address; len?: number } = {}) => {
+      const a = (await generateKeyPairSigner()).address;
+      const d = Buffer.alloc(o.len ?? 8 + 32 + 512 * 56);
+      Buffer.from([89, 128, 118, 221, 6, 72, 180, 146]).copy(d, 0);
+      const at = 8 + 32 + entry * 56;
+      if (at + 32 <= d.length) {
+        d.writeBigUInt64LE(value, at);
+        d.writeBigUInt64LE(exp, at + 8);
+        d.writeBigUInt64LE(ts, at + 24);
+      }
+      h.put(a, d, o.owner ?? SCOPE);
+      return a;
+    };
+    const scope = (label: string, bank: Address, oracle: Address, entry: number, rest: Address[] = [oracle], failing: boolean | "if-panics" = false) =>
+      run(
+        `scope oracle: ${label}`,
+        gov,
+        [
+          withRest(
+            s.ix("lending_pool_configure_bank_oracle_scope", { oracle: new web3.PublicKey(oracle), entry_index: entry }, [
+              { address: group.address },
+              { address: gov.address, signer: gov },
+              { address: bank, writable: true },
+              { address: INSTRUCTIONS },
+            ] as never),
+            rest,
+          ),
+        ],
+        [bank],
+        failing,
+      );
+    const good = await scopeAt(7, 150_000_000n, 6n, t);
+    await scope("not Scope's", scopeBank.address, await scopeAt(7, 1n, 0n, t, { owner: SYSTEM }), 7);
+    await scope("short", scopeBank.address, await scopeAt(7, 1n, 0n, t, { len: 100 }), 7);
+    await scope("an entry past the table", scopeBank.address, good, 600);
+    await scope("an entry never refreshed", scopeBank.address, good, 8);
+    await scope("an exponent too large", scopeBank.address, await scopeAt(3, 1n, 30n, t), 3);
+    await scope("the wrong account", scopeBank.address, good, 7, [await scopeAt(7, 1n, 0n, t)]);
+    await scope("a staked bank", staked, good, 7);
+    await scope("a regular bank", scopeBank.address, good, 7);
+    editBank(scopeBank.address, [["config.asset_tag", 3n, 1]]);
+    await scope("a Kamino bank without its reserve", scopeBank.address, good, 7);
+    await scope("a Kamino bank, the wrong reserve", scopeBank.address, good, 7, [good, other.address]);
+    editBank(scopeBank.address, [["config.asset_tag", 0n, 1]]);
+    editBank(scopeBank.address, [["flags", 8n, 8]]);
+    await scope("a frozen bank", scopeBank.address, good, 7, [good], "if-panics");
+    editBank(scopeBank.address, [["flags", 0n, 8]]);
+    editGroup(group.address, [["governance_admin", govWas, 32]]);
   });
 });

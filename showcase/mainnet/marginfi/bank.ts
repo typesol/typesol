@@ -114,6 +114,44 @@ export function initBank(
   feeVaultAuthorityBump: u8,
   bankSeed: u64,
 ): void {
+  initBankFields(
+    bank,
+    group,
+    mint,
+    mintDecimals,
+    liquidityVault,
+    insuranceVault,
+    feeVault,
+    timestamp,
+    liquidityVaultBump,
+    liquidityVaultAuthorityBump,
+    insuranceVaultBump,
+    insuranceVaultAuthorityBump,
+    feeVaultBump,
+    feeVaultAuthorityBump,
+    bankSeed,
+  );
+  setConfig(bank, config);
+}
+
+/** Bank::init's fields other than the config. */
+export function initBankFields(
+  bank: Mut<Bank>,
+  group: Pubkey,
+  mint: Pubkey,
+  mintDecimals: u8,
+  liquidityVault: Pubkey,
+  insuranceVault: Pubkey,
+  feeVault: Pubkey,
+  timestamp: i64,
+  liquidityVaultBump: u8,
+  liquidityVaultAuthorityBump: u8,
+  insuranceVaultBump: u8,
+  insuranceVaultAuthorityBump: u8,
+  feeVaultBump: u8,
+  feeVaultAuthorityBump: u8,
+  bankSeed: u64,
+): void {
   bank.mint = mint;
   bank.mint_decimals = mintDecimals;
   bank.group = group;
@@ -129,11 +167,45 @@ export function initBank(
   bank.fee_vault_bump = feeVaultBump;
   bank.fee_vault_authority_bump = feeVaultAuthorityBump;
   bank.last_update = timestamp;
-  setConfig(bank, config);
   bank.flags = CLOSE_ENABLED_FLAG;
   bank.bank_seed = bankSeed;
   bank.liquidation_liquidator_fee = 0n;
   bank.liquidation_insurance_fee = 0n;
+}
+
+/**
+ * write_staked_bank's config: the staked settings' weights, limits, age and tier, a placeholder borrow side and
+ * interest curve (staked banks are never borrowed), the staked asset tag, the 0.1.4 oracle flag.
+ */
+export function setStakedConfig(bank: Mut<Bank>, init: i128, maint: i128, depositLimit: u64, riskTier: RiskTier, valueLimit: u64, maxAge: u16): void {
+  const config = bank.config;
+  config.asset_weight_init.value = init;
+  config.asset_weight_maint.value = maint;
+  config.liability_weight_init.value = 422212465065984n; // 1.5
+  config.liability_weight_maint.value = 351843720888320n; // 1.25
+  config.deposit_limit = depositLimit;
+  const ir = config.interest_rate_config;
+  ir.insurance_fee_fixed_apr.value = 0n;
+  ir.insurance_ir_fee.value = 28147497671066n; // 0.1
+  ir.protocol_fixed_fee_apr.value = 2814749767107n; // 0.01
+  ir.protocol_ir_fee.value = 0n;
+  ir.protocol_origination_fee.value = 0n;
+  ir.zero_util_rate = 0n;
+  ir.hundred_util_rate = 1234567n;
+  for (let i = 0n; i < 5n; i++) {
+    ir.points.get(i).util = i === 0n ? 12345n : 0n;
+    ir.points.get(i).rate = i === 0n ? 123456n : 0n;
+  }
+  ir.curve_type = 1n;
+  config.operational_state = BankOperationalState.Operational;
+  config.oracle_setup = OracleSetup.None;
+  config.borrow_limit = 0n;
+  config.risk_tier = riskTier;
+  config.asset_tag = BANK_ASSET_TAG_STAKED;
+  config.config_flags = 1n;
+  config.total_asset_value_init_limit = valueLimit;
+  config.oracle_max_age = maxAge;
+  config.oracle_max_confidence = 0n;
 }
 
 /** BankConfig::validate: the weights, the interest curve, isolated banks' zero asset weights, the oracle age. */

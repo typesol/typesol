@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's staked SOL (`init_staked_settings`, `edit_staked_settings`, `propagate_staked_settings`,
+  `disable_staked_oracles`, `enable_staked_oracle_onramp`, `lending_pool_add_bank_permissionless`,
+  `lending_pool_backfill_staked_bank_validator_vote_account`) and `lending_pool_configure_bank_oracle_scope`. Against
+  the binary on mainnet: 1,440 transactions, the same IDL for all 104 ported instructions.
 - New: `writeData<T>(account, offset, value)`, a little-endian write into a `Mut<AccountInfo>` of this program
   (bounds-checked); `resizeAccount(account, newSize)`, Rust's `AccountInfo::resize` (the length only, new bytes
   zeroed, no rent moved, at most 10 KiB of growth).
