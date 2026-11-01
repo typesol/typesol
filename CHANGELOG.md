@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Releases: each GitHub Release gets a manifest (`scripts/release-manifest.ts`): compiler and toolchain versions, the
+  sha256 of every example's and port's binary, IDL and C, the reference binaries and the test corpus. It also gets the
+  previous release's sources built by both packages, with their diff, so "the same binaries" can be checked and
+  redone by anyone (docs/testing.md). 0.37.0 → 0.38.0, checked by hand: all 67 programs of the 0.37.0 sources build to
+  the same binary and IDL.
 - Examples: examples/marginfi begins a port of Marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6, Apache-2.0; on mainnet
   as MFv2hWf3… with the same 124 instructions, version 0.1.12 in its on-chain IDL). This first part has no
   instructions yet: its 255 errors (from the on-chain IDL), its I80F48 fixed-point arithmetic and its 12 zero-copy

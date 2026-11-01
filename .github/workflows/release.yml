@@ -61,6 +61,56 @@ jobs:
       - run: pnpm test
       - run: npm publish --provenance --access public --ignore-scripts
 
+  # The release's manifest (scripts/release-manifest.ts), attached to its GitHub Release: the hashes of every binary,
+  # IDL and C file the published package builds from this tag's sources, the toolchain, the reference binaries and the
+  # test corpus. Also the previous release's sources built by the previous package and by this one, with their diff,
+  # so "programs that use none of it build to the same binaries" can be checked, and redone by anyone.
+  manifest:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # uploads to this version's GitHub Release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ inputs.version }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install Agave CLI and platform-tools
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          for i in 1 2 3 4; do cargo-build-sbf --install-only --tools-version v1.52 && break; sleep $((i * 15)); done
+      - run: pnpm install --frozen-lockfile
+      - name: Wait for the registry
+        env:
+          VERSION: ${{ inputs.version }}
+        run: for i in $(seq 1 20); do [ "$(npm view "@typesol/cli@$VERSION" version 2>/dev/null)" = "$VERSION" ] && exit 0; sleep 15; done; exit 1
+      - name: Build the manifests
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          PREV="$(git describe --tags --abbrev=0 "v$VERSION^")"
+          for v in "$VERSION" "${PREV#v}"; do
+            mkdir -p "$RUNNER_TEMP/npm-$v" && (cd "$RUNNER_TEMP/npm-$v" && npm init -y >/dev/null && npm install --no-audit --no-fund "@typesol/cli@$v")
+          done
+          git worktree add "$RUNNER_TEMP/sources-$PREV" "$PREV"
+          node scripts/release-manifest.ts --compiler "$RUNNER_TEMP/npm-$VERSION/node_modules/@typesol/cli" --out manifest.json
+          node scripts/release-manifest.ts --compiler "$RUNNER_TEMP/npm-${PREV#v}/node_modules/@typesol/cli" --sources "$RUNNER_TEMP/sources-$PREV" --out "previous-sources-$PREV.json"
+          node scripts/release-manifest.ts --compiler "$RUNNER_TEMP/npm-$VERSION/node_modules/@typesol/cli" --sources "$RUNNER_TEMP/sources-$PREV" --out "previous-sources-v$VERSION.json"
+          node scripts/release-manifest.ts --diff "previous-sources-$PREV.json" "previous-sources-v$VERSION.json" | tee binary-diff.txt
+      - name: Attach to the GitHub Release
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$VERSION" manifest.json previous-sources-*.json binary-diff.txt --clobber
+
   # What a user gets: the published package from the registry, a project from each template, its own test.
   installed:
     needs: publish
