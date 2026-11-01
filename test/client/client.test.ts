@@ -300,9 +300,13 @@ describe("generated client: typechecks", () => {
         .filter((f) => f.endsWith(".ts"))
         .map((f) => `examples/${f}`),
       "examples/orderbook/orderbook.ts",
+      "showcase/mainnet/multisig/multisig.ts",
       ...readdirSync(path.join(ROOT, "test/fixtures"))
         .filter((f) => f.endsWith(".ts"))
         .map((f) => `test/fixtures/${f}`),
+      ...readdirSync(path.join(ROOT, "showcase/test/fixtures"))
+        .filter((f) => f.endsWith(".ts"))
+        .map((f) => `showcase/test/fixtures/${f}`),
     ];
     for (const p of programs) {
       const out = path.join(dir, p.replace(/[/.]/g, "_"));

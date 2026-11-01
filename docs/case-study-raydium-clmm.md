@@ -3,7 +3,7 @@
 This page ports a production concentrated-liquidity AMM in full: [Raydium CLMM](https://github.com/raydium-io/raydium-clmm)
 (`programs/amm` at 6d7a0f8, Anchor 1.0.2, Apache-2.0). It is deployed on mainnet at
 `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK`, and its on-chain IDL matches that commit. The port is
-[`examples/raydium-clmm/`](https://github.com/typesol/typesol/blob/main/examples/raydium-clmm). As with
+[`showcase/mainnet/raydium-clmm/`](https://github.com/typesol/typesol/blob/main/showcase/mainnet/raydium-clmm). As with
 [Raydium CP-Swap](case-study-raydium-cp-swap.md), it is checked against the binary that runs on mainnet, not a rebuild.
 
 ## What is ported
@@ -88,7 +88,7 @@ The swap needed nothing new:
 
 ## How it was checked
 
-[`test/examples/raydium-clmm.test.ts`](https://github.com/typesol/typesol/blob/main/test/examples/raydium-clmm.test.ts)
+[`showcase/test/raydium-clmm.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/raydium-clmm.test.ts)
 loads the binary dumped from mainnet on 2026-10-30 (sha256 in
 [`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)) into one LiteSVM
 and the port into another. Both use the same program id and the same clock, and both have Metaplex Token Metadata.

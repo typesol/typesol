@@ -15,12 +15,12 @@ dump mnoopTCrg4p8ry25e4bcWA9XZjbNjMTfgYVGGEdRsf3 mpl_noop.so
 dump cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK spl_account_compression.so
 dump noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV spl_noop.so
 dump ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S program_metadata.so
-# coral-xyz/multisig as deployed on mainnet (the differential test of examples/multisig.ts runs against it).
+# coral-xyz/multisig as deployed on mainnet (the differential test of showcase/mainnet/multisig/multisig.ts runs against it).
 [[ -f coral_multisig.so ]] || solana program dump -u mainnet-beta msigUdDBsR4zSUYqYEDrc1LcgtmuSDDM7KxpRUXNC6U coral_multisig.so
-# Raydium CP-Swap as deployed on mainnet (examples/raydium-cp-swap's differential test).
+# Raydium CP-Swap as deployed on mainnet (showcase/mainnet/raydium-cp-swap's differential test).
 [[ -f raydium_cp_swap.so ]] || solana program dump -u mainnet-beta CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C raydium_cp_swap.so
 [[ -f raydium_clmm.so ]] || solana program dump -u mainnet-beta CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK raydium_clmm.so
-# Jito's MEV programs as deployed on mainnet (examples/jito-mev's differential test). A dump is padded with zeros to the
+# Jito's MEV programs as deployed on mainnet (showcase/mainnet/jito-mev's differential test). A dump is padded with zeros to the
 # program account's size (10 MB for tip distribution); it is cut where the ELF ends (its section headers).
 trimmed() {
   [[ -f "$2" ]] && return

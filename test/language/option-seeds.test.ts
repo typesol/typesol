@@ -75,7 +75,9 @@ describe("Option arguments with a default, as seeds", () => {
   });
 
   it("generates a client from Marginfi's on-chain IDL, its account PDAs included", () => {
-    const idl = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as ClientIdl;
+    const idl = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../showcase/test/fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8"),
+    ) as ClientIdl;
     const { source, notes } = generateClient(idl);
     expect(notes.filter((n) => /marginfi_account is not filled in/.test(n))).toEqual([]);
     expect(source).toContain("getU16Codec().encode(args.thirdPartyId ?? 0)");

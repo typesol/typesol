@@ -9,12 +9,12 @@
  *   node scripts/release-manifest.ts --diff a.json b.json
  *
  * --compiler: a @typesol/cli package (or this checkout, the default; run `pnpm build` first). --sources: the tree
- * whose examples/ and test/ports/ are built (default: this checkout). Every program is built at one address, so
+ * whose examples/ and ports (showcase/program-examples/, or showcase/ after 0.38.0) are built (default: this checkout). Every program is built at one address, so
  * the IDLs compare too.
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -94,9 +94,11 @@ const files = (dir: string): string[] => {
 
 const programs: Manifest["programs"] = {};
 const scratch = mkdtempSync(path.join(os.tmpdir(), "typesol-manifest-"));
-const entries = [...files(path.join(sourceRoot, "examples")), ...files(path.join(sourceRoot, "test/ports"))].filter(
-  (f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"),
-);
+// The programs: examples/, and the mainnet ports and program-examples ports (showcase/program-examples up to 0.38.0, showcase/ after).
+const roots = ["examples", "showcase/program-examples", "showcase/mainnet", "showcase/program-examples"]
+  .map((d) => path.join(sourceRoot, d))
+  .filter((d) => existsSync(d));
+const entries = roots.flatMap((d) => files(d)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"));
 for (const [i, entry] of entries.entries()) {
   const rel = path.relative(sourceRoot, entry);
   try {

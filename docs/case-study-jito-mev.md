@@ -6,9 +6,9 @@ Anchor 0.31.1, Apache-2.0). Each one is checked against the binary that runs on 
 
 | Program | Mainnet id | Port |
 | --- | --- | --- |
-| Tip payment | `T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt` | [`tip_payment.ts`](https://github.com/typesol/typesol/blob/main/examples/jito-mev/tip_payment.ts) |
-| Tip distribution | `4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7` | [`tip_distribution.ts`](https://github.com/typesol/typesol/blob/main/examples/jito-mev/tip_distribution.ts) |
-| Priority fee distribution | `Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3` | [`priority_fee_distribution.ts`](https://github.com/typesol/typesol/blob/main/examples/jito-mev/priority_fee_distribution.ts) |
+| Tip payment | `T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt` | [`tip_payment.ts`](https://github.com/typesol/typesol/blob/main/showcase/mainnet/jito-mev/tip_payment.ts) |
+| Tip distribution | `4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7` | [`tip_distribution.ts`](https://github.com/typesol/typesol/blob/main/showcase/mainnet/jito-mev/tip_distribution.ts) |
+| Priority fee distribution | `Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3` | [`priority_fee_distribution.ts`](https://github.com/typesol/typesol/blob/main/showcase/mainnet/jito-mev/priority_fee_distribution.ts) |
 
 Searchers pay tips into eight fixed tip payment accounts. When the leader changes, the tip payment program pays them
 out to the current tip receiver and the block builder's commission to the block builder. The tip receiver is
@@ -74,7 +74,7 @@ The rest uses what TypeSOL already had:
 
 ## How it was checked
 
-[`test/examples/jito-mev.test.ts`](https://github.com/typesol/typesol/blob/main/test/examples/jito-mev.test.ts) loads
+[`showcase/test/jito-mev.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/jito-mev.test.ts) loads
 the binaries dumped from mainnet on 2026-10-31 (sha256 in
 [`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)). A dump is padded
 with zeros to its program account's size, 10 MB for tip distribution, so the files are cut where the ELF ends. Each
@@ -117,7 +117,7 @@ There are 150 transactions:
   - a go-live epoch in the future, then the current one;
   - a transfer into last epoch's account.
 
-Besides these, `test/verification/fuzz-jito.test.ts` sends random sequences of the same transactions, honest and
+Besides these, `showcase/test/fuzz-jito.test.ts` sends random sequences of the same transactions, honest and
 hostile, to the originals and the ports, with a new seed on every run (CI's included). It requires the same outcome,
 bytes, events and log lines after every step; `FUZZ_SEED=<seed>` reproduces a run, `FUZZ_STEPS=<n>` lengthens it.
 

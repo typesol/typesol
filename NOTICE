@@ -12,9 +12,9 @@ This repository also holds third-party material used only by its tests. None of 
   and sha256 are in test/programs/SOURCES.md.
   The Metaplex programs, under the Metaplex(TM) NFT Open Source License 1.0, are not kept here: scripts/fetch-programs.sh
   downloads them.
-- test/fixtures/marginfi/: Marginfi v2's on-chain IDL and three of its mainnet accounts (mrgnlabs/marginfi-v2,
+- showcase/test/fixtures/marginfi/: Marginfi v2's on-chain IDL and three of its mainnet accounts (mrgnlabs/marginfi-v2,
   Apache-2.0), and I80F48 vectors written with the fixed crate (MIT or Apache-2.0).
-- test/fixtures/clmm/: Raydium CLMM's on-chain IDL and the accounts of one mainnet pool (raydium-io/raydium-clmm,
+- showcase/test/fixtures/clmm/: Raydium CLMM's on-chain IDL and the accounts of one mainnet pool (raydium-io/raydium-clmm,
   Apache-2.0).
 
 Examples under examples/ that port these programs (raydium-cp-swap, raydium-clmm, jito-mev, marginfi, multisig.ts)
