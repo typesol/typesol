@@ -1574,6 +1574,203 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editGroup(group.address, [["governance_admin", govWas, 32]]);
   });
 
+  it("administers the group and the fee state as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const other = await s.funded();
+    const flow = await s.funded();
+    const fee = (
+      label: string,
+      name: string,
+      by: KeyPairSigner,
+      args: Record<string, unknown>,
+      accounts: { address: Address; writable?: boolean; signer?: KeyPairSigner }[],
+      watch: Address[],
+    ) => run(`${label}`, by, [s.ix(name, args, accounts as never)], watch);
+    // The program's fees for the group (the global fee admin).
+    const groupFee = (label: string, by: KeyPairSigner, on: boolean) =>
+      fee(
+        `group fee: ${label}`,
+        "config_group_fee",
+        by,
+        { enable_program_fee: on },
+        [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: h.feeState }, { address: INSTRUCTIONS }],
+        [group.address],
+      );
+    const flagsAt = offsetOf("MarginfiGroup", "group_flags");
+    const flagsWas = data(group.address).readBigUInt64LE(flagsAt);
+    await groupFee("by someone else", other, true);
+    await groupFee("off", admin, false);
+    await groupFee("on", admin, true);
+    const premiumWallet = (label: string, by: KeyPairSigner) =>
+      fee(
+        `fee state premium wallet: ${label}`,
+        "edit_fee_state_premium",
+        by,
+        { premium_wallet: new web3.PublicKey(other.address) },
+        [{ address: by.address, signer: by }, { address: h.feeState, writable: true }, { address: INSTRUCTIONS }],
+        [h.feeState],
+      );
+    await premiumWallet("by someone else", other);
+    await premiumWallet("by the global fee admin", admin);
+    // Panic pauses: 6 hours each, extended while running, at most 3 a day and 4 in a row.
+    const pause = (label: string, by: KeyPairSigner) =>
+      fee(
+        `pause: ${label}`,
+        "panic_pause",
+        by,
+        {},
+        [{ address: by.address, signer: by }, { address: h.feeState, writable: true }, { address: INSTRUCTIONS }],
+        [h.feeState],
+      );
+    const unpause = (label: string, by: KeyPairSigner) =>
+      fee(
+        `unpause: ${label}`,
+        "panic_unpause",
+        by,
+        {},
+        [{ address: by.address, signer: by, writable: true }, { address: h.feeState, writable: true }, { address: INSTRUCTIONS }],
+        [h.feeState],
+      );
+    const unpauseAnyone = (label: string) =>
+      fee(`unpause (anyone): ${label}`, "panic_unpause_permissionless", other, {}, [{ address: h.feeState, writable: true }], [h.feeState]);
+    tick(2n * 86_400n);
+    await pause("by someone else", other);
+    await unpause("not paused", admin);
+    await pause("paused", admin);
+    await unpauseAnyone("too early");
+    tick(60n);
+    await pause("extended", admin);
+    await pause("a third time", admin);
+    await pause("a fourth time the same day", admin);
+    await unpause("by someone else", other);
+    await unpause("by the global fee admin", admin);
+    tick(86_400n);
+    await pause("the next day", admin);
+    tick(7n * 3_600n);
+    await unpauseAnyone("expired");
+    await unpauseAnyone("again");
+    // The governance admin: the current one hands over (to a new one and back).
+    const gov = (label: string, by: KeyPairSigner, to: Address) =>
+      fee(
+        `governance admin: ${label}`,
+        "marginfi_group_set_governance_admin",
+        by,
+        { new_governance_admin: new web3.PublicKey(to) },
+        [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: INSTRUCTIONS }],
+        [group.address],
+      );
+    const govAt = offsetOf("MarginfiGroup", "governance_admin");
+    const govWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(govAt, govAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    const current = await s.funded();
+    editGroup(group.address, [["governance_admin", keyBits(current.address), 32]]);
+    await gov("to nobody", current, "11111111111111111111111111111111" as Address);
+    await gov("by someone else", other, other.address);
+    await gov("handed over", current, other.address);
+    await gov("handed back", other, current.address);
+    editGroup(group.address, [["governance_admin", 0n, 32]]);
+    await gov("the first, by the admin", admin, other.address);
+    editGroup(group.address, [["governance_admin", govWas, 32]]);
+    // Rate limits: a bank's (tokens) and the group's (dollars), by the admin or the limit admin.
+    const bankLimits = (label: string, by: KeyPairSigner, hourly: bigint | null, daily: bigint | null) =>
+      fee(
+        `bank rate limits: ${label}`,
+        "configure_bank_rate_limits",
+        by,
+        { hourly_max_outflow: hourly === null ? null : new BN(hourly.toString()), daily_max_outflow: daily === null ? null : new BN(daily.toString()) },
+        [{ address: group.address }, { address: by.address, signer: by }, { address: usdc.address, writable: true }, { address: INSTRUCTIONS }],
+        [usdc.address],
+      );
+    await bankLimits("by someone else", other, 1n, null);
+    await bankLimits("past i64", admin, 1n << 63n, null);
+    await bankLimits("both", admin, 5_000_000n, 50_000_000n);
+    await bankLimits("off", admin, 0n, 0n);
+    const groupLimits = (label: string, by: KeyPairSigner, hourly: bigint | null, daily: bigint | null) =>
+      fee(
+        `group rate limits: ${label}`,
+        "configure_group_rate_limits",
+        by,
+        { hourly_max_outflow_usd: hourly === null ? null : new BN(hourly.toString()), daily_max_outflow_usd: daily === null ? null : new BN(daily.toString()) },
+        [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: INSTRUCTIONS }],
+        [group.address],
+      );
+    await groupLimits("by someone else", other, 1n, null);
+    await groupLimits("past i64", admin, null, 1n << 63n);
+    await groupLimits("hourly $1,000", admin, 1_000n, null);
+    // The flow admin's updates to the group's windows.
+    const flowAt = offsetOf("MarginfiGroup", "delegate_flow_admin");
+    const flowWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(flowAt, flowAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    editGroup(group.address, [["delegate_flow_admin", keyBits(flow.address), 32]]);
+    const seqAt = offsetOf("MarginfiGroup", "rate_limiter_last_admin_update_seq");
+    const seq0 = data(group.address).readBigUInt64LE(seqAt);
+    const slotAt = offsetOf("MarginfiGroup", "rate_limiter_last_admin_update_slot");
+    const update = (label: string, by: KeyPairSigner, out: bigint | null, inflow: bigint | null, seq: bigint, from: bigint, to: bigint) =>
+      fee(
+        `group rate limiter: ${label}`,
+        "update_group_rate_limiter",
+        by,
+        {
+          outflow_usd: out === null ? null : new BN(out.toString()),
+          inflow_usd: inflow === null ? null : new BN(inflow.toString()),
+          update_seq: new BN(seq.toString()),
+          event_start_slot: new BN(from.toString()),
+          event_end_slot: new BN(to.toString()),
+        },
+        [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: INSTRUCTIONS }],
+        [group.address],
+      );
+    tick();
+    const last = data(group.address).readBigUInt64LE(slotAt);
+    const lo = (last > slot - 100n ? last : slot - 100n) + 1n;
+    await update("by someone else", other, 10n, null, seq0 + 1n, lo, slot - 1n);
+    await update("nothing", flow, null, null, seq0 + 1n, lo, slot - 1n);
+    await update("slots reversed", flow, 10n, null, seq0 + 1n, slot - 1n, lo);
+    await update("a future slot", flow, 10n, null, seq0 + 1n, lo, slot + 5n);
+    await update("out of sequence", flow, 10n, null, seq0 + 3n, lo, slot - 1n);
+    await update("an inflow past i64", flow, null, 1n << 63n, seq0 + 1n, lo, slot - 1n);
+    await update("an outflow", flow, 400n, null, seq0 + 1n, lo, lo + 1n);
+    await update("an old slot", flow, 10n, null, seq0 + 2n, lo, lo + 2n);
+    await update("past the hourly limit", flow, 700n, null, seq0 + 2n, lo + 2n, slot - 1n);
+    await update("an inflow, then an outflow", flow, 700n, 300n, seq0 + 2n, lo + 2n, slot - 1n);
+    const lastNow = data(group.address).readBigUInt64LE(slotAt);
+    slot += 2_000n;
+    setClock(t, slot);
+    await update("stale", flow, 10n, null, seq0 + 3n, lastNow + 1n, lastNow + 2n);
+    editGroup(group.address, [["delegate_flow_admin", flowWas, 32]]);
+    await groupLimits("off", admin, 0n, 0n);
+    // The premium matrix: sorted pairs, at most 64.
+    const premium = (label: string, by: KeyPairSigner, c: number, l: number, rate: number) =>
+      fee(
+        `group premium: ${label}`,
+        "lending_pool_configure_group_premium",
+        by,
+        { collateral_tag: c, liability_tag: l, rate },
+        [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: INSTRUCTIONS }],
+        [group.address],
+      );
+    await premium("by someone else", other, 1, 2, 1_000);
+    await premium("an empty tag", admin, 0, 2, 1_000);
+    await premium("past the highest rate", admin, 1, 2, 429_496_730);
+    await premium("a new pair", admin, 1, 2, 1_000);
+    await premium("a pair before it", admin, 1, 1, 2_000);
+    await premium("a pair after them", admin, 3, 1, 3_000);
+    await premium("a new rate", admin, 1, 2, 5_000);
+    await premium("removed", admin, 1, 1, 0);
+    await premium("removed again", admin, 1, 1, 0);
+    await premium("removed, the first", admin, 1, 2, 0);
+    await premium("removed, the last", admin, 3, 1, 0);
+    editGroup(group.address, [["group_flags", flagsWas, 8]]);
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());

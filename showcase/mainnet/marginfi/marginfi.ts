@@ -20,7 +20,7 @@ import {
   type TokenAccount,
   type TokenInterface,
   type i128,
-  type u16,
+  u16,
   type InstructionsSysvar,
   type HasOne,
   type Init,
@@ -123,6 +123,9 @@ import {
   totalLiquidationFee,
   updateBankCache,
   updateCachePrice,
+  recordGroupInflow,
+  recordGroupOutflow,
+  saturatingAddI64,
   assetAmount,
   liabilityAmount,
   liquidatorFee,
@@ -178,6 +181,8 @@ import {
   type LendingAccountBorrowEvent,
   type LendingAccountLiquidateEvent,
   type LiquidationReceiverEvent,
+  type SetGovernanceAdminEvent,
+  type LendingPoolGroupPremiumConfigureEvent,
   type AdminCloseAccountEvent,
   type MarginfiAccountTransferToNewAccount,
   type MarginfiAccountFreezeEvent,
@@ -230,7 +235,7 @@ import {
   validateOracleCount,
   validatesFeedAccount,
 } from "./oracle";
-import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
+import { PROGRAM_FEES_ENABLED, basisToU32, u32ToBasis, validateInterestRateConfig } from "./interest_rate";
 import {
   type Bank,
   type FeeState,
@@ -2571,6 +2576,275 @@ export function adminCloseAccount(
   emit<AdminCloseAccountEvent>({
     header: { signer: null, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: group.key },
     global_fee_wallet: global_fee_wallet.key,
+  });
+}
+
+// ---- fee state, panic pause, governance --------------------------------------------------------------------------
+
+/** Turn the program's fees on or off for a group (the global fee admin). */
+export function configGroupFee(
+  marginfi_group: Mut<MarginfiGroup>,
+  global_fee_admin: Signer,
+  fee_state: Seeds<HasOne<Account<FeeState>, "global_fee_admin", MarginfiError.Unauthorized>, ["feestate"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  enable_program_fee: boolean,
+): void {
+  if (enable_program_fee) marginfi_group.group_flags |= PROGRAM_FEES_ENABLED;
+  else marginfi_group.group_flags &= ~PROGRAM_FEES_ENABLED;
+  marginfi_group.fee_state_cache.last_update = now();
+}
+
+/** Where premium fees go (the global fee admin). */
+export function editFeeStatePremium(
+  global_fee_admin: Signer,
+  fee_state: Seeds<HasOne<Mut<FeeState>, "global_fee_admin", MarginfiError.Unauthorized>, ["feestate"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  premium_wallet: Pubkey,
+): void {
+  fee_state.premium_wallet = premium_wallet;
+}
+
+/** PanicState: paused, for 6 hours a pause; at most 3 a day and 4 in a row. */
+const PAUSED: u8 = 1n;
+const PAUSE_SECONDS: i64 = 21600n;
+function pauseExpired(fs: Mut<FeeState>, t: i64): boolean {
+  const p = fs.panic_state;
+  if ((p.pause_flags & PAUSED) === 0n) return true;
+  if (t < p.pause_start_timestamp) return false;
+  return t - p.pause_start_timestamp >= PAUSE_SECONDS;
+}
+function unpause(fs: Mut<FeeState>): void {
+  fs.panic_state.pause_flags &= ~PAUSED;
+  fs.panic_state.pause_start_timestamp = 0n;
+  fs.panic_state.consecutive_pause_count = 0n;
+}
+function unpauseIfExpired(fs: Mut<FeeState>, t: i64): void {
+  if ((fs.panic_state.pause_flags & PAUSED) !== 0n && pauseExpired(fs, t)) unpause(fs);
+}
+
+/**
+ * Pause the protocol for 6 hours (the global fee admin or the pause delegate): an expired pause cleared first, a
+ * running one extended; refused past 3 pauses a day or 4 in a row.
+ */
+export function panicPause(
+  pause_authority: Signer,
+  fee_state: Seeds<Mut<FeeState>, ["feestate"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(
+    fee_state,
+    pause_authority.key === fee_state.global_fee_admin ||
+      (fee_state.pause_delegate_admin !== SYSTEM_PROGRAM_ID && pause_authority.key === fee_state.pause_delegate_admin),
+    MarginfiError.Unauthorized,
+  );
+  const t = now();
+  unpauseIfExpired(fee_state, t);
+  // PanicState::pause
+  unpauseIfExpired(fee_state, t);
+  if (saturatingSubI64(t, fee_state.panic_state.last_daily_reset_timestamp) >= 86400n) {
+    fee_state.panic_state.daily_pause_count = 0n;
+    fee_state.panic_state.last_daily_reset_timestamp = t;
+  }
+  const daily = t - fee_state.panic_state.last_daily_reset_timestamp >= 86400n ? 0n : fee_state.panic_state.daily_pause_count;
+  require(fee_state.panic_state.consecutive_pause_count < 4n && daily < 3n, MarginfiError.PauseLimitExceeded);
+  const running = (fee_state.panic_state.pause_flags & PAUSED) !== 0n && !pauseExpired(fee_state, t);
+  fee_state.panic_state.pause_start_timestamp = running ? saturatingAddI64(fee_state.panic_state.pause_start_timestamp, PAUSE_SECONDS) : t;
+  fee_state.panic_state.pause_flags |= PAUSED;
+  const dailyCount = fee_state.panic_state.daily_pause_count;
+  fee_state.panic_state.daily_pause_count = dailyCount === 255n ? 255n : dailyCount + 1n;
+  const consecutive = fee_state.panic_state.consecutive_pause_count;
+  fee_state.panic_state.consecutive_pause_count = consecutive === 255n ? 255n : consecutive + 1n;
+}
+
+/** Lift a pause (the global fee admin). */
+export function panicUnpause(
+  global_fee_admin: Mut<Signer>,
+  fee_state: Seeds<HasOne<Mut<FeeState>, "global_fee_admin", MarginfiError.Unauthorized>, ["feestate"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  const t = now();
+  require((fee_state.panic_state.pause_flags & PAUSED) !== 0n, MarginfiError.ProtocolNotPaused);
+  unpauseIfExpired(fee_state, t);
+  if ((fee_state.panic_state.pause_flags & PAUSED) !== 0n) unpause(fee_state);
+}
+
+/** Lift a pause that has run its 6 hours (anyone). */
+export function panicUnpausePermissionless(fee_state: Seeds<Mut<FeeState>, ["feestate"]>): void {
+  const t = now();
+  require((fee_state.panic_state.pause_flags & PAUSED) !== 0n, MarginfiError.ProtocolNotPaused);
+  require(pauseExpired(fee_state, t), MarginfiError.PauseLimitExceeded);
+  unpause(fee_state);
+}
+
+/** Set a group's governance admin (the admin the first time, the governance admin after). */
+export function marginfiGroupSetGovernanceAdmin(
+  marginfi_group: Mut<MarginfiGroup>,
+  signer: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  new_governance_admin: Pubkey,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require(new_governance_admin !== SYSTEM_PROGRAM_ID, MarginfiError.InvalidGovernanceAdmin);
+  const previous = marginfi_group.governance_admin;
+  require(signer.key === (previous === SYSTEM_PROGRAM_ID ? marginfi_group.admin : previous), MarginfiError.Unauthorized);
+  marginfi_group.governance_admin = new_governance_admin;
+  emit<SetGovernanceAdminEvent>({
+    header: { signer: signer.key, marginfi_group: marginfi_group.key },
+    previous_governance_admin: previous,
+    new_governance_admin,
+  });
+}
+
+/** Set a bank's hourly and daily outflow limits, in its tokens (the admin or the limit admin). */
+export function configureBankRateLimits(
+  group: Account<MarginfiGroup>,
+  admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  hourly_max_outflow: Option<u64>,
+  daily_max_outflow: Option<u64>,
+): void {
+  constraint(group, admin.key === group.admin || admin.key === group.delegate_limit_admin, MarginfiError.Unauthorized);
+  checkNoDurableNonce(instruction_sysvar);
+  const t = now();
+  if (hourly_max_outflow !== null) {
+    require(hourly_max_outflow <= 9223372036854775807n, MarginfiError.InvalidConfig);
+    bank.rate_limiter.hourly = { max_outflow: hourly_max_outflow, window_duration: 3600n, window_start: t, prev_window_outflow: 0n, cur_window_outflow: 0n };
+  }
+  if (daily_max_outflow !== null) {
+    require(daily_max_outflow <= 9223372036854775807n, MarginfiError.InvalidConfig);
+    bank.rate_limiter.daily = { max_outflow: daily_max_outflow, window_duration: 86400n, window_start: t, prev_window_outflow: 0n, cur_window_outflow: 0n };
+  }
+}
+
+/** Set a group's hourly and daily outflow limits, in dollars (the admin or the limit admin). */
+export function configureGroupRateLimits(
+  marginfi_group: Mut<MarginfiGroup>,
+  admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  hourly_max_outflow_usd: Option<u64>,
+  daily_max_outflow_usd: Option<u64>,
+): void {
+  constraint(marginfi_group, admin.key === marginfi_group.admin || admin.key === marginfi_group.delegate_limit_admin, MarginfiError.Unauthorized);
+  checkNoDurableNonce(instruction_sysvar);
+  const t = now();
+  if (hourly_max_outflow_usd !== null) {
+    require(hourly_max_outflow_usd <= 9223372036854775807n, MarginfiError.InvalidConfig);
+    marginfi_group.rate_limiter.hourly = {
+      max_outflow: hourly_max_outflow_usd,
+      window_duration: 3600n,
+      window_start: t,
+      prev_window_outflow: 0n,
+      cur_window_outflow: 0n,
+    };
+  }
+  if (daily_max_outflow_usd !== null) {
+    require(daily_max_outflow_usd <= 9223372036854775807n, MarginfiError.InvalidConfig);
+    marginfi_group.rate_limiter.daily = {
+      max_outflow: daily_max_outflow_usd,
+      window_duration: 86400n,
+      window_start: t,
+      prev_window_outflow: 0n,
+      cur_window_outflow: 0n,
+    };
+  }
+}
+
+/**
+ * Record the group's flows (the flow admin), aggregated off-chain from the flow events: in sequence and slot order, at
+ * most 1,500 slots old; an inflow gives capacity back, an outflow must fit the group's windows.
+ */
+export function updateGroupRateLimiter(
+  marginfi_group: HasOne<Mut<MarginfiGroup>, "delegate_flow_admin", MarginfiError.Unauthorized>,
+  delegate_flow_admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  outflow_usd: Option<u64>,
+  inflow_usd: Option<u64>,
+  update_seq: u64,
+  event_start_slot: u64,
+  event_end_slot: u64,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require(outflow_usd !== null || inflow_usd !== null, MarginfiError.GroupRateLimiterUpdateEmpty);
+  require(event_start_slot <= event_end_slot, MarginfiError.GroupRateLimiterUpdateInvalidSlotRange);
+  require(event_start_slot > marginfi_group.rate_limiter_last_admin_update_slot, MarginfiError.GroupRateLimiterUpdateOutOfOrderSlot);
+  const slot = currentSlot();
+  require(event_end_slot <= slot, MarginfiError.GroupRateLimiterUpdateFutureSlot);
+  require(slot - event_end_slot <= 1500n, MarginfiError.GroupRateLimiterUpdateStale);
+  const last = marginfi_group.rate_limiter_last_admin_update_seq;
+  require(update_seq === (last === 18446744073709551615n ? last : last + 1n), MarginfiError.GroupRateLimiterUpdateOutOfOrderSeq);
+  const t = now();
+  if (inflow_usd !== null) {
+    require(inflow_usd <= 9223372036854775807n, MarginfiError.InvalidConfig);
+    recordGroupInflow(marginfi_group, inflow_usd, t);
+  }
+  if (outflow_usd !== null) recordGroupOutflow(marginfi_group, outflow_usd, t);
+  marginfi_group.rate_limiter_last_admin_update_slot = event_end_slot;
+  marginfi_group.rate_limiter_last_admin_update_seq = update_seq;
+}
+
+/**
+ * Set, change or remove (rate 0) the premium rate for a pair of collateral and liability tags (the admin): the
+ * matrix stays sorted by (collateral, liability), at most 64 entries.
+ */
+export function lendingPoolConfigureGroupPremium(
+  group: HasOne<Mut<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  collateral_tag: u16,
+  liability_tag: u16,
+  rate: u32,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require(collateral_tag !== 0n && liability_tag !== 0n, MarginfiError.PremiumEntryInvalid);
+  require(rate <= 429496729n, MarginfiError.PremiumEntryInvalid);
+  let count = u64(group.premium_settings.entry_count);
+  if (count > 64n) count = 64n;
+  const target = (u64(collateral_tag) << 16n) | u64(liability_tag);
+  let at = 0n;
+  while (at < count) {
+    const e = group.premium_entries.get(at);
+    if (((u64(e.collateral_tag) << 16n) | u64(e.liability_tag)) >= target) break;
+    at++;
+  }
+  const found = at < count && group.premium_entries.get(at).collateral_tag === collateral_tag && group.premium_entries.get(at).liability_tag === liability_tag;
+  let old: u32 = 0n;
+  if (rate > 0n) {
+    if (found) old = group.premium_entries.get(at).rate;
+    else {
+      require(count < 64n, MarginfiError.PremiumMatrixFull);
+      for (let j = count; j > at; j--) {
+        group.premium_entries.get(j).collateral_tag = group.premium_entries.get(j - 1n).collateral_tag;
+        group.premium_entries.get(j).liability_tag = group.premium_entries.get(j - 1n).liability_tag;
+        group.premium_entries.get(j).rate = group.premium_entries.get(j - 1n).rate;
+      }
+      count++;
+    }
+    group.premium_entries.get(at).collateral_tag = collateral_tag;
+    group.premium_entries.get(at).liability_tag = liability_tag;
+    group.premium_entries.get(at).rate = rate;
+  } else {
+    require(found, MarginfiError.PremiumEntryNotFound);
+    old = group.premium_entries.get(at).rate;
+    for (let j = at; j + 1n < count; j++) {
+      group.premium_entries.get(j).collateral_tag = group.premium_entries.get(j + 1n).collateral_tag;
+      group.premium_entries.get(j).liability_tag = group.premium_entries.get(j + 1n).liability_tag;
+      group.premium_entries.get(j).rate = group.premium_entries.get(j + 1n).rate;
+    }
+    group.premium_entries.get(count - 1n).collateral_tag = 0n;
+    group.premium_entries.get(count - 1n).liability_tag = 0n;
+    group.premium_entries.get(count - 1n).rate = 0n;
+    count--;
+  }
+  group.premium_settings.entry_count = u16(count);
+  group.premium_settings.entry_capacity = 64n;
+  group.premium_settings.timestamp = now();
+  emit<LendingPoolGroupPremiumConfigureEvent>({
+    header: { signer: admin.key, marginfi_group: group.key },
+    collateral_tag,
+    liability_tag,
+    old_rate: old,
+    new_rate: rate,
   });
 }
 
