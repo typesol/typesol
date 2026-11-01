@@ -363,6 +363,8 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 
 ## Differences
 
+- **This program's id in the receivership checks.** The original compares the transaction's instructions with its
+  mainnet id; the port with the id it runs under. At `MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA` they are the same.
 - **The liquidatee as its own liquidator.** The original fails loading the second account (`AccountBorrowFailed`, a
   runtime error without a custom code), after the checks before it; the port fails at the same point with 2040.
   The tests check that both fail.
