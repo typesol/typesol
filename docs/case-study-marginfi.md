@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans and account administration done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -201,6 +201,14 @@ borrows skip their health checks. The end runs them: Initial health over the acc
 isolated tier, the tag cleared when healthy at Maintenance, every collateral priced when it owes a premium-active
 bank, the premium rates (ratcheted), the breaker's gate while it owes anything.
 
+**Part 5, account administration.** `marginfi_account_set_freeze` (the admin freezes, the governance admin
+unfreezes), `marginfi_account_update_emissions_destination_account` (the authority, not while frozen),
+`sync_indexer_flags` (any marginfi accounts that follow, writable), `transfer_to_new_account` and
+`transfer_to_new_account_pda` (for the fee state's transfer fee to the global fee wallet: the new account, at a
+keypair or the PDA `marginfi_account_initialize_pda` uses, takes the old one's balances, flags and tag under its new
+authority; the old one is emptied, disabled and points at it), `admin_close_account` (anyone, an empty account idle
+for 60 days with no orders, record or rebalance fee pool, its rent to the global fee wallet).
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -273,9 +281,9 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 497 in
+for the oracles, and 537 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
-for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans and the risk engine. The last two write Pyth and Switchboard accounts byte for
+for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
@@ -322,7 +330,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans and the risk engine (497, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account administration and the risk engine (537, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -366,7 +374,12 @@ byte into both ledgers:
   (before that, by someone else, none there, owing, a deposit). Flash loans with nothing in between, borrowing past
   the limit and repaying it all, borrowing within it; refused at the end: kept past the limit, the health accounts
   left out; refused at the start: the end index at another instruction, at the start, past the transaction, no end,
-  another signer, an end naming another account, an end alone, a second start, a frozen account.
+  another signer, an end naming another account, an end alone, a second start, a frozen account. Freezing (by
+  someone else, unfreezing by the admin, freezing, a durable nonce, unfreezing by the governance admin); the
+  emissions destination (frozen, by the authority, by someone else); indexer flags (two accounts, one read-only, a
+  bank, none); transfers (by someone else, to the wrong fee wallet, in a flash loan, with balances, again, to a PDA,
+  with a third-party id outside its program, with an open id); closes (active lately, the wrong wallet, with a
+  balance, a rebalance fee pool left, idle 61 days).
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -498,13 +511,18 @@ Compute units per transaction, mainnet original against the port, from one run o
 | a deleverage: start, withdraw 1 SOL, repay 150 USDC, end | 160,288 | 94,646 | −41% |
 | a flash loan: start, borrow past the limit, repay it all, end | 75,214 | 35,898 | −52% |
 | a flash loan: start, end | 18,114 | 10,818 | −40% |
+| `marginfi_account_set_freeze` | 5,368 | 1,237 | −77% |
+| `transfer_to_new_account`, with balances | 12,906 | 7,259 | −44% |
+| `transfer_to_new_account_pda` | 15,008 | 7,831 | −48% |
+| `admin_close_account` | 5,755 | 3,591 | −38% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
 40%). In the oracle file, the 72 that succeed use 47–83% fewer; the 76 refused ones 46–92% fewer. In the risk file,
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
-receiverships 30–40%, deleverages 41–42% and flash loans 40–52% (whole transactions, the withdrawals and repayments in them included);
+receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
+38–86%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
