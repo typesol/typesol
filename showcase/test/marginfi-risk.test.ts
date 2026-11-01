@@ -1851,6 +1851,161 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editGroup(group.address, [["group_flags", flagsWas, 8]]);
   });
 
+  it("administers banks as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    await user([[usdc, 500_000_000n]]);
+    const other = await s.funded();
+    const gov = await s.funded();
+    const govAt = offsetOf("MarginfiGroup", "governance_admin");
+    const govWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(govAt, govAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    editGroup(group.address, [["governance_admin", keyBits(gov.address), 32]]);
+    const call = (
+      label: string,
+      name: string,
+      by: KeyPairSigner,
+      args: Record<string, unknown>,
+      accounts: { address: Address; writable?: boolean; signer?: KeyPairSigner }[],
+      watch: Address[],
+    ) => run(label, by, [s.ix(name, args, accounts as never)], watch);
+    // E-mode entries (the governance admin): sorted, checked, e-mode on when any is set.
+    const entry = (tag: number, init: bigint, maint: bigint, flags = 0) => ({
+      collateral_bank_emode_tag: tag,
+      flags,
+      pad0: [1, 2, 3, 4, 5],
+      asset_weight_init: fx(ratio(init, 100n)),
+      asset_weight_maint: fx(ratio(maint, 100n)),
+    });
+    const empty = () => entry(0, 0n, 0n);
+    const emode = (label: string, by: KeyPairSigner, bank: Priced, tag: number, list: ReturnType<typeof entry>[]) =>
+      call(
+        `bank emode: ${label}`,
+        "lending_pool_configure_bank_emode",
+        by,
+        { emode_tag: tag, entries: [...list, ...Array.from({ length: 10 - list.length }, empty)] },
+        [{ address: group.address }, { address: by.address, signer: by }, { address: bank.address, writable: true }, { address: INSTRUCTIONS }],
+        [bank.address],
+      );
+    await emode("by someone else", other, sol, 5, [entry(3, 80n, 90n)]);
+    await emode("entries out of order", gov, sol, 5, [entry(7, 70n, 80n), entry(3, 80n, 90n, 1), entry(4, 60n, 70n)]);
+    await emode("an initial weight over maintenance", gov, sol, 5, [entry(3, 95n, 90n)]);
+    await emode("a tag twice", gov, sol, 5, [entry(3, 80n, 90n), entry(3, 70n, 80n)]);
+    await emode("past the leverage caps", gov, sol, 5, [entry(3, 129n, 129n)]);
+    await emode("none", gov, usdc, 2, []);
+    await emode("one for usdc", gov, usdc, 2, [entry(6, 50n, 60n)]);
+    const clone = (label: string, by: KeyPairSigner, from: Priced, to: Priced) =>
+      call(
+        `clone emode: ${label}`,
+        "lending_pool_clone_emode",
+        by,
+        {},
+        [
+          { address: group.address },
+          { address: by.address, signer: by },
+          { address: from.address },
+          { address: to.address, writable: true },
+          { address: INSTRUCTIONS },
+        ],
+        [to.address],
+      );
+    await clone("by someone else", other, sol, usdc);
+    await clone("sol's to usdc", gov, sol, usdc);
+    // Premium tags and activation (the admin); turning it off warns that unpaid premium is forgiven.
+    const premium = (label: string, by: KeyPairSigner, bank: Priced, tag: number, active: boolean) =>
+      call(
+        `bank premium: ${label}`,
+        "lending_pool_configure_bank_premium",
+        by,
+        { premium_tag: tag, active },
+        [{ address: group.address }, { address: by.address, signer: by }, { address: bank.address, writable: true }, { address: INSTRUCTIONS }],
+        [bank.address],
+      );
+    await premium("by someone else", other, usdc, 4, true);
+    await premium("on", admin, usdc, 4, true);
+    tick();
+    await premium("on again", admin, usdc, 5, true);
+    await premium("off", admin, usdc, 5, false);
+    await premium("off again", admin, usdc, 0, false);
+    // The circuit breaker cleared (the admin or the risk admin).
+    const clear = (label: string, by: KeyPairSigner, reseed: boolean) =>
+      call(
+        `clear breaker: ${label}`,
+        "lending_pool_clear_circuit_breaker",
+        by,
+        { reseed_reference: reseed },
+        [{ address: group.address }, { address: by.address, signer: by }, { address: usdc.address, writable: true }, { address: INSTRUCTIONS }],
+        [usdc.address],
+      );
+    editBank(usdc.address, [
+      ["cb_tier", 2n, 1],
+      ["cb_halt_started_at", t - 100n, 8],
+      ["cb_halt_ended_at", t + 1_000n, 8],
+      ["cb_reference_price", 5n * ONE, 16],
+    ]);
+    tick(60n);
+    await clear("by someone else", other, false);
+    await clear("by the admin", admin, false);
+    editBank(usdc.address, [["cb_tier", 1n, 1]]);
+    await clear("reseeding the references", admin, true);
+    // Backfilled flags: a seed that derives the bank, IS_T22 from its mint.
+    const backfill = (label: string, bank: Address, m: Address, seed: bigint | null) =>
+      call(
+        `backfill: ${label}`,
+        "lending_pool_backfill_bank_is_t22_flag",
+        other,
+        { bank_seed: seed === null ? null : new BN(seed.toString()) },
+        [{ address: bank, writable: true }, { address: group.address }, { address: m }],
+        [bank],
+      );
+    await backfill("the wrong mint", usdc.address, sol.mint, null);
+    await backfill("nothing to backfill", usdc.address, usdc.mint, null);
+    await backfill("a seed of another bank", usdc.address, usdc.mint, 3n);
+    const sm = await mint(TOKEN_PROGRAM, 6);
+    const [seededIx, seeded] = await addBank(group.address, gov, sm, TOKEN_PROGRAM, bankConfig(), { seed: 7n });
+    await run("add seeded bank", admin, [seededIx], [seeded.address]);
+    editBank(seeded.address, [
+      ["flags", 0n, 8],
+      ["bank_seed", 0n, 8],
+    ]);
+    await backfill("its own seed", seeded.address, sm, 7n);
+    const tm = await mint(TOKEN_2022, 6);
+    const [t22Ix, t22Bank] = await addBank(group.address, gov, tm, TOKEN_2022, bankConfig());
+    await run("add t22 bank", admin, [t22Ix], [t22Bank.address]);
+    editBank(t22Bank.address, [["flags", 0n, 8]]);
+    await backfill("a Token-2022 mint", t22Bank.address, tm, null);
+    // Closing banks (the admin).
+    const close = (label: string, by: KeyPairSigner, bank: Address, force: boolean | null) =>
+      call(
+        `close bank: ${label}`,
+        "lending_pool_close_bank",
+        by,
+        { force_close: force },
+        [
+          { address: group.address, writable: true },
+          { address: bank, writable: true },
+          { address: by.address, signer: by, writable: true },
+          { address: INSTRUCTIONS },
+        ],
+        [group.address, bank, by.address],
+      );
+    await close("by someone else", other, t22Bank.address, null);
+    await close("with deposits", admin, usdc.address, null);
+    await close("with deposits, forced", admin, usdc.address, true);
+    editBank(t22Bank.address, [["flags", 0n, 8]]);
+    await close("not made to close", admin, t22Bank.address, null);
+    await close("not made to close, forced", admin, t22Bank.address, true);
+    const fm = await mint(TOKEN_PROGRAM, 6);
+    const [freshIx, fresh] = await addBank(group.address, gov, fm, TOKEN_PROGRAM, bankConfig());
+    await run("add an empty bank", admin, [freshIx], [fresh.address]);
+    await close("an empty bank", admin, fresh.address, false);
+    editGroup(group.address, [["governance_admin", govWas, 32]]);
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());

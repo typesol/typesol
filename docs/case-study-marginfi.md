@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, part of bank administration done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -220,6 +220,16 @@ e-mode leverage caps from 1 to 100, both set or both unset, initial below mainte
 an inflow giving capacity back, an outflow within the windows); `lending_pool_configure_group_premium` (the admin:
 the premium matrix kept sorted by collateral and liability tag, at most 64 pairs, a rate of 0 removing one).
 
+**Part 5, bank administration.** `lending_pool_configure_bank_emode` (the governance admin: a bank's e-mode tag and
+10 entries, sorted by collateral tag as Rust's stable sort does, their padding cleared, checked against its liability
+weights and the group's caps, e-mode on when any is set), `lending_pool_clone_emode` (one bank's e-mode settings to
+another), `lending_pool_configure_bank_premium` (the admin: its premium tag, on or off, the activation time when it
+turns on, the original's warning when it turns off), `lending_pool_clear_circuit_breaker` (the admin or the risk
+admin: interest first, the halt reset, the references too if asked), `lending_pool_backfill_bank_is_t22_flag`
+(anyone: a seed that derives the bank under the mainnet program, IS_T22 from a Token-2022 mint),
+`lending_pool_close_bank` (the admin: a bank made to close with no positions, or forced; no shares or emissions left
+either way; its rent to the admin).
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -295,9 +305,9 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 606 in
+for the oracles, and 643 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
-for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
+for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
@@ -344,7 +354,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration and the risk engine (606, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (643, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -402,7 +412,11 @@ byte into both ledgers:
   outflow, stale); the premium matrix (by someone else, an empty tag, past the highest rate, three pairs in sorted
   places, a new rate, removals, one already gone); the fee state edited (by someone else, nothing, every field, by
   the new admin); governance (by someone else, roles, a leverage under 1 and over 100, one cap, initial at
-  maintenance, caps, same-asset caps alone, reversed and set, a new admin).
+  maintenance, caps, same-asset caps alone, reversed and set, a new admin). E-mode entries (by someone else, out of
+  order, an initial weight over maintenance, a tag twice, past the caps, none, one) and their copy; premium tags (by
+  someone else, on, on again, off with its warning, off again); the breaker cleared (by someone else, by the admin,
+  reseeding); backfills (the wrong mint, nothing, another bank's seed, its own, a Token-2022 mint); closes (by someone
+  else, with deposits, forced, not made to close, forced, an empty bank).
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -541,6 +555,8 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `panic_pause` | 7,188 | 863 | −88% |
 | `update_group_rate_limiter`, an outflow | 5,152 | 1,397 | −73% |
 | `lending_pool_configure_group_premium`, a new pair | 5,558 | 1,155 | −79% |
+| `lending_pool_configure_bank_emode`, three entries sorted | 79,762 | 10,384 | −87% |
+| `lending_pool_close_bank` | 4,530 | 2,498 | −45% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -548,7 +564,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%;
+38–86%, group and fee state administration 68–97%, bank administration 45–96%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
