@@ -1,6 +1,7 @@
 // Marginfi's events and the types they hold that are not account data (programs/marginfi/src/events.rs @ c5d440f6),
 // generated from the on-chain IDL by `typesol port`: Borsh (@layout borsh) where they hold Options, as Anchor emits them.
-// SetKeeperCloseFlagsEvent (an Option<Vec<Pubkey>>) is not here yet.
+// SetKeeperCloseFlagsEvent holds an Option<Vec<Pubkey>>, so it is not @layout borsh: emit writes it field by field,
+// its header too.
 import { type FixedArray, type Option, type Pubkey, type Vec, type f64, type i64, type u16, type u32, type u64, type u8 } from "typesol";
 import { type BankOperationalState, type HealthCache, type OrderTriggerType, type RatePoint, type RiskTier, type WrappedI80F48 } from "./state";
 
@@ -633,4 +634,10 @@ export interface StakedSettingsEditConfig {
   oracle_max_age: Option<u16>;
   /** WARN: You almost certainly want "Collateral", using Isolated risk tier makes the asset worthless as collateral, making all outstanding accounts eligible to be liquidated, and is generally useful only when creating a staked collateral pool for rewards purposes only. */
   risk_tier: Option<RiskTier>;
+}
+
+/** SetKeeperCloseFlagsEvent */
+export interface SetKeeperCloseFlagsEvent {
+  header: AccountEventHeader;
+  bank_keys: Option<Vec<Pubkey>>;
 }

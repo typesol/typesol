@@ -33,6 +33,7 @@ import {
   type SystemProgram,
   type u32,
   type Vec,
+  type Hash,
   constraint,
   loadAccount,
   currentSlot,
@@ -52,6 +53,7 @@ import {
   transferFeeInverse,
   transferFeeBasisPoints,
   transferHookProgram,
+  sha256,
   writable,
   log,
   now,
@@ -63,6 +65,8 @@ import {
 } from "typesol";
 import {
   ZERO_KEY,
+  balanceIndex,
+  nextFreeTag,
   ACCOUNT_DISABLED,
   ACCOUNT_FROZEN,
   ACCOUNT_IN_FLASHLOAN,
@@ -104,7 +108,7 @@ import {
   refreshIndexerFlags,
   clearLendingAccount,
 } from "./account";
-import { type BankConfigCompact, type BankConfigFast, type BankConfigGov } from "./args";
+import { type BankConfigCompact, type BankConfigFast, type BankConfigGov, type OrderTrigger } from "./args";
 import {
   ASSET_TAG_JUPLEND,
   BANK_ASSET_TAG_STAKED,
@@ -183,6 +187,10 @@ import {
 import {
   type InterestRateConfigOpt,
   type LendingPoolBankSetSameAssetEmodeEligibilityEvent,
+  type MarginfiAccountPlaceOrderEvent,
+  type MarginfiAccountCloseOrderEvent,
+  type KeeperCloseOrderEvent,
+  type SetKeeperCloseFlagsEvent,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
@@ -260,6 +268,8 @@ import {
   type MarginfiGroup,
   type SameAssetEmodeRegistry,
   type BankMetadata,
+  type Order,
+  OrderTriggerType,
   type WrappedI80F48,
   BankOperationalState,
   OracleSetup,
@@ -3894,4 +3904,209 @@ export function lendingPoolCloneBank(
   checkNoDurableNonce(instruction_sysvar);
   // "Staging or localnet only!"
   require(false, MarginfiError.InternalLogicError);
+}
+
+// ---- orders -------------------------------------------------------------------------------------------------------
+
+/** u32::MAX / 10: the most slippage an order may allow. */
+const MAX_ORDER_SLIPPAGE: u32 = 429496729n;
+const MARGINFI_ACCOUNT_DISCRIMINATOR: u64 = 3034426136269599299n;
+
+/**
+ * keys_sha256_hash: sha256 of the bank keys in byte order, the order's seed. The original hashes any number of keys and
+ * wants two afterwards; here two come first (a transaction wrong in that and another way fails differently).
+ */
+function orderSeed(keys: Vec<Pubkey>): Hash {
+  require(keys.length === 2n, MarginfiError.InvalidBalanceCount);
+  const a = keys.get(0n);
+  const b = keys.get(1n);
+  return a.compare(b) <= 0n ? sha256(a, b) : sha256(b, a);
+}
+
+/** Not executing an order, in a flash loan, frozen, disabled, in receivership or deleverage. */
+function orderStateOk(account: Account<MarginfiAccount>, executing: boolean): boolean {
+  const f = account.account_flags;
+  return (
+    ((f & ACCOUNT_IN_ORDER_EXECUTION) !== 0n) === executing &&
+    (f & (ACCOUNT_IN_FLASHLOAN | ACCOUNT_FROZEN | ACCOUNT_DISABLED | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_DELEVERAGE)) === 0n
+  );
+}
+
+/**
+ * Place a stop-loss / take-profit order on two balances of the account (its authority): one asset and one liability,
+ * each tagged for the order (new tags where they have none). The order is the PDA ["order", account, sha256 of the two
+ * bank keys in byte order], so a pair has at most one; the fee state's flat fee goes to the fee wallet.
+ */
+export function marginfiAccountPlaceOrder(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, "authority", MarginfiError.Unauthorized>,
+  fee_payer: Mut<Signer>,
+  authority: Signer,
+  order: Init<Order>,
+  fee_state: HasOne<Seeds<Account<FeeState>, ["feestate"]>, "global_fee_wallet", MarginfiError.InvalidFeeWallet>,
+  global_fee_wallet: Mut<AccountInfo>,
+  system_program: SystemProgram,
+  bank_keys: Vec<Pubkey>,
+  trigger: OrderTrigger,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, orderStateOk(marginfi_account, false), MarginfiError.UnexpectedOrderExecutionState);
+  const bump = order.create(fee_payer, ["order", marginfi_account.key, orderSeed(bank_keys)]);
+  const k1 = bank_keys.get(0n);
+  const k2 = bank_keys.get(1n);
+  require(k1 !== k2, MarginfiError.DuplicateBalance);
+  const i1 = balanceIndex(marginfi_account, k1);
+  const i2 = balanceIndex(marginfi_account, k2);
+  const s1 = balanceSide(marginfi_account, i1);
+  const s2 = balanceSide(marginfi_account, i2);
+  require((s1 === 1n && s2 === 2n) || (s1 === 2n && s2 === 1n), MarginfiError.InvalidAssetOrLiabilitiesCount);
+  const b1 = marginfi_account.lending_account.balances.get(i1);
+  const b2 = marginfi_account.lending_account.balances.get(i2);
+  const needs1 = b1.tag === 0n;
+  const needs2 = b2.tag === 0n;
+  if (needs1 || needs2) {
+    let next = marginfi_account.lending_account.last_tag_used === 65535n ? 0n : marginfi_account.lending_account.last_tag_used + 1n;
+    if (needs1) {
+      const t1 = nextFreeTag(marginfi_account, next);
+      b1.tag = t1;
+      marginfi_account.lending_account.last_tag_used = t1;
+      next = t1 === 65535n ? 0n : t1 + 1n;
+    }
+    if (needs2) {
+      const t2 = nextFreeTag(marginfi_account, next);
+      b2.tag = t2;
+      marginfi_account.lending_account.last_tag_used = t2;
+    }
+  }
+  order.marginfi_account = marginfi_account.key;
+  switch (trigger.kind) {
+    case "StopLoss":
+      order.trigger = OrderTriggerType.StopLoss;
+      order.stop_loss.value = trigger.threshold.value;
+      order.max_slippage = trigger.max_slippage;
+      order.take_profit.value = 0n;
+      require(order.stop_loss.value > 0n, MarginfiError.InvalidOrderTakeProfitOrStopLoss);
+      break;
+    case "TakeProfit":
+      order.trigger = OrderTriggerType.TakeProfit;
+      order.take_profit.value = trigger.threshold.value;
+      order.max_slippage = trigger.max_slippage;
+      order.stop_loss.value = 0n;
+      require(order.take_profit.value > 0n, MarginfiError.InvalidOrderTakeProfitOrStopLoss);
+      break;
+    case "Both":
+      order.trigger = OrderTriggerType.Both;
+      order.stop_loss.value = trigger.stop_loss.value;
+      order.take_profit.value = trigger.take_profit.value;
+      order.max_slippage = trigger.max_slippage;
+      require(order.stop_loss.value > 0n && order.take_profit.value > order.stop_loss.value, MarginfiError.InvalidOrderTakeProfitOrStopLoss);
+      break;
+  }
+  require(order.max_slippage <= MAX_ORDER_SLIPPAGE, MarginfiError.SlippageTooHigh);
+  order.tags.set(0n, b1.tag);
+  order.tags.set(1n, b2.tag);
+  order.bump = bump;
+  order.created_at = now();
+  require(marginfi_account.active_orders < 255n, MarginfiError.IllegalAction);
+  marginfi_account.active_orders += 1n;
+  const fee = fee_state.order_init_flat_sol_fee;
+  if (fee > 0n) system_program.transfer(fee_payer, global_fee_wallet, u64(fee));
+  emit<MarginfiAccountPlaceOrderEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    order: order.key,
+    trigger: order.trigger,
+    stop_loss: { value: order.stop_loss.value },
+    take_profit: { value: order.take_profit.value },
+    tags: order.tags,
+  });
+}
+
+/** Close an order (the account's authority, or the governance admin): its rent to whoever they name. */
+export function marginfiAccountCloseOrder(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  order: CloseTo<HasOne<Mut<Order>, "marginfi_account">, "fee_recipient">,
+  fee_recipient: Mut<AccountInfo>,
+  system_program: SystemProgram,
+): void {
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, false), MarginfiError.Unauthorized);
+  if (marginfi_account.active_orders > 0n) marginfi_account.active_orders -= 1n;
+  emit<MarginfiAccountCloseOrderEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    order: order.key,
+  });
+}
+
+/**
+ * Close an order that can no longer run (anyone): one of its tagged balances is gone or untagged, or the account is
+ * closed. Its rent goes to whoever closes it.
+ */
+export function marginfiAccountKeeperCloseOrder(
+  marginfi_account: Mut<AccountInfo>,
+  fee_recipient: Mut<AccountInfo>,
+  order: CloseTo<HasOne<Mut<Order>, "marginfi_account">, "fee_recipient">,
+): void {
+  let can = true;
+  let authority = ZERO_KEY;
+  let group = ZERO_KEY;
+  if (!(marginfi_account.owner === SYSTEM_PROGRAM_ID && marginfi_account.dataLen === 0n)) {
+    require(marginfi_account.dataLen >= 8n + 2304n, MarginfiError.InternalLogicError);
+    require(readData<u64>(marginfi_account, 0n) === MARGINFI_ACCOUNT_DISCRIMINATOR, MarginfiError.InternalLogicError);
+    const account = loadAccountMut<MarginfiAccount>(marginfi_account);
+    can = false;
+    for (let t = 0n; t < 2n; t++) {
+      let held = false;
+      for (let i = 0n; i < 16n; i++) {
+        const b = account.lending_account.balances.get(i);
+        if (b.active !== 0n && b.tag === order.tags.get(t)) held = true;
+      }
+      if (!held) can = true;
+    }
+    if (can && account.active_orders > 0n) account.active_orders -= 1n;
+    authority = account.authority;
+    group = account.group;
+  }
+  require(can, MarginfiError.LiquidatorOrderCloseNotAllowed);
+  emit<KeeperCloseOrderEvent>({
+    header: { signer: null, marginfi_account: marginfi_account.key, marginfi_account_authority: authority, marginfi_group: group },
+    order: order.key,
+  });
+}
+
+/**
+ * Untag balances so the keeper may close the orders on them (the account's authority, or the governance admin): the
+ * named banks' balances, or all of them.
+ */
+export function marginfiAccountSetKeeperCloseFlags(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank_keys_opt: Option<Vec<Pubkey>>,
+): void {
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, false), MarginfiError.Unauthorized);
+  if (bank_keys_opt !== null) {
+    for (const k of bank_keys_opt) marginfi_account.lending_account.balances.get(balanceIndex(marginfi_account, k)).tag = 0n;
+  } else for (let i = 0n; i < 16n; i++) marginfi_account.lending_account.balances.get(i).tag = 0n;
+  emit<SetKeeperCloseFlagsEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank_keys: bank_keys_opt,
+  });
 }

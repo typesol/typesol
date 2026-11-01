@@ -106,6 +106,43 @@ export function findBalance(account: Mut<MarginfiAccount>, bank: Pubkey): i64 {
 }
 
 /**
+ * LendingAccount::get_balance_index: Rust's binary_search_by over the balances (kept sorted by descending bank key, but
+ * not after every instruction: the search is the same, so it misses where Rust's does), then active (or
+ * LendingAccountBalanceNotFound).
+ */
+export function balanceIndex(account: Account<MarginfiAccount>, bank: Pubkey): u64 {
+  let size = 16n;
+  let base = 0n;
+  while (size > 1n) {
+    const half = size / 2n;
+    const mid = base + half;
+    if (bank.compare(account.lending_account.balances.get(mid).bank_pk) !== 1n) base = mid;
+    size -= half;
+  }
+  const b = account.lending_account.balances.get(base);
+  require(b.bank_pk === bank && b.active !== 0n, MarginfiError.LendingAccountBalanceNotFound);
+  return base;
+}
+
+/** The first order tag from `from` on (wrapping, skipping 0) that no active balance holds: reserve_n_tags' search. */
+export function nextFreeTag(account: Account<MarginfiAccount>, from: u16): u16 {
+  // At most 16 tags are held, so one of 17 candidates is free.
+  let next = from;
+  let found = false;
+  for (let k = 0n; k < 17n && !found; k++) {
+    if (next === 0n) next = 1n;
+    let used = false;
+    for (let i = 0n; i < 16n; i++) {
+      const b = account.lending_account.balances.get(i);
+      if (b.active !== 0n && b.tag === next) used = true;
+    }
+    if (used) next = next === 65535n ? 0n : next + 1n;
+    else found = true;
+  }
+  return next;
+}
+
+/**
  * BankAccountWrapper::find_or_create: the active balance in `bank`, or a new one in the first free slot (at most
  * four staked or integration positions, 16 balances in all).
  */

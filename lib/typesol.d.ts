@@ -727,8 +727,8 @@ export type Account<T> = Readonly<T> & AccountMeta;
  */
 export type Mut<T, E = never> = T & AccountMeta;
 
-/** A PDA seed: a string, a Pubkey, an integer (at its width) or a unit enum value (one byte). */
-export type Seed = string | Pubkey | bigint | number;
+/** A PDA seed: a string, a Pubkey, a Hash (its 32 bytes), an integer (at its width) or a unit enum value (one byte). */
+export type Seed = string | Pubkey | Hash | bigint | number;
 
 /**
  * The seeds (with the bump) of one PDA signature, for helpers that sign CPIs: declare a `seeds: SignerSeeds`

@@ -98,9 +98,11 @@ function idlType(t: FieldType | ValueType, borshOption = false): unknown {
     case "dataEnumArg":
       // Borsh enum in arguments and events; fixed tag + payload in account data.
       return borshOption || t.kind === "dataEnumArg" ? { defined: { name: t.name } } : { defined: { name: fixedEnumName(t.name) } };
-    case "vec":
+    case "vec": {
       if (t.cap !== undefined) return { defined: { name: fixedVecName(t) } };
-      return t.elem.kind === "int" && t.elem.name === "u8" ? "bytes" : { vec: idlType(t.elem) };
+      const vec = t.elem.kind === "int" && t.elem.name === "u8" ? "bytes" : { vec: idlType(t.elem) };
+      return t.optional ? { option: vec } : vec;
+    }
     case "vecArg": {
       // Anchor writes Vec<u8> as bytes; a FixedVec argument is a Borsh Vec on the wire too.
       const vec = t.elem.kind === "int" && t.elem.name === "u8" ? "bytes" : { vec: idlType(t.elem) };

@@ -857,6 +857,13 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
     }
     for (const n of wire) structs.get(n)!.wire = "borsh";
   }
+  // An Option<Vec<T>> field is Borsh, of no fixed size: a field of an event, not of account data, an argument, a
+  // returned struct or a struct nested in another.
+  for (const sd of structs.values()) {
+    const f = sd.fields.find((x) => x.type.kind === "vec" && x.type.optional);
+    if (f && (accountStructs.has(sd.name) || argStructs.has(sd.name) || nestedSomewhere(sd.name) || sd.layout === "borsh"))
+      reporter.error(sd.node, `${sd.name}.${f.name}: Option<Vec<T>> fields are for events (emit<${sd.name}>), not account data, arguments or nested structs`);
+  }
   checkSnakeDuplicates(
     instructions.map((ix) => ({ name: ix.node.name!.text, node: ix.node.name! })),
     "instructions",
@@ -1104,6 +1111,14 @@ function analyzeStructs(
     if (scalar) return scalar;
     const opt = resolveOptionType(node, scope);
     if (opt) return opt;
+    // Option<Vec<T>> (events only: Anchor's Option<Vec<Pubkey>>): a tag byte, then the Vec when Some.
+    {
+      const inner = optionInner(node, scope);
+      if (inner && typesolName(inner, imports) === "Vec") {
+        const v = fieldType(inner);
+        if (v.kind === "vec") return { ...v, optional: true };
+      }
+    }
     // Option of a struct (account data only): Option<Point> or Point | null
     {
       let inner: ts.TypeNode | undefined;
