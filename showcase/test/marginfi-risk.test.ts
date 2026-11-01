@@ -6,7 +6,7 @@
 import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
+import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, report } from "./jito-helpers.js";
 import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
 
@@ -1159,6 +1159,190 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await run("tag", admin, [h.tagLiqRecord(b.e.account, group.address, healthAccounts(b.e.account, [], true))], [b.e.account]);
     tick(3n * 86_400n);
     await rx("tagged three days ago, a larger premium", b, { seize: 1_000_000_000n, repay: 110_000_000n });
+  });
+
+  it("deleverages as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    await user([
+      [usdc, 500_000_000_000n],
+      [sol, 500_000_000_000n],
+    ]);
+    // The group's risk admin and flow admin for this test (restored at the end).
+    const ra = await user([]);
+    const flow = await s.funded();
+    const at = (field: string) => {
+      const o = offsetOf("MarginfiGroup", field);
+      return BigInt(
+        "0x" +
+          Buffer.from(data(group.address).subarray(o, o + 32))
+            .reverse()
+            .toString("hex"),
+      );
+    };
+    const riskWas = at("risk_admin");
+    const flowWas = at("delegate_flow_admin");
+    editGroup(group.address, [
+      ["risk_admin", keyBits(ra.owner.address), 32],
+      ["delegate_flow_admin", keyBits(flow.address), 32],
+    ]);
+    const setup = async (debt: bigint) => {
+      const e = await user([[sol, 10_000_000_000n]]);
+      owe(e.account, usdc, debt * 1_000_000n * ONE);
+      const [record] = await pda(PROGRAM, ["liq_record", e.account]);
+      await run(
+        "record",
+        ra.owner,
+        [
+          s.ix("marginfi_account_init_liq_record", {}, [
+            { address: e.account, writable: true },
+            { address: ra.owner.address, signer: ra.owner, writable: true },
+            { address: record, writable: true },
+            { address: SYSTEM },
+          ]),
+        ],
+        [e.account, record],
+      );
+      return { e, record };
+    };
+    const startIx = (c: Awaited<ReturnType<typeof setup>>, by: KeyPairSigner) => {
+      const ix = s.ix("start_deleverage", {}, [
+        { address: c.e.account, writable: true },
+        { address: c.record, writable: true },
+        { address: group.address },
+        { address: by.address, signer: by },
+        { address: INSTRUCTIONS },
+      ]);
+      return { ...ix, accounts: [...ix.accounts!, ...healthAccounts(c.e.account, [], true).map((address) => ({ address, role: 1 }) as never)] };
+    };
+    /** The account's banks for the end: sorted as a withdrawal or repayment leaves them, else as they sit. */
+    const endIx = (c: Awaited<ReturnType<typeof setup>>, by: KeyPairSigner, sorted = false) => {
+      const ix = s.ix("end_deleverage", {}, [
+        { address: c.e.account, writable: true },
+        { address: c.record, writable: true },
+        { address: group.address },
+        { address: by.address, signer: by },
+        { address: INSTRUCTIONS },
+      ]);
+      const list = healthAccounts(c.e.account, [], !sorted).filter((a) => banks.some((b) => b.address === a));
+      return { ...ix, accounts: [...ix.accounts!, ...list.map((address) => ({ address, role: 1 }) as never)] };
+    };
+    type Dx = { seize?: bigint; repay?: bigint; by?: KeyPairSigner; endBy?: KeyPairSigner; start?: boolean; middle?: Instruction[] };
+    const dx = (label: string, c: Awaited<ReturnType<typeof setup>>, o: Dx = {}) => {
+      refresh();
+      const by = o.by ?? ra.owner;
+      const rest = healthAccounts(c.e.account, [], true);
+      const ixs: Instruction[] = [];
+      if (o.start ?? true) ixs.push(startIx(c, by));
+      ixs.push(...(o.middle ?? []));
+      if (o.seize) ixs.push(h.withdraw(group.address, c.e.account, by, sol, ra.wallets.get(sol.address)!, o.seize, { rest }));
+      if (o.repay) ixs.push(h.repay(group.address, c.e.account, by, usdc.address, ra.wallets.get(usdc.address)!, usdc.v.liquidity, o.repay));
+      ixs.push(endIx(c, o.endBy ?? by, !!(o.seize || o.repay)));
+      return run(`deleverage: ${label}`, by, ixs, [c.e.account, c.record, sol.address, usdc.address, group.address, ra.owner.address], false);
+    };
+    // A healthy account: the risk admin unwinds part of it; health may not fall.
+    const a = await setup(500n);
+    tick();
+    await dx("withdraw 1 SOL, repay 150 USDC", a, { seize: 1_000_000_000n, repay: 150_000_000n });
+    await dx("health falls", a, { seize: 1_000_000_000n, repay: 10_000_000n });
+    const other = await s.funded();
+    await dx("not the risk admin", a, { by: other });
+    await dx("ended by someone else", a, { endBy: other });
+    await dx("the end alone", a, { start: false });
+    await dx("durable nonce", a, { middle: [h.advanceNonce(ra.owner)] });
+    // The group's daily limit on what deleverages withdraw.
+    const limit = (label: string, by: KeyPairSigner, value: number) =>
+      run(
+        `deleverage limit: ${label}`,
+        by,
+        [
+          s.ix("configure_deleverage_withdrawal_limit", { limit: value }, [
+            { address: group.address, writable: true },
+            { address: by.address, signer: by },
+            { address: INSTRUCTIONS },
+          ]),
+        ],
+        [group.address],
+      );
+    await limit("not an admin", other, 100);
+    await limit("zero", admin, 0);
+    await limit("$100 a day", admin, 100);
+    await dx("past the day's limit", a, { seize: 1_000_000_000n, repay: 150_000_000n });
+    await dx("within it", a, { seize: 100_000_000n, repay: 20_000_000n });
+    // The flow admin's aggregated updates.
+    const flowUpdate = (label: string, by: KeyPairSigner, usd: number, seq: bigint, from: bigint, to: bigint) =>
+      run(
+        `deleverage withdrawals: ${label}`,
+        by,
+        [
+          s.ix(
+            "update_deleverage_withdrawals",
+            { outflow_usd: usd, update_seq: new BN(seq.toString()), event_start_slot: new BN(from.toString()), event_end_slot: new BN(to.toString()) },
+            [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: INSTRUCTIONS }],
+          ),
+        ],
+        [group.address],
+      );
+    tick();
+    await flowUpdate("not the flow admin", other, 10, 1n, slot - 10n, slot - 5n);
+    await flowUpdate("nothing", flow, 0, 1n, slot - 10n, slot - 5n);
+    await flowUpdate("slots reversed", flow, 10, 1n, slot - 5n, slot - 10n);
+    await flowUpdate("a future slot", flow, 10, 1n, slot - 5n, slot + 5n);
+    await flowUpdate("stale", flow, 10, 1n, slot - 3000n, slot - 2000n);
+    await flowUpdate("out of sequence", flow, 10, 5n, slot - 10n, slot - 5n);
+    await flowUpdate("in order", flow, 10, 1n, slot - 10n, slot - 5n);
+    await flowUpdate("an old slot", flow, 10, 2n, slot - 10n, slot - 5n);
+    await flowUpdate("past the limit", flow, 1_000, 2n, slot - 4n, slot - 1n);
+    tick(86_400n);
+    await flowUpdate("a day later", flow, 50, 2n, slot - 4n, slot - 1n);
+    // Tokenless repayments complete: the risk admin purges what deposits are left in the bank.
+    const force = (label: string, by: KeyPairSigner, bank: Priced) =>
+      run(
+        `force tokenless complete: ${label}`,
+        by,
+        [
+          s.ix("lending_pool_force_tokenless_repay_complete", {}, [
+            { address: group.address },
+            { address: by.address, signer: by },
+            { address: bank.address, writable: true },
+            { address: INSTRUCTIONS },
+          ]),
+        ],
+        [bank.address],
+      );
+    const purge = (label: string, by: KeyPairSigner, u: User, bank: Priced) =>
+      run(
+        `purge: ${label}`,
+        by,
+        [
+          s.ix("purge_deleverage_balance", {}, [
+            { address: group.address },
+            { address: u.account, writable: true },
+            { address: by.address, signer: by },
+            { address: bank.address, writable: true },
+            { address: INSTRUCTIONS },
+          ]),
+        ],
+        [u.account, bank.address],
+      );
+    const holder = await user([[sol, 1_000_000_000n]]);
+    await purge("not complete", ra.owner, holder, sol);
+    await force("not the risk admin", other, sol);
+    await force("not allowed", ra.owner, sol);
+    editBank(sol.address, [["flags", 32n, 8]]);
+    await force("allowed", ra.owner, sol);
+    await purge("not the risk admin", other, holder, sol);
+    await purge("no balance there", ra.owner, ra, sol);
+    const debtor = await user([]);
+    owe(debtor.account, sol, 1_000_000_000n * ONE);
+    await purge("owing", ra.owner, debtor, sol);
+    await purge("a deposit", ra.owner, holder, sol);
+    editBank(sol.address, [["flags", 0n, 8]]);
+    editGroup(group.address, [
+      ["risk_admin", riskWas, 32],
+      ["delegate_flow_admin", flowWas, 32],
+      ["deleverage_withdraw_window_cache.daily_limit", 0n, 4],
+    ]);
   });
 
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {

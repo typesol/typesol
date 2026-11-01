@@ -15,6 +15,11 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's deleverage, which completes part 4 of the port: `start_deleverage` and `end_deleverage` (the
+  risk admin's receivership, any account, health may not fall), `configure_deleverage_withdrawal_limit`,
+  `update_deleverage_withdrawals`, `lending_pool_force_tokenless_repay_complete` and `purge_deleverage_balance`.
+  Against the binary on mainnet: 890 transactions, the same IDL for all 40 ported instructions; the fuzzer
+  deleverages too.
 - Examples: Marginfi's receivership liquidation (part 4 of the port): `start_liquidation` and `end_liquidation`, the
   account's health and its banks' prices locked at the start and its health at those prices at the end (the premium
   cap, a close-out under $5, the tag's growing premium, the record's entries, the flat SOL fee), the transaction's

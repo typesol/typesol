@@ -769,6 +769,17 @@ export function marginfiPair() {
     ]);
     return { ...ix, accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: opts.readonlyRest?.includes(address) ? 0 : 1 }) as never)] };
   };
+  /** start_deleverage / end_deleverage, the account's banks writable (`rest`: start's groups, end's banks). */
+  const deleverage = (which: "start" | "end", group: Address, account: Address, record: Address, by: KeyPairSigner, rest: Address[] = []): Instruction => {
+    const ix = s.ix(`${which}_deleverage`, {}, [
+      { address: account, writable: true },
+      { address: record, writable: true },
+      { address: group },
+      { address: by.address, signer: by },
+      { address: INSTRUCTIONS },
+    ]);
+    return { ...ix, accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: 1 }) as never)] };
+  };
   const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
 
@@ -790,6 +801,7 @@ export function marginfiPair() {
     liquidate,
     startLiquidation,
     endLiquidation,
+    deleverage,
     createAta,
     repay,
     ata,

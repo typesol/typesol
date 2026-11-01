@@ -1369,3 +1369,9 @@ export function tagAdjustedPremium(base: i128, taggedAt: i64, t: i64): i128 {
   const progress = fxWrappingDiv(fxFromI64(growth), fxFromI64(601200n));
   return fxAdd(base, fxWrappingMul(fxSub(I80F48_ONE, base), progress));
 }
+
+/** What a receivership took out of an account and paid in, by equity value. */
+export interface Moved {
+  seized: i128;
+  repaid: i128;
+}

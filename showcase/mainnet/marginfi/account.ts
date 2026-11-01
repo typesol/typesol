@@ -1,7 +1,21 @@
 // A marginfi account's lending balances (programs/marginfi/src/state/marginfi_account.rs, premium.rs and the type
 // crate's user_account.rs @ c5d440f6): finding or opening a balance in a bank, moving shares in and out of it,
 // closing it, the order balances are kept in and the flags indexers read. Amounts and shares are I80F48.
-import { type Account, type Mut, type Pubkey, type i128, type i32, type i64, type u16, type u64, type u8, i64 as toI64, pubkey, require, u64 as toU64 } from "typesol";
+import {
+  type Account,
+  type Mut,
+  type Pubkey,
+  type i128,
+  type i32,
+  type i64,
+  type u16,
+  type u64,
+  type u8,
+  i64 as toI64,
+  pubkey,
+  require,
+  u64 as toU64,
+} from "typesol";
 import {
   BANK_ASSET_TAG_STAKED,
   LIQ_CACHE_LOCKED_FLAG,
@@ -235,6 +249,18 @@ export function closeBalanceInternal(account: Mut<MarginfiAccount>, i: u64, bank
   if (hadLiabs) bank.borrowing_position_count = saturatingSub(bank.borrowing_position_count);
 }
 
+/**
+ * lending_account_purge_delev_balance's write-off: the balance closed, its bank's price lock cleared in receivership,
+ * one lender fewer, its asset shares gone from the bank.
+ */
+export function purgeBalance(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Bank>, inReceivership: boolean): void {
+  const shares = account.lending_account.balances.get(i).asset_shares.value;
+  emptyBalance(account, i);
+  if (inReceivership) bank.cache.liq_cache_flags &= ~LIQ_CACHE_LOCKED_FLAG;
+  bank.lending_position_count = saturatingSub(bank.lending_position_count);
+  changeAssetShares(bank, -shares, false);
+}
+
 /** Balance::empty_deactivated. */
 function emptyBalance(account: Mut<MarginfiAccount>, i: u64): void {
   const b = account.lending_account.balances.get(i);
@@ -352,7 +378,13 @@ export function canBeClosed(account: Mut<MarginfiAccount>): boolean {
   for (let i = 0n; i < 16n && empty; i++)
     if (balanceSide(account, i) !== 0n || account.lending_account.balances.get(i).liability_shares.value > I80F48_ZERO) empty = false;
   const flags = account.account_flags;
-  return (flags & ACCOUNT_DISABLED) === 0n && empty && (flags & ACCOUNT_IN_FLASHLOAN) === 0n && (flags & ACCOUNT_IN_RECEIVERSHIP) === 0n && (flags & ACCOUNT_FROZEN) === 0n;
+  return (
+    (flags & ACCOUNT_DISABLED) === 0n &&
+    empty &&
+    (flags & ACCOUNT_IN_FLASHLOAN) === 0n &&
+    (flags & ACCOUNT_IN_RECEIVERSHIP) === 0n &&
+    (flags & ACCOUNT_FROZEN) === 0n
+  );
 }
 
 /**

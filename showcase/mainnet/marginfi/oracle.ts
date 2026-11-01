@@ -5,7 +5,21 @@
 //
 // Errors are values here (`err`, 0 when there is none), as the original's are `Result`s its risk engine sometimes keeps
 // instead of returning; the instructions fail with them (`require(r.err === 0n, r.err)`). Panics abort.
-import { type Account, type RemainingAccount, type i128, type i32, type i64, type u32, type u64, type u8, i64 as toI64, pubkey, readData, require, u64 as toU64 } from "typesol";
+import {
+  type Account,
+  type RemainingAccount,
+  type i128,
+  type i32,
+  type i64,
+  type u32,
+  type u64,
+  type u8,
+  i64 as toI64,
+  pubkey,
+  readData,
+  require,
+  u64 as toU64,
+} from "typesol";
 import { ASSET_TAG_JUPLEND, BANK_ASSET_TAG_STAKED, saturatingAddI64, saturatingSubI64 } from "./bank";
 import { MarginfiError } from "./errors";
 import { type Fx, exp10Fx, fxFromI128Wrapping, fxFromI64, fxFromU64, fxMin, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
@@ -39,35 +53,64 @@ const DEFAULT_MAX_CONFIDENCE: u32 = 429496729n;
 /** OracleSetup as its u8 (the instruction arguments' form); 29 and up are not setups. */
 export function setupOf(n: u8): OracleSetup {
   switch (n) {
-    case 0n: return OracleSetup.None;
-    case 1n: return OracleSetup.PythLegacy;
-    case 2n: return OracleSetup.SwitchboardV2;
-    case 3n: return OracleSetup.PythPushOracle;
-    case 4n: return OracleSetup.SwitchboardPull;
-    case 5n: return OracleSetup.StakedWithPythPush;
-    case 6n: return OracleSetup.KaminoPythPush;
-    case 7n: return OracleSetup.KaminoSwitchboardPull;
-    case 8n: return OracleSetup.Fixed;
-    case 9n: return OracleSetup.DriftPythPull;
-    case 10n: return OracleSetup.DriftSwitchboardPull;
-    case 11n: return OracleSetup.SolendPythPull;
-    case 12n: return OracleSetup.SolendSwitchboardPull;
-    case 13n: return OracleSetup.FixedKamino;
-    case 14n: return OracleSetup.FixedDrift;
-    case 15n: return OracleSetup.JuplendPythPull;
-    case 16n: return OracleSetup.JuplendSwitchboardPull;
-    case 17n: return OracleSetup.FixedJuplend;
-    case 18n: return OracleSetup.Scope;
-    case 19n: return OracleSetup.PythMSOL;
-    case 20n: return OracleSetup.KaminoMSOL;
-    case 21n: return OracleSetup.JuplendMSOL;
-    case 22n: return OracleSetup.PythLST;
-    case 23n: return OracleSetup.KaminoLST;
-    case 24n: return OracleSetup.JuplendLST;
-    case 25n: return OracleSetup.PTPyth;
-    case 26n: return OracleSetup.PTFixed;
-    case 27n: return OracleSetup.ScopeKamino;
-    case 28n: return OracleSetup.ScopeJuplend;
+    case 0n:
+      return OracleSetup.None;
+    case 1n:
+      return OracleSetup.PythLegacy;
+    case 2n:
+      return OracleSetup.SwitchboardV2;
+    case 3n:
+      return OracleSetup.PythPushOracle;
+    case 4n:
+      return OracleSetup.SwitchboardPull;
+    case 5n:
+      return OracleSetup.StakedWithPythPush;
+    case 6n:
+      return OracleSetup.KaminoPythPush;
+    case 7n:
+      return OracleSetup.KaminoSwitchboardPull;
+    case 8n:
+      return OracleSetup.Fixed;
+    case 9n:
+      return OracleSetup.DriftPythPull;
+    case 10n:
+      return OracleSetup.DriftSwitchboardPull;
+    case 11n:
+      return OracleSetup.SolendPythPull;
+    case 12n:
+      return OracleSetup.SolendSwitchboardPull;
+    case 13n:
+      return OracleSetup.FixedKamino;
+    case 14n:
+      return OracleSetup.FixedDrift;
+    case 15n:
+      return OracleSetup.JuplendPythPull;
+    case 16n:
+      return OracleSetup.JuplendSwitchboardPull;
+    case 17n:
+      return OracleSetup.FixedJuplend;
+    case 18n:
+      return OracleSetup.Scope;
+    case 19n:
+      return OracleSetup.PythMSOL;
+    case 20n:
+      return OracleSetup.KaminoMSOL;
+    case 21n:
+      return OracleSetup.JuplendMSOL;
+    case 22n:
+      return OracleSetup.PythLST;
+    case 23n:
+      return OracleSetup.KaminoLST;
+    case 24n:
+      return OracleSetup.JuplendLST;
+    case 25n:
+      return OracleSetup.PTPyth;
+    case 26n:
+      return OracleSetup.PTFixed;
+    case 27n:
+      return OracleSetup.ScopeKamino;
+    case 28n:
+      return OracleSetup.ScopeJuplend;
   }
   // OracleSetup::from_u8(..).unwrap_or_else(|| panic!("unsupported oracle type")); here InternalLogicError.
   require(false, MarginfiError.InternalLogicError);
@@ -249,7 +292,18 @@ export function loadFeed(bank: Account<Bank>, a: RemainingAccount, t: i64): Feed
     if (e !== 0n) return feedErr(e);
     const updated = readData<i64>(a, 2216n);
     if (saturatingSubI64(t, updated) > maxAge) return feedErr(6049n);
-    return { err: 0n, kind: 4n, price: 0n, conf: 0n, ema_price: 0n, ema_conf: 0n, exponent: 0n, publish_time: 0n, value: readData<i128>(a, 2264n), source_time: updated };
+    return {
+      err: 0n,
+      kind: 4n,
+      price: 0n,
+      conf: 0n,
+      ema_price: 0n,
+      ema_conf: 0n,
+      exponent: 0n,
+      publish_time: 0n,
+      value: readData<i128>(a, 2264n),
+      source_time: updated,
+    };
   }
   const e = pythAccountErr(a);
   if (e !== 0n) return feedErr(e);
