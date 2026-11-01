@@ -6,6 +6,15 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's repayments and fees, which completes part 2 of the port (docs/case-study-marginfi.md):
+  repayments in part (the premium settled first) and in full (rounded up, the balance closed), tokenless repayments by
+  the risk admin, collecting a bank's fees, and the admin and permissionless withdrawals from its fee and insurance
+  vaults. Against the binary on mainnet: 244 transactions (63 new) with the same outcome, account bytes and events, the
+  same IDL for all 21 ported instructions, and the random runs repay and move fees too; 24–97% fewer compute units on
+  the ones that succeed.
+- Changed: a token account or mint parameter that is an empty system account (never created) fails with
+  AccountNotInitialized (3012), as Anchor's `Account` / `InterfaceAccount` checks it, before the owner check (3007).
+
 - Examples: Marginfi's accounts and deposits (part 2 of the port, docs/case-study-marginfi.md): opening accounts as
   keypairs and PDAs, deposits (SPL Token, and Token-2022 with the transfer fee added), closing balances and accounts.
   Against the binary on mainnet: the same outcome, account bytes and events on 181 transactions now (66 new), the same

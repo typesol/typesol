@@ -144,6 +144,17 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
     };
     while (accounts.length < 3) await openAccount(`account ${accounts.length}`);
     const editAccount = h.edit("MarginfiAccount");
+    /** Accounts holding a liability (written into both: borrows are not ported yet), and the bank it is in. */
+    const borrowers: { address: Address; owner: KeyPairSigner; bank: FuzzBank }[] = [];
+    const feeAtas = new Map<string, Address>();
+    for (const m of mints) feeAtas.set(m.mint, await h.createAta(h.feeWallet, m.mint, m.program));
+    const destinations = new Map<string, Address>();
+    const read128 = (at: Address, type: string, path: string) => {
+      const data = Buffer.from((s.original.getAccount(at) as { data: Uint8Array }).data);
+      const o = offsetOf(type, path);
+      return data.readBigInt64LE(o + 8) * (1n << 64n) + data.readBigUInt64LE(o);
+    };
+    const keyBits = (a: Address) => BigInt("0x" + Buffer.from(new web3.PublicKey(a).toBytes()).reverse().toString("hex"));
     /** An amount across scales: dust, ordinary, large. */
     const amount = (): bigint => [rng.next() % 10n, rng.next() % 100_000n, rng.next() % 1_000_000_000n, rng.next() % (1n << 50n)][rng.int(4)]!;
 
@@ -153,7 +164,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       const b = bank.address;
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       h.setTime(t);
-      switch (rng.int(14)) {
+      switch (rng.int(18)) {
         case 0:
         case 1:
         case 2: {
@@ -328,6 +339,102 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
               )) === "ok"
             )
               accounts.splice(i, 1);
+          }
+          break;
+        }
+        case 14: {
+          // A liability, written into both: a fresh account owing a random amount in this bank.
+          const owner = rng.pick(users);
+          const k = await generateKeyPairSigner();
+          if ((await run(label("borrower init"), owner, [h.accountInit(group.address, k, owner)], [k.address])) !== "ok") break;
+          const shares = (amount() + 2n) * ONE + (rng.next() % ONE);
+          editAccount(k.address, [
+            ["lending_account.balances[0].active", 1n, 1],
+            ["lending_account.balances[0].bank_pk", keyBits(b), 32],
+            ["lending_account.balances[0].liability_shares", shares, 16],
+            ["lending_account.balances[0].last_update", t - (rng.next() % 100_000n), 8],
+            ["lending_account.balances[0].premium_rate_snapshot", rng.chance(30) ? rng.next() % 400_000_000n : 0n, 4],
+          ]);
+          h.editBank(b, [["total_liability_shares", read128(b, "Bank", "total_liability_shares") + shares, 16]]);
+          if (rng.chance(20))
+            h.editBank(b, [
+              ["flags", rng.pick([16n, 16n | 8192n, 16n | 32n]), 8],
+              ["premium_activated_at", t - 50_000n, 8],
+            ]);
+          borrowers.push({ address: k.address, owner, bank });
+          break;
+        }
+        case 15:
+        case 16: {
+          // A repayment: part (premium first) or all, now and then by a wrong signer or with a wrong mint.
+          if (!borrowers.length) break;
+          const debt = rng.pick(borrowers);
+          const by = signer(debt.owner);
+          const from = wallets.get(`${debt.owner.address}:${debt.bank.mint.mint}`)!;
+          const t22 = debt.bank.mint.program === TOKEN_2022;
+          const rest = t22 ? (rng.chance(90) ? [debt.bank.mint.mint] : []) : [];
+          if (rng.chance(8)) editAccount(debt.address, [["account_flags", rng.pick([1n, 16n, 48n, 64n, 128n]), 8]]);
+          await run(
+            label("repay"),
+            by,
+            [
+              h.repay(group.address, debt.address, by, debt.bank.address, from, debt.bank.v.liquidity, amount(), {
+                all: rng.chance(30) ? true : rng.chance(50) ? null : false,
+                program: debt.bank.mint.program,
+                rest,
+              }),
+            ],
+            [debt.address, debt.bank.address, debt.bank.v.liquidity, from],
+            "if-panics",
+          );
+          editAccount(debt.address, [["account_flags", 0n, 8]]);
+          break;
+        }
+        case 17: {
+          // Fees: collect them out of the liquidity vault, then the admin withdraws, or anyone sends them to the
+          // destination the admin set.
+          const rest = bank.mint.program === TOKEN_2022 ? [bank.mint.mint] : [];
+          const feeAta = feeAtas.get(bank.mint.mint)!;
+          const choice = rng.int(4);
+          if (choice === 0)
+            await run(
+              label("collect fees"),
+              other,
+              [h.collectFees(group.address, bank, feeAta, bank.mint.program, rest)],
+              [b, bank.v.liquidity, bank.v.insurance, bank.v.fee, feeAta],
+              "if-panics",
+            );
+          else if (choice === 1) {
+            const dst = wallets.get(`${users[0]!.address}:${bank.mint.mint}`)!;
+            await run(
+              label("withdraw fees or insurance"),
+              h.admin,
+              [
+                h.withdrawVault(
+                  rng.chance(50) ? "fees" : "insurance",
+                  group.address,
+                  bank,
+                  signer(h.admin),
+                  dst,
+                  amount() % 1_000_000n,
+                  bank.mint.program,
+                  rest,
+                ),
+              ],
+              [bank.v.fee, bank.v.insurance, dst],
+            );
+          } else if (choice === 2) {
+            const dst = wallets.get(`${rng.pick(users).address}:${bank.mint.mint}`)!;
+            if ((await run(label("set fees destination"), h.admin, [h.updateFeesDestination(group.address, b, signer(h.admin), dst)], [b])) === "ok")
+              destinations.set(b, dst);
+          } else {
+            const dst = destinations.get(b) ?? wallets.get(`${users[1]!.address}:${bank.mint.mint}`)!;
+            await run(
+              label("withdraw fees permissionless"),
+              other,
+              [h.withdrawFeesPermissionless(group.address, bank, dst, amount(), bank.mint.program, rest)],
+              [bank.v.fee, dst],
+            );
           }
           break;
         }

@@ -829,13 +829,19 @@ static inline bool ts_is_token_program(const SolPubkey *k) {
 }
 /* A Token-2022 Multisig is 355 bytes and its signer bytes are attacker-chosen: never accept that length. */
 #define TS_MULTISIG_LEN 355
+/* A token account or mint not owned by a token program. As Anchor's (Interface)Account: an empty system account (never
+   created) is "not initialized", anything else a wrong owner. Out of line: the checks that pass stay as small as before. */
+static __attribute__((noinline)) uint64_t ts_token_owner_fail(const TsAccount *a) {
+  if (a->lamports == 0 && ts_key_eq(&a->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_INITIALIZED, "TypeSOL: account is not initialized");
+  TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: not owned by a token program");
+}
 static inline uint64_t ts_check_token_account(const TsAccount *a) {
   bool ok = false;
   if (ts_key_eq(&a->owner, &TS_TOKEN_PROGRAM_ID)) ok = a->data_len == TS_TOKEN_ACCOUNT_LEN;
   else if (ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID))
     ok = a->data_len == TS_TOKEN_ACCOUNT_LEN ||
          (a->data_len > TS_TOKEN_ACCOUNT_LEN && a->data_len != TS_MULTISIG_LEN && a->data[TS_TOKEN_ACCOUNT_LEN] == 2);
-  else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: token account not owned by a token program");
+  else return ts_token_owner_fail(a);
   if (!ok || a->data[108] == 0) TS_FAIL(TS_ERR_TOKEN_ACCOUNT, "TypeSOL: not an initialized token account");
   return SUCCESS;
 }
@@ -846,7 +852,7 @@ static inline uint64_t ts_check_mint(const TsAccount *a) {
   else if (ts_key_eq(&a->owner, &TS_TOKEN_2022_PROGRAM_ID))
     ok = a->data_len == TS_MINT_LEN ||
          (a->data_len > TS_TOKEN_ACCOUNT_LEN && a->data_len != TS_MULTISIG_LEN && a->data[TS_TOKEN_ACCOUNT_LEN] == 1);
-  else TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: mint not owned by a token program");
+  else return ts_token_owner_fail(a);
   if (!ok || a->data[45] != 1) TS_FAIL(TS_ERR_MINT, "TypeSOL: not an initialized mint");
   return SUCCESS;
 }

@@ -429,9 +429,127 @@ export function marginfiPair() {
     return { ...ix, accounts: [...ix.accounts!, ...(opts.rest ?? []).map((address) => ({ address, role: 0 }) as never)] };
   };
 
+  const repay = (
+    group: Address,
+    account: Address,
+    authority: KeyPairSigner,
+    bank: Address,
+    from: Address,
+    vault: Address,
+    amount: bigint,
+    opts: { all?: boolean | null; program?: Address; rest?: Address[] } = {},
+  ): Instruction => {
+    const ix = s.ix("lending_account_repay", { amount: new BN(amount.toString()), repay_all: opts.all ?? null }, [
+      { address: group },
+      { address: account, writable: true },
+      { address: authority.address, signer: authority },
+      { address: bank, writable: true },
+      { address: from, writable: true },
+      { address: vault, writable: true },
+      { address: opts.program ?? TOKEN_PROGRAM },
+    ]);
+    return { ...ix, accounts: [...ix.accounts!, ...(opts.rest ?? []).map((address) => ({ address, role: 0 }) as never)] };
+  };
+  /** The associated token account of `owner` for `m` under `program`. */
+  const ata = async (owner: Address, m: Address, program: Address = TOKEN_PROGRAM) =>
+    (await pda(address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"), [owner, program, m]))[0];
+  /** A token account at a given address (an ATA, say), written into both. */
+  const tokenAccountAt = (at: Address, m: Address, owner: Address, amount = 0n, program: Address = TOKEN_PROGRAM) => {
+    const data = Buffer.alloc(165);
+    key(m).copy(data, 0);
+    key(owner).copy(data, 32);
+    data.writeBigUInt64LE(amount, 64);
+    data[108] = 1;
+    for (const vm of s.vms())
+      vm.setAccount({ address: at, data: new Uint8Array(data), executable: false, lamports: lamports(2_039_280n), programAddress: program, space: 165n });
+    return at;
+  };
+  type BankRef = { address: Address; v: Awaited<ReturnType<typeof vaults>> };
+  const withRest = (ix: Instruction, rest: Address[]): Instruction => ({
+    ...ix,
+    accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: 0 }) as never)],
+  });
+  const collectFees = (group: Address, bank: BankRef, feeAta: Address, program: Address = TOKEN_PROGRAM, rest: Address[] = []) =>
+    withRest(
+      s.ix("lending_pool_collect_bank_fees", {}, [
+        { address: group },
+        { address: bank.address, writable: true },
+        { address: bank.v.liquidityAuth },
+        { address: bank.v.liquidity, writable: true },
+        { address: bank.v.insurance, writable: true },
+        { address: bank.v.fee, writable: true },
+        { address: feeState },
+        { address: feeAta, writable: true },
+        { address: program },
+      ]),
+      rest,
+    );
+  const withdrawVault = (
+    which: "fees" | "insurance",
+    group: Address,
+    bank: BankRef,
+    by: KeyPairSigner,
+    dst: Address,
+    amount: bigint,
+    program: Address = TOKEN_PROGRAM,
+    rest: Address[] = [],
+  ) =>
+    withRest(
+      s.ix(which === "fees" ? "lending_pool_withdraw_fees" : "lending_pool_withdraw_insurance", { amount: new BN(amount.toString()) }, [
+        { address: group },
+        { address: bank.address },
+        { address: by.address, signer: by },
+        { address: which === "fees" ? bank.v.fee : bank.v.insurance, writable: true },
+        { address: which === "fees" ? bank.v.feeAuth : bank.v.insuranceAuth },
+        { address: dst, writable: true },
+        { address: program },
+        { address: INSTRUCTIONS },
+      ]),
+      rest,
+    );
+  const withdrawFeesPermissionless = (group: Address, bank: BankRef, dst: Address, amount: bigint, program: Address = TOKEN_PROGRAM, rest: Address[] = []) =>
+    withRest(
+      s.ix("lending_pool_withdraw_fees_permissionless", { amount: new BN(amount.toString()) }, [
+        { address: group },
+        { address: bank.address },
+        { address: bank.v.fee, writable: true },
+        { address: bank.v.feeAuth },
+        { address: dst, writable: true },
+        { address: program },
+      ]),
+      rest,
+    );
+  const updateFeesDestination = (group: Address, bank: Address, by: KeyPairSigner, dst: Address) =>
+    s.ix("lending_pool_update_fees_destination_account", {}, [
+      { address: group },
+      { address: bank, writable: true },
+      { address: by.address, signer: by },
+      { address: dst },
+      { address: INSTRUCTIONS },
+    ]);
+
+  /** The associated token account of `owner` for `m`, created through the ATA program in both. */
+  const createAta = async (owner: Address, m: Address, program: Address = TOKEN_PROGRAM) => {
+    const at = await ata(owner, m, program);
+    const ix = t22.getCreateAssociatedTokenIdempotentInstruction({ payer: admin, ata: at, owner, mint: m, tokenProgram: program }) as Instruction;
+    for (const vm of s.vms()) {
+      const r = await send(vm, admin, [ix]);
+      if (r instanceof FailedTransactionMetadata) throw new Error(`ata: ${String(r.err())}`);
+    }
+    return at;
+  };
+
   return {
     s,
     run,
+    createAta,
+    repay,
+    ata,
+    tokenAccountAt,
+    collectFees,
+    withdrawVault,
+    withdrawFeesPermissionless,
+    updateFeesDestination,
     async load() {
       await s.load();
       [feeState] = await pda(PROGRAM, ["feestate"]);
