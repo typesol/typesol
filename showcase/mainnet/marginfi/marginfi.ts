@@ -1026,21 +1026,21 @@ export function lendingAccountWithdraw(
   if (!deferred) {
     // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
     const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
-    const h = healthComponents(marginfi_account, group, remainingAccounts(), start, REQ_INITIAL, true, t);
+    const h = healthComponents(marginfi_account, group, remainingAccounts(), start, remainingAccounts().length, REQ_INITIAL, true, t);
     if (!flash) {
       require(h.err === 0n, h.err);
       require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
-      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), start);
+      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), start, remainingAccounts().length);
       require(tiers === 0n, tiers);
       // A tagged account healthy at Maintenance (spot prices) loses its tag; any error there keeps it.
       if (marginfi_account.liquidation_tagged_at !== 0n) {
-        const m = healthComponents(marginfi_account, group, remainingAccounts(), start, REQ_MAINTENANCE, false, t);
+        const m = healthComponents(marginfi_account, group, remainingAccounts(), start, remainingAccounts().length, REQ_MAINTENANCE, false, t);
         if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
       }
     }
     writeHealthCache(marginfi_account, h, t, !flash);
     if (hasLiabilities(marginfi_account)) {
-      const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, t);
+      const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, remainingAccounts().length, t);
       require(gate === 0n, gate);
     }
     updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
@@ -1145,20 +1145,20 @@ export function lendingAccountBorrow(
   if (bank.config.risk_tier === RiskTier.Isolated) marginfi_account.indexer_flags.has_isolated = 1n;
   // check_account_init_health_and_clear_tag, as a withdrawal runs it.
   const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
-  const h = healthComponents(marginfi_account, group, remainingAccounts(), start, REQ_INITIAL, true, t);
+  const h = healthComponents(marginfi_account, group, remainingAccounts(), start, remainingAccounts().length, REQ_INITIAL, true, t);
   if (!flash) {
     require(h.err === 0n, h.err);
     require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
-    const tiers = riskTiersErr(marginfi_account, remainingAccounts(), start);
+    const tiers = riskTiersErr(marginfi_account, remainingAccounts(), start, remainingAccounts().length);
     require(tiers === 0n, tiers);
     if (marginfi_account.liquidation_tagged_at !== 0n) {
-      const m = healthComponents(marginfi_account, group, remainingAccounts(), start, REQ_MAINTENANCE, false, t);
+      const m = healthComponents(marginfi_account, group, remainingAccounts(), start, remainingAccounts().length, REQ_MAINTENANCE, false, t);
       if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
     }
   }
   // New premium-active debt needs a real rate: a pass that could not price some collateral cannot give one.
   require(!premiumRefreshUnavailable(h), MarginfiError.PremiumSnapshotUnavailable);
-  const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, t);
+  const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, remainingAccounts().length, t);
   require(gate === 0n, gate);
   updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
   const p = cachePrice(bank, bank.key, remainingAccounts(), start, t);
@@ -1181,7 +1181,7 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
   const t = now();
   const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
   // check_account_init_health: in a flash loan Ok at once, the cache untouched.
-  const init = healthComponents(marginfi_account, group, remainingAccounts(), 0n, REQ_INITIAL, true, t);
+  const init = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_INITIAL, true, t);
   let engineErr: u32 = 0n;
   let flags: u32 = 0n;
   if (!flash) {
@@ -1189,7 +1189,7 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
     else {
       if (init.assets >= init.liabs) {
         flags = HEALTH_HEALTHY;
-        engineErr = riskTiersErr(marginfi_account, remainingAccounts(), 0n);
+        engineErr = riskTiersErr(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length);
       } else engineErr = 6009n;
     }
   }
@@ -1211,7 +1211,7 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
   let liabsMaint = I80F48_ZERO;
   if (flash) liqErr = 6037n;
   else {
-    const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, REQ_MAINTENANCE, false, t);
+    const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_MAINTENANCE, false, t);
     if (m.err !== 0n) liqErr = m.err;
     else {
       assetsMaint = m.assets;
@@ -1236,7 +1236,7 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
   let liabsEquity = I80F48_ZERO;
   if (flash) bankruptcyErr = 6037n;
   else {
-    const q = healthComponents(marginfi_account, group, remainingAccounts(), 0n, REQ_EQUITY, false, t);
+    const q = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_EQUITY, false, t);
     if (q.err !== 0n) bankruptcyErr = q.err;
     else {
       assetsEquity = q.assets;
@@ -1300,7 +1300,7 @@ export function marginfiAccountTagLiqRecord(marginfi_account: HasOne<Mut<Marginf
   );
   constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
   const t = now();
-  const m = preLiquidation(marginfi_account, group, remainingAccounts(), 0n, t);
+  const m = preLiquidation(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, t);
   require(m.err === 0n, m.err);
   if (m.health > I80F48_ZERO || m.liabs === I80F48_ZERO) {
     require(marginfi_account.liquidation_tagged_at !== 0n, MarginfiError.HealthyAccount);
@@ -1392,10 +1392,10 @@ export function lendingPoolHandleBankruptcy(
   const start: u64 = t22 ? 1n : 0n;
   // The breaker's gate, unless an admin settles; then the equity check on the bank before its interest accrues.
   if (!admin) {
-    const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, t);
+    const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, remainingAccounts().length, t);
     require(gate === 0n, gate);
   }
-  const q = bankruptcy(marginfi_account, group, remainingAccounts(), start, t);
+  const q = bankruptcy(marginfi_account, group, remainingAccounts(), start, remainingAccounts().length, t);
   require(q.err === 0n, q.err);
   const p = cachePrice(bank, bank.key, remainingAccounts(), start, t);
   resetHealthCache(marginfi_account, t, 3n, HEALTH_ENGINE_OK);

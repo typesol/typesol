@@ -175,7 +175,7 @@ export interface Reconciled {
  * every config, its least favorable weight and flags); with same-asset leverage on, liabilities that all price one
  * asset through one feed give their collateral twin the weight `liability weight × (1 − 1 / leverage)`.
  */
-export function reconcileEmode(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, req: u8): Reconciled {
+export function reconcileEmode(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, end: u64, req: u8): Reconciled {
   let leverage = I80F48_ZERO;
   if (req === REQ_INITIAL) leverage = u32ToBasis(group.same_asset_emode_init_leverage);
   else if (req === REQ_MAINTENANCE) leverage = u32ToBasis(group.same_asset_emode_maint_leverage);
@@ -199,7 +199,7 @@ export function reconcileEmode(acc: Account<MarginfiAccount>, group: Account<Mar
     const b = acc.lending_account.balances.get(i);
     if (b.active === 0n) continue;
     const k = start + at;
-    if (k >= rest.length || loaderErr(rest.get(k)) !== 0n) break;
+    if (k >= end || loaderErr(rest.get(k)) !== 0n) break;
     const bank = loadAccount<Bank>(rest.get(k));
     if (bank.key !== b.bank_pk) break;
     const per = accountsPerBank(bank);
@@ -462,6 +462,7 @@ export function healthComponents(
   group: Account<MarginfiGroup>,
   rest: RemainingAccounts,
   start: u64,
+  end: u64,
   req: u8,
   scratch: boolean,
   t: i64,
@@ -486,14 +487,14 @@ export function healthComponents(
     h.err = 6037n;
     return h;
   }
-  const r = reconcileEmode(acc, group, rest, start, req);
+  const r = reconcileEmode(acc, group, rest, start, end, req);
   const pricePremium = group.premium_settings.entry_count > 0n;
   const emodePossible = req === REQ_MAINTENANCE && (r.count > 0n || r.same);
   let collateralSeen = false;
   let unboosted = false;
   let unpriceableLeg = false;
   const now = toU64(t);
-  const len = rest.length - start;
+  const len = end - start;
   let at = 0n;
   let pos = 0n;
   for (let i = 0n; i < 16n; i++) {
@@ -634,14 +635,14 @@ export function healthComponents(
  * check_account_risk_tiers: the same walk (no oracle check); an isolated liability must be the account's only one
  * (counting stops at the second isolated one).
  */
-export function riskTiersErr(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64): u32 {
+export function riskTiersErr(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64): u32 {
   let isolated = 0n;
   let total = 0n;
   let at = 0n;
   for (let i = 0n; i < 16n; i++) {
     const b = acc.lending_account.balances.get(i);
     if (b.active === 0n) continue;
-    if (at >= rest.length - start) return INVALID_BANK_ACCOUNT;
+    if (at >= end - start) return INVALID_BANK_ACCOUNT;
     const loadErr = loaderErr(rest.get(start + at));
     if (loadErr !== 0n) return loadErr;
     const bank = loadAccount<Bank>(rest.get(start + at));
@@ -795,12 +796,12 @@ export function cachePrice(bank: Account<Bank>, bankKey: Pubkey, rest: Remaining
  * run_cb_price_gate: every bank of the account must not be halted or circuit-broken, and each with its breaker on
  * must price (spot) within its first tier and its long window of the breaker's references.
  */
-export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, t: i64): u32 {
+export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64, t: i64): u32 {
   let at = 0n;
   for (let i = 0n; i < 16n; i++) {
     const b = acc.lending_account.balances.get(i);
     if (b.active === 0n) continue;
-    if (at >= rest.length - start) return INVALID_BANK_ACCOUNT;
+    if (at >= end - start) return INVALID_BANK_ACCOUNT;
     const loadErr = loaderErr(rest.get(start + at));
     if (loadErr !== 0n) return loadErr;
     const bank = loadAccount<Bank>(rest.get(start + at));
@@ -810,7 +811,7 @@ export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccoun
     const per = accountsPerBank(bank);
     if (per.err !== 0n) return per.err;
     if (on) {
-      if (rest.length - start < at + per.n) return WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+      if (end - start < at + per.n) return WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
       const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t);
       if (f.err !== 0n) return f.err;
       const p = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
@@ -927,8 +928,8 @@ export interface Totals {
  * check_pre_liquidation_condition_and_get_account_health (no liability bank, no cache): Maintenance health at spot
  * prices, assets less liabilities; the caller decides what a healthy account means.
  */
-export function preLiquidation(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, t: i64): Totals {
-  const m = healthComponents(acc, group, rest, start, REQ_MAINTENANCE, false, t);
+export function preLiquidation(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, end: u64, t: i64): Totals {
+  const m = healthComponents(acc, group, rest, start, end, REQ_MAINTENANCE, false, t);
   if (m.err !== 0n) return { err: m.err, health: 0n, assets: 0n, liabs: 0n };
   const health = fxTrySub(m.assets, m.liabs);
   return { err: health.err, health: health.v, assets: m.assets, liabs: m.liabs };
@@ -941,8 +942,8 @@ export const BANKRUPT_THRESHOLD: i128 = 28147497671066n;
  * check_account_bankrupt: equity values at EMA prices and full weights; bankrupt when it owes more than it holds with
  * under 0.1 in assets (AccountNotBankrupt otherwise).
  */
-export function bankruptcy(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, t: i64): Totals {
-  const q = healthComponents(acc, group, rest, start, REQ_EQUITY, false, t);
+export function bankruptcy(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, end: u64, t: i64): Totals {
+  const q = healthComponents(acc, group, rest, start, end, REQ_EQUITY, false, t);
   if (q.err !== 0n) return { err: q.err, health: 0n, assets: 0n, liabs: 0n };
   const bankrupt = q.liabs > I80F48_ZERO && q.assets < BANKRUPT_THRESHOLD && q.liabs > q.assets;
   return { err: bankrupt ? 0n : 6013n, health: 0n, assets: q.assets, liabs: q.liabs };
