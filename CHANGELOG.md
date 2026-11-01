@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: `u256` multiplication (and so I80F48 products, `mulDiv`) multiplies only the 32-bit limbs that are not
+  zero: two 88-bit values take 9 products instead of 64. A Marginfi I80F48 product went from about 700 to about 380
+  compute units, and an interest accrual from 30,292 to 25,296 (against the original's 41,642); across Marginfi's
+  successful transactions the port now uses 36–97% fewer compute units than the original (24–97% before). Programs that use
+  `u256` or `mulDiv` build to different binaries: here examples/raydium-clmm and marginfi.
+- New: a narrowed `Option` of a struct or fixed array (`args.inner !== null` before it) passes straight to a helper
+  that takes the struct or array.
+
 - Examples: Marginfi's repayments and fees, which completes part 2 of the port (docs/case-study-marginfi.md):
   repayments in part (the premium settled first) and in full (rounded up, the balance closed), tokenless repayments by
   the risk admin, collecting a bank's fees, and the admin and permissionless withdrawals from its fee and insurance

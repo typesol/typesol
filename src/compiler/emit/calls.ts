@@ -1440,7 +1440,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "structRef":
       case "arrayArg": {
         const want: FieldType = p.type.kind === "structRef" ? { kind: "struct", name: p.type.struct } : p.type.array;
-        const r = this.ref(n);
+        let r = this.ref(n);
+        // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): its value.
+        if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
         if (!r || !sameType(r.type, want)) this.fail(n, `expected a ${typeName(want)}`);
         return this.snapshotPlace(r.lv, want, h);
       }
