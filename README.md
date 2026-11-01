@@ -182,8 +182,8 @@ checks it against the binary deployed on mainnet (same outcomes and account byte
 [docs/case-study-raydium-clmm.md](docs/case-study-raydium-clmm.md) for all 37 instructions of Raydium CLMM
 (pools, positions, swaps and routes, limit orders, rewards, admin: the same on 302 transactions; 33–84% fewer
 compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) for Jito's three MEV programs (tip
-payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–95% fewer
-compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–79% fewer
+compute units, up to 95% on refused calls). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
@@ -211,7 +211,7 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | --- | --- |
 | **Accounts** | `Signer`, `Account<T>`, `Mut<T>`, `Init<T>`, `InitIfNeeded<T>` (PDAs or keypair accounts, with Anchor's `space`; mints, token accounts and associated token accounts), `Zeroed<T>` (up to 10 MiB), optional accounts (`A \| null`), token accounts and mints, `SystemAccount`, programs, sysvars, and account groups (Anchor's composite accounts) |
 | **Constraints** | `HasOne`, `Seeds` (also from account fields and under another program; `pdaBump` like `ctx.bumps`), `CloseTo`, `Ata`, `Address`, `Owner`, `Executable`. They are checked before the body runs and recorded in the IDL, and take your own error as Anchor's `@ ErrorCode.X` does |
-| **Data** | `u8`…`u128`, `i8`…`i128`, `boolean`, `Pubkey`, `Hash`, nested structs, `FixedArray`, `FixedString`, `Option`, unit enums, data enums (discriminated unions), `Vec` that resizes its account, `FixedVec` lists anywhere, and Anchor's own byte layout (`@layout borsh`) to take over existing Anchor accounts and to pass, return and emit structs with String / Vec / Option fields as Anchor does |
+| **Data** | `u8`…`u128`, `i8`…`i128`, `u256` (for computation), `f64` (as its bits, in events and accounts), `boolean`, `Pubkey`, `Hash`, nested structs, `FixedArray`, `FixedString`, `Option`, unit enums, data enums (discriminated unions), `Vec` that resizes its account, `FixedVec` lists anywhere, and Anchor's own byte layout (`@layout borsh`) to take over existing Anchor accounts and to pass, return and emit structs with String / Vec / Option fields as Anchor does |
 | **Control flow** | `if`, `for`, `for … of`, `while`, `switch` (with narrowing on data enums), ternaries, `??`, destructuring, helper functions (returning structs too, arrow functions, closures, function arguments, generics), list callbacks (`some`, `find`, `reduce`, …) across multiple files |
 | **CPIs** | System, SPL Token, Token-2022 (including extension reads, metadata and token groups), ATA, Memo, Stake, Metaplex Token Metadata, Core, Bubblegum. Generic `invoke` with PDA signing (one or several PDAs per call), return data, and typed bindings generated from any Anchor IDL (`typesol cpi`) |
 | **Events** | `emit` (log-based) and `emitCpi` (Anchor `emit_cpi!`, through a self-CPI) |
@@ -286,7 +286,7 @@ The official escrow ([tokens/escrow](https://github.com/solana-developers/progra
 deployed to Solana mainnet-beta in all four versions and called with the same mints, amounts and accounts, one
 instruction per transaction. The TypeSOL program was upgraded in place to 0.25.0 on 2026-10-29; the others are as first
 deployed on 2026-10-27. Each figure is the compute units of that transaction, linked to Solscan; the lowest per row is
-in bold. The deployed programs match these builds byte for byte (`typesol verify` for TypeSOL), and the TypeSOL
+in bold. The deployed programs match their builds byte for byte (`typesol verify` for TypeSOL; that is the 0.25.0 build, not the current release), and the TypeSOL
 program's IDL is published on chain with `typesol idl publish`.
 
 | Transaction | TypeSOL | Pinocchio | Native Rust | Anchor |
@@ -336,6 +336,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`raydium-cp-swap/`](examples/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
 | [`raydium-clmm/`](examples/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](examples/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
+| [`marginfi/`](examples/marginfi) | Marginfi v2, in progress: its errors, I80F48 fixed-point arithmetic and zero-copy accounts, checked against mainnet's accounts and IDL; instructions to come |
 | [`multisig.ts`](examples/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

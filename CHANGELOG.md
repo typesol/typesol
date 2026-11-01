@@ -72,7 +72,7 @@ same binaries as in 0.37.0.
   bytes and events, 33–84% fewer compute units.
 - Examples: examples/jito-mev, ports of Jito's three MEV programs (tip payment, tip distribution, priority fee
   distribution; all 24 instructions), checked against the mainnet binaries (test/programs/jito_*.so) on 150
-  transactions: the same outcomes, account bytes, events and log lines, with 58–95% fewer compute units. The tip
+  transactions: the same outcomes, account bytes, events and log lines, with 58–79% fewer compute units (up to 95% on refused calls). The tip
   payment port follows the binary on mainnet, which is the program of Jito's #143 (no `claim_tips`). See
   docs/case-study-jito-mev.md.
 - New: a `Seeds<…>` bump stored in a struct field of another account, `"@config.bumps.vault"` (Anchor's
