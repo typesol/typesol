@@ -1970,9 +1970,11 @@ export declare enum AnchorError {
 /**
  * Abort with the given error unless `condition` holds. The error is a member of an exported string enum, any
  * `AnchorError` member, or a string literal: each distinct literal becomes an error named `RequireFailed<N>` with code
- * 6000 + N, numbered after the program's error enums and listed in the IDL.
+ * 6000 + N, numbered after the program's error enums and listed in the IDL. A `u32` value instead fails with that code
+ * as computed at run time (`require(r.err === 0n, r.err)`, a helper returning its error as a value, as Rust's `?` passes
+ * one on); a zero code fails with 5100.
  */
-export declare function require(condition: boolean, error: string | AnchorError): asserts condition;
+export declare function require(condition: boolean, error: string | AnchorError | u32): asserts condition;
 /**
  * Anchor's `constraint = condition @ error` on `account`. Written at the start of an instruction's body (before any
  * other statement), it runs with that account's checks, after its has_one and before its owner check, so a transaction

@@ -59,6 +59,11 @@ A member's string is its message (the IDL's `msg`); `X = ""` leaves the message 
 Any of Anchor's own codes can be raised directly: `require(cond, AnchorError.RequireKeysEqViolated)` fails with 2502,
 as `require_keys_eq!` does.
 
+A code can also be computed at run time: `require(cond, code)` with a `u32` value fails with that code. This is how a
+helper passes an error on as Rust's `?` does, when it returns the error as a value instead of failing (a price read
+whose error the caller may record or ignore): `const r = price(feed); require(r.err === 0n, r.err);`. The code is
+reported as it is (use one of your errors' codes, so clients can decode it); a zero code fails with 5100.
+
 ## Which error a transaction gets
 
 A transaction can break several checks; it fails with the first. Within each account's constraints the checks run in

@@ -3,8 +3,8 @@
 // have the same outcome, account bytes and events in both. Bank configs, interest curves, fees, balances, clocks and
 // the circuit breaker's state come from the seed: reproduce a failure with FUZZ_SEED=<seed>; lengthen with FUZZ_STEPS=<n>.
 //
-// Deposits and borrows are not ported yet: the fuzzer writes a bank's asset and liability shares into both, then
-// accrues. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
+// Borrows are not ported yet: the fuzzer writes a bank's asset and liability shares into both, then accrues. Oracles
+// are Pyth and Switchboard accounts it writes into both, their prices a random walk with jumps. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
 import { type Address, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { describe, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM } from "../../test/harness.js";
@@ -154,17 +154,57 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       const o = offsetOf(type, path);
       return data.readBigInt64LE(o + 8) * (1n << 64n) + data.readBigUInt64LE(o);
     };
+    const read64 = (at: Address, type: string, path: string) =>
+      Buffer.from((s.original.getAccount(at) as { data: Uint8Array }).data).readBigUInt64LE(offsetOf(type, path));
     const keyBits = (a: Address) => BigInt("0x" + Buffer.from(new web3.PublicKey(a).toBytes()).reverse().toString("hex"));
     /** An amount across scales: dust, ordinary, large. */
     const amount = (): bigint => [rng.next() % 10n, rng.next() % 100_000n, rng.next() % 1_000_000_000n, rng.next() % (1n << 50n)][rng.int(4)]!;
+
+    // Each bank's Pyth and Switchboard accounts, rewritten before a pulse: a random walk with jumps, random
+    // confidence, exponent and age, now and then a broken account.
+    let slot = 388_800_007n;
+    const feeds = new Map<string, { pyth: Address; swb: Address; price: bigint }>();
+    const feedsOf = async (b: Address) => {
+      let f = feeds.get(b);
+      if (!f) {
+        f = { pyth: (await generateKeyPairSigner()).address, swb: (await generateKeyPairSigner()).address, price: 100_000_000n };
+        feeds.set(b, f);
+      }
+      return f;
+    };
+    const writeFeeds = (f: { pyth: Address; swb: Address; price: bigint }) => {
+      const move = rng.chance(15) ? BigInt(rng.int(8000)) - 4000n : BigInt(rng.int(800)) - 400n;
+      f.price = f.price + (f.price * move) / 10_000n;
+      if (f.price <= 0n || rng.chance(2)) f.price = BigInt(rng.int(1_000_000_000)) - (rng.chance(5) ? 1000n : 0n);
+      const age = rng.chance(10) ? BigInt(rng.int(200)) : BigInt(rng.int(20));
+      const expo = rng.chance(90) ? -6 : rng.pick([0, 2, -2, -8, -12, 23, -23, 24, -24]);
+      const conf = rng.chance(80) ? (f.price > 0n ? f.price : 1n) / BigInt(50 + rng.int(500)) : rng.next() % 100_000_000n;
+      h.setPyth(f.pyth, {
+        price: f.price,
+        conf,
+        expo,
+        publishTime: rng.chance(5) ? t + BigInt(rng.int(100)) : t - age,
+        emaPrice: rng.chance(70) ? f.price : f.price + BigInt(rng.int(2_000_000)) - 1_000_000n,
+        emaConf: rng.chance(70) ? conf : conf * 2n,
+        partial: rng.chance(5),
+        len: rng.chance(3) ? rng.int(140) : undefined,
+      });
+      h.setSwb(f.swb, {
+        value: rng.chance(97) ? f.price * 10n ** 12n : rng.next() * rng.next(),
+        lastUpdate: t - age,
+        owner: rng.chance(3) ? h.feeWallet : undefined,
+        len: rng.chance(3) ? rng.int(3300) : undefined,
+      });
+    };
 
     for (let step = 0; step < STEPS; step++) {
       const label = (what: string) => `step ${step} (seed ${SEED}): ${what}`;
       const bank = rng.pick(banks);
       const b = bank.address;
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
-      h.setTime(t);
-      switch (rng.int(18)) {
+      slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
+      h.setClock(t, slot);
+      switch (rng.int(22)) {
         case 0:
         case 1:
         case 2: {
@@ -436,6 +476,39 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
               [bank.v.fee, dst],
             );
           }
+          break;
+        }
+        case 18:
+        case 19: {
+          // Point the bank at a feed: mostly its own Pyth or Switchboard account, sometimes a wrong count, key or setup.
+          const f = await feedsOf(b);
+          writeFeeds(f);
+          const setup = rng.chance(80) ? rng.pick([3, 4]) : rng.pick([0, 1, 5, 6, 8, 18, 19, 20, 22, 25, rng.int(40)]);
+          const feed = setup === 4 ? f.swb : f.pyth;
+          const oracle = rng.chance(90) ? feed : rng.pick([f.pyth, f.swb]);
+          const rest = rng.chance(85) ? [feed] : rng.pick([[], [feed, feed], [f.pyth, f.swb, other.address]]);
+          // Mostly with the frozen-settings flag cleared (the fast admin's steps set it now and then).
+          if (rng.chance(85)) h.editBank(b, [["flags", read64(b, "Bank", "flags") & ~8n, 8]]);
+          if (rng.chance(5)) h.editBank(b, [["flags", rng.pick([0n, 8n, 4096n, 16n]), 8]]);
+          await run(label("configure oracle"), h.admin, [h.configureOracle(group.address, signer(h.admin), b, setup, oracle, rest)], [b], "if-panics");
+          break;
+        }
+        case 20: {
+          // A fixed price (or a PT start price), now and then negative, with a wrong setup or accounts.
+          const setup = rng.chance(80) ? 8 : rng.pick([3, 25, 26, 13, rng.int(40)]);
+          const price = rng.chance(10) ? -(rng.next() % ONE) : rng.next() % (ONE * 1000n);
+          const rest = rng.chance(85) ? [] : [other.address];
+          await run(label("set oracle price"), h.admin, [h.setOraclePrice(group.address, signer(h.admin), b, price, setup, rest)], [b], "if-panics");
+          break;
+        }
+        case 21: {
+          // Pulse the price into the cache and the circuit breaker, with the feed the bank is set to (usually).
+          const f = await feedsOf(b);
+          writeFeeds(f);
+          const setup = read64(b, "Bank", "config.oracle_setup") & 0xffn;
+          const own = setup === 3n ? [f.pyth] : setup === 4n ? [f.swb] : [];
+          const rest = rng.chance(80) ? own : rng.pick([[f.pyth], [f.swb], [], [f.pyth, f.swb]]);
+          await run(label("pulse"), other, [h.pulse(group.address, b, rest)], [b], "if-panics");
           break;
         }
         default: {

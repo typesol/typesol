@@ -1,11 +1,32 @@
 // Marginfi's bank (programs/marginfi/src/state/bank.rs, bank_config.rs and bank_cache.rs @ c5d440f6): creating one
 // from its compact config, checking a config, the interest accrual and the rate cache. Amounts and share values are
 // I80F48 (showcase/mainnet/marginfi/i80f48.ts).
-import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, i64 as toI64, u32 as toU32, u64 as toU64 } from "typesol";
+import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, i64 as toI64, u32 as toU32, u64 as toU64, u8 as toU8 } from "typesol";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import { MarginfiError } from "./errors";
-import { type InterestRateConfigOpt, type LendingPoolBankAccrueInterestEvent, type RateLimitFlowEvent } from "./events";
-import { I80F48_MAX, I80F48_ONE, I80F48_ZERO, fxAdd, fxDiv, fxMul, fxFromU64, fxSub, fxToF64Bits, fxToU64 } from "./i80f48";
+import {
+  type CircuitBreakerAutoBrokenEvent,
+  type CircuitBreakerClearedEvent,
+  type CircuitBreakerTrippedEvent,
+  type InterestRateConfigOpt,
+  type LendingPoolBankAccrueInterestEvent,
+  type RateLimitFlowEvent,
+} from "./events";
+import {
+  I80F48_MAX,
+  I80F48_ONE,
+  I80F48_ZERO,
+  fxAdd,
+  fxDiv,
+  fxMul,
+  fxFromU64,
+  fxSub,
+  fxToF64Bits,
+  fxToU64,
+  fxToU64Wrapping,
+  fxWrappingDiv,
+  fxWrappingMul,
+} from "./i80f48";
 import { accrualChanges, calcInterestRate, milliToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
 import { type Bank, type BankConfig, type MarginfiGroup, type RateLimitWindow, BankOperationalState, OracleSetup, RiskTier } from "./state";
 
@@ -215,8 +236,8 @@ export function updateBankCache(bank: Mut<Bank>, group: Account<MarginfiGroup>, 
 export const PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG: u64 = 4n;
 export const FREEZE_SETTINGS: u64 = 8n;
 export const CIRCUIT_BREAKER_ENABLED: u64 = 2048n;
-const BANK_SAME_ASSET_EMODE_ELIGIBLE: u64 = 4096n;
-const ASSET_TAG_JUPLEND: u8 = 6n;
+export const BANK_SAME_ASSET_EMODE_ELIGIBLE: u64 = 4096n;
+export const ASSET_TAG_JUPLEND: u8 = 6n;
 const MAX_LIQUIDATION_FEE_U32: u32 = 2147483647n;
 const CB_ENABLE_MAX_PRICE_AGE_SECONDS: i64 = 30n;
 /** 0.025 and 0.0001 as I80F48 (rounded to nearest, as fixed_macro's literals). */
@@ -522,12 +543,12 @@ function i64Of(n: u64): i64 {
 function i64Wrap(n: u64): i64 {
   return n <= 9223372036854775807n ? toI64(n) : toI64(n - 9223372036854775808n) - 9223372036854775807n - 1n;
 }
-function saturatingSubI64(a: i64, b: i64): i64 {
+export function saturatingSubI64(a: i64, b: i64): i64 {
   if (b > 0n && a < -9223372036854775808n + b) return -9223372036854775808n;
   if (b < 0n && a > 9223372036854775807n + b) return 9223372036854775807n;
   return a - b;
 }
-function saturatingAddI64(a: i64, b: i64): i64 {
+export function saturatingAddI64(a: i64, b: i64): i64 {
   if (b > 0n && a > 9223372036854775807n - b) return 9223372036854775807n;
   if (b < 0n && a < -9223372036854775808n - b) return -9223372036854775808n;
   return a + b;
@@ -552,4 +573,179 @@ export function recordDepositInflow(bank: Mut<Bank>, group: Account<MarginfiGrou
       mint_decimals: bank.mint_decimals,
       current_timestamp: timestamp,
     });
+}
+
+// ---- the oracle price cache and the circuit breaker (state/bank.rs) ----------------------------------------------
+
+/** Floor for the EMA reference used in deviation math: below it the breaker reseeds instead of dividing. */
+const CB_MIN_REF_PRICE: i128 = 1048576n;
+const CB_MIN_PULSE_SLOT_GAP: u64 = 2n;
+const CB_MAX_TIER3_BEFORE_CIRCUIT_BREAK: u8 = 3n;
+const CB_MAX_EMA_SHIFT_BPS_PER_PULSE: u64 = 500n;
+const CB_WINDOW_SECONDS: u64 = 14400n;
+const CB_WINDOW_MAX_UP_BPS: u64 = 2000n;
+const CB_WINDOW_MAX_DOWN_BPS: u64 = 4000n;
+const CB_CLEAR_REASON_ESCALATION_EXPIRED: u8 = 1n;
+const U64_MAX_SAT: u64 = 18446744073709551615n;
+
+/** BankOperationalState as its u8. */
+function operationalStateU8(s: BankOperationalState): u8 {
+  if (s === BankOperationalState.Paused) return 0n;
+  if (s === BankOperationalState.Operational) return 1n;
+  if (s === BankOperationalState.ReduceOnly) return 2n;
+  if (s === BankOperationalState.KilledByBankruptcy) return 3n;
+  if (s === BankOperationalState.Uninitialized) return 4n;
+  if (s === BankOperationalState.ReduceOnlyWithBorrowingPower) return 5n;
+  return 6n;
+}
+
+/** cb_deviation_bps: `(delta * 10_000 / reference).to_num::<u64>()`, the release build's wrapping `*` and `/`. */
+function cbDeviationBps(delta: i128, reference: i128): u64 {
+  return fxToU64Wrapping(fxWrappingDiv(fxWrappingMul(delta, fxFromU64(10000n)), reference));
+}
+/** cb_confidence_adjusted_deviation_bps: the move past the confidence band (plain `-` and abs, which panic on overflow). */
+function cbConfidenceAdjustedDeviationBps(current: i128, reference: i128, confidence: i128): u64 {
+  const d = current - reference;
+  const beyond = (d < 0n ? -d : d) - (confidence > 0n ? confidence : 0n);
+  return cbDeviationBps(beyond > 0n ? beyond : 0n, reference);
+}
+function cbTierForDeviation(bank: Mut<Bank>, bps: u64): u8 {
+  for (let i = 2n; ; i--) {
+    const tier = bank.config.cb_deviation_bps_tiers.get(i);
+    if (tier > 0n && bps >= toU64(tier)) return toU8(i + 1n);
+    if (i === 0n) return 0n;
+  }
+}
+function orDefault(configured: u64, fallback: u64): u64 {
+  return configured === 0n ? fallback : configured;
+}
+
+/**
+ * trip_cb_halt: the next tier (or the breached one), a halt of that tier's duration (the frozen span of a halt it
+ * replaces is banked for the next accrual), and after three tier-3 trips in a row the bank is circuit-broken.
+ */
+function tripCbHalt(bank: Mut<Bank>, timestamp: i64, bps: u64, breached: u8): void {
+  let tier = breached;
+  if (bank.cb_tier > 0n) {
+    tier = bank.cb_tier + 1n;
+    if (tier > 3n) tier = 3n;
+  }
+  const dur = toI64(bank.config.cb_tier_durations_seconds.get(toU64(tier) - 1n));
+  const frozen = cbFrozenSeconds(bank, bank.last_update, timestamp);
+  const pending = bank.cb_frozen_seconds_pending;
+  bank.cb_frozen_seconds_pending = pending > U64_MAX_SAT - frozen ? U64_MAX_SAT : pending + frozen;
+  bank.cb_tier = tier;
+  bank.cb_halt_started_at = timestamp;
+  bank.cb_halt_ended_at = saturatingAddI64(timestamp, dur);
+  emit<CircuitBreakerTrippedEvent>({ tier, deviation_bps: bps, halt_started_at: timestamp, halt_ended_at: bank.cb_halt_ended_at });
+  if (tier === 3n) {
+    if (bank.cb_tier3_consecutive_trips < 255n) bank.cb_tier3_consecutive_trips += 1n;
+    if (bank.cb_tier3_consecutive_trips >= CB_MAX_TIER3_BEFORE_CIRCUIT_BREAK) {
+      if (bank.config.operational_state === BankOperationalState.CircuitBroken) return;
+      bank.cb_pre_break_state = operationalStateU8(bank.config.operational_state);
+      bank.config.operational_state = BankOperationalState.CircuitBroken;
+      emit<CircuitBreakerAutoBrokenEvent>({ consecutive_tier3_trips: bank.cb_tier3_consecutive_trips, current_timestamp: timestamp });
+    }
+  }
+}
+
+/**
+ * update_circuit_breaker: an enabled breaker that is not halted takes one observation per two slots and per oracle
+ * publication. A move past a tier's deviation from the EMA reference (beyond the confidence band), or past the
+ * long window's cap, halts the bank; a clean one moves the reference (at most 5% a time).
+ */
+function updateCircuitBreaker(bank: Mut<Bank>, timestamp: i64, slot: u64, current: i128, conf: i128, sourceTime: i64): void {
+  if ((bank.flags & CIRCUIT_BREAKER_ENABLED) !== CIRCUIT_BREAKER_ENABLED) return;
+  if (bank.config.operational_state === BankOperationalState.CircuitBroken) return;
+  if (bank.cb_tier > 0n && timestamp < bank.cb_halt_ended_at) return;
+  if (bank.cb_tier > 0n) {
+    const dur = toI64(bank.config.cb_tier_durations_seconds.get(toU64(bank.cb_tier) - 1n));
+    const deadline = saturatingAddI64(bank.cb_halt_ended_at, dur * toI64(bank.config.cb_escalation_window_mult));
+    if (timestamp >= deadline) {
+      const prior = bank.cb_tier;
+      bank.cb_tier = 0n;
+      bank.cb_tier3_consecutive_trips = 0n;
+      emit<CircuitBreakerClearedEvent>({ prior_tier: prior, reason: CB_CLEAR_REASON_ESCALATION_EXPIRED, current_timestamp: timestamp });
+    }
+  }
+  let reference = bank.cb_reference_price.value;
+  if (reference === 0n) {
+    bank.cb_reference_price.value = current;
+    bank.cb_window_reference_price.value = current;
+    bank.cb_window_started_at = timestamp;
+    bank.cb_last_observed_slot = slot;
+    if (sourceTime !== 0n) bank.cb_last_oracle_source_time = sourceTime;
+    return;
+  }
+  const last = bank.cb_last_observed_slot;
+  if (slot < (last > U64_MAX_SAT - CB_MIN_PULSE_SLOT_GAP ? U64_MAX_SAT : last + CB_MIN_PULSE_SLOT_GAP)) return;
+  if (sourceTime !== 0n && sourceTime <= bank.cb_last_oracle_source_time) return;
+  bank.cb_last_observed_slot = slot;
+  if (sourceTime !== 0n) bank.cb_last_oracle_source_time = sourceTime;
+  if (reference <= CB_MIN_REF_PRICE) {
+    bank.cb_reference_price.value = current;
+    bank.cb_window_reference_price.value = current;
+    bank.cb_window_started_at = timestamp;
+    return;
+  }
+  const confidence = conf > 0n ? conf : 0n;
+  const deviation = cbConfidenceAdjustedDeviationBps(current, reference, confidence);
+  let windowRef = bank.cb_window_reference_price.value;
+  if (windowRef === 0n || windowRef <= CB_MIN_REF_PRICE) {
+    bank.cb_window_reference_price.value = reference;
+    bank.cb_window_started_at = timestamp;
+    windowRef = reference;
+  }
+  if (bank.cb_window_started_at === 0n) bank.cb_window_started_at = timestamp;
+  const windowSeconds = toI64(orDefault(toU64(bank.config.cb_window_seconds), CB_WINDOW_SECONDS));
+  const maxUp = orDefault(toU64(bank.config.cb_window_max_up_bps), CB_WINDOW_MAX_UP_BPS);
+  const maxDown = orDefault(toU64(bank.config.cb_window_max_down_bps), CB_WINDOW_MAX_DOWN_BPS);
+  const expired = timestamp >= saturatingAddI64(bank.cb_window_started_at, windowSeconds);
+  const up = current - windowRef - confidence;
+  const down = windowRef - current - confidence;
+  const upBps = cbDeviationBps(up > 0n ? up : 0n, windowRef);
+  const downBps = cbDeviationBps(down > 0n ? down : 0n, windowRef);
+  const windowDeviation = upBps > downBps ? upBps : downBps;
+  if (upBps >= maxUp || downBps >= maxDown) {
+    const tier = cbTierForDeviation(bank, windowDeviation);
+    tripCbHalt(bank, timestamp, windowDeviation, tier > 0n ? tier : 1n);
+    // A breach after the window ran out is a window's slow drift: the anchor creeps to the cap's edge and restarts.
+    if (expired) {
+      const step = upBps >= maxUp ? I80F48_ONE + fxWrappingDiv(fxFromU64(maxUp), fxFromU64(10000n)) : I80F48_ONE - fxWrappingDiv(fxFromU64(maxDown), fxFromU64(10000n));
+      bank.cb_window_reference_price.value = fxWrappingMul(windowRef, step);
+      bank.cb_window_started_at = timestamp;
+    }
+    return;
+  }
+  const breached = cbTierForDeviation(bank, deviation);
+  if (breached > 0n) {
+    tripCbHalt(bank, timestamp, deviation, breached);
+    return;
+  }
+  if (expired) {
+    bank.cb_window_reference_price.value = current;
+    bank.cb_window_started_at = timestamp;
+  }
+  const alpha = fxWrappingDiv(fxFromU64(toU64(bank.config.cb_ema_alpha_bps)), fxFromU64(10000n));
+  const next = fxWrappingMul(alpha, current) + fxWrappingMul(I80F48_ONE - alpha, reference);
+  const maxShift = fxWrappingDiv(fxWrappingMul(reference, fxFromU64(CB_MAX_EMA_SHIFT_BPS_PER_PULSE)), fxFromU64(10000n));
+  let shift = next - reference;
+  const floor = -maxShift;
+  if (shift < floor) shift = floor;
+  if (shift > maxShift) shift = maxShift;
+  reference += shift;
+  bank.cb_reference_price.value = reference;
+}
+
+/**
+ * update_cache_price: the price an instruction priced the bank at (unbiased, its confidence, now), unless a receivership
+ * locked the cache, then the circuit breaker's observation of it (the price multiplier is 1 for the setups ported).
+ */
+export function updateCachePrice(bank: Mut<Bank>, price: i128, conf: i128, sourceTime: i64, timestamp: i64, slot: u64): void {
+  if ((bank.cache.liq_cache_flags & LIQ_CACHE_LOCKED_FLAG) !== 0n) return;
+  bank.cache.last_oracle_price.value = price;
+  bank.cache.last_oracle_price_confidence.value = conf;
+  bank.cache.price_multiplier.value = I80F48_ONE;
+  bank.cache.last_oracle_price_timestamp = timestamp;
+  updateCircuitBreaker(bank, timestamp, slot, price, conf, sourceTime);
 }

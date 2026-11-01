@@ -37,6 +37,7 @@ export const ATA_PROGRAM_BYTES = [
 ];
 
 export const U64: ScalarType = { kind: "int", name: "u64" };
+export const U32: ScalarType = { kind: "int", name: "u32" };
 export const U8: ScalarType = { kind: "int", name: "u8" };
 export const I64: ScalarType = { kind: "int", name: "i64" };
 export const I32: ScalarType = { kind: "int", name: "i32" };

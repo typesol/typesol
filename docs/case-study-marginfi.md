@@ -12,7 +12,7 @@ fixed point. The port comes in parts, each checked before the next:
 | --- | --- | --- |
 | 1 | Errors, I80F48 arithmetic, the zero-copy accounts and the types they hold | done |
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
-| 3 | Oracles, the risk engine, withdrawals and borrows | to come |
+| 3 | Oracles, the risk engine, withdrawals and borrows | in progress: oracles done |
 | 4 | Liquidation and bankruptcy | to come |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
@@ -20,10 +20,11 @@ The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typeso
 | File | Holds |
 | --- | --- |
 | `marginfi.ts` | the instructions |
-| `bank.ts` | a bank: creating one, checking its config, configuring it, accruing interest, the rate cache, its shares and limits, the states that refuse an instruction, the rate limiter |
+| `bank.ts` | a bank: creating one, checking its config, configuring it, accruing interest, the rate cache, its shares and limits, the states that refuse an instruction, the rate limiter, the price cache and the circuit breaker |
 | `account.ts` | a marginfi account's balances: finding or opening one, growing it, closing it, their order, the flags indexers read |
+| `oracle.ts` | the price adapter: oracle setups, validating a feed, reading Pyth push and Switchboard pull accounts, prices and confidence intervals |
 | `interest_rate.ts` | the seven-point interest curve, the rates and fees it gives, the accrual arithmetic |
-| `i80f48.ts` | I80F48, bit for bit as the `fixed` crate (1.28.0) computes it |
+| `i80f48.ts` | I80F48, bit for bit as the `fixed` crate (1.28.0) computes it, including the release build's wrapping `*`, `/` and `from_num` |
 | `state.ts`, `events.ts`, `args.ts`, `errors.ts` | accounts, events, instruction arguments and errors, as the on-chain IDL describes them |
 
 ## What is ported
@@ -78,6 +79,28 @@ After each, the balances are sorted by bank key and the indexer flags recomputed
 - `lending_pool_withdraw_fees`, `lending_pool_withdraw_insurance` (admin) and
   `lending_pool_withdraw_fees_permissionless` (to the destination the admin set).
 
+**Part 3, oracles.** Three instructions:
+
+- `lending_pool_configure_bank_oracle`: a Pyth push or Switchboard pull feed for a bank (the governance admin), the
+  feed account checked as it is set: its key, then a Pyth `PriceUpdateV2`'s discriminator and Borsh form, or a
+  Switchboard feed's owner, discriminator and size. A bank in same-asset e-mode keeps its feed account and kind of
+  feed. Fixed and PT prices are refused (they go through `set_oracle_price`), Scope feeds too (their own instruction);
+  the venue setups (Kamino, Drift, Solend, JupLend) are refused on a bank of another asset tag, as the original's
+  first check does;
+- `lending_pool_set_oracle_price`: a fixed price (never negative; the venue kind of fixed price for a venue bank),
+  refused on staked and same-asset banks; the PT start price's checks (in (0, 1], the accounts it takes);
+- `lending_pool_pulse_bank_price_cache` (anyone): the bank's interest accrued (not while the protocol is paused),
+  then its spot price and confidence into the cache, and the circuit breaker's observation of them. Pyth must be
+  fully verified and no older than the bank's maximum age; its confidence interval is 2.12 × the reported one,
+  refused past the bank's maximum (10% by default) and capped at 5%. Switchboard's value is divided by 10^18, its
+  confidence the configured share of the price. The breaker counts one observation per two slots and per oracle
+  publication; a move from its EMA reference past a tier (beyond the confidence band), or past the long window's cap,
+  halts the bank for that tier's time, a breach within the escalation window raises the tier, three tier-3 trips in a
+  row break the bank, and a clean move pulls the reference by at most 5%.
+
+Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
+multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
+
 ## What it needed
 
 - **Zero-copy accounts checked as Anchor's `AccountLoader` checks them.** For `@serialization bytemuck` structs the
@@ -101,6 +124,15 @@ After each, the balances are sorted by bank key and the indexer flags recomputed
 - **Token accounts never created.** Collecting fees to a fee wallet that has no associated token account yet fails
   with AccountNotInitialized (3012) in Anchor, before the owner check. TypeSOL's token account and mint checks gave
   3007; they now follow Anchor.
+- **Remaining accounts in helpers.** A bank's oracle accounts come after its declared accounts, and the price adapter
+  reads them in helpers. A helper may now take a `RemainingAccount` parameter (`remainingAccounts().get(i)`): its key,
+  owner and data length, `readData` at any offset, `loadAccount` / `loadAccountMut` of a struct.
+- **Errors as values.** Marginfi's price reads return `Result`s that its risk engine sometimes records instead of
+  failing. The adapter's helpers return their error as a value, and the instructions fail with it:
+  `require(r.err === 0n, r.err)`, a `require` whose code is computed at run time.
+- **The release build's arithmetic.** `fixed` debug-asserts on overflow in `*`, `/` and `from_num`, so the deployed
+  build wraps there (a Switchboard value past 2^79 wraps converting to I80F48), while `+`, `-` and `abs` panic
+  (overflow checks are on). The circuit breaker's deviation math uses each as the original does.
 - **Faster Pubkey ordering.** The balances are sorted by bank key after every deposit or close, comparing mostly empty
   (all-zero) keys. Comparing eight bytes at a time instead of one cut a balance close from 6,610 to 1,865 compute
   units and a deposit from 9,712 to 5,271. Every program that orders Pubkeys or hashes gains from it.
@@ -120,7 +152,9 @@ Borrows are not ported yet, so the test writes liabilities and a bank's asset an
 before it accrues or takes a repayment, and the same for other state no ported instruction reaches yet (e-mode entries, a recorded circuit-breaker
 halt, a frozen bank, the fee state's pause, an account's flags and balances, rate limits).
 
-There are 244 transactions:
+There are 244 transactions in that file, and 174 in
+[`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
+for the oracles. That file writes Pyth and Switchboard accounts byte for byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
   set, handed over, refused to the old admin; the pause propagated.
@@ -151,12 +185,30 @@ There are 244 transactions:
   durable nonce; the insurance vault likewise; the permissionless withdrawal with no destination set, to another
   account, in part and capped at the vault.
 
+- **Oracles (174).** Feeds set by another signer, on another group's bank, with the wrong sysvar or a durable nonce,
+  on a frozen bank (a panic), with setup bytes past 28 and the deprecated ones (panics), and each setup that belongs
+  to another instruction; Pyth with no, two and the wrong account, too short, with the wrong discriminator, not
+  Borsh-decodable (four ways), Partial and stale (accepted here); Switchboard with the wrong owner, too short, the
+  wrong discriminator, longer than needed; venue, mSOL and LST setups by account count and asset tag; a staked bank;
+  same-asset e-mode. Fixed prices refused (signer, group, frozen, same-asset, setup, negative, SOL and staked banks,
+  an extra account), set, zero; PT prices by count and range. Pulses with no oracle, the wrong accounts, stale, Partial
+  and future Pyth updates, the confidence at, past and under the bank's maximum, exponents from −24 to 100 (panics past
+  ±23), an overflowing price, negative prices; Switchboard stale, cents, negative, past 2^79 (wrapped) and at i128's
+  maximum, with confidence and capped; fixed prices, negative in raw state; with interest to accrue, while paused, with
+  a locked cache. The circuit breaker: off, enabled, clean moves pulling the reference, slot and publication dedup, a
+  tier-1 trip, a halt, an escalation, its expiry (the cleared event), three tier-3 trips breaking the bank; a long
+  window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
+  3 in raw state (a panic).
+
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
 way), fees, balances across scales, clock jumps, frozen banks, circuit-breaker settings and halts, accounts opened and
 closed, deposits into SPL Token, Token-2022 and transfer-fee banks at every scale, balances closed after being written
 down to dust, liabilities written in and repaid in part or in full (premiums, tokenless banks), fees collected and
-withdrawn, account flags, wrong signers.
+withdrawn, account flags, wrong signers; oracles set (mostly the bank's own Pyth or Switchboard account, sometimes
+the wrong one, count or setup), fixed prices, and pulses over Pyth and Switchboard accounts rewritten each time (a
+random walk with jumps, random confidence, exponents and ages, now and then a broken account), the slot moving on so
+the circuit breaker counts them.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
 
@@ -165,7 +217,12 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 - **Logs.** The original writes about 160 `msg!` lines (configs echoed when a bank is added, values before and after a
   change). The port writes only the `WARN` lines, which the tests compare. Events, which indexers read, are the same.
 - **Panics.** Where the original panics (an assert on a negative rate, a clock behind the bank's last update, an
-  unknown curve type in an account), the port fails with a numbered error. The tests check that both fail.
+  unknown curve type in an account, an oracle setup byte past 28, a Pyth exponent past ±23), the port fails with a
+  numbered error. The tests check that both fail.
+- **Undecodable Pyth accounts.** The original fails with `BorshIoError`, a runtime error without a custom code; the
+  port fails with error 1. The tests check that both fail.
+- **Oracles not ported.** Setting a bank of the matching asset tag to a venue, mSOL, LST or PT setup, and pricing
+  one, stops in the port where the original goes on to read the venue's state.
 
 ## Cost
 
@@ -208,6 +265,17 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_pool_withdraw_fees` | 13,558 | 2,493 | −82% |
 | `lending_pool_withdraw_insurance` | 13,536 | 2,495 | −82% |
 | `lending_pool_withdraw_fees_permissionless` | 10,773 | 2,378 | −78% |
+| `lending_pool_configure_bank_oracle`, Pyth | 7,337 | 1,206 | −84% |
+| `lending_pool_configure_bank_oracle`, Switchboard | 7,258 | 1,212 | −83% |
+| `lending_pool_set_oracle_price` | 4,644 | 1,129 | −76% |
+| `lending_pool_pulse_bank_price_cache`, Pyth | 14,147 | 6,018 | −57% |
+| `lending_pool_pulse_bank_price_cache`, Switchboard | 7,755 | 3,056 | −61% |
+| `lending_pool_pulse_bank_price_cache`, fixed | 3,815 | 1,048 | −73% |
+| `lending_pool_pulse_bank_price_cache`, an hour of interest first | 41,299 | 22,504 | −46% |
+| `lending_pool_pulse_bank_price_cache`, the breaker's reference moved | 27,267 | 10,951 | −60% |
+| `lending_pool_pulse_bank_price_cache`, a tier-3 trip breaking the bank | 24,401 | 9,740 | −60% |
 
-Across the 125 transactions that succeed, the port uses 36–97% fewer compute units; across the 118 refused ones,
-56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
+Across the 125 transactions of the first file that succeed, the port uses 36–97% fewer compute units; across the 118
+refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
+In the oracle file, the 72 that succeed use 42–84% fewer; the 76 refused ones 8–93% fewer (the least: a Pyth price
+scaled by 10^23 before it overflows).
