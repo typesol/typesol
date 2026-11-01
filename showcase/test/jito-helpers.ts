@@ -7,14 +7,14 @@ import {
   type KeyPairSigner,
   AccountRole,
   address,
-  generateKeyPairSigner,
+  createKeyPairSignerFromPrivateKeyBytes,
   getAddressDecoder,
   getAddressEncoder,
   lamports,
 } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
@@ -83,7 +83,16 @@ export function merkle(leaves: [Address, bigint][]) {
 
 /** One original and its port side by side: send to both and compare. `source`: a file of showcase/mainnet/jito-mev, or an absolute path. */
 export function pairOf(so: string, source: string, programId: Address) {
+  // Keys come from FUZZ_SEED (or a fixed seed) and a counter, not the system's randomness: the order of keys decides
+  // how balances sort, so a fuzz failure reproduces only with the same keys.
+  const keySeed = process.env.FUZZ_SEED ?? "typesol-pair";
+  let keyCount = 0;
   const s = {
+    /** The next key pair of this pair's sequence. */
+    async key(): Promise<KeyPairSigner> {
+      const bytes = createHash("sha256").update(`${keySeed}:${so}:${keyCount++}`).digest();
+      return createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(bytes));
+    },
     d: undefined as unknown as Deployed,
     original: undefined as unknown as LiteSVM,
     cu: {} as Record<string, [bigint, bigint]>,
@@ -116,13 +125,13 @@ export function pairOf(so: string, source: string, programId: Address) {
       };
     },
     async funded(sol = 100n) {
-      const k = await generateKeyPairSigner();
+      const k = await s.key();
       for (const vm of s.vms()) vm.airdrop(k.address, lamports(sol * 1_000_000_000n));
       return k;
     },
     /** A vote account whose node key is `node`. */
     async voteAccount(node: Address) {
-      const v = (await generateKeyPairSigner()).address;
+      const v = (await s.key()).address;
       const data = Buffer.alloc(3762);
       data.writeUInt32LE(2, 0);
       key(node).copy(data, 4);
@@ -147,14 +156,14 @@ export function pairOf(so: string, source: string, programId: Address) {
     },
     /** An account (some data, rent-exempt) owned by `owner`, in both. */
     async ownedBy(owner: Address) {
-      const a = (await generateKeyPairSigner()).address;
+      const a = (await s.key()).address;
       for (const vm of s.vms())
         vm.setAccount({ address: a, data: new Uint8Array(64), executable: false, lamports: lamports(10_000_000n), programAddress: owner, space: 64n });
       return a;
     },
     /** A fresh, empty system account: one a payout would leave below rent. */
     async empty() {
-      return (await generateKeyPairSigner()).address;
+      return (await s.key()).address;
     },
     lamportsOf(a: Address) {
       return s.original.getAccount(a).exists ? (s.original.getAccount(a) as { lamports: bigint }).lamports : 0n;
@@ -182,6 +191,8 @@ export function pairOf(so: string, source: string, programId: Address) {
         return "failed";
       }
       expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
+      // PAIR_PORT_LOGS=<label>: the port's logs for that transaction (with TYPESOL_PROFILE=1, for `typesol profile`).
+      if (process.env.PAIR_PORT_LOGS === label) writeFileSync(`${process.env.PAIR_PORT_LOGS_FILE ?? "port-logs.txt"}`, logs(b));
       // PAIR_LOG=<code>: where the original failed with that code (its last log lines).
       if (process.env.PAIR_LOG && outcome(a).includes(`code: ${process.env.PAIR_LOG} `))
         console.log(`${label}: original failed\n  ${logs(a).split("\n").slice(-4).join("\n  ")}`);

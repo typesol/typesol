@@ -1,7 +1,7 @@
 // Marginfi's mainnet binary (test/programs/marginfi_v2.so) and showcase/mainnet/marginfi side by side, for the differential test
 // (showcase/test/marginfi.test.ts) and the fuzzer (showcase/test/fuzz-marginfi.test.ts): instruction builders, bank
 // configs, and writes into both of state the ported instructions cannot reach yet.
-import { type Address, type Instruction, type KeyPairSigner, address, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, address, lamports } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -218,7 +218,7 @@ export function marginfiPair() {
 
   /** A mint of `program` (82 bytes, no extensions) with `decimals`, written straight into both. */
   const mint = async (program: Address, decimals: number) => {
-    const m = (await generateKeyPairSigner()).address;
+    const m = (await s.key()).address;
     const data = Buffer.alloc(82);
     data.writeUInt32LE(1, 0);
     key(admin.address).copy(data, 4);
@@ -251,7 +251,7 @@ export function marginfiPair() {
   ): Promise<[Instruction, Bank]> => {
     let bank: Bank;
     if (opts.seed === undefined) {
-      const k = await generateKeyPairSigner();
+      const k = await s.key();
       bank = { address: k.address, signer: k, v: await vaults(k.address) };
     } else {
       const seed = Buffer.alloc(8);
@@ -341,7 +341,7 @@ export function marginfiPair() {
   const sysvar = { address: INSTRUCTIONS };
   /** A token account of `m` owned by `owner` (165 bytes, SPL Token), written straight into both. */
   const tokenAccount = async (m: Address, owner: Address, amount = 0n, program: Address = TOKEN_PROGRAM) => {
-    const a = (await generateKeyPairSigner()).address;
+    const a = (await s.key()).address;
     const data = Buffer.alloc(165);
     key(m).copy(data, 0);
     key(owner).copy(data, 32);
@@ -353,7 +353,7 @@ export function marginfiPair() {
   };
   /** A Token-2022 mint with a transfer fee (basis points, maximum), created through Token-2022 in both. */
   const feeMint = async (decimals: number, basisPoints: number, maximumFee: bigint) => {
-    const m = await generateKeyPairSigner();
+    const m = await s.key();
     const exts = [
       {
         __kind: "TransferFeeConfig" as const,
@@ -390,7 +390,7 @@ export function marginfiPair() {
   };
   /** A Token-2022 token account of `m` (with its extensions' room) owned by `owner`, through Token-2022 in both. */
   const t22Account = async (m: Address, owner: Address, amount = 0n) => {
-    const a = await generateKeyPairSigner();
+    const a = await s.key();
     const space = 182;
     const ixs: Instruction[] = [
       getCreateAccountInstruction({
@@ -657,6 +657,30 @@ export function marginfiPair() {
       ]),
       opts.rest ?? [],
     );
+  const borrow = (
+    group: Address,
+    account: Address,
+    authority: KeyPairSigner,
+    bank: BankRef,
+    to: Address,
+    amount: bigint,
+    opts: { program?: Address; rest?: Address[] } = {},
+  ) =>
+    withRest(
+      s.ix("lending_account_borrow", { amount: new BN(amount.toString()) }, [
+        { address: group },
+        { address: account, writable: true },
+        { address: authority.address, signer: authority },
+        { address: bank.address, writable: true },
+        { address: to, writable: true },
+        { address: bank.v.liquidityAuth },
+        { address: bank.v.liquidity, writable: true },
+        { address: opts.program ?? TOKEN_PROGRAM },
+      ]),
+      opts.rest ?? [],
+    );
+  const pulseHealth = (account: Address, group: Address, rest: Address[] = []) =>
+    withRest(s.ix("lending_account_pulse_health", {}, [{ address: account, writable: true }, { address: group }]), rest);
   const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
 
@@ -671,6 +695,8 @@ export function marginfiPair() {
     setOraclePrice,
     pulse,
     withdraw,
+    borrow,
+    pulseHealth,
     createAta,
     repay,
     ata,

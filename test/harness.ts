@@ -46,7 +46,9 @@ export async function deployExample(name: string, opts: { svm?: LiteSVM; program
 export async function deployFile(file: string, opts: { svm?: LiteSVM; programId?: Address } = {}): Promise<Deployed> {
   const programId = opts.programId ?? (await generateKeyPairSigner()).address;
   const out = mkdtempSync(path.join(os.tmpdir(), `typesol-${path.basename(file, ".ts")}-`));
-  const res = build(file, out, programId);
+  // TYPESOL_PROFILE=1: a --profile build (a marker and the compute units left before each line), to find where a
+  // transaction spends: run it and pass its logs to `typesol profile`.
+  const res = build(file, out, programId, { profile: !!process.env.TYPESOL_PROFILE });
   const svm = opts.svm ?? new LiteSVM();
   svm.addProgramFromFile(programId, res.soPath);
   rmSync(out, { recursive: true, force: true }); // loaded: the build files are not needed again

@@ -234,7 +234,9 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
             name: f.idlName ?? fieldIdlName(f.name),
             ...docsOf(s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name)),
             type: f.idlBytes
-              ? { array: ["u8", f.idlBytes] }
+              ? f.type.kind === "array"
+                ? { array: [{ array: ["u8", f.idlBytes] }, f.type.len] }
+                : { array: ["u8", f.idlBytes] }
               : s.layout === "borsh" || s.wire === "borsh"
                 ? borshIdlType(f.type)
                 : idlType(f.type, model.events.has(s.name) && !model.accountStructs.has(s.name)),

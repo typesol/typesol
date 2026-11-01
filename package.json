@@ -70,7 +70,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/*.ts\" \"test/*/*.test.ts\" \"showcase/test/*.ts\" \"showcase/test/*/*.test.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\"",
     "lint": "prettier --check \"src/**/*.ts\" \"test/*.ts\" \"test/*/*.test.ts\" \"showcase/test/*.ts\" \"showcase/test/*/*.test.ts\" \"scripts/**/*.ts\" \"lib/**/*.ts\" && pnpm typecheck",
     "prepublishOnly": "pnpm lint && pnpm test",
-    "test:core": "vitest run test",
+    "test:core": "vitest run --exclude 'showcase/**'",
     "test:showcase": "vitest run showcase"
   },
   "engines": {

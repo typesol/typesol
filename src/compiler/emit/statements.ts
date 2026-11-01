@@ -994,9 +994,11 @@ export abstract class StatementEmitter extends CpiEmitter {
         if (mutable) this.fail(d, "bind struct values with const (their fields can still be updated)");
         if (structType.size === undefined || structType.vec) this.fail(d.type!, `${structType.name} has variable-size fields and cannot be a local`);
         this.line(`TSS_${structType.name} ${c}__v;`);
-        this.writeAggregate({ lv: `${c}__v`, type: { kind: "struct", name: structType.name }, writable: true }, init);
+        this.writeAggregate({ lv: `${c}__v`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
         this.line(`TSS_${structType.name} *${c} = &${c}__v;`);
-        this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: structType.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        this.scopes
+          .at(-1)!
+          .set(name, { c, type: { kind: "structRef", struct: structType.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
         continue;
       }
       // Data enums: `const a: Action = { kind: "X", ... }` builds a local; `const a = acct.action` aliases storage.
@@ -1030,12 +1032,15 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (target) {
         if (mutable) this.fail(d, "bind struct references with const");
         this.line(`TSS_${target.struct} *${c} = ${target.ptr};`);
+        // A struct a helper returned lives in a local this function owns, not in account data.
+        const owned = ts.isCallExpression(init) && !!this.helperOf(init);
         this.scopes.at(-1)!.set(name, {
           c,
           type: { kind: "structRef", struct: target.struct, writable: target.writable },
           mutable: false,
-          paths: this.pathsOf(init),
+          paths: owned ? [`@${c}`] : this.pathsOf(init),
           decl: d,
+          ...(owned ? { owned } : {}),
         });
         continue;
       }
@@ -1058,7 +1063,9 @@ export abstract class StatementEmitter extends CpiEmitter {
       if ((type.kind === "account" || type.kind === "structRef") && mutable) this.fail(d, "bind accounts with const");
       if (type.kind === "pubkey") this.line(`SolPubkey ${c} = *(${v.c});`);
       else this.line(`${valueC(type)}${type.kind === "account" ? "" : " "}${c} = ${this.ownedString(v).c};`);
-      this.scopes.at(-1)!.set(name, { c, type, mutable });
+      // A struct a helper returned lives in a local this function owns, not in account data.
+      const owned = type.kind === "structRef" && ts.isCallExpression(init) && !!this.helperOf(init);
+      this.scopes.at(-1)!.set(name, { c, type, mutable, ...(owned ? { paths: [`@${c}`], owned } : {}) });
     }
   }
 

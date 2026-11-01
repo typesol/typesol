@@ -1462,12 +1462,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
         // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): its value.
         if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
         if (!r || !sameType(r.type, want)) this.fail(n, `expected a ${typeName(want)}`);
-        return this.snapshotPlace(r.lv, want, h);
+        return this.snapshotPlace(r.lv, want, h, n);
       }
       case "dataEnumArg": {
         const r = this.ref(n);
         if (!r || r.type.kind !== "dataEnum" || r.type.name !== p.type.name) this.fail(n, `expected a ${p.type.name}`);
-        return this.snapshotPlace(r.lv, { kind: "dataEnum", name: p.type.name }, h);
+        return this.snapshotPlace(r.lv, { kind: "dataEnum", name: p.type.name }, h, n);
       }
       case "vecArg": {
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
@@ -1483,8 +1483,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
    * A struct/array/data-enum helper argument. Helpers that take accounts may change account data, so they get a
    * copy taken at the call (JS passes the object as it was); other helpers cannot write, so a pointer is enough.
    */
-  protected snapshotPlace(lv: string, type: FieldType, h: Helper): string {
+  protected snapshotPlace(lv: string, type: FieldType, h: Helper, node?: ts.Expression): string {
     if (!h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining")) return `(&${lv})`;
+    // A struct this function owns (a literal, or a helper's result it holds), or part of one, is not account data: what
+    // the helper writes cannot change it, so the helper reads it in place.
+    if (node && this.ownedRoot(node)) return `(&${lv})`;
     const n = this.fieldBytes(type);
     // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
     const t = this.tmp("argc");
@@ -1493,6 +1496,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
     this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;
+  }
+
+  /** Whether `node` is (part of) a struct value this function owns: `h`, `h.inner`, `h.list.get(i)`. */
+  protected ownedRoot(node: ts.Expression): boolean {
+    let n: ts.Expression = node;
+    for (;;) {
+      if (ts.isParenthesizedExpression(n)) n = n.expression;
+      else if (ts.isPropertyAccessExpression(n)) n = n.expression;
+      else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "get") n = n.expression.expression;
+      else break;
+    }
+    return ts.isIdentifier(n) && !!this.lookup(n.text)?.owned;
   }
 
   /** `signer([...seeds])` (one PDA signature), or a SignerSeeds parameter passed on. */

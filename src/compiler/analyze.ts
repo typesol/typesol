@@ -1149,10 +1149,12 @@ function analyzeStructs(
         const problem = cNameProblem(name);
         if (problem) reporter.fail(m.name, problem);
         const type = fieldType(m.type);
-        // `/** @bytes */`: an integer the IDL describes as its bytes (Marginfi's WrappedI80F48 { value: [u8; 16] }).
+        // `/** @bytes */`: an integer the IDL describes as its bytes (Marginfi's WrappedI80F48 { value: [u8; 16] }), or a
+        // FixedArray of them, each its bytes (Marginfi's HealthCache.prices: [[u8; 8]; 16], f64 bits).
         const bytesTag = ts.getJSDocTags(m).find((t) => t.tagName.text === "bytes");
-        if (bytesTag && type.kind !== "int") reporter.fail(bytesTag, "@bytes is for integer fields: the IDL then shows the integer's bytes, [u8; N]");
-        const idlBytes = bytesTag && type.kind === "int" ? Number(/\d+/.exec(type.name)![0]) / 8 : undefined;
+        const bytesOf = type.kind === "int" ? type : type.kind === "array" && type.elem.kind === "int" ? type.elem : undefined;
+        if (bytesTag && !bytesOf) reporter.fail(bytesTag, "@bytes is for integer fields (or FixedArrays of integers): the IDL then shows the bytes, [u8; N]");
+        const idlBytes = bytesTag && bytesOf ? Number(/\d+/.exec(bytesOf.name)![0]) / 8 : undefined;
         const nameTag = ts.getJSDocTags(m).find((t) => t.tagName.text === "idlName");
         const idlName = typeof nameTag?.comment === "string" ? nameTag.comment.trim() : undefined;
         if (nameTag && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(idlName ?? "")) reporter.fail(nameTag, "@idlName takes the field's name in the IDL: @idlName _pad0");
