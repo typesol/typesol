@@ -8,7 +8,8 @@ codes, and says so here.
 
 - New: helpers take remaining accounts. A `RemainingAccount` parameter (`remainingAccounts().get(i)` at the call)
   gives the helper the account's key, owner, lamports and data length, `readData` at any offset, and `loadAccount` /
-  `loadAccountMut` of a struct; a read-only view sees what the instruction already wrote through the same account.
+  `loadAccountMut` of a struct; a read-only view sees what the instruction already wrote through the same account, and
+  a `loadAccountMut` claims the account for the rest of the instruction (a second one fails with 2040).
 - New: `require(condition, code)` with a `u32` code computed at run time fails with that code (a helper that returns
   its error as a value, as Rust's `?` passes one on: `require(r.err === 0n, r.err)`); a zero code fails with 5100.
 - Examples: Marginfi's oracles (part 3 of the port, docs/case-study-marginfi.md): pointing a bank at a Pyth push or
