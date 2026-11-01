@@ -1623,6 +1623,32 @@ describe.skipIf(!existsSync(ORIGINAL))("examples/raydium-clmm against Raydium CL
     // The new token arrived: both hops ran.
     expect(bytesAt(thirdAcct).readBigUInt64LE(64)).toBeGreaterThan(before);
     expect(await both("swap_router_base_in, too little out", pool.user, [await route(2_000_000_000n, 10n ** 13n)], watch)).toBe(custom(errors.TooLittleOutputReceived!));
+    // Routes that come back to a pool: each hop sees what the hops before it did to the pool.
+    const revisit = async (amount: bigint, hops: [Pool, Address][]) => {
+      const accounts: Meta[] = [];
+      for (const [p, m] of hops) accounts.push(...(await hop(p, m)));
+      return ix("swap_router_base_in", { amount_in: new BN(amount.toString()), amount_out_minimum: new BN("0") }, [
+        { address: pool.user.address, signer: pool.user },
+        { address: pool.acct0, writable: true },
+        { address: pool.m0.address, writable: true },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        { address: MEMO },
+        ...accounts,
+      ]);
+    };
+    const back = (p: Pool, m: Address): [Pool, Address] => [p, m];
+    expect(
+      await both("swap_router_base_in, there and back in one pool", pool.user, [await revisit(3_000_000_000n, [back(pool, pool.m0.address), back(pool, pool.m1.address)])], watch),
+    ).toBe("ok");
+    expect(
+      await both(
+        "swap_router_base_in, four hops through two pools twice",
+        pool.user,
+        [await revisit(1_500_000_000n, [back(pool, pool.m0.address), back(poolB, pool.m1.address), back(poolB, third.address), back(pool, pool.m1.address)])],
+        watch,
+      ),
+    ).toBe("ok");
   });
 
   // Random swaps, positions opened, and liquidity added and taken out, in one pool: the same in both. Choices and
