@@ -12,7 +12,7 @@ codes, and says so here.
 - New: a `Hash` is a PDA seed (its 32 bytes).
 - Examples: Marginfi's orders, placed and closed: `marginfi_account_place_order`, `marginfi_account_close_order`,
   `marginfi_account_set_keeper_close_flags`, `marginfi_account_keeper_close_order`. Against the binary on mainnet:
-  1,222 transactions, the same IDL for all 81 ported instructions.
+  1,221 transactions, the same IDL for all 81 ported instructions.
 - New: `Option<Vec<T>>` instruction arguments (or `Vec<T> | null`, or of a FixedVec; Anchor's `Option<Vec<u8>>`): a
   tag byte, then the Vec when Some; `x !== null` before reading it as a list or passing it to a helper that takes the
   list.

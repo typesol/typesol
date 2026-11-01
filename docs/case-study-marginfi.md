@@ -247,7 +247,8 @@ of its last byte kept; before the bank exists, for the PDA its group, mint and s
 staging and localnet builds; the mainnet build panics once the bank and its vaults are created, and so does the port.
 
 **Part 5, orders.** `marginfi_account_place_order` (the authority: a stop loss, a take profit or both on two balances,
-one asset and one liability found by the original's binary search over the balances, which need not be sorted; each
+one asset and one liability found by the original's binary search over the balances, which need not be sorted (the
+port's search misses where Rust's does: checked on unsorted balances and in the fuzz steps); each
 tagged for the order, new tags searched from the last one used; the order is the PDA of the account and the sha256 of
 the two bank keys in byte order, so a pair has one; the fee state's flat fee to the fee wallet),
 `marginfi_account_close_order` (the authority or the governance admin, the rent to whom they name),
@@ -332,7 +333,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 804 in
+for the oracles, and 803 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -381,7 +382,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (804, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (803, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,

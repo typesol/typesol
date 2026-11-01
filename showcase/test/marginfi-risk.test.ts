@@ -2497,14 +2497,14 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editAccount(a, [["account_flags", flags | 2n, 8]]);
     await place("in a flash loan", u.owner, a, [usdc.address, third.address], sl(ONE));
     editAccount(a, [["account_flags", flags, 8]]);
-    // A second account, its deposits in several banks before a borrow: the balance search runs over them unsorted.
+    // A second account whose balances are not sorted: the balance search runs over them as the original's does.
     const v = await user([
       [third, 100_000_000n],
       [usdc, 300_000_000n],
       [fixed, 1_000n],
     ]);
-    tick();
-    await b("for orders, unsorted", v, sol, 500_000_000n);
+    // A debt written into a free slot, as deposits leave them: in no particular order of bank keys.
+    owe(v.account, sol, 500_000_000n * ONE);
     for (const k of [usdc, third, fixed]) await place(`each pair: ${k.kind}`, v.owner, v.account, [k.address, sol.address], sl(ONE));
     // Untagging (the authority): some banks, or all; then a keeper may close the orders left without their balances.
     const untag = (label: string, by: KeyPairSigner, account: Address, keys: Address[] | null) =>
