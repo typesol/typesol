@@ -30,4 +30,13 @@ trimmed() {
 trimmed T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt jito_tip_payment.so
 trimmed 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 jito_tip_distribution.so
 trimmed Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3 jito_priority_fee_distribution.so
-ls -la *.so
+# Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
+# checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded.
+for f in *.so; do
+  want="$(grep -E "^\| \`$f\` " SOURCES.md | grep -oE '[0-9a-f]{64}' | tail -1 || true)"
+  got="$(shasum -a 256 "$f" | cut -c1-64)"
+  if [[ -z "$want" ]]; then echo "$f: not in SOURCES.md" >&2
+  elif [[ "$want" == "$got" ]]; then echo "$f: sha256 as recorded"
+  else echo "$f: sha256 differs from SOURCES.md ($got): upgraded upstream since it was recorded?" >&2
+  fi
+done

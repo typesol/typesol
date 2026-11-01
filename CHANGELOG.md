@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- Repository: a NOTICE for the third-party material the tests use (Apache-2.0 program binaries in test/programs, with
+  the licence text, and the Marginfi and Raydium fixtures); a test that every committed binary is the one SOURCES.md
+  records (sha256); `scripts/fetch-programs.sh` reports fetched binaries whose hash differs.
 - New: `f64`, a 64-bit float held as its IEEE bits, for event and account fields (`f64FromBits`, `f64Bits`; the IDL
   says `f64`). No float arithmetic.
 - New: `Option<FixedArray<T, N>>` fields (Anchor's `Option<[u16; 3]>`), readable after narrowing with `.get(i)` or

@@ -371,5 +371,5 @@ built-in, a constraint or an error code. Then read [CONTRIBUTING.md](CONTRIBUTIN
 
 ## License
 
-[MIT](LICENSE). Third-party program binaries used by the tests are listed with their licenses in
-[test/programs/SOURCES.md](test/programs/SOURCES.md).
+[MIT](LICENSE). The tests also use third-party program binaries and data, none of it in the npm package: see
+[NOTICE](NOTICE) and [test/programs/SOURCES.md](test/programs/SOURCES.md).
