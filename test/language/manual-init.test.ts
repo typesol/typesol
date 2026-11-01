@@ -90,6 +90,22 @@ describe("creating accounts by hand", () => {
     expect(await order("11111111111111111111111111111111", "11111111111111111111111111111112")).toBe(1);
     expect(await order("So11111111111111111111111111111111111111112", "So11111111111111111111111111111111111111112")).toBe(2);
     expect(await order("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "So11111111111111111111111111111111111111112")).toBe(3);
+    // Keys that differ in one byte, at every position (the compare reads eight bytes at a time): as Buffer.compare.
+    const { web3 } = await import("@anchor-lang/core");
+    for (let at = 0; at < 32; at++)
+      for (const [x, y] of [
+        [0x00, 0x01],
+        [0x80, 0x7f],
+        [0xff, 0x00],
+      ]) {
+        const a = Buffer.alloc(32, 0x5a);
+        const b = Buffer.from(a);
+        a[at] = x!;
+        b[at] = y!;
+        if (at < 31) b[at + 1] = 0x00; // a later byte that would decide the other way, if the order were wrong
+        const want = Buffer.compare(a, b) < 0 ? 1 : 3;
+        expect(await order(new web3.PublicKey(a).toBase58(), new web3.PublicKey(b).toBase58()), `byte ${at}: ${x} vs ${y}`).toBe(want);
+      }
   });
 
   it("an ATA under one of several token programs: pass it to create", () => {

@@ -348,6 +348,14 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
               const at = s.path.includes(".") ? undefined : addressOf(s.path);
               return at && new Uint8Array(enc.encode(at));
             }
+            // `opt.unwrap_or(7)`: an Option argument, or 7 when it is None (Anchor's text for such a seed).
+            const fallback = /^(.*)\.unwrap_or\((-?\d+)\)$/.exec(s.path);
+            if (fallback) {
+              const arg = def.args.find((x) => x.name === fallback[1]);
+              const inner = arg && typeof arg.type === "object" && "option" in arg.type ? (arg.type.option as IdlType) : undefined;
+              const value = arg && (argsIn[arg.name] ?? argsIn[camel(arg.name)]);
+              return inner === undefined ? undefined : argSeed(value === undefined || value === null ? BigInt(fallback[2]!) : value, inner);
+            }
             const arg = def.args.find((x) => x.name === s.path);
             const value = arg && (argsIn[arg.name] ?? argsIn[camel(arg.name)]);
             return arg && (argSeed(value, arg.type) ?? enumSeed(value, arg.type));

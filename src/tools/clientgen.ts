@@ -147,7 +147,8 @@ export const TYPESOL_ERRORS: Record<number, string> = {
 const INTS: Record<string, number> = { u8: 8, u16: 16, u32: 32, u64: 64, u128: 128, i8: 8, i16: 16, i32: 32, i64: 64, i128: 128 };
 const FLOATS: Record<string, number> = { f32: 32, f64: 64 };
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const PATH = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+/** A seed path: `arg`, `arg.field…`, or `opt.unwrap_or(N)` (Anchor's text for an Option argument with a default). */
+const PATH = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*(\.unwrap_or\(-?\d+\))?$/;
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const JS_RESERVED = new Set(
   (
@@ -1109,6 +1110,14 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
     const seedExpr = (s: IdlSeed, group: string, refs: Refs = BUILDER): string | { why: string } => {
       if (s.kind === "const") return bytes(s.value!);
       if (s.kind === "arg") {
+        // `opt.unwrap_or(7)`: an Option argument, or 7 when it is None.
+        const fallback = /^(.*)\.unwrap_or\((-?\d+)\)$/.exec(s.path!);
+        if (fallback) {
+          const t = argType.get(fallback[1]!);
+          if (t === undefined || typeof t !== "object" || t.option === undefined || !(typeof t.option === "string" && t.option in INTS))
+            return { why: `the seed ${s.path} is not an Option integer argument with a default` };
+          return `${codec(t.option)}.encode(${refs.arg(camel(fallback[1]!))} ?? ${fallback[2]})`;
+        }
         // `params.id`: a field (of a field…) of a struct argument.
         const [head, ...rest] = s.path!.split(".");
         let t = argType.get(head!);

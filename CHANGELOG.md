@@ -6,6 +6,19 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's accounts and deposits (part 2 of the port, docs/case-study-marginfi.md): opening accounts as
+  keypairs and PDAs, deposits (SPL Token, and Token-2022 with the transfer fee added), closing balances and accounts.
+  Against the binary on mainnet: the same outcome, account bytes and events on 181 transactions now (66 new), the same
+  IDL for all 16 ported instructions, and the random runs cover them; 27–97% fewer compute units on the ones that
+  succeed.
+- Faster: Pubkeys and hashes are ordered eight bytes at a time (`a.compare(b)`, the Merkle proof check). A Marginfi
+  balance close, which sorts the account's balances, went from 6,610 to 1,865 compute units. Programs that compare
+  keys or hashes build to different binaries: here examples/raydium-cp-swap, raydium-clmm, jito-mev's two
+  distribution programs and marginfi.
+- New: an Option argument with a default as a seed, `tag ?? 7n`, is recorded in the IDL as Anchor records
+  `tag.unwrap_or(7)`, and `typesol client` and `typesol/testing` derive such PDAs. Fix: `typesol client` refused an IDL
+  with such a seed (Marginfi's on-chain one).
+
 - Examples: Marginfi's group and bank administration (part 2 of the port, docs/case-study-marginfi.md): eleven
   instructions, from the fee state and groups to adding banks (SPL Token and Token-2022, with or without a seed),
   configuring them (operational states, curves, liquidation fees, the circuit breaker, e-mode checks, frozen banks)

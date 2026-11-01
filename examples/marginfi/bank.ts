@@ -1,20 +1,20 @@
 // Marginfi's bank (programs/marginfi/src/state/bank.rs, bank_config.rs and bank_cache.rs @ c5d440f6): creating one
 // from its compact config, checking a config, the interest accrual and the rate cache. Amounts and share values are
 // I80F48 (examples/marginfi/i80f48.ts).
-import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, u32 as toU32, u64 as toU64 } from "typesol";
+import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, i64 as toI64, u32 as toU32, u64 as toU64 } from "typesol";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import { MarginfiError } from "./errors";
-import { type InterestRateConfigOpt, type LendingPoolBankAccrueInterestEvent } from "./events";
-import { I80F48_MAX, I80F48_ONE, I80F48_ZERO, fxAdd, fxDiv, fxMul, fxSub, fxToF64Bits } from "./i80f48";
+import { type InterestRateConfigOpt, type LendingPoolBankAccrueInterestEvent, type RateLimitFlowEvent } from "./events";
+import { I80F48_MAX, I80F48_ONE, I80F48_ZERO, fxAdd, fxDiv, fxMul, fxFromU64, fxSub, fxToF64Bits, fxToU64 } from "./i80f48";
 import { accrualChanges, calcInterestRate, milliToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
-import { type Bank, type BankConfig, type MarginfiGroup, BankOperationalState, OracleSetup, RiskTier } from "./state";
+import { type Bank, type BankConfig, type MarginfiGroup, type RateLimitWindow, BankOperationalState, OracleSetup, RiskTier } from "./state";
 
 /** Bank.flags */
 export const CLOSE_ENABLED_FLAG: u64 = 16n;
 export const IS_T22: u64 = 128n;
 export const BANK_SEED_KNOWN: u64 = 256n;
 const ORACLE_MIN_AGE: u16 = 10n;
-const LIQ_CACHE_LOCKED_FLAG: u8 = 1n;
+export const LIQ_CACHE_LOCKED_FLAG: u8 = 1n;
 const U32_MAX: u64 = 4294967295n;
 
 export function assetAmount(bank: Mut<Bank>, shares: i128): i128 {
@@ -414,4 +414,145 @@ export function checkSameAssetFee(bank: Mut<Bank>, group: Account<MarginfiGroup>
   const leverage = u32ToBasis(group.same_asset_emode_maint_leverage);
   if (leverage <= I80F48_ONE) return;
   require(feesFitLeverage(totalLiquidationFee(bank), leverage), MarginfiError.MaxMaintLeverageExceeded);
+}
+
+// ---- shares, limits and states (Bank's share methods, utils::validate_bank_state, the rate limiter) ---------------
+
+export const BANK_ASSET_TAG_STAKED: u8 = 2n;
+export const PREMIUM_ACTIVE: u64 = 8192n;
+export const TOKENLESS_REPAYMENTS_ALLOWED: u64 = 32n;
+const U64_MAX: u64 = 18446744073709551615n;
+
+/** get_asset_shares: zero when the share value is zero. */
+export function getAssetShares(bank: Mut<Bank>, value: i128): i128 {
+  if (bank.asset_share_value.value === I80F48_ZERO) return I80F48_ZERO;
+  return fxDiv(value, bank.asset_share_value.value);
+}
+export function getLiabilityShares(bank: Mut<Bank>, value: i128): i128 {
+  return fxDiv(value, bank.liability_share_value.value);
+}
+
+/** change_asset_shares: a positive change must leave the deposits below the deposit limit (unless bypassed). */
+export function changeAssetShares(bank: Mut<Bank>, shares: i128, bypassDepositLimit: boolean): void {
+  const total = fxAdd(bank.total_asset_shares.value, shares);
+  if (shares > I80F48_ZERO && bank.config.deposit_limit !== U64_MAX && !bypassDepositLimit)
+    require(assetAmount(bank, total) < fxFromU64(bank.config.deposit_limit), MarginfiError.BankAssetCapacityExceeded);
+  bank.total_asset_shares.value = total;
+}
+/** change_liability_shares: a positive change must leave the borrows below the borrow limit (unless bypassed). */
+export function changeLiabilityShares(bank: Mut<Bank>, shares: i128, bypassBorrowLimit: boolean): void {
+  bank.total_liability_shares.value = fxAdd(bank.total_liability_shares.value, shares);
+  if (!bypassBorrowLimit && shares > I80F48_ZERO && bank.config.borrow_limit !== U64_MAX)
+    require(liabilityAmount(bank, bank.total_liability_shares.value) < fxFromU64(bank.config.borrow_limit), MarginfiError.BankLiabilityCapacityExceeded);
+}
+
+/** get_remaining_deposit_capacity: what may still be deposited, one below the limit (no limit: u64::MAX). */
+export function remainingDepositCapacity(bank: Mut<Bank>): u64 {
+  if (bank.config.deposit_limit === U64_MAX) return U64_MAX;
+  const current = assetAmount(bank, bank.total_asset_shares.value);
+  const limit = fxFromU64(bank.config.deposit_limit);
+  if (current >= limit) return 0n;
+  return fxToU64(fxSub(fxSub(limit, current), I80F48_ONE));
+}
+
+/** is_cb_halted: the breaker is on, has tripped, and its halt has not ended. */
+export function isCbHalted(bank: Mut<Bank>, timestamp: i64): boolean {
+  return (bank.flags & CIRCUIT_BREAKER_ENABLED) === CIRCUIT_BREAKER_ENABLED && bank.cb_tier > 0n && timestamp < bank.cb_halt_ended_at;
+}
+
+/** utils::InstructionKind */
+export const FAILS_IN_REDUCE_STATE: u8 = 1n;
+export const FAILS_IN_PAUSED_STATE: u8 = 2n;
+export const FAILS_IF_PAUSED_OR_REDUCE_STATE: u8 = 3n;
+
+/**
+ * validate_bank_state: a bank killed by bankruptcy or not yet initialized refuses everything; a halted or
+ * circuit-broken one refuses what is not halt-safe; then the (pre-break) state's rules for this kind of instruction.
+ */
+export function validateBankState(bank: Mut<Bank>, kind: u8, haltSafe: boolean, timestamp: i64): void {
+  const state = bank.config.operational_state;
+  require(state !== BankOperationalState.KilledByBankruptcy, MarginfiError.BankKilledByBankruptcy);
+  require(state !== BankOperationalState.Uninitialized, MarginfiError.BankUninitialized);
+  const broken = state === BankOperationalState.CircuitBroken;
+  require(haltSafe || !(broken || isCbHalted(bank, timestamp)), MarginfiError.BankCircuitBreakerHalted);
+  const effective = cbEffectiveOperationalState(bank);
+  require(effective !== BankOperationalState.KilledByBankruptcy, MarginfiError.BankKilledByBankruptcy);
+  require(effective !== BankOperationalState.Uninitialized, MarginfiError.BankUninitialized);
+  const reduce = effective === BankOperationalState.ReduceOnly || effective === BankOperationalState.ReduceOnlyWithBorrowingPower;
+  if (kind === FAILS_IN_REDUCE_STATE) require(!reduce, MarginfiError.BankReduceOnly);
+  else if (kind === FAILS_IN_PAUSED_STATE) require(effective !== BankOperationalState.Paused, MarginfiError.BankPaused);
+  else if (kind === FAILS_IF_PAUSED_OR_REDUCE_STATE) {
+    require(effective !== BankOperationalState.Paused, MarginfiError.BankPaused);
+    require(!reduce, MarginfiError.BankReduceOnly);
+  }
+}
+
+/** RateLimitWindow::maybe_advance_window, then record_inflow (an enabled window): an inflow gives back capacity. */
+function windowInflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLimitWindow {
+  let start = w.window_start;
+  let prev = w.prev_window_outflow;
+  let cur = w.cur_window_outflow;
+  if (w.window_duration !== 0n) {
+    const elapsed = saturatingSubI64(timestamp, start);
+    if (elapsed >= 0n) {
+      const e = toU64(elapsed);
+      // `window_duration * 2` overflows (panics) in the original for durations past u64::MAX / 2.
+      require(w.window_duration <= 9223372036854775807n, MarginfiError.MathError);
+      if (e >= w.window_duration * 2n) {
+        prev = 0n;
+        cur = 0n;
+        start = timestamp;
+      } else if (e >= w.window_duration) {
+        prev = cur;
+        cur = 0n;
+        start = saturatingAddI64(start, i64Wrap(w.window_duration));
+      }
+    }
+  }
+  const inflow: i64 = amount <= 9223372036854775807n ? i64Of(amount) : 9223372036854775807n;
+  return {
+    max_outflow: w.max_outflow,
+    window_duration: w.window_duration,
+    window_start: start,
+    prev_window_outflow: prev,
+    cur_window_outflow: saturatingSubI64(cur, inflow),
+  };
+}
+function i64Of(n: u64): i64 {
+  return toI64(n);
+}
+/** `as i64` on a u64: wraps past i64::MAX. */
+function i64Wrap(n: u64): i64 {
+  return n <= 9223372036854775807n ? toI64(n) : toI64(n - 9223372036854775808n) - 9223372036854775807n - 1n;
+}
+function saturatingSubI64(a: i64, b: i64): i64 {
+  if (b > 0n && a < -9223372036854775808n + b) return -9223372036854775808n;
+  if (b < 0n && a > 9223372036854775807n + b) return 9223372036854775807n;
+  return a - b;
+}
+function saturatingAddI64(a: i64, b: i64): i64 {
+  if (b > 0n && a > 9223372036854775807n - b) return 9223372036854775807n;
+  if (b < 0n && a < -9223372036854775808n - b) return -9223372036854775808n;
+  return a + b;
+}
+
+/**
+ * record_deposit_inflow: outside flash loans, receiverships, deleverages and rebalances, a deposit gives back the
+ * bank's rate-limit capacity and, when the group limits flows, is reported for the flow admin to aggregate.
+ */
+export function recordDepositInflow(bank: Mut<Bank>, group: Account<MarginfiGroup>, groupKey: Pubkey, bankKey: Pubkey, accountFlags: u64, amount: u64, timestamp: i64): void {
+  // ACCOUNT_IN_FLASHLOAN | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_REBALANCE
+  if ((accountFlags & 306n) !== 0n) return;
+  if (bank.rate_limiter.hourly.max_outflow > 0n) bank.rate_limiter.hourly = windowInflow(bank.rate_limiter.hourly, amount, timestamp);
+  if (bank.rate_limiter.daily.max_outflow > 0n) bank.rate_limiter.daily = windowInflow(bank.rate_limiter.daily, amount, timestamp);
+  if (group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n)
+    emit<RateLimitFlowEvent>({
+      group: groupKey,
+      bank: bankKey,
+      mint: bank.mint,
+      flow_direction: 1n,
+      native_amount: amount,
+      mint_decimals: bank.mint_decimals,
+      current_timestamp: timestamp,
+    });
 }

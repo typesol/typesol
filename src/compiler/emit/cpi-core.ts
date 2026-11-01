@@ -102,6 +102,16 @@ export abstract class CpiCoreEmitter extends CallEmitter {
       b.writeBigUInt64LE(value);
       return { kind: "const", value: [...b] };
     }
+    // `opt ?? 0n` on an Option argument: Anchor's IDL keeps the Rust expression's text, `opt.unwrap_or(0)`.
+    if (
+      ts.isBinaryExpression(el) &&
+      el.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+      ts.isBigIntLiteral(el.right) &&
+      ts.isIdentifier(el.left)
+    ) {
+      const arg = this.describeSeed(el.left);
+      if (arg?.kind === "arg") return { kind: "arg", path: `${arg.path}.unwrap_or(${BigInt(el.right.text.slice(0, -1).replace(/_/g, ""))})` };
+    }
     // Only the argument itself, not a local that shadows its name.
     if (ts.isIdentifier(el) && this.ix?.args.some((a) => a.name === el.text) && this.lookup(el.text) === this.args.get(el.text))
       return {

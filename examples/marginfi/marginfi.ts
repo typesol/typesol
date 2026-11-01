@@ -8,11 +8,13 @@
 import {
   type Account,
   type AccountInfo,
+  type CloseTo,
+  type SystemAccount,
   type Address,
   type Mint,
   type TokenAccount,
   type TokenInterface,
-  type u8,
+  type u16,
   type InstructionsSysvar,
   type HasOne,
   type Init,
@@ -25,26 +27,57 @@ import {
   type u32,
   constraint,
   emit,
+  invoke,
+  programId,
+  readData,
+  readonly,
+  readonlySigner,
+  remainingAccounts,
+  transferFeeInverse,
+  writable,
   log,
   now,
   pubkey,
   require,
   u64,
+  u8,
 } from "typesol";
+import {
+  ACCOUNT_DISABLED,
+  ACCOUNT_FROZEN,
+  ACCOUNT_IN_RECEIVERSHIP,
+  INCREASE_DEPOSIT_ONLY,
+  assetTagsCompatible,
+  canBeClosed,
+  closeBalance,
+  findBalance,
+  findOrCreateBalance,
+  increaseBalance,
+  initMarginfiAccount,
+  notFrozenForAuthority,
+  signerAuthorized,
+  sortBalances,
+  syncIndexerFlags,
+} from "./account";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import {
   BANK_SEED_KNOWN,
   CIRCUIT_BREAKER_ENABLED,
+  FAILS_IF_PAUSED_OR_REDUCE_STATE,
   FREEZE_SETTINGS,
   IS_T22,
+  TOKENLESS_REPAYMENTS_ALLOWED,
   accrueInterest,
   checkSameAssetFee,
   configureBank,
   initBank,
+  recordDepositInflow,
+  remainingDepositCapacity,
   totalLiquidationFee,
   updateBankCache,
   updateInterestRateConfig,
   validateBankConfig,
+  validateBankState,
   validateEmodeEntries,
 } from "./bank";
 import { MarginfiError } from "./errors";
@@ -52,13 +85,15 @@ import {
   type InterestRateConfigOpt,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
+  type LendingAccountDepositEvent,
   type LendingPoolBankCreateEvent,
+  type MarginfiAccountCreateEvent,
   type MarginfiGroupConfigureEvent,
   type MarginfiGroupCreateEvent,
 } from "./events";
-import { I80F48_ONE } from "./i80f48";
+import { I80F48_ONE, fxFromU64 } from "./i80f48";
 import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
-import { type Bank, type FeeState, type MarginfiGroup, type WrappedI80F48, BankOperationalState } from "./state";
+import { type Bank, type FeeState, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState } from "./state";
 
 const SYSTEM_PROGRAM_ID = pubkey("11111111111111111111111111111111");
 const ASSET_TAG_DEFAULT: u8 = 0n;
@@ -499,4 +534,182 @@ export function lendingPoolUpdateFeesDestinationAccount(
   constraint(destination_account, destination_account.mint === bank.mint, MarginfiError.InvalidFeesDestinationAccount);
   checkNoDurableNonce(instruction_sysvar);
   bank.fees_destination_account = destination_account.key;
+}
+
+// ---- marginfi accounts -------------------------------------------------------------------------------------------
+
+const PDA_FREE_THRESHOLD: u16 = 10000n;
+const TOKEN_PROGRAM_ID = pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+/**
+ * is_allowed_cpi_for_third_party_id: ids below 10,000 are free; a registered one only through a CPI from the
+ * program registered for it.
+ */
+function thirdPartyAllowed(ixs: InstructionsSysvar, id: u16): boolean {
+  if (id < PDA_FREE_THRESHOLD) return true;
+  let allowed = SYSTEM_PROGRAM_ID;
+  let known = true;
+  if (id === 10001n) allowed = pubkey("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
+  else if (id === 11111n) allowed = pubkey("AsgardVwpApNc9DgEsDAHJcvupPuRtLQSKDP9MQNw16N");
+  else if (id === 11123n) allowed = pubkey("6HyT8NQDpXY5wGkvX7haQVJ5nGUBVXQSkaT6Nf7fbsuJ");
+  else if (id === 11124n) allowed = pubkey("save8RQVPMWNTzU18t3GBvBkN9hT7jsGjiCQ28FpD9H");
+  else known = false;
+  if (!known) return false;
+  const top = ixs.get(ixs.currentIndex()).programId;
+  if (top === programId()) return false;
+  return top === allowed;
+}
+
+/** Create a marginfi account (a new keypair account) in a group, owned by `authority`. */
+export function marginfiAccountInitialize(
+  marginfi_group: Account<MarginfiGroup>,
+  marginfi_account: Init<MarginfiAccount>,
+  authority: Signer,
+  fee_payer: Mut<Signer>,
+  system_program: SystemProgram,
+): void {
+  constraint(marginfi_group, !protocolPaused(marginfi_group), MarginfiError.ProtocolPaused);
+  marginfi_account.create(fee_payer, null);
+  initMarginfiAccount(marginfi_account, marginfi_group.key, authority.key, u64(now()));
+  emit<MarginfiAccountCreateEvent>({
+    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: authority.key, marginfi_group: marginfi_group.key },
+  });
+}
+
+/**
+ * Create a marginfi account at the PDA ["marginfi_account", group, authority, account_index, third_party_id], so a
+ * client can find it again. A registered third-party id (10,000 and up) only through that party's program.
+ */
+export function marginfiAccountInitializePda(
+  marginfi_group: Account<MarginfiGroup>,
+  marginfi_account: Init<MarginfiAccount>,
+  authority: Signer,
+  fee_payer: Mut<Signer>,
+  instructions_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  system_program: SystemProgram,
+  account_index: u16,
+  third_party_id: Option<u16>,
+): void {
+  constraint(marginfi_group, !protocolPaused(marginfi_group), MarginfiError.ProtocolPaused);
+  const bump = marginfi_account.create(fee_payer, ["marginfi_account", marginfi_group.key, authority.key, account_index, third_party_id ?? 0n]);
+  if (third_party_id !== null) require(thirdPartyAllowed(instructions_sysvar, third_party_id), MarginfiError.Unauthorized);
+  initMarginfiAccount(marginfi_account, marginfi_group.key, authority.key, u64(now()));
+  marginfi_account.account_index = account_index;
+  marginfi_account.third_party_index = third_party_id ?? 0n;
+  marginfi_account.bump = bump;
+  emit<MarginfiAccountCreateEvent>({
+    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: authority.key, marginfi_group: marginfi_group.key },
+  });
+}
+
+/** Close an empty marginfi account (no balances, orders or liquidation record), its rent to the fee payer. */
+export function marginfiAccountClose(
+  marginfi_account: CloseTo<HasOne<Mut<MarginfiAccount>, "authority", MarginfiError.Unauthorized>, "fee_payer">,
+  authority: Signer,
+  fee_payer: Mut<Signer>,
+  rebalance_fee_pool: Seeds<SystemAccount, ["rebalance_fee_pool", "@marginfi_account"]>,
+): void {
+  require((marginfi_account.account_flags & ACCOUNT_FROZEN) === 0n, MarginfiError.AccountFrozen);
+  require(marginfi_account.liquidation_record === SYSTEM_PROGRAM_ID, MarginfiError.IllegalAction);
+  require(marginfi_account.active_orders === 0n, MarginfiError.IllegalAction);
+  require(canBeClosed(marginfi_account), MarginfiError.IllegalAction);
+  require(rebalance_fee_pool.lamports === 0n, MarginfiError.IllegalAction);
+}
+
+/** Close a balance whose assets and liabilities are both below 0.0001 (after accruing the bank's interest). */
+export function lendingAccountCloseBalance(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+): void {
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, false), MarginfiError.Unauthorized);
+  constraint(bank, isMarginfiAssetTag(bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  require((marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  const t = now();
+  accrueInterest(bank, group, bank.key, t);
+  updateBankCache(bank, group, t);
+  const inReceivership = (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n;
+  const i = findBalance(marginfi_account, bank.key);
+  require(i >= 0n, MarginfiError.BankAccountNotFound);
+  closeBalance(marginfi_account, u64(i), bank, inReceivership);
+  sortBalances(marginfi_account);
+  syncIndexerFlags(marginfi_account);
+  marginfi_account.last_update = u64(t);
+}
+
+/** Default, SOL and staked SOL banks: the ones the standard instructions serve (not the integrations'). */
+function isMarginfiAssetTag(tag: u8): boolean {
+  return tag === 0n || tag === 1n || tag === 2n;
+}
+
+/**
+ * Deposit into a bank: its interest accrues, the account's balance in it grows (refused if it would repay a
+ * liability, or past the deposit limit unless `deposit_up_to_limit` caps the amount), and the tokens move to the
+ * liquidity vault. A Token-2022 bank takes its mint as the first remaining account and the pre-fee amount.
+ */
+export function lendingAccountDeposit(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+  signer_token_account: Mut<AccountInfo>,
+  liquidity_vault: Mut<TokenAccount>,
+  token_program: TokenInterface,
+  amount: u64,
+  deposit_up_to_limit: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, true), MarginfiError.Unauthorized);
+  constraint(bank, isMarginfiAssetTag(bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  constraint(bank, (bank.flags & TOKENLESS_REPAYMENTS_ALLOWED) === 0n, MarginfiError.BankReduceOnly);
+  const t = now();
+  // maybe_take_bank_mint: a Token-2022 bank's mint comes first among the remaining accounts.
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  let decimals: u8 = 0n;
+  if (t22) {
+    const rest = remainingAccounts();
+    require(rest.length > 0n, MarginfiError.T22MintRequired);
+    const mint = rest.get(0n);
+    require(mint.key === bank.mint, MarginfiError.T22MintRequired);
+    // InterfaceAccount<Mint>: owned by a token program, an initialized mint (with extensions: tagged a mint).
+    const n = mint.dataLen;
+    require(mint.owner === TOKEN_PROGRAM_ID || mint.owner === TOKEN_2022_ID, MarginfiError.T22MintRequired);
+    require(n >= 82n && n !== 355n && !(n > 82n && n <= 165n), MarginfiError.T22MintRequired);
+    require(readData<u8>(mint, 45n) === 1n, MarginfiError.T22MintRequired);
+    require(n === 82n || readData<u8>(mint, 165n) === 1n, MarginfiError.T22MintRequired);
+    decimals = readData<u8>(mint, 44n);
+  }
+  require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
+  validateBankState(bank, FAILS_IF_PAUSED_OR_REDUCE_STATE, findBalance(marginfi_account, bank.key) >= 0n, t);
+  const flags = marginfi_account.account_flags;
+  require((flags & ACCOUNT_DISABLED) === 0n && (flags & ACCOUNT_IN_RECEIVERSHIP) === 0n, MarginfiError.AccountDisabled);
+  accrueInterest(bank, group, bank.key, t);
+  let deposit = amount;
+  if (deposit_up_to_limit !== null && deposit_up_to_limit) {
+    const room = remainingDepositCapacity(bank);
+    if (room < deposit) deposit = room;
+  }
+  if (deposit === 0n) return;
+  const i = findOrCreateBalance(marginfi_account, bank, bank.key, t);
+  const shares = increaseBalance(marginfi_account, i, bank, fxFromU64(deposit), INCREASE_DEPOSIT_ONLY, u64(t));
+  marginfi_account.last_update = u64(t);
+  recordDepositInflow(bank, group, group.key, bank.key, marginfi_account.account_flags, deposit, t);
+  if (t22) {
+    const mint = remainingAccounts().get(0n);
+    const preFee = deposit + transferFeeInverse(mint, deposit);
+    invoke(token_program, [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(authority)], [u8(12n), preFee, decimals]);
+  } else invoke(token_program, [writable(signer_token_account), writable(liquidity_vault), readonlySigner(authority)], [u8(3n), deposit]);
+  updateBankCache(bank, group, t);
+  emit<LendingAccountDepositEvent>({
+    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: deposit,
+    share_amount: { value: shares },
+  });
+  sortBalances(marginfi_account);
+  syncIndexerFlags(marginfi_account);
 }

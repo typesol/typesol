@@ -3,7 +3,7 @@
 // of the accounts it touches and the events must be the same. The original's msg! logs are not compared (the port does
 // not repeat them); WARN lines are.
 import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
-import { type Idl } from "@anchor-lang/core";
+import { type Idl, web3 } from "@anchor-lang/core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,10 +13,20 @@ import { INSTRUCTIONS, ONE, U32_MAX, bankConfig, fx, le, marginfiPair, offsetOf,
 
 describe("Marginfi v2 port against the mainnet binary", () => {
   const h = marginfiPair();
-  const { s, run, initFeeState, groupInit, configure, advanceNonce, mint, addBank, watchBank, accrue, editBank, editGroup, setTime, fast, irOpt, sysvar, tokenAccount } = h;
+  const { s, run, initFeeState, groupInit, configure, advanceNonce, mint, addBank, watchBank, accrue, edit, editBank, editGroup, setTime, fast, irOpt, sysvar, tokenAccount } = h;
   let feeState: Address;
   let admin: KeyPairSigner;
   let feeWallet: Address;
+  /** Where a bank's balance sits in an account (the original's copy; both must agree). */
+  const indexOf = async (account: Address, bank: Address) => {
+    const data = Buffer.from((s.original.getAccount(account) as { data: Uint8Array }).data);
+    const want = Buffer.from(new web3.PublicKey(bank).toBytes());
+    for (let i = 0; i < 16; i++) {
+      const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].bank_pk`);
+      if (data.subarray(at, at + 32).equals(want)) return i;
+    }
+    throw new Error("no balance");
+  };
   beforeAll(async () => {
     await h.load();
     ({ admin, feeState, feeWallet } = h);
@@ -27,7 +37,7 @@ describe("Marginfi v2 port against the mainnet binary", () => {
     const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as Idl;
     const strip = (v: unknown) => JSON.parse(JSON.stringify(v, (k, x) => (k === "docs" ? undefined : x)));
     // Accounts with their writable / signer flags, PDA seeds, relations and addresses; discriminators; arguments.
-    expect(s.d.idl.instructions.length).toBe(11);
+    expect(s.d.idl.instructions.length).toBe(16);
     for (const ix of s.d.idl.instructions) expect(strip(ix), ix.name).toEqual(strip(onchain.instructions.find((o) => o.name === ix.name)));
     for (const e of s.d.idl.events ?? []) expect(e, e.name).toEqual(onchain.events!.find((o) => o.name === e.name));
   });
@@ -364,5 +374,174 @@ describe("Marginfi v2 port against the mainnet binary", () => {
     await destination("another mint", admin, wrong);
     await destination("not a token account", admin, b);
     await destination("set", admin, dest);
+  });
+
+  it("opens accounts, takes deposits and closes balances as the original does", async () => {
+    const group = await generateKeyPairSigner();
+    await run("accounts group init", admin, [groupInit(group, admin)], [group.address]);
+    const g = group.address;
+    const usdc = await mint(TOKEN_PROGRAM, 6);
+    const [ix1, usdcBank] = await addBank(g, admin, usdc, TOKEN_PROGRAM, bankConfig({ deposit_limit: new BN(1_000_000) }));
+    expect(await run("accounts: add bank", admin, [ix1], watchBank(usdcBank, g))).toBe("ok");
+    const sol = await mint(TOKEN_PROGRAM, 9);
+    const [ix2, solBank] = await addBank(g, admin, sol, TOKEN_PROGRAM, bankConfig({ asset_tag: 1 }));
+    expect(await run("accounts: add SOL bank", admin, [ix2], watchBank(solBank, g))).toBe("ok");
+    const editAccount = edit("MarginfiAccount");
+
+    // Accounts: a keypair account, and PDAs by index and third-party id.
+    const user = await s.funded();
+    const acct = await generateKeyPairSigner();
+    const a = acct.address;
+    expect(await run("account init", user, [h.accountInit(g, acct, user)], [a, user.address])).toBe("ok");
+    await run("account init again", user, [h.accountInit(g, acct, user)], [a]);
+    const p0 = await h.accountPda(g, user.address, 0, 0);
+    await run("account init pda", user, [h.accountInitPda(g, p0, user, 0, null)], [p0]);
+    await run("account init pda: taken", user, [h.accountInitPda(g, p0, user, 0, 0)], [p0]);
+    const p7 = await h.accountPda(g, user.address, 7, 42);
+    await run("account init pda: index 7, third party 42", user, [h.accountInitPda(g, p7, user, 7, 42)], [p7]);
+    const pReg = await h.accountPda(g, user.address, 1, 10_001);
+    await run("account init pda: registered id, called directly", user, [h.accountInitPda(g, pReg, user, 1, 10_001)], [pReg]);
+    const pUnreg = await h.accountPda(g, user.address, 1, 20_000);
+    await run("account init pda: unregistered id", user, [h.accountInitPda(g, pUnreg, user, 1, 20_000)], [pUnreg]);
+    const pWrong = await h.accountPda(g, user.address, 2, 0);
+    await run("account init pda: wrong address", user, [h.accountInitPda(g, pWrong, user, 3, null)], [pWrong]);
+
+    // Deposits into the USDC bank from the user's token account.
+    const from = await tokenAccount(usdc, user.address, 10_000_000_000n);
+    const dep = (amount: bigint, opts: Parameters<typeof h.deposit>[7] = {}, by = user, account = a, bank = usdcBank) =>
+      h.deposit(g, account, by, bank.address, from, bank.v.liquidity, amount, opts);
+    const watch = [a, usdcBank.address, usdcBank.v.liquidity, from];
+    setTime(1_800_300_000n);
+    expect(await run("deposit", user, [dep(250_000n)], watch)).toBe("ok");
+    await run("deposit: zero", user, [dep(0n)], watch);
+    await run("deposit: not the authority", admin, [dep(1n, {}, admin)], watch);
+    await run("deposit: wrong vault", user, [h.deposit(g, a, user, usdcBank.address, from, solBank.v.liquidity, 1n)], watch);
+    await run("deposit: over the limit", user, [dep(900_000n)], watch);
+    setTime(1_800_300_100n);
+    await run("deposit: up to the limit", user, [dep(900_000n, { upToLimit: true })], watch);
+    await run("deposit: up to a full limit", user, [dep(5n, { upToLimit: true })], watch);
+    editBank(usdcBank.address, [["config.deposit_limit", (1n << 64n) - 1n, 8]]);
+    await run("deposit: no limit", user, [dep(3_333_333n)], watch);
+    await run("deposit: more than the user holds", user, [dep(20_000_000_000n, { upToLimit: false })], watch);
+    // Interest accrues on deposit (liabilities written into the bank).
+    editBank(usdcBank.address, [["total_liability_shares", 1_000_000n * ONE, 16]]);
+    setTime(1_800_400_000n);
+    await run("deposit: after interest", user, [dep(1_234_567n)], watch);
+    // The SOL bank: a second balance, sorted by bank key.
+    const solFrom = await tokenAccount(sol, user.address, 5_000_000_000n);
+    expect(await run("deposit: SOL", user, [h.deposit(g, a, user, solBank.address, solFrom, solBank.v.liquidity, 777n)], [a, solBank.address, solFrom])).toBe("ok");
+
+    // Token-2022: the mint comes first among the remaining accounts; with a transfer fee, the pre-fee amount moves.
+    const feeMint = await h.feeMint(6, 150, 40_000n);
+    const [ix3, t22Bank] = await addBank(g, admin, feeMint, TOKEN_2022, bankConfig());
+    expect(await run("accounts: add Token-2022 bank", admin, [ix3], watchBank(t22Bank, g))).toBe("ok");
+    const t22From = await h.t22Account(feeMint, user.address, 50_000_000_000n);
+    const t22Watch = [a, t22Bank.address, t22Bank.v.liquidity, t22From];
+    const t22dep = (amount: bigint, rest: Address[]) =>
+      h.deposit(g, a, user, t22Bank.address, t22From, t22Bank.v.liquidity, amount, { program: TOKEN_2022, rest });
+    await run("deposit Token-2022: no mint", user, [t22dep(1_000n, [])], t22Watch);
+    await run("deposit Token-2022: another mint", user, [t22dep(1_000n, [usdc])], t22Watch);
+    await run("deposit Token-2022: not a mint", user, [t22dep(1_000n, [t22From])], t22Watch);
+    await run("deposit Token-2022: SPL token program", user, [h.deposit(g, a, user, t22Bank.address, t22From, t22Bank.v.liquidity, 1_000n)], t22Watch);
+    for (const amount of [1n, 67n, 1_000n, 123_456_789n, 9_000_000_000n])
+      expect(await run(`deposit Token-2022 with a fee: ${amount}`, user, [t22dep(amount, [feeMint])], t22Watch)).toBe("ok");
+
+    // The account's own state.
+    const balance0 = (field: string) => `lending_account.balances[0].${field}`;
+    editAccount(a, [["account_flags", 64n, 8]]);
+    await run("deposit: frozen, by its authority", user, [dep(1n)], watch);
+    await run("deposit: frozen, by the governance admin", admin, [h.deposit(g, a, admin, usdcBank.address, from, usdcBank.v.liquidity, 1n)], watch);
+    editAccount(a, [["account_flags", 1n, 8]]);
+    await run("deposit: disabled", user, [dep(1n)], watch);
+    editAccount(a, [["account_flags", 16n, 8]]);
+    await run("deposit: in receivership", user, [dep(1n)], watch);
+    editAccount(a, [["account_flags", 256n, 8]]);
+    await run("deposit: in a rebalance, by a keeper", admin, [h.deposit(g, a, admin, usdcBank.address, from, usdcBank.v.liquidity, 1n)], watch);
+    editAccount(a, [["account_flags", 0n, 8]]);
+    // A liability in the bank: deposits must not repay it.
+    const usdcIndex = await indexOf(a, usdcBank.address);
+    editAccount(a, [[`lending_account.balances[${usdcIndex}].liability_shares`, 5n * ONE, 16]]);
+    await run("deposit: would repay", user, [dep(1_000n)], watch, "if-panics");
+    editAccount(a, [
+      [`lending_account.balances[${usdcIndex}].liability_shares`, 0n, 16],
+      [`lending_account.balances[${usdcIndex}].premium_outstanding`, 9n * ONE, 16],
+      [`lending_account.balances[${usdcIndex}].premium_rate_snapshot`, 77n, 4],
+    ]);
+    await run("deposit: a stale premium written off", user, [dep(1_000n)], watch);
+    // Bank states.
+    for (const [state, name] of [
+      [0n, "paused"],
+      [2n, "reduce only"],
+      [3n, "killed by bankruptcy"],
+      [4n, "uninitialized"],
+      [5n, "reduce only with borrowing power"],
+      [6n, "circuit broken (was operational)"],
+    ] as const) {
+      editBank(usdcBank.address, [["config.operational_state", state, 1], ["cb_pre_break_state", 1n, 1]]);
+      await run(`deposit: bank ${name}`, user, [dep(10n)], watch);
+    }
+    editBank(usdcBank.address, [["config.operational_state", 1n, 1], ["flags", 16n | 32n, 8]]);
+    await run("deposit: tokenless repayments", user, [dep(10n)], watch);
+    editBank(usdcBank.address, [["flags", 16n | 2048n, 8], ["cb_tier", 1n, 1], ["cb_halt_ended_at", 1_900_000_000n, 8]]);
+    await run("deposit: halted, existing balance", user, [dep(10n)], watch);
+    const fresh = await generateKeyPairSigner();
+    expect(await run("account init: second", user, [h.accountInit(g, fresh, user)], [fresh.address])).toBe("ok");
+    await run("deposit: halted, new balance", user, [dep(10n, {}, user, fresh.address)], [fresh.address, usdcBank.address]);
+    editBank(usdcBank.address, [["flags", 16n, 8], ["cb_tier", 0n, 1]]);
+    // Rate limits: the bank's windows take inflows back; the group's report them.
+    editBank(usdcBank.address, [
+      ["rate_limiter.hourly.max_outflow", 1_000_000n, 8],
+      ["rate_limiter.hourly.window_duration", 3600n, 8],
+      ["rate_limiter.hourly.window_start", 1_800_398_000n, 8],
+      ["rate_limiter.hourly.cur_window_outflow", 500n, 8],
+      ["rate_limiter.daily.max_outflow", 9_000_000n, 8],
+      ["rate_limiter.daily.window_duration", 86_400n, 8],
+      ["rate_limiter.daily.window_start", 1_800_390_000n, 8],
+      ["rate_limiter.daily.prev_window_outflow", 7_000n, 8],
+      ["rate_limiter.daily.cur_window_outflow", 4_000n, 8],
+    ]);
+    editGroup(g, [["rate_limiter.hourly.max_outflow", 1n, 8]]);
+    await run("deposit: rate limits", user, [dep(1_200n)], watch);
+    // A staked balance in the account: default assets cannot join it.
+    editAccount(fresh.address, [
+      ["lending_account.balances[0].active", 1n, 1],
+      ["lending_account.balances[0].bank_pk", 0n, 32],
+      ["lending_account.balances[0].bank_asset_tag", 2n, 1],
+    ]);
+    await run("deposit: staked account into a default bank", user, [dep(10n, {}, user, fresh.address)], [fresh.address, usdcBank.address]);
+    // Sixteen balances: no slot left.
+    const full = await generateKeyPairSigner();
+    expect(await run("account init: third", user, [h.accountInit(g, full, user)], [full.address])).toBe("ok");
+    const fills: [string, bigint, number][] = [];
+    for (let i = 0; i < 16; i++) fills.push([`lending_account.balances[${i}].active`, 1n, 1], [`lending_account.balances[${i}].bank_pk`, BigInt(1000 - i), 32]);
+    editAccount(full.address, fills);
+    await run("deposit: no balance slot left", user, [dep(10n, {}, user, full.address)], [full.address, usdcBank.address]);
+
+    // Close balances: refused with assets; dust closes (assets to insurance).
+    const cb = (bank: Address, by = user, account = a) => h.closeBalance(g, account, by, bank);
+    await run("close balance: has assets", user, [cb(usdcBank.address)], [a, usdcBank.address]);
+    await run("close balance: not the authority", admin, [cb(usdcBank.address, admin)], [a, usdcBank.address]);
+    await run("close balance: no balance there", user, [cb(usdcBank.address, user, fresh.address)], [fresh.address, usdcBank.address]);
+    editAccount(a, [[`lending_account.balances[${usdcIndex}].asset_shares`, ONE / 20_000n, 16]]);
+    setTime(1_800_500_000n);
+    await run("close balance: dust", user, [cb(usdcBank.address)], [a, usdcBank.address]);
+    await run("close balance: closed", user, [cb(usdcBank.address)], [a, usdcBank.address]);
+
+    // Close the account: refused with a balance, frozen, by another; then closed.
+    await run("close account: a balance left", user, [await h.accountClose(a, user)], [a, user.address]);
+    const solIndex = await indexOf(a, solBank.address);
+    editAccount(a, [[`lending_account.balances[${solIndex}].asset_shares`, 0n, 16]]);
+    expect(await run("close balance: SOL", user, [cb(solBank.address)], [a, solBank.address])).toBe("ok");
+    const t22Index = await indexOf(a, t22Bank.address);
+    editAccount(a, [[`lending_account.balances[${t22Index}].asset_shares`, 0n, 16]]);
+    expect(await run("close balance: Token-2022", user, [cb(t22Bank.address)], [a, t22Bank.address])).toBe("ok");
+    await run("close account: not the authority", admin, [await h.accountClose(a, admin)], [a]);
+    editAccount(a, [["account_flags", 64n, 8]]);
+    await run("close account: frozen", user, [await h.accountClose(a, user)], [a]);
+    editAccount(a, [["account_flags", 0n, 8], ["active_orders", 1n, 1]]);
+    await run("close account: an active order", user, [await h.accountClose(a, user)], [a]);
+    editAccount(a, [["active_orders", 0n, 1]]);
+    expect(await run("close account", user, [await h.accountClose(a, user)], [a, user.address])).toBe("ok");
+    await run("close account: pda, emptied", user, [await h.accountClose(p0, user)], [p0, user.address]);
   });
 });

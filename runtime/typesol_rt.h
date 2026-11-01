@@ -1049,10 +1049,13 @@ static inline uint64_t ts_init_account(TsAccount *a, const SolPubkey *program_id
   return SUCCESS;
 }
 
-/* Pubkey order: Rust's Ord on [u8; 32], lexicographic. */
+/* Pubkey order: Rust's Ord on [u8; 32], lexicographic. Eight bytes at a time: a word read big-endian orders as its
+   bytes do, so the first word that differs decides. */
 static inline int64_t ts_key_cmp(const SolPubkey *a, const SolPubkey *b) {
-  for (int i = 0; i < 32; i++)
-    if (a->x[i] != b->x[i]) return a->x[i] < b->x[i] ? -1 : 1;
+  for (int i = 0; i < 32; i += 8) {
+    uint64_t x = ts_ld64(a->x + i), y = ts_ld64(b->x + i);
+    if (x != y) return __builtin_bswap64(x) < __builtin_bswap64(y) ? -1 : 1;
+  }
   return 0;
 }
 
@@ -1562,7 +1565,12 @@ static const SolPubkey TS_INSTRUCTIONS_SYSVAR_ID = {{6,167,213,23,24,123,209,102
  * difference as uint8_t, so any difference is positive.)
  */
 static inline int ts_bytes_cmp(const uint8_t *a, const uint8_t *b, uint64_t n) {
-  for (uint64_t i = 0; i < n; i++)
+  uint64_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    uint64_t x = ts_ld64(a + i), y = ts_ld64(b + i);
+    if (x != y) return __builtin_bswap64(x) < __builtin_bswap64(y) ? -1 : 1;
+  }
+  for (; i < n; i++)
     if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
   return 0;
 }
