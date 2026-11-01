@@ -4,7 +4,8 @@
 // the circuit breaker's state come from the seed: reproduce a failure with FUZZ_SEED=<seed>; lengthen with FUZZ_STEPS=<n>.
 //
 // Borrows are not ported yet: the fuzzer writes a bank's asset and liability shares into both, then accrues. Oracles
-// are Pyth and Switchboard accounts it writes into both, their prices a random walk with jumps. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
+// are Pyth and Switchboard accounts it writes into both, their prices a random walk with jumps; withdrawals run the
+// risk engine over them. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
 import { type Address, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { describe, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM } from "../../test/harness.js";
@@ -204,7 +205,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(22)) {
+      switch (rng.int(25)) {
         case 0:
         case 1:
         case 2: {
@@ -483,7 +484,8 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           // Point the bank at a feed: mostly its own Pyth or Switchboard account, sometimes a wrong count, key or setup.
           const f = await feedsOf(b);
           writeFeeds(f);
-          const setup = rng.chance(80) ? rng.pick([3, 4]) : rng.pick([0, 1, 5, 6, 8, 18, 19, 20, 22, 25, rng.int(40)]);
+          // Not 19 or 22 on a default bank: their mSOL / LST validation is not ported (docs/case-study-marginfi.md).
+          const setup = rng.chance(80) ? rng.pick([3, 4]) : rng.pick([0, 1, 5, 6, 8, 18, 20, 23, 25, rng.int(19)]);
           const feed = setup === 4 ? f.swb : f.pyth;
           const oracle = rng.chance(90) ? feed : rng.pick([f.pyth, f.swb]);
           const rest = rng.chance(85) ? [feed] : rng.pick([[], [feed, feed], [f.pyth, f.swb, other.address]]);
@@ -495,7 +497,8 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
         }
         case 20: {
           // A fixed price (or a PT start price), now and then negative, with a wrong setup or accounts.
-          const setup = rng.chance(80) ? 8 : rng.pick([3, 25, 26, 13, rng.int(40)]);
+          // Not a PT start price that passes its checks on a default bank: the Exponent vault's validation is not ported.
+          const setup = rng.chance(80) ? 8 : rng.pick([3, 13, 4, 29 + rng.int(10)]);
           const price = rng.chance(10) ? -(rng.next() % ONE) : rng.next() % (ONE * 1000n);
           const rest = rng.chance(85) ? [] : [other.address];
           await run(label("set oracle price"), h.admin, [h.setOraclePrice(group.address, signer(h.admin), b, price, setup, rest)], [b], "if-panics");
@@ -509,6 +512,80 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           const own = setup === 3n ? [f.pyth] : setup === 4n ? [f.swb] : [];
           const rest = rng.chance(80) ? own : rng.pick([[f.pyth], [f.swb], [], [f.pyth, f.swb]]);
           await run(label("pulse"), other, [h.pulse(group.address, b, rest)], [b], "if-panics");
+          break;
+        }
+        case 22:
+        case 23:
+        case 24: {
+          // A withdrawal (part, or all), with the account's banks and their oracles after it: as the client sends
+          // them, now and then one left out, out of order or with something extra; prices freshly written mostly.
+          const pool = [...accounts, ...borrowers];
+          if (!pool.length) break;
+          const acct = rng.pick(pool);
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const held: FuzzBank[] = [];
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (hb) held.push(hb);
+          }
+          const target = held.length && rng.chance(85) ? rng.pick(held) : bank;
+          // What the account holds there, in tokens: most withdrawals ask for part of it.
+          let deposit = 0n;
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].bank_pk`);
+            if (!d.subarray(at, at + 32).equals(Buffer.from(new web3.PublicKey(target.address).toBytes()))) continue;
+            const sv = read128(target.address, "Bank", "asset_share_value");
+            const so = offsetOf("MarginfiAccount", `lending_account.balances[${i}].asset_shares`);
+            const shares = d.readBigInt64LE(so + 8) * (1n << 64n) + d.readBigUInt64LE(so);
+            deposit = (shares * sv) >> 96n;
+          }
+          const all = rng.chance(20);
+          const groups: Address[][] = [];
+          const sorted = [...held].sort((x, y) =>
+            Buffer.compare(Buffer.from(new web3.PublicKey(y.address).toBytes()), Buffer.from(new web3.PublicKey(x.address).toBytes())),
+          );
+          for (const hb of sorted) {
+            if (all && hb.address === target.address) continue;
+            const f = await feedsOf(hb.address);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(hb.address, "Bank", "config.oracle_setup") & 0xffn;
+            groups.push(setup === 8n ? [hb.address] : [hb.address, setup === 4n ? f.swb : f.pyth]);
+          }
+          if (all && rng.chance(50)) {
+            const f = await feedsOf(target.address);
+            groups.push([target.address, f.pyth]);
+          }
+          if (groups.length > 1 && rng.chance(5)) groups.reverse();
+          let rest = groups.flat();
+          if (rest.length && rng.chance(5)) rest = rest.slice(0, rest.length - 1);
+          if (rng.chance(5)) rest.push(other.address);
+          const t22 = target.mint.program === TOKEN_2022;
+          const owner = acct.owner;
+          const by = signer(owner);
+          const to = wallets.get(`${owner.address}:${target.mint.mint}`)!;
+          // Mostly an operational bank (the administration steps leave banks paused, killed or broken at random).
+          if (rng.chance(75)) h.editBank(target.address, [["config.operational_state", 1n, 1]]);
+          // Half the time no interest to accrue first (the accrual steps leave some banks past what accrual can hold).
+          if (rng.chance(50)) h.editBank(target.address, [["last_update", t, 8]]);
+          if (rng.chance(6)) editAccount(acct.address, [["account_flags", rng.pick([1n, 16n, 32n, 48n, 64n]), 8]]);
+          if (rng.chance(5)) editAccount(acct.address, [["liquidation_tagged_at", t - 10n, 8]]);
+          await run(
+            label("withdraw"),
+            by,
+            [
+              h.withdraw(group.address, acct.address, by, target, to, deposit > 0n && rng.chance(70) ? rng.next() % (deposit + 1n) : amount(), {
+                all: all ? true : rng.chance(20) ? false : null,
+                program: target.mint.program,
+                rest: [...(t22 && rng.chance(95) ? [target.mint.mint] : []), ...rest],
+              }),
+            ],
+            [acct.address, target.address, target.v.liquidity, target.v.insurance, to],
+            "if-panics",
+          );
+          editAccount(acct.address, [["account_flags", 0n, 8]]);
           break;
         }
         default: {

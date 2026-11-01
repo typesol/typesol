@@ -1,4 +1,5 @@
-// Remaining accounts passed to helpers (`function price(feed: RemainingAccount)`), as Marginfi's risk engine reads one
+// Remaining accounts passed to helpers, one (`function price(feed: RemainingAccount)`) or the list
+// (`function health(rest: RemainingAccounts)`), as Marginfi's risk engine reads one
 // oracle per bank: the helper reads the account's key, owner, data length and raw data, loads a struct of this program
 // from it (a read-only view sees what the instruction already wrote through the same account), and writes one; an error
 // it returns as a value fails the instruction with that code (`require(r.err === 0n, r.err)`).
@@ -15,6 +16,7 @@ const SOURCE = `import {
   type Mut,
   type Pubkey,
   type RemainingAccount,
+  type RemainingAccounts,
   type Signer,
   type SystemProgram,
   type u32,
@@ -44,6 +46,17 @@ function add(a: RemainingAccount, by: u64): void {
   c.n += by;
 }
 
+/** A walk over the list, as Marginfi's risk engine walks [bank, oracle…] groups: the sum of the counters it finds. */
+function total(rest: RemainingAccounts, from: u64): u64 {
+  let sum = 0n;
+  for (let i = from; i < rest.length; i++) sum += loaded(rest.get(i));
+  return sum;
+}
+/** Passed on to another helper. */
+function totalTwice(rest: RemainingAccounts): u64 {
+  return total(rest, 0n) + total(rest, rest.length - 1n);
+}
+
 export function open(payer: Mut<Signer>, counter: Init<Counter>, system_program: SystemProgram): void {
   counter.create(payer, ["counter"]);
 }
@@ -55,6 +68,10 @@ export function bump(user: Signer, counter: Mut<Counter>, program: Pubkey): void
     require(r.err === 0n, r.err);
     require(r.n === counter.n && loaded(rem.get(i)) === counter.n, E.Stale);
   }
+}
+export function sum(user: Signer, counter: Mut<Counter>, want: u64): void {
+  const rest = remainingAccounts();
+  require(totalTwice(rest) === want && total(remainingAccounts(), 1n) + counter.n === want - counter.n, E.Stale);
 }
 export function grow(user: Signer, by: u64): void {
   add(remainingAccounts().get(0n), by);
@@ -98,6 +115,17 @@ describe("remaining accounts as helper parameters", () => {
       ]);
     expectOk(await send(d.svm, payer, [addTo(5)]));
     expect(Buffer.from(acct(d.svm, c).data).readBigUInt64LE(8)).toBe(6n);
+    // The whole list in a helper: counters at 6, the list [c, c, c]: 18 + 6 = 24, and 12 + 6 = 24 - 6.
+    const sum = (want: number) =>
+      ix(d, "sum", { want: new BN(want) }, [
+        { address: payer.address, signer: payer },
+        { address: c, writable: true },
+        { address: c },
+        { address: c },
+        { address: c },
+      ]);
+    expectOk(await send(d.svm, payer, [sum(24)]));
+    expect(customError(await send(d.svm, payer, [sum(25)]))).toBe(6000);
     // A helper's loadAccountMut claims the account for the rest of the instruction, as one in the instruction does:
     // a second call on the same account is refused (2040) and nothing is written.
     const twice = ix(d, "regrow", { by: new BN(2) }, [

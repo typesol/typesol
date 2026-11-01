@@ -166,7 +166,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           );
         if (l.type.kind === "array") this.fail(node, `"${node.text}" is an array; use .get(i)`);
         if (l.type.kind === "vec") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
-        if (l.type.kind === "remaining") return { c: "", type: l.type };
+        if (l.type.kind === "remaining") return { c: l.c, type: l.type };
         return l.type.kind === "pubkey" && !l.ptr ? { c: `(&${l.c})`, type: l.type } : { c: l.c, type: l.type };
       }
       const k = this.model.constants.get(node.text);
@@ -242,7 +242,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
   protected property(node: ts.PropertyAccessExpression): Value {
     const field = node.name.text;
     if (field === "length") {
-      if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.ix!.accounts.length}))`, type: U64 };
+      if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.remainingBase(node.expression)}))`, type: U64 };
       const sysvar = this.instructionsParam(node.expression);
       if (sysvar) {
         this.assertUsable(sysvar, node.expression);

@@ -12,7 +12,7 @@ fixed point. The port comes in parts, each checked before the next:
 | --- | --- | --- |
 | 1 | Errors, I80F48 arithmetic, the zero-copy accounts and the types they hold | done |
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
-| 3 | Oracles, the risk engine, withdrawals and borrows | in progress: oracles done |
+| 3 | Oracles, the risk engine, withdrawals and borrows | in progress: oracles, the risk engine and withdrawals done |
 | 4 | Liquidation and bankruptcy | to come |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
@@ -23,6 +23,7 @@ The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typeso
 | `bank.ts` | a bank: creating one, checking its config, configuring it, accruing interest, the rate cache, its shares and limits, the states that refuse an instruction, the rate limiter, the price cache and the circuit breaker |
 | `account.ts` | a marginfi account's balances: finding or opening one, growing it, closing it, their order, the flags indexers read |
 | `oracle.ts` | the price adapter: oracle setups, validating a feed, reading Pyth push and Switchboard pull accounts, prices and confidence intervals |
+| `risk.ts` | the risk engine: an account's assets and liabilities weighted and priced, e-mode, the isolated tier, the premium a liability projects and the rates its snapshot moves to, the circuit breaker's gate, the health cache |
 | `interest_rate.ts` | the seven-point interest curve, the rates and fees it gives, the accrual arithmetic |
 | `i80f48.ts` | I80F48, bit for bit as the `fixed` crate (1.28.0) computes it, including the release build's wrapping `*`, `/` and `from_num` |
 | `state.ts`, `events.ts`, `args.ts`, `errors.ts` | accounts, events, instruction arguments and errors, as the on-chain IDL describes them |
@@ -98,6 +99,29 @@ After each, the balances are sorted by bank key and the indexer flags recomputed
   halts the bank for that tier's time, a breach within the escalation window raises the tier, three tier-3 trips in a
   row break the bank, and a clean move pulls the reference by at most 5%.
 
+**Part 3, withdrawals and the risk engine.** One instruction, `lending_account_withdraw`: part of a deposit (before a
+Token-2022 transfer fee) or all of it (the fraction of a token to the insurance fund), refused past the deposit;
+the bank's rate limits and the group's (priced in USD), a deleverage's daily limit, receivership and order execution
+(anyone may withdraw, priced, no health check), a tokenless bank's remainder. Then the account's health, as the
+risk engine computes it over the banks and oracles after the instruction's accounts (one [bank, oracle] group per
+balance):
+
+- each balance priced at the oracle's EMA for Initial health (spot for Maintenance), collateral less its
+  confidence interval and liabilities plus it, weighted, collateral in a paused or reduce-only bank worth nothing,
+  an isolated bank's collateral worth nothing, deposits past a bank's USD cap counted in proportion;
+- a collateral leg whose oracle fails is skipped for Initial health and its error recorded in the health cache
+  (a liability's fails the instruction);
+- e-mode: the tags every liability's bank offers, at their least favorable weights, and same-asset e-mode
+  (liabilities that all price one asset through one feed lift that asset's collateral to
+  `liability weight × (1 − 1 / leverage)`);
+- the premium a premium-active liability has accrued since its last claim, projected into its value; after the
+  check, each liability's premium is claimed and its rate snapshot set from the collateral mix (an unpriceable
+  collateral leg only ratchets it up);
+- the isolated tier (an isolated liability must be the only one), the circuit breaker's gate while the account owes
+  anything (a halted bank, or a price past the first tier or the long window), the liquidation tag cleared once
+  Maintenance health is positive (any error in that pass keeps it), the health cache (values, prices as f64,
+  the first oracle error, HEALTHY and ENGINE_OK, version 3), and the bank's price cache last.
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -130,6 +154,13 @@ multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port sto
 - **Errors as values.** Marginfi's price reads return `Result`s that its risk engine sometimes records instead of
   failing. The adapter's helpers return their error as a value, and the instructions fail with it:
   `require(r.err === 0n, r.err)`, a `require` whose code is computed at run time.
+- **The remaining accounts in helpers.** The risk engine walks [bank, oracle…] groups after the instruction's
+  accounts. A helper may now take them as a list (`RemainingAccounts`, `remainingAccounts()` at the call): `.length`,
+  `.get(i)`, `loadAccount`, as the instruction would.
+- **Error codes as the original computes them.** A collateral leg whose oracle fails with a runtime error (an
+  undecodable Pyth account) records `MarginfiError::InternalLogicError as u32`: the variant's index, 0, so nothing is
+  recorded; a liability's becomes `InvalidOracleSetup as u32`, 25, which `MarginfiError::from` turns into
+  InternalLogicError. The fuzzer found the first.
 - **The release build's arithmetic.** `fixed` debug-asserts on overflow in `*`, `/` and `from_num`, so the deployed
   build wraps there (a Switchboard value past 2^79 wraps converting to I80F48), while `+`, `-` and `abs` panic
   (overflow checks are on). The circuit breaker's deviation math uses each as the original does.
@@ -152,9 +183,12 @@ Borrows are not ported yet, so the test writes liabilities and a bank's asset an
 before it accrues or takes a repayment, and the same for other state no ported instruction reaches yet (e-mode entries, a recorded circuit-breaker
 halt, a frozen bank, the fee state's pause, an account's flags and balances, rate limits).
 
-There are 244 transactions in that file, and 174 in
+There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles. That file writes Pyth and Switchboard accounts byte for byte into both ledgers:
+for the oracles, and 123 in
+[`showcase/test/marginfi-withdraw.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-withdraw.test.ts)
+for withdrawals and the risk engine. The last two write Pyth and Switchboard accounts byte for byte into both
+ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
   set, handed over, refused to the old admin; the pause propagated.
@@ -200,6 +234,18 @@ for the oracles. That file writes Pyth and Switchboard accounts byte for byte in
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
+- **Withdrawals and the risk engine (123).** Part of a deposit, more than it, from a bank without a balance, by
+  another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
+  accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
+  oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
+  nothing recorded) and liability oracle (InternalLogicError), an EMA past its confidence cap; all of it, again, of a
+  liability. An isolated liability beside another; e-mode lifting a collateral weight; the deposit cap's discount; a
+  reduce-only collateral bank; the breaker's gate on a price jump, a halted bank with and without debt; a bank's
+  hourly limit and the group's daily limit (and the bank missing from the accounts); receivership by a liquidator,
+  without a price, at a zero price, at a zero weight; deleverage alone and within and past the day's limit; a
+  tokenless bank's remainder; the liquidation tag cleared; premium rates from the collateral mix, projected into
+  health, ratcheted on a stale leg, written off; Token-2022 with a transfer fee, without the mint, all of it.
+
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
 way), fees, balances across scales, clock jumps, frozen banks, circuit-breaker settings and halts, accounts opened and
@@ -208,7 +254,9 @@ down to dust, liabilities written in and repaid in part or in full (premiums, to
 withdrawn, account flags, wrong signers; oracles set (mostly the bank's own Pyth or Switchboard account, sometimes
 the wrong one, count or setup), fixed prices, and pulses over Pyth and Switchboard accounts rewritten each time (a
 random walk with jumps, random confidence, exponents and ages, now and then a broken account), the slot moving on so
-the circuit breaker counts them.
+the circuit breaker counts them; withdrawals of part of a deposit or all of it over those prices, the health
+accounts as a client sends them or now and then short, out of order or with extras, account flags (disabled,
+receivership, deleverage, frozen) and liquidation tags.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
 
@@ -219,8 +267,12 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 - **Panics.** Where the original panics (an assert on a negative rate, a clock behind the bank's last update, an
   unknown curve type in an account, an oracle setup byte past 28, a Pyth exponent past ±23), the port fails with a
   numbered error. The tests check that both fail.
-- **Undecodable Pyth accounts.** The original fails with `BorshIoError`, a runtime error without a custom code; the
-  port fails with error 1. The tests check that both fail.
+- **Undecodable Pyth accounts.** Where the original fails with `BorshIoError`, a runtime error without a custom code
+  (setting or pulsing a feed, a withdrawal's up-front price), the port fails with error 1. The tests check that both
+  fail. Inside the risk engine both record and re-raise it alike (see above).
+- **Health accounts.** A remaining account that is not a bank of the program fails the original's `AccountLoader`
+  with the same codes as the port's (3007, 3001, 3002); one owned by the program, with a bank's discriminator but
+  too short, panics in the original and fails with 3003 in the port.
 - **Oracles not ported.** Setting a bank of the matching asset tag to a venue, mSOL, LST or PT setup, and pricing
   one, stops in the port where the original goes on to read the venue's state.
 
@@ -265,17 +317,26 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_pool_withdraw_fees` | 13,558 | 2,493 | −82% |
 | `lending_pool_withdraw_insurance` | 13,536 | 2,495 | −82% |
 | `lending_pool_withdraw_fees_permissionless` | 10,773 | 2,378 | −78% |
-| `lending_pool_configure_bank_oracle`, Pyth | 7,337 | 1,206 | −84% |
-| `lending_pool_configure_bank_oracle`, Switchboard | 7,258 | 1,212 | −83% |
-| `lending_pool_set_oracle_price` | 4,644 | 1,129 | −76% |
-| `lending_pool_pulse_bank_price_cache`, Pyth | 14,147 | 6,018 | −57% |
-| `lending_pool_pulse_bank_price_cache`, Switchboard | 7,755 | 3,056 | −61% |
-| `lending_pool_pulse_bank_price_cache`, fixed | 3,815 | 1,048 | −73% |
-| `lending_pool_pulse_bank_price_cache`, an hour of interest first | 41,299 | 22,504 | −46% |
-| `lending_pool_pulse_bank_price_cache`, the breaker's reference moved | 27,267 | 10,951 | −60% |
-| `lending_pool_pulse_bank_price_cache`, a tier-3 trip breaking the bank | 24,401 | 9,740 | −60% |
+| `lending_pool_configure_bank_oracle`, Pyth | 7,337 | 1,209 | −84% |
+| `lending_pool_configure_bank_oracle`, Switchboard | 7,258 | 1,215 | −83% |
+| `lending_pool_set_oracle_price` | 4,644 | 1,132 | −76% |
+| `lending_pool_pulse_bank_price_cache`, Pyth | 14,147 | 5,146 | −64% |
+| `lending_pool_pulse_bank_price_cache`, Switchboard | 7,755 | 2,928 | −62% |
+| `lending_pool_pulse_bank_price_cache`, fixed | 3,815 | 991 | −74% |
+| `lending_pool_pulse_bank_price_cache`, an hour of interest first | 41,299 | 21,034 | −49% |
+| `lending_pool_pulse_bank_price_cache`, the breaker's reference moved | 27,267 | 10,642 | −61% |
+| `lending_pool_pulse_bank_price_cache`, a tier-3 trip breaking the bank | 24,401 | 9,109 | −63% |
+| `lending_account_withdraw`, part, no debt | 52,868 | 31,661 | −40% |
+| `lending_account_withdraw`, healthy after, against a USDC debt | 46,421 | 29,172 | −37% |
+| `lending_account_withdraw`, a stale collateral oracle skipped | 43,406 | 27,892 | −36% |
+| `lending_account_withdraw`, all of it | 41,490 | 27,563 | −34% |
+| `lending_account_withdraw`, e-mode lifting the collateral | 46,246 | 29,309 | −37% |
+| `lending_account_withdraw`, premium rates from the collateral mix | 63,359 | 41,192 | −35% |
+| `lending_account_withdraw`, Token-2022 with a transfer fee | 53,306 | 30,561 | −43% |
+| `lending_account_withdraw`, in receivership, by a liquidator | 39,987 | 16,497 | −59% |
 
 Across the 125 transactions of the first file that succeed, the port uses 36–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
-In the oracle file, the 72 that succeed use 42–84% fewer; the 76 refused ones 8–93% fewer (the least: a Pyth price
-scaled by 10^23 before it overflows).
+In the oracle file, the 72 that succeed use 47–84% fewer; the 76 refused ones 46–93% fewer. In the withdrawal file,
+the 35 that succeed use 33–84% fewer, the 32 refused ones 40–92% fewer; a withdrawal's health check is mostly I80F48
+products and quotients, like accrual.

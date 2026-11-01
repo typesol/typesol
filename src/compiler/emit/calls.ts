@@ -540,8 +540,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return undefined;
       }
       case "remainingAccounts":
-        if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions");
-        return { c: "", type: { kind: "remaining" } };
+        if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions; pass it to a helper that takes RemainingAccounts");
+        return { c: String(this.ix.accounts.length), type: { kind: "remaining" } };
       case "readData":
         return this.readData(node);
       case "bigEndian":
@@ -1004,6 +1004,16 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return { name, count };
   }
 
+  /** The index of the first remaining account among the instruction's accounts, as C: a constant, or a helper's parameter. */
+  protected remainingBase(node: ts.Expression): string {
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      if (l?.type.kind === "remaining" && l.c) return l.c;
+    }
+    if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions; pass it to a helper that takes RemainingAccounts");
+    return String(this.ix.accounts.length);
+  }
+
   /** `remainingAccounts()` or a const bound to it. */
   protected isRemaining(node: ts.Expression): boolean {
     if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "remaining";
@@ -1110,9 +1120,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       node.expression.name.text === "get" &&
       this.isRemaining(node.expression.expression)
     ) {
-      if (!this.ix) this.fail(node, "remainingAccounts() is only available in instructions");
       if (node.arguments.length !== 1) this.fail(node, "get(index) takes one argument");
-      const n = this.ix.accounts.length;
+      const n = this.remainingBase(node.expression.expression);
       const idx = this.index(node.arguments[0], `(uint64_t)(params->ka_num - ${n})`);
       const t = this.tmp("acct");
       this.line(`TsAccount *${t} = params->ka[${n} + ${idx}];`);

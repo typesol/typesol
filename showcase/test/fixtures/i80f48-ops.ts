@@ -1,5 +1,5 @@
 // Every I80F48 operation of showcase/mainnet/marginfi/i80f48.ts behind one instruction, for showcase/test/fuzz-i80f48.test.ts.
-import { type i128, type u8, i128 as toI128, u64 } from "typesol";
+import { type i128, type u8, i128 as toI128, require, u64 } from "typesol";
 import {
   fxAbs,
   fxAdd,
@@ -13,9 +13,17 @@ import {
   fxSaturatingMul,
   fxSaturatingSub,
   fxSub,
+  fxFromI128Wrapping,
   fxToF64Bits,
+  fxToI64Wrapping,
+  fxToU32Wrapping,
   fxToU64,
+  fxToU64Wrapping,
+  fxTryDiv,
+  fxTryMul,
   fxUnsignedAbs,
+  fxWrappingDiv,
+  fxWrappingMul,
 } from "../../mainnet/marginfi/i80f48";
 
 export interface Out {
@@ -45,5 +53,19 @@ export function run(op: u8, a: i128, b: i128): Out {
   else if (op === 12n) v = fxRound(a);
   else if (op === 13n) u = fxToU64(a);
   else if (op === 14n) u = fxToF64Bits(a);
+  else if (op === 15n) {
+    const r = fxTryMul(a, b);
+    require(r.err === 0n, r.err);
+    v = r.v;
+  } else if (op === 16n) v = fxWrappingMul(a, b);
+  else if (op === 17n) {
+    const r = fxTryDiv(a, b);
+    require(r.err === 0n, r.err);
+    v = r.v;
+  } else if (op === 18n) v = fxWrappingDiv(a, b);
+  else if (op === 19n) v = fxFromI128Wrapping(a);
+  else if (op === 20n) v = toI128(fxToI64Wrapping(a));
+  else if (op === 21n) u = u64(fxToU32Wrapping(a));
+  else if (op === 22n) u = fxToU64Wrapping(a);
   return { v, u };
 }

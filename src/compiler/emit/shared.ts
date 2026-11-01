@@ -309,6 +309,8 @@ export function helperSignature(h: Helper): string {
       // A writable account with a growable Vec: its length at instruction entry, for push / pop / clear.
       if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) params.push(`uint64_t entry_${p.name}`);
     } else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
+    // The remaining accounts: the index of the first one among the instruction's accounts.
+    else if (p.type.kind === "remaining") params.push(`uint64_t p_${p.name}`);
     else if (p.type.kind === "pubkey")
       params.push(`SolPubkey p_${p.name}`); // by value: a copy taken at the call
     else if (p.type.kind === "arrayArg") params.push(storageDecl(p.type.array, `(*p_${p.name})`));

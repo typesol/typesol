@@ -56,6 +56,21 @@ const MODEL: Record<string, (a: bigint, b: bigint) => Answer> = {
   f64: (a) => f64Bits(a),
 };
 const OPS = ["add", "sub", "mul", "div", "sadd", "ssub", "smul", "abs", "uabs", "int", "frac", "ceil", "round", "u64", "f64"] as const;
+/**
+ * What the release build does where `fixed` only debug-asserts: `*`, `/`, `from_num` and `to_num` wrap to the width
+ * (`/` by zero panics). The checked forms that return the error as a value (`tmul`, `tdiv`) answer as `mul`, `div`.
+ */
+const WRAPPING: Record<string, (a: bigint, b: bigint) => Answer> = {
+  tmul: MODEL.mul!,
+  wmul: (a, b) => String(BigInt.asIntN(128, floorDiv(a * b, ONE))),
+  tdiv: MODEL.div!,
+  wdiv: (a, b) => (b === 0n ? null : String(BigInt.asIntN(128, (a * ONE) / b))),
+  fromi128: (a) => String(BigInt.asIntN(128, a * ONE)),
+  toi64: (a) => String(BigInt.asIntN(64, floorDiv(a, ONE))),
+  tou32: (a) => String(BigInt.asUintN(32, floorDiv(a, ONE))),
+  tou64: (a) => String(BigInt.asUintN(64, floorDiv(a, ONE))),
+};
+const ALL = [...OPS, ...Object.keys(WRAPPING)];
 
 describe("I80F48 against the fixed crate", () => {
   it("the model gives every oracle vector", () => {
@@ -78,20 +93,21 @@ describe("I80F48 against the fixed crate", () => {
     const data = Buffer.from((res as TransactionMetadata).returnData().data());
     const v = data.readBigInt64LE(8) * (1n << 64n) + data.readBigUInt64LE(0);
     const u = data.readBigUInt64LE(16);
-    const name = OPS[op]!;
+    const name = ALL[op]!;
     if (name === "uabs") return String((u << 64n) | v);
-    return name === "u64" || name === "f64" ? String(u) : String(v);
+    return name === "u64" || name === "f64" || name === "tou32" || name === "tou64" ? String(u) : String(v);
   }
-  const check = async (a: bigint, b: bigint) => {
-    for (let op = 0; op < OPS.length; op++) {
-      const want = MODEL[OPS[op]!]!(a, b);
-      expect(await onChain(op, a, b), `${OPS[op]}(${a}, ${b}) (seed ${SEED})`).toBe(want);
+  const check = async (a: bigint, b: bigint, ops = ALL.length) => {
+    for (let op = 0; op < ops; op++) {
+      const name = ALL[op]!;
+      const want = (MODEL[name] ?? WRAPPING[name])!(a, b);
+      expect(await onChain(op, a, b), `${name}(${a}, ${b}) (seed ${SEED})`).toBe(want);
     }
   };
 
   it("the port gives the oracle's answers", async () => {
     const at = (name: string) => VECTORS.fields.indexOf(name);
-    for (const row of VECTORS.rows.slice(0, 120)) await check(BigInt(row[at("a")]!), BigInt(row[at("b")]!));
+    for (const row of VECTORS.rows.slice(0, 120)) await check(BigInt(row[at("a")]!), BigInt(row[at("b")]!), OPS.length);
   });
 
   it(`the port gives the model's answers on random values (seed ${SEED})`, async () => {
@@ -116,5 +132,12 @@ describe("I80F48 against the fixed crate", () => {
       }
     };
     for (let i = 0; i < RUNS / 15; i++) await check(value(), value());
+    // Products around 2^175, where the checked product stops fitting and the wrapping one starts to wrap.
+    for (let i = 0; i < RUNS / 30; i++) {
+      const bits = 60n + (next() % 60n);
+      const a = BigInt.asIntN(128, (1n << bits) + (next() % (1n << (bits - 1n)))) * (next() % 2n ? 1n : -1n);
+      const b = BigInt.asIntN(128, (1n << (175n - bits)) + (next() % (1n << (174n - bits)))) * (next() % 2n ? 1n : -1n);
+      await check(a, b);
+    }
   });
 });

@@ -6,6 +6,21 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: helpers take the remaining accounts as a list. A `RemainingAccounts` parameter (`remainingAccounts()` at the
+  call) gives the helper `.length` and `.get(i)` over the same accounts, to read, load or pass on to another helper,
+  as a risk engine walks one [bank, oracle] group per position.
+- Examples: Marginfi's withdrawals and risk engine (part 3, docs/case-study-marginfi.md): withdrawals of part or all
+  of a deposit, with the account's Initial health over Pyth, Switchboard and fixed prices (oracle errors recorded or
+  failing as the original's, e-mode and same-asset e-mode, the isolated tier, the deposit cap's discount), premium
+  projection and rate snapshots, the circuit breaker's gate, the liquidation tag, rate limits, receivership,
+  deleverage and Token-2022. Against the binary on mainnet: 123 new transactions (541 in all), the same IDL for all
+  25 ported instructions, and the random runs withdraw through the risk engine; 33–84% fewer compute units on the
+  withdrawals that succeed. The fuzzer found how the original records an undecodable oracle's error in the health
+  cache (0, the variant's index, not 6000).
+- Fixed (Marginfi example): the oracle port below had made I80F48 products cost more (an accrual 26,983 compute units
+  instead of 25,296): with three functions multiplying 256-bit values, clang stopped inlining the multiplication.
+  The checked and wrapping products now hand everything that cannot overflow to the plain one.
+
 - New: helpers take remaining accounts. A `RemainingAccount` parameter (`remainingAccounts().get(i)` at the call)
   gives the helper the account's key, owner, lamports and data length, `readData` at any offset, and `loadAccount` /
   `loadAccountMut` of a struct; a read-only view sees what the instruction already wrote through the same account, and
@@ -16,7 +31,7 @@ codes, and says so here.
   Switchboard pull feed, fixed prices, and the price cache pulse with the circuit breaker (tiers, escalation, the long
   window, breaking a bank). Against the binary on mainnet: 174 new transactions over Pyth and Switchboard accounts
   written byte for byte, the same IDL for all 24 ported instructions, and the random runs set oracles and pulse prices
-  through the breaker; 42–84% fewer compute units on the ones that succeed.
+  through the breaker; 47–84% fewer compute units on the ones that succeed.
 
 - Repository: the ports moved out of `examples/` and `test/` into `showcase/`: `showcase/mainnet/` (Raydium CP-Swap
   and CLMM, Jito's MEV programs, Marginfi, coral-xyz/multisig), `showcase/program-examples/` (was `test/ports/`) and

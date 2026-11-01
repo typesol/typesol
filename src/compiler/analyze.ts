@@ -1606,6 +1606,8 @@ function analyzeHelper(
       // One of the remaining accounts (remainingAccounts().get(i)), as the instruction holds it: read with readData or
       // loadAccount, its key, owner, lamports and data length.
       if (typesolName(p.type, scope.imports) === "RemainingAccount") return { name: p.name.text, type: { kind: "account" } as ValueType, node: p };
+      // The remaining accounts as a list (`remainingAccounts()` at the call): `.length` and `.get(i)` in the helper.
+      if (typesolName(p.type, scope.imports) === "RemainingAccounts") return { name: p.name.text, type: { kind: "remaining" } as ValueType, node: p };
       // Accounts the caller already checked: Signer, AccountInfo, Account<T>/Mut<T>, token accounts, programs.
       const wrapped = typesolName(p.type, scope.imports);
       if (

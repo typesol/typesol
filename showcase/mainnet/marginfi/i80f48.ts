@@ -8,7 +8,7 @@
 // The checked forms (Marginfi's `checked_mul(…).ok_or(MathError)`) fail with MathError where `fixed` returns None; the
 // fxTry forms return that error as a value (the risk engine records some errors instead of failing), and the wrapping
 // forms give the bits `*`, `/` and `from_num` give in the release build (they only debug_assert on overflow).
-import { type i128, type i64, type u32, type u64, i128 as toI128, require, u128, u256, u64 as toU64 } from "typesol";
+import { type i128, type i64, type u32, type u64, i128 as toI128, i64 as toI64, require, u128, u256, u32 as toU32, u64 as toU64 } from "typesol";
 import { MarginfiError } from "./errors";
 
 export const I80F48_ONE: i128 = 281474976710656n;
@@ -101,14 +101,84 @@ export function fxDiv(a: i128, b: i128): i128 {
   return signed(q, negative && q !== 0n);
 }
 
+/**
+ * The bit length of a magnitude. Products of fewer than 175 bits always fit, so fxTryMul and fxWrappingMul hand them to
+ * fxMul: one function multiplying 256-bit values keeps clang inlining that multiplication into it (with more, it
+ * calls it, and every product pays).
+ */
+function bitLength(x: u128): u64 {
+  let v = x;
+  let n = 0n;
+  if (v >> 64n !== 0n) {
+    v = v >> 64n;
+    n += 64n;
+  }
+  if (v >> 32n !== 0n) {
+    v = v >> 32n;
+    n += 32n;
+  }
+  if (v >> 16n !== 0n) {
+    v = v >> 16n;
+    n += 16n;
+  }
+  if (v >> 8n !== 0n) {
+    v = v >> 8n;
+    n += 8n;
+  }
+  if (v >> 4n !== 0n) {
+    v = v >> 4n;
+    n += 4n;
+  }
+  if (v >> 2n !== 0n) {
+    v = v >> 2n;
+    n += 2n;
+  }
+  if (v >> 1n !== 0n) {
+    v = v >> 1n;
+    n += 1n;
+  }
+  return v !== 0n ? n + 1n : n;
+}
+/** a × b past 174 bits, in 64-bit limbs: whether it fits, and its bits (wrapped). */
+function wideProduct(a: i128, b: i128): Fx {
+  const negative = a < 0n !== b < 0n;
+  const ua = u128(magnitude(a));
+  const ub = u128(magnitude(b));
+  const m64: u128 = 18446744073709551615n;
+  const aL = ua & m64;
+  const aH = ua >> 64n;
+  const bL = ub & m64;
+  const bH = ub >> 64n;
+  const ll = aL * bL;
+  const lh = aL * bH;
+  const hl = aH * bL;
+  const hh = aH * bH;
+  const w0 = ll & m64;
+  const mid = (lh & m64) + (hl & m64) + (ll >> 64n);
+  const w1 = mid & m64;
+  const mid2 = (lh >> 64n) + (hl >> 64n) + (hh & m64) + (mid >> 64n);
+  const w2 = mid2 & m64;
+  const w3 = (hh >> 64n) + (mid2 >> 64n);
+  // q = product >> 48: its low 128 bits, and whether any bit above them is set.
+  const m48: u128 = 281474976710655n;
+  let low = (w0 >> 48n) | (w1 << 16n) | ((w2 & m48) << 80n);
+  let high = w2 >> 48n !== 0n || w3 !== 0n;
+  // A negative product rounds toward −∞.
+  if (negative && (w0 & m48) !== 0n) {
+    if (low === 340282366920938463463374607431768211455n) {
+      low = 0n;
+      high = true;
+    } else low += 1n;
+  }
+  const ok = !high && (negative ? low <= u128(TWO_127) : low < u128(TWO_127));
+  return { err: ok ? 0n : MATH_ERROR, v: wrap128(u256(low), negative) };
+}
+
 /** checked_mul, its overflow returned. */
 export function fxTryMul(a: i128, b: i128): Fx {
-  const negative = a < 0n !== b < 0n;
-  const p = magnitude(a) * magnitude(b);
-  let q = p >> 48n;
-  if (negative && (p & u256(u128(FRAC_MASK))) !== 0n) q += 1n;
-  if (!fits(q, negative && p !== 0n)) return { err: MATH_ERROR, v: 0n };
-  return { err: 0n, v: wrap128(q, negative) };
+  if (bitLength(fxUnsignedAbs(a)) + bitLength(fxUnsignedAbs(b)) <= 174n) return { err: 0n, v: fxMul(a, b) };
+  const p = wideProduct(a, b);
+  return p.err !== 0n ? { err: MATH_ERROR, v: 0n } : p;
 }
 /** checked_div, its zero divisor or overflow returned. */
 export function fxTryDiv(a: i128, b: i128): Fx {
@@ -130,11 +200,8 @@ export function fxTrySub(a: i128, b: i128): Fx {
 }
 /** `a * b`: the product rounded toward −∞, its bits past 128 dropped. */
 export function fxWrappingMul(a: i128, b: i128): i128 {
-  const negative = a < 0n !== b < 0n;
-  const p = magnitude(a) * magnitude(b);
-  let q = p >> 48n;
-  if (negative && (p & u256(u128(FRAC_MASK))) !== 0n) q += 1n;
-  return wrap128(q, negative);
+  if (bitLength(fxUnsignedAbs(a)) + bitLength(fxUnsignedAbs(b)) <= 174n) return fxMul(a, b);
+  return wideProduct(a, b).v;
 }
 /** `a / b`: the quotient toward zero, its bits past 128 dropped; a zero divisor panics. */
 export function fxWrappingDiv(a: i128, b: i128): i128 {
@@ -187,6 +254,62 @@ export function fxRound(a: i128): i128 {
 export function fxFromU64(n: u64): i128 {
   return toI128(u128(n)) << 48n;
 }
+/** EXP_10_I80F48[e]: 10^e as I80F48; an index of 24 or more panics in the original (here InternalLogicError). */
+export function exp10Fx(e: u64): i128 {
+  switch (e) {
+    case 0n:
+      return 281474976710656n;
+    case 1n:
+      return 2814749767106560n;
+    case 2n:
+      return 28147497671065600n;
+    case 3n:
+      return 281474976710656000n;
+    case 4n:
+      return 2814749767106560000n;
+    case 5n:
+      return 28147497671065600000n;
+    case 6n:
+      return 281474976710656000000n;
+    case 7n:
+      return 2814749767106560000000n;
+    case 8n:
+      return 28147497671065600000000n;
+    case 9n:
+      return 281474976710656000000000n;
+    case 10n:
+      return 2814749767106560000000000n;
+    case 11n:
+      return 28147497671065600000000000n;
+    case 12n:
+      return 281474976710656000000000000n;
+    case 13n:
+      return 2814749767106560000000000000n;
+    case 14n:
+      return 28147497671065600000000000000n;
+    case 15n:
+      return 281474976710656000000000000000n;
+    case 16n:
+      return 2814749767106560000000000000000n;
+    case 17n:
+      return 28147497671065600000000000000000n;
+    case 18n:
+      return 281474976710656000000000000000000n;
+    case 19n:
+      return 2814749767106560000000000000000000n;
+    case 20n:
+      return 28147497671065600000000000000000000n;
+    case 21n:
+      return 281474976710656000000000000000000000n;
+    case 22n:
+      return 2814749767106560000000000000000000000n;
+    case 23n:
+      return 28147497671065600000000000000000000000n;
+  }
+  require(false, MarginfiError.InternalLogicError);
+  return 0n;
+}
+
 /** from_num of an i64. */
 export function fxFromI64(n: i64): i128 {
   return toI128(n) * I80F48_ONE;
@@ -199,6 +322,15 @@ export function fxFromI128Wrapping(n: i128): i128 {
 export function fxToU64Wrapping(a: i128): u64 {
   // The integer part is in [-2^79, 2^79); adding 2^80 keeps it modulo 2^64 and makes it positive.
   return toU64(u128((a >> 48n) + 1208925819614629174706176n) & 18446744073709551615n);
+}
+/** to_num::<i64>: toward −∞, then wrapped to 64 bits. */
+export function fxToI64Wrapping(a: i128): i64 {
+  const u = fxToU64Wrapping(a);
+  return u <= 9223372036854775807n ? toI64(u) : toI64(u - 9223372036854775808n) - 9223372036854775807n - 1n;
+}
+/** to_num::<u32>: toward −∞, then wrapped to 32 bits. */
+export function fxToU32Wrapping(a: i128): u32 {
+  return toU32(fxToU64Wrapping(a) & 4294967295n);
 }
 /** checked_to_num::<u64> (to_num where Marginfi unwraps it): toward −∞; MathError when out of range. */
 export function fxToU64(a: i128): u64 {
