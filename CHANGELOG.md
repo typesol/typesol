@@ -15,6 +15,11 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's classic liquidation (part 4 of the port): `lending_account_liquidate`, the liquidatee's
+  collateral taken at a discount for its debt, the insurance fund's cut sent from the liability bank's vault, the
+  liquidatee's tag after it, the liquidator's health over its own accounts and its premium seeded, a halted bank left
+  to the admins, Token-2022. Against the binary on mainnet: 798 transactions, the same IDL for all 32 ported
+  instructions; the fuzzer liquidates too. 34–37% fewer compute units on liquidations.
 - Examples: Marginfi's liquidation records and bankruptcy, the start of part 4 of the port:
   `marginfi_account_init_liq_record`, `marginfi_account_tag_liq_record` (a liquidatable account tagged, the health
   cache from the Maintenance pass), `marginfi_account_close_liq_record` and `lending_pool_handle_bankruptcy` (the
