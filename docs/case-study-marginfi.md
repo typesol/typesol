@@ -348,7 +348,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 847 in
+for the oracles, and 896 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -397,7 +397,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (847, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (896, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -617,6 +617,9 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `marginfi_account_set_keeper_close_flags`, one bank | 3,094 | 1,083 | −65% |
 | `marginfi_account_keeper_close_order` | 2,709 | 1,403 | −48% |
 | an order executed (start, withdraw, repay, end), stop loss | 158,349 | 70,948 | −55% |
+| `marginfi_account_place_rebalance_order` | 10,820 | 3,570 | −67% |
+| `marginfi_account_update_rebalance_order` | 3,980 | 1,610 | −60% |
+| `marginfi_account_top_up_rebalance_fee_pool` | 6,498 | 2,970 | −54% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -624,7 +627,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions);
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.

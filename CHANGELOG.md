@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Fixed: an event's fields go out in the order declared, as Anchor's Borsh sends them (a `Vec<T>` field went last,
+  after the fixed-size fields as account data stores it), and the IDL lists them so.
+- Examples: Marginfi's rebalance orders, kept: `marginfi_account_place_rebalance_order`, `update_rebalance_order`,
+  `close_rebalance_order`, `top_up_rebalance_fee_pool`, `withdraw_rebalance_fee_pool`. Against the binary on mainnet:
+  1,314 transactions, the same IDL for all 88 ported instructions.
 - Examples: Marginfi's order execution, `marginfi_account_start_execute_order` and
   `marginfi_account_end_execute_order` (a sandwich: the executor withdraws and repays in between). Against the binary
   on mainnet: 1,265 transactions, the same IDL for all 83 ported instructions.
