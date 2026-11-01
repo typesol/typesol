@@ -30,7 +30,7 @@ import {
 import { ACCOUNT_IN_FLASHLOAN, EMPTY_BALANCE_THRESHOLD, ZERO_KEY, claimPremium, writeOffPremium } from "./account";
 import { BANK_SAME_ASSET_EMODE_ELIGIBLE, CIRCUIT_BREAKER_ENABLED, PREMIUM_ACTIVE, cbPriceGateErr } from "./bank";
 import { MarginfiError } from "./errors";
-import { type Fx, I80F48_ONE, I80F48_ZERO, exp10Fx, fxFromU64, fxMul, fxToF64Bits, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
+import { type Fx, I80F48_ONE, I80F48_ZERO, exp10Fx, fxFromU64, fxMul, fxSub, fxToF64Bits, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
 import { SECONDS_PER_YEAR, milliToU32, u32ToBasis, u32ToMilli } from "./interest_rate";
 import {
   BIAS_HIGH,
@@ -971,4 +971,78 @@ export function resetHealthCache(acc: Mut<MarginfiAccount>, t: i64, version: u8,
   c.internal_bankruptcy_err = 0n;
   for (let j = 0n; j < 32n; j++) c.reserved0.set(j, 0n);
   for (let j = 0n; j < 16n; j++) c.reserved1.set(j, 0n);
+}
+
+/**
+ * any_balance_bank_is_cb_halted: whether a bank of the account is halted by its circuit breaker or circuit-broken,
+ * walking [start, end) as the engine does (no oracle count check); errors as values.
+ */
+export function anyBankHalted(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64, t: i64): Count {
+  let at = start;
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    if (at >= end) return { err: INVALID_BANK_ACCOUNT, n: 0n };
+    const loadErr = loaderErr(rest.get(at));
+    if (loadErr !== 0n) return { err: loadErr, n: 0n };
+    const bank = loadAccount<Bank>(rest.get(at));
+    if (bank.key !== b.bank_pk) return { err: INVALID_BANK_ACCOUNT, n: 0n };
+    const on = (bank.flags & CIRCUIT_BREAKER_ENABLED) !== 0n;
+    if ((on && bank.cb_tier > 0n && t < bank.cb_halt_ended_at) || bank.config.operational_state === BankOperationalState.CircuitBroken) return { err: 0n, n: 1n };
+    const per = accountsPerBank(bank);
+    if (per.err !== 0n) return { err: per.err, n: 0n };
+    at += per.n;
+  }
+  return { err: 0n, n: 0n };
+}
+
+/**
+ * The liability balance a liquidation repays: the first active one in `bank` (LendingAccountBalanceNotFound if none),
+ * holding a share or more of debt (`noDebt` otherwise) and less than one of assets (`assets` otherwise).
+ */
+export function liabilityBalanceErr(acc: Account<MarginfiAccount>, bank: Pubkey, noDebt: u32, assets: u32): u32 {
+  for (let i = 0n; i < 16n; i++) {
+    const b = acc.lending_account.balances.get(i);
+    if (b.active === 0n || b.bank_pk !== bank) continue;
+    if (b.liability_shares.value < EMPTY_BALANCE_THRESHOLD) return noDebt;
+    if (b.asset_shares.value >= EMPTY_BALANCE_THRESHOLD) return assets;
+    return 0n;
+  }
+  return 6002n;
+}
+
+/** calc_amount: the token amount worth `value` at `price`. */
+export function calcAmount(value: i128, price: i128, decimals: u8): Fx {
+  const scaled = fxTryMul(value, exp10Fx(toU64(decimals)));
+  if (scaled.err !== 0n) return scaled;
+  return fxTryDiv(scaled.v, price);
+}
+
+/** max_premium_rate_for_liability_tag: the highest pair rate configured for a liability tag (0 if none). */
+export function maxPremiumRate(group: Account<MarginfiGroup>, tag: u16): u32 {
+  let n = toU64(group.premium_settings.entry_count);
+  if (n > 64n) n = 64n;
+  let max: u32 = 0n;
+  for (let i = 0n; i < n; i++) {
+    const e = group.premium_entries.get(i);
+    if (e.liability_tag === tag && e.rate > max) max = e.rate;
+  }
+  return max;
+}
+
+/** LIQUIDATION_TAG_RESET_DEFICIT_FRACTION and LIQUIDATION_TAG_RESET_REPAID_FRACTION (0.25). */
+const TAG_RESET_FRACTION: i128 = 70368744177664n;
+
+/**
+ * tag_after_liquidation: a tagged account's tag cleared once it is healthy, restarted when the liquidation erased a
+ * quarter of its deficit or repaid a quarter of its liabilities, kept otherwise.
+ */
+export function tagAfterLiquidation(taggedAt: i64, pre: i128, post: i128, preLiabs: i128, repaid: i128, t: i64): i64 {
+  if (taggedAt === 0n) return 0n;
+  const preDeficit = pre < I80F48_ZERO ? -pre : I80F48_ZERO;
+  const postDeficit = post < I80F48_ZERO ? -post : I80F48_ZERO;
+  if (postDeficit === I80F48_ZERO) return 0n;
+  const erased = fxSub(preDeficit, postDeficit) >= fxMul(preDeficit, TAG_RESET_FRACTION);
+  const repaidEnough = preLiabs > I80F48_ZERO && repaid >= fxMul(preLiabs, TAG_RESET_FRACTION);
+  return erased || repaidEnough ? t : taggedAt;
 }

@@ -10,6 +10,8 @@ import {
   type Account,
   type AccountInfo,
   type CloseTo,
+  type Dup,
+  type RemainingAccounts,
   type SystemAccount,
   type Address,
   type Mint,
@@ -54,6 +56,10 @@ import {
   ACCOUNT_FROZEN,
   ACCOUNT_IN_FLASHLOAN,
   ACCOUNT_IN_REBALANCE,
+  ACCOUNT_IN_RISK_ADMIN_LIQUIDATION,
+  DECREASE_BYPASS_BORROW_LIMIT,
+  INCREASE_BYPASS_DEPOSIT_LIMIT,
+  claimPremium,
   ZERO_AMOUNT_THRESHOLD,
   writeOffPremiumAmount,
   DECREASE_BORROW_ONLY,
@@ -96,6 +102,7 @@ import {
   FREEZE_SETTINGS,
   IS_T22,
   TOKENLESS_REPAYMENTS_ALLOWED,
+  PREMIUM_ACTIVE,
   accrueInterest,
   checkSameAssetFee,
   configureBank,
@@ -109,6 +116,10 @@ import {
   totalLiquidationFee,
   updateBankCache,
   updateCachePrice,
+  assetAmount,
+  liabilityAmount,
+  liquidatorFee,
+  insuranceFee,
   updateInterestRateConfig,
   validateBankConfig,
   validateBankState,
@@ -118,6 +129,13 @@ import { MarginfiError } from "./errors";
 import {
   REQ_INITIAL,
   REQ_MAINTENANCE,
+  accountsPerBank,
+  anyBankHalted,
+  calcAmount,
+  feedAt,
+  liabilityBalanceErr,
+  maxPremiumRate,
+  tagAfterLiquidation,
   cachePrice,
   calcValue,
   cbPriceGate,
@@ -146,6 +164,7 @@ import {
   type LendingAccountRepayEvent,
   type LendingAccountWithdrawEvent,
   type LendingAccountBorrowEvent,
+  type LendingAccountLiquidateEvent,
   type HealthPulseEvent,
   type LiquidationTagEvent,
   type LendingPoolBankHandleBankruptcyEvent,
@@ -158,10 +177,30 @@ import {
   type MarginfiGroupConfigureEvent,
   type MarginfiGroupCreateEvent,
 } from "./events";
-import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxMul, fxSaturatingAdd, fxCeil, fxSaturatingSub, fxSub, fxToF64Bits, fxToU32Wrapping, fxToU64, fxTrySub } from "./i80f48";
+import {
+  I80F48_ONE,
+  I80F48_ZERO,
+  fxAdd,
+  fxFrac,
+  fxFromU64,
+  fxInt,
+  fxMul,
+  fxSaturatingAdd,
+  fxCeil,
+  fxSaturatingSub,
+  fxSub,
+  fxToF64Bits,
+  fxToU32Wrapping,
+  fxToU64,
+  fxTryAdd,
+  fxTryMul,
+  fxTrySub,
+} from "./i80f48";
 import {
   ASSET_TAG_DEFAULT,
   ASSET_TAG_SOL,
+  BIAS_HIGH,
+  priceOfType,
   feedFamily,
   fixedFeed,
   loadFeed,
@@ -173,7 +212,17 @@ import {
   validatesFeedAccount,
 } from "./oracle";
 import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
-import { type Bank, type FeeState, type LiquidationRecord, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState, OracleSetup, RiskTier } from "./state";
+import {
+  type Bank,
+  type FeeState,
+  type LiquidationRecord,
+  type MarginfiAccount,
+  type MarginfiGroup,
+  type WrappedI80F48,
+  BankOperationalState,
+  OracleSetup,
+  RiskTier,
+} from "./state";
 
 /** Anchor takes as many accounts as the runtime passes: a withdrawal's health check reads a bank and its oracle per balance. */
 export const MAX_ACCOUNTS = 255n;
@@ -492,7 +541,11 @@ export function lendingPoolAccrueBankInterest(group: Account<MarginfiGroup>, ban
 function fastAdminCanTransition(current: BankOperationalState, next: BankOperationalState): boolean {
   if (next === BankOperationalState.Paused) return true;
   if (next === BankOperationalState.ReduceOnly)
-    return current === BankOperationalState.Operational || current === BankOperationalState.ReduceOnly || current === BankOperationalState.ReduceOnlyWithBorrowingPower;
+    return (
+      current === BankOperationalState.Operational ||
+      current === BankOperationalState.ReduceOnly ||
+      current === BankOperationalState.ReduceOnlyWithBorrowingPower
+    );
   if (next === BankOperationalState.ReduceOnlyWithBorrowingPower)
     return current === BankOperationalState.Operational || current === BankOperationalState.ReduceOnlyWithBorrowingPower;
   return false;
@@ -511,7 +564,8 @@ export function lendingPoolConfigureBank(
 ): void {
   checkNoDurableNonce(instruction_sysvar);
   const c = bank_config_opt;
-  if (c.operational_state !== null) require(fastAdminCanTransition(bank.config.operational_state, c.operational_state), MarginfiError.InvalidFastBankOperationalState);
+  if (c.operational_state !== null)
+    require(fastAdminCanTransition(bank.config.operational_state, c.operational_state), MarginfiError.InvalidFastBankOperationalState);
   if ((bank.flags & FREEZE_SETTINGS) === FREEZE_SETTINGS) {
     if (c.deposit_limit !== null) bank.config.deposit_limit = c.deposit_limit;
     if (c.borrow_limit !== null) bank.config.borrow_limit = c.borrow_limit;
@@ -635,21 +689,15 @@ export function lendingPoolConfigureBankOracle(
   // A bank with frozen settings panics in the original.
   require((bank.flags & FREEZE_SETTINGS) !== FREEZE_SETTINGS, MarginfiError.InternalLogicError);
   const s = setupOf(setup);
-  require(
-    s !== OracleSetup.Fixed &&
-      s !== OracleSetup.FixedKamino &&
-      s !== OracleSetup.FixedDrift &&
-      s !== OracleSetup.FixedJuplend &&
-      s !== OracleSetup.PTPyth &&
-      s !== OracleSetup.PTFixed,
-    MarginfiError.UseSetOraclePrice,
-  );
+  require(s !== OracleSetup.Fixed &&
+    s !== OracleSetup.FixedKamino &&
+    s !== OracleSetup.FixedDrift &&
+    s !== OracleSetup.FixedJuplend &&
+    s !== OracleSetup.PTPyth &&
+    s !== OracleSetup.PTFixed, MarginfiError.UseSetOraclePrice);
   require(s !== OracleSetup.Scope && s !== OracleSetup.ScopeKamino && s !== OracleSetup.ScopeJuplend, MarginfiError.UseConfigureBankOracleScope);
-  require(
-    (bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) !== BANK_SAME_ASSET_EMODE_ELIGIBLE ||
-      (bank.config.oracle_keys.get(0n) === oracle && feedFamily(bank.config.oracle_setup) === feedFamily(s)),
-    MarginfiError.BadEmodeConfig,
-  );
+  require((bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) !== BANK_SAME_ASSET_EMODE_ELIGIBLE ||
+    (bank.config.oracle_keys.get(0n) === oracle && feedFamily(bank.config.oracle_setup) === feedFamily(s)), MarginfiError.BadEmodeConfig);
   bank.config.oracle_setup = s;
   bank.config.oracle_keys.set(0n, oracle);
   bank.config.fixed_price.value = I80F48_ZERO;
@@ -665,7 +713,12 @@ export function lendingPoolConfigureBankOracle(
   let err = validateOracleCount(bank, rem.length);
   if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
   require(err === 0n, err);
-  emit<LendingPoolBankConfigureOracleEvent>({ header: { signer: governance_admin.key, marginfi_group: group.key }, bank: bank.key, oracle_setup: setup, oracle });
+  emit<LendingPoolBankConfigureOracleEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    oracle_setup: setup,
+    oracle,
+  });
 }
 
 /**
@@ -871,10 +924,14 @@ export function lendingAccountDeposit(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
@@ -899,7 +956,12 @@ export function lendingAccountDeposit(
   } else invoke(token_program, [writable(signer_token_account), writable(liquidity_vault), readonlySigner(authority)], [u8(3n), deposit]);
   updateBankCache(bank, group, t);
   emit<LendingAccountDepositEvent>({
-    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
     bank: bank.key,
     mint: bank.mint,
     amount: deposit,
@@ -949,10 +1011,14 @@ export function lendingAccountWithdraw(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   const start: u64 = t22 ? 1n : 0n;
@@ -1014,7 +1080,12 @@ export function lendingAccountWithdraw(
     );
   updateBankCache(bank, group, t);
   emit<LendingAccountWithdrawEvent>({
-    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
     bank: bank.key,
     mint: bank.mint,
     amount: paid,
@@ -1080,10 +1151,14 @@ export function lendingAccountBorrow(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   const start: u64 = t22 ? 1n : 0n;
@@ -1124,7 +1199,12 @@ export function lendingAccountBorrow(
       ["liquidity_vault_auth", bank.key, bump],
     );
   emit<LendingAccountBorrowEvent>({
-    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
     bank: bank.key,
     mint: bank.mint,
     amount: pre + feeTokens,
@@ -1177,7 +1257,10 @@ const HEALTH_EMODE_BOOSTED: u32 = 8n;
  * Maintenance health (liquidatable or not; a healthy account loses its liquidation tag) and its equity (bankrupt or
  * not, underwater, a trivial balance), then the event with the cache.
  */
-export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, group: Account<MarginfiGroup>): void {
+export function lendingAccountPulseHealth(
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  group: Account<MarginfiGroup>,
+): void {
   const t = now();
   const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
   // check_account_init_health: in a flash loan Ok at once, the cache untouched.
@@ -1249,7 +1332,10 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
   const isolated = hasIsolatedLiability(marginfi_account, remainingAccounts());
   syncBalanceDerived(marginfi_account);
   const lastUpdate = marginfi_account.last_update;
-  const elapsed = saturatingSubI64(t, lastUpdate <= 9223372036854775807n ? i64(lastUpdate) : i64(lastUpdate - 9223372036854775808n) - 9223372036854775807n - 1n);
+  const elapsed = saturatingSubI64(
+    t,
+    lastUpdate <= 9223372036854775807n ? i64(lastUpdate) : i64(lastUpdate - 9223372036854775808n) - 9223372036854775807n - 1n,
+  );
   const f = marginfi_account.indexer_flags;
   f.was_active_30d = elapsed <= 2592000n ? 1n : 0n;
   f.was_active_60d = elapsed <= 5184000n ? 1n : 0n;
@@ -1290,7 +1376,10 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
  * Tag an account (anyone): at or below zero Maintenance health (with debt) it is tagged from now on, which lets the
  * liquidation premium grow; healthy again, a tagged account loses its tag. The account's banks and oracles follow.
  */
-export function marginfiAccountTagLiqRecord(marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, group: Account<MarginfiGroup>): void {
+export function marginfiAccountTagLiqRecord(
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  group: Account<MarginfiGroup>,
+): void {
   constraint(
     marginfi_account,
     (marginfi_account.account_flags &
@@ -1371,7 +1460,8 @@ export function lendingPoolHandleBankruptcy(
   checkNoDurableNonce(instruction_sysvar);
   const t = now();
   const admin = signer.key === group.risk_admin || signer.key === group.admin;
-  if ((bank.flags & PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG) === PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG) validateBankState(bank, FAILS_IN_PAUSED_STATE, false, t);
+  if ((bank.flags & PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG) === PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG)
+    validateBankState(bank, FAILS_IN_PAUSED_STATE, false, t);
   else {
     validateBankState(bank, 0n, true, t);
     require(admin, MarginfiError.Unauthorized);
@@ -1383,10 +1473,14 @@ export function lendingPoolHandleBankruptcy(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   const start: u64 = t22 ? 1n : 0n;
@@ -1442,13 +1536,351 @@ export function lendingPoolHandleBankruptcy(
   marginfi_account.last_update = u64(t);
   if (kill) bank.config.operational_state = BankOperationalState.KilledByBankruptcy;
   emit<LendingPoolBankHandleBankruptcyEvent>({
-    header: { signer: signer.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    header: {
+      signer: signer.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
     bank: bank.key,
     mint: bank.mint,
     bad_debt: f64FromBits(fxToF64Bits(badDebt)),
     covered_amount: f64FromBits(fxToF64Bits(covered)),
     socialized_amount: f64FromBits(fxToF64Bits(socialized)),
     premium_written_off: f64FromBits(fxToF64Bits(writtenOff)),
+  });
+}
+
+/**
+ * validate_bank_asset_tags: a liquidation never pays default-like assets (default and the integrations) for staked
+ * SOL debt or the other way round; SOL goes with either.
+ */
+function bankTagsCompatible(a: Mut<Bank>, b: Mut<Bank>): boolean {
+  const ta = a.config.asset_tag;
+  const tb = b.config.asset_tag;
+  const da = ta === 0n || (ta >= 3n && ta <= 6n);
+  const db = tb === 0n || (tb >= 3n && tb <= 6n);
+  return !((da && tb === BANK_ASSET_TAG_STAKED) || (ta === BANK_ASSET_TAG_STAKED && db));
+}
+
+/**
+ * check_post_liquidation_condition_and_get_account_health, then the liquidatee's premium snapshots from the new
+ * collateral mix (no ratchet: a third party picked its oracles). The liability must still be there and the account
+ * still at or below zero at Maintenance, but better than before. Returns its health.
+ */
+function liquidateeAfter(
+  acc: Mut<MarginfiAccount>,
+  group: Account<MarginfiGroup>,
+  rest: RemainingAccounts,
+  start: u64,
+  liabBank: Pubkey,
+  pre: i128,
+  t: i64,
+): i128 {
+  require((acc.account_flags & ACCOUNT_IN_FLASHLOAN) === 0n, MarginfiError.AccountInFlashloan);
+  const e = liabilityBalanceErr(acc, liabBank, 6069n, 6070n);
+  require(e === 0n, e);
+  const h = healthComponents(acc, group, rest, start, rest.length, REQ_MAINTENANCE, true, t);
+  require(h.err === 0n, h.err);
+  const health = fxTrySub(h.assets, h.liabs);
+  require(health.err === 0n, health.err);
+  require(health.v <= I80F48_ZERO, MarginfiError.TooSevereLiquidation);
+  require(health.v > pre, MarginfiError.WorseHealthPostLiquidation);
+  updatePremiumSnapshots(acc, group, h, u64(t), false);
+  return health.v;
+}
+
+/**
+ * The liquidator's Initial health over its own window (skipped in a flash loan), its tag cleared when healthy at
+ * Maintenance, its premium snapshots ratcheted; a premium-active debt it just took on that the pass could not price
+ * is raised to the highest rate configured for its tag (the time since its last update claimed at the old rate).
+ */
+function liquidatorAfter(
+  acc: Mut<MarginfiAccount>,
+  group: Account<MarginfiGroup>,
+  rest: RemainingAccounts,
+  start: u64,
+  end: u64,
+  liab: Mut<Bank>,
+  t: i64,
+): void {
+  const flash = (acc.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
+  const h = healthComponents(acc, group, rest, start, end, REQ_INITIAL, true, t);
+  if (!flash) {
+    require(h.err === 0n, h.err);
+    require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+    const tiers = riskTiersErr(acc, rest, start, end);
+    require(tiers === 0n, tiers);
+    if (acc.liquidation_tagged_at !== 0n) {
+      const m = healthComponents(acc, group, rest, start, end, REQ_MAINTENANCE, false, t);
+      if (m.err === 0n && m.assets > m.liabs) acc.liquidation_tagged_at = 0n;
+    }
+  }
+  updatePremiumSnapshots(acc, group, h, u64(t), true);
+  if (h.s_complete || (liab.flags & PREMIUM_ACTIVE) === 0n) return;
+  const found = findBalance(acc, liab.key);
+  if (found < 0n) return;
+  const i = u64(found);
+  const b = acc.lending_account.balances.get(i);
+  const seed = maxPremiumRate(group, liab.premium_tag);
+  if (b.liability_shares.value < EMPTY_BALANCE_THRESHOLD || b.premium_rate_snapshot >= seed) return;
+  const owed = fxTryMul(b.liability_shares.value, liab.liability_share_value.value);
+  require(owed.err === 0n, owed.err);
+  claimPremium(acc, i, owed.v, liab.premium_activated_at, u64(t));
+  acc.lending_account.balances.get(i).premium_rate_snapshot = seed;
+}
+
+/**
+ * Liquidate (classic): the liquidator takes `asset_amount` of the liquidatee's collateral in `asset_bank` at a discount
+ * and takes on the liquidatee's debt in `liab_bank` worth it, less the insurance fund's cut, which the liability
+ * bank's vault pays to its insurance vault. The remaining accounts: a Token-2022 liability bank's mint; the asset
+ * bank's oracles (only their count matters), the liability bank's oracles; the liquidator's [bank, oracles…] groups
+ * after the liquidation (`liquidator_accounts` of them), then the liquidatee's (`liquidatee_accounts`), last.
+ */
+export function lendingAccountLiquidate(
+  group: Account<MarginfiGroup>,
+  asset_bank: Dup<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>>,
+  liab_bank: Dup<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>>,
+  liquidator_marginfi_account: Dup<HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>>,
+  authority: Signer,
+  liquidatee_marginfi_account: Dup<HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>>,
+  bank_liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@liab_bank"], "@liab_bank.liquidity_vault_authority_bump">,
+  bank_liquidity_vault: Seeds<Mut<TokenAccount>, ["liquidity_vault", "@liab_bank"], "@liab_bank.liquidity_vault_bump">,
+  bank_insurance_vault: Seeds<Mut<AccountInfo>, ["insurance_vault", "@liab_bank"], "@liab_bank.insurance_vault_bump">,
+  token_program: TokenInterface,
+  asset_amount: u64,
+  liquidatee_accounts: u8,
+  liquidator_accounts: u8,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(liab_bank, isMarginfiAssetTag(liab_bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  constraint(liquidator_marginfi_account, (liquidator_marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) === 0n, MarginfiError.ForbiddenIx);
+  constraint(liquidator_marginfi_account, notFrozenForAuthority(liquidator_marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(
+    liquidator_marginfi_account,
+    signerAuthorized(liquidator_marginfi_account, group.governance_admin, authority.key, false, false, false),
+    MarginfiError.Unauthorized,
+  );
+  constraint(liquidatee_marginfi_account, (liquidatee_marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) === 0n, MarginfiError.ForbiddenIx);
+  require(asset_amount > 0n, MarginfiError.ZeroLiquidationAmount);
+  require(asset_bank.key !== liab_bank.key, MarginfiError.SameAssetAndLiabilityBanks);
+  // The original's second load_mut of one account fails here (AccountBorrowFailed, not a custom code).
+  require(liquidator_marginfi_account.key !== liquidatee_marginfi_account.key, 2040n);
+  const t = now();
+  const ts = u64(t);
+  // maybe_take_bank_mint (the liability bank's), before anything else.
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(mintOk(
+      liab_bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
+    decimals = readData<u8>(mint, 44n);
+  }
+  const start: u64 = t22 ? 1n : 0n;
+  const len = remainingAccounts().length;
+  accrueInterest(asset_bank, group, asset_bank.key, t);
+  accrueInterest(liab_bank, group, liab_bank.key, t);
+  // The liquidatee's accounts are the last `liquidatee_accounts` (more than there are panics).
+  require(u64(liquidatee_accounts) <= len - start, MarginfiError.InternalLogicError);
+  const liqe = len - u64(liquidatee_accounts);
+  sortBalances(liquidatee_marginfi_account);
+  const halted = anyBankHalted(liquidatee_marginfi_account, remainingAccounts(), liqe, len, t);
+  require(halted.err === 0n, halted.err);
+  const cbAdmin = halted.n !== 0n;
+  // A halted bank leaves liquidation to the admins; otherwise the breaker's gate first, as for a borrow.
+  if (cbAdmin) require(authority.key === group.risk_admin || authority.key === group.admin, MarginfiError.CircuitBreakerAdminOnly);
+  else {
+    const gate = cbPriceGate(liquidatee_marginfi_account, remainingAccounts(), liqe, len, t);
+    require(gate === 0n, gate);
+  }
+  require(bankTagsCompatible(asset_bank, liab_bank), MarginfiError.AssetTagMismatch);
+  validateBankState(asset_bank, FAILS_IN_PAUSED_STATE, cbAdmin, t);
+  validateBankState(liab_bank, FAILS_IN_PAUSED_STATE, cbAdmin, t);
+  require(assetTagsCompatible(liab_bank, liquidatee_marginfi_account), MarginfiError.AssetTagMismatch);
+  require(assetTagsCompatible(liab_bank, liquidator_marginfi_account), MarginfiError.AssetTagMismatch);
+  require(assetTagsCompatible(asset_bank, liquidator_marginfi_account), MarginfiError.AssetTagMismatch);
+
+  // check_pre_liquidation_condition_and_get_account_health: a debt in the liability bank, unhealthy at Maintenance.
+  require((liquidatee_marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) === 0n, MarginfiError.AccountInFlashloan);
+  const owing = liabilityBalanceErr(liquidatee_marginfi_account, liab_bank.key, 6066n, 6067n);
+  require(owing === 0n, owing);
+  const before = preLiquidation(liquidatee_marginfi_account, group, remainingAccounts(), liqe, len, t);
+  require(before.err === 0n, before.err);
+  require(before.health <= I80F48_ZERO, MarginfiError.HealthyAccount);
+  const assetCache = cachePrice(asset_bank, asset_bank.key, remainingAccounts(), liqe, t);
+  const liabCache = cachePrice(liab_bank, liab_bank.key, remainingAccounts(), liqe, t);
+
+  // Prices: the asset's spot less its confidence (found by key), the liability's plus it (its oracles after the
+  // asset bank's count of them).
+  const amount = fxFromU64(asset_amount);
+  const assetPer = accountsPerBank(asset_bank);
+  require(assetPer.err === 0n, assetPer.err);
+  const assetPrice = lowPrice(asset_bank, asset_bank.key, remainingAccounts(), start, t);
+  require(assetPrice.err === 0n, assetPrice.err);
+  require(assetPrice.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
+  const liabPer = accountsPerBank(liab_bank);
+  require(liabPer.err === 0n, liabPer.err);
+  const liabFirst = start + assetPer.n - 1n;
+  require(liabFirst + liabPer.n - 1n <= len, MarginfiError.InternalLogicError);
+  const feed = feedAt(liab_bank, remainingAccounts(), liabFirst, liabPer.n - 1n, t);
+  require(feed.err === 0n, feed.err);
+  const liabPrice = priceOfType(feed, true, BIAS_HIGH, liab_bank.config.oracle_max_confidence);
+  require(liabPrice.err === 0n, liabPrice.err);
+  require(liabPrice.v > I80F48_ZERO, MarginfiError.ZeroLiabilityPrice);
+
+  // The liquidator pays the asset's value less its cut; the liquidatee is credited that less the insurance fund's.
+  const liquidatorCut = liquidatorFee(liab_bank);
+  const insuranceCut = insuranceFee(liab_bank);
+  const finalDiscount = fxSub(I80F48_ONE, fxAdd(insuranceCut, liquidatorCut));
+  const liquidatorDiscount = fxSub(I80F48_ONE, liquidatorCut);
+  const paidValue = calcValue(amount, assetPrice.v, asset_bank.mint_decimals, liquidatorDiscount, true);
+  require(paidValue.err === 0n, paidValue.err);
+  const paid = calcAmount(paidValue.v, liabPrice.v, liab_bank.mint_decimals);
+  require(paid.err === 0n, paid.err);
+  const creditedValue = calcValue(amount, assetPrice.v, asset_bank.mint_decimals, finalDiscount, true);
+  require(creditedValue.err === 0n, creditedValue.err);
+  const credited = calcAmount(creditedValue.v, liabPrice.v, liab_bank.mint_decimals);
+  require(credited.err === 0n, credited.err);
+  const insurance = fxSub(paid.v, credited.v);
+  const repaidMaint = calcValue(credited.v, liabPrice.v, liab_bank.mint_decimals, liab_bank.config.liability_weight_maint.value, true);
+  require(repaidMaint.err === 0n, repaidMaint.err);
+  // The original asserts it (a panic).
+  require(insurance >= I80F48_ZERO, MarginfiError.InternalLogicError);
+
+  // The liquidator takes on the debt: out of its deposit in the liability bank first, then borrowed.
+  const r = findOrCreateBalance(liquidator_marginfi_account, liab_bank, liab_bank.key, t);
+  const rLiabPre = liabilityAmount(liab_bank, liquidator_marginfi_account.lending_account.balances.get(r).liability_shares.value);
+  const rLiabAssetPre = assetAmount(liab_bank, liquidator_marginfi_account.lending_account.balances.get(r).asset_shares.value);
+  decreaseBalance(liquidator_marginfi_account, r, liab_bank, paid.v, DECREASE_BYPASS_BORROW_LIMIT, ts);
+  const rLiabPost = liabilityAmount(liab_bank, liquidator_marginfi_account.lending_account.balances.get(r).liability_shares.value);
+  const rLiabAssetPost = assetAmount(liab_bank, liquidator_marginfi_account.lending_account.balances.get(r).asset_shares.value);
+  // The liquidatee gives up the collateral.
+  const foundAsset = findBalance(liquidatee_marginfi_account, asset_bank.key);
+  require(foundAsset >= 0n, MarginfiError.BankAccountNotFound);
+  const e = u64(foundAsset);
+  const eAssetPre = assetAmount(asset_bank, liquidatee_marginfi_account.lending_account.balances.get(e).asset_shares.value);
+  require(eAssetPre >= amount, MarginfiError.OverliquidationAttempt);
+  decreaseBalance(liquidatee_marginfi_account, e, asset_bank, amount, DECREASE_BYPASS_BORROW_LIMIT, ts);
+  const eAssetPost = assetAmount(asset_bank, liquidatee_marginfi_account.lending_account.balances.get(e).asset_shares.value);
+  // The liquidator receives it: its premium owed in that bank settled first, as a repayment would.
+  const a = findOrCreateBalance(liquidator_marginfi_account, asset_bank, asset_bank.key, t);
+  const rAssetPre = assetAmount(asset_bank, liquidator_marginfi_account.lending_account.balances.get(a).asset_shares.value);
+  claimBalancePremium(liquidator_marginfi_account, a, asset_bank, ts);
+  const settled = settlePremium(liquidator_marginfi_account, a, asset_bank, amount);
+  const credit = fxTrySub(amount, settled);
+  require(credit.err === 0n, credit.err);
+  if (credit.v > I80F48_ZERO) increaseBalance(liquidator_marginfi_account, a, asset_bank, credit.v, INCREASE_BYPASS_DEPOSIT_LIMIT, ts);
+  const rAssetPost = assetAmount(asset_bank, liquidator_marginfi_account.lending_account.balances.get(a).asset_shares.value);
+  const premiumLeft = liquidator_marginfi_account.lending_account.balances.get(a).premium_outstanding.value;
+  liquidator_marginfi_account.last_update = ts;
+  const fee = fxToU64(insurance);
+  const dust = fxFrac(insurance);
+  // The liquidatee's debt is repaid by what it is credited; the insurance fund's cut leaves the vault.
+  const foundLiab = findBalance(liquidatee_marginfi_account, liab_bank.key);
+  require(foundLiab >= 0n, MarginfiError.BankAccountNotFound);
+  const l = u64(foundLiab);
+  const eLiabPre = liabilityAmount(liab_bank, liquidatee_marginfi_account.lending_account.balances.get(l).liability_shares.value);
+  increaseBalance(liquidatee_marginfi_account, l, liab_bank, credited.v, INCREASE_REPAY_ONLY, ts);
+  const eLiabPost = liabilityAmount(liab_bank, liquidatee_marginfi_account.lending_account.balances.get(l).liability_shares.value);
+  liquidatee_marginfi_account.last_update = ts;
+  const bump = liab_bank.liquidity_vault_authority_bump;
+  if (t22)
+    invoke(
+      token_program,
+      [writable(bank_liquidity_vault), readonly(remainingAccounts().get(0n)), writable(bank_insurance_vault), readonlySigner(bank_liquidity_vault_authority)],
+      [u8(12n), fee, decimals],
+      ["liquidity_vault_auth", liab_bank.key, bump],
+    );
+  else
+    invoke(
+      token_program,
+      [writable(bank_liquidity_vault), writable(bank_insurance_vault), readonlySigner(bank_liquidity_vault_authority)],
+      [u8(3n), fee],
+      ["liquidity_vault_auth", liab_bank.key, bump],
+    );
+  const outstanding = fxTryAdd(liab_bank.collected_insurance_fees_outstanding.value, dust);
+  require(outstanding.err === 0n, outstanding.err);
+  liab_bank.collected_insurance_fees_outstanding.value = outstanding.v;
+  updateBankCache(asset_bank, group, t);
+  if (assetCache.err === 0n) updateCachePrice(asset_bank, assetCache.price, assetCache.conf, assetCache.source_time, t, currentSlot());
+  updateBankCache(liab_bank, group, t);
+  if (liabCache.err === 0n) updateCachePrice(liab_bank, liabCache.price, liabCache.conf, liabCache.source_time, t, currentSlot());
+
+  // The liquidator's accounts end where the liquidatee's begin (more than there are panics).
+  require(u64(liquidator_accounts) <= liqe - start, MarginfiError.InternalLogicError);
+  const liqr = liqe - u64(liquidator_accounts);
+  const after = liquidateeAfter(liquidatee_marginfi_account, group, remainingAccounts(), liqe, liab_bank.key, before.health, t);
+  liquidatee_marginfi_account.liquidation_tagged_at = tagAfterLiquidation(
+    liquidatee_marginfi_account.liquidation_tagged_at,
+    before.health,
+    after,
+    before.liabs,
+    repaidMaint.v,
+    t,
+  );
+  liquidatee_marginfi_account.indexer_flags.has_ever_been_liquidated = 1n;
+  syncIndexerFlags(liquidatee_marginfi_account);
+  sortBalances(liquidator_marginfi_account);
+  syncIndexerFlags(liquidator_marginfi_account);
+  liquidatorAfter(liquidator_marginfi_account, group, remainingAccounts(), liqr, liqe, liab_bank, t);
+  if (!cbAdmin) {
+    const gate = cbPriceGate(liquidator_marginfi_account, remainingAccounts(), liqr, liqe, t);
+    require(gate === 0n, gate);
+  }
+  liquidatee_marginfi_account.account_flags &= ~ACCOUNT_IN_RISK_ADMIN_LIQUIDATION;
+  liquidator_marginfi_account.account_flags &= ~ACCOUNT_IN_RISK_ADMIN_LIQUIDATION;
+  if (settled > I80F48_ZERO)
+    emit<LendingAccountPremiumSettledEvent>({
+      header: {
+        signer: authority.key,
+        marginfi_account: liquidator_marginfi_account.key,
+        marginfi_account_authority: liquidator_marginfi_account.authority,
+        marginfi_group: group.key,
+      },
+      bank: asset_bank.key,
+      mint: asset_bank.mint,
+      premium_settled: f64FromBits(fxToF64Bits(settled)),
+      premium_written_off: f64FromBits(0n),
+      premium_outstanding_remaining: f64FromBits(fxToF64Bits(premiumLeft)),
+    });
+  emit<LendingAccountLiquidateEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: liquidator_marginfi_account.key,
+      marginfi_account_authority: liquidator_marginfi_account.authority,
+      marginfi_group: group.key,
+    },
+    liquidatee_marginfi_account: liquidatee_marginfi_account.key,
+    liquidatee_marginfi_account_authority: liquidatee_marginfi_account.authority,
+    asset_bank: asset_bank.key,
+    asset_mint: asset_bank.mint,
+    liability_bank: liab_bank.key,
+    liability_mint: liab_bank.mint,
+    liquidatee_pre_health: f64FromBits(fxToF64Bits(before.health)),
+    liquidatee_post_health: f64FromBits(fxToF64Bits(after)),
+    pre_balances: {
+      liquidatee_asset_balance: f64FromBits(fxToF64Bits(eAssetPre)),
+      liquidatee_liability_balance: f64FromBits(fxToF64Bits(eLiabPre)),
+      liquidator_asset_balance: f64FromBits(fxToF64Bits(rAssetPre)),
+      liquidator_liability_balance: f64FromBits(fxToF64Bits(rLiabPre)),
+      liquidator_liability_bank_asset_balance: f64FromBits(fxToF64Bits(rLiabAssetPre)),
+    },
+    post_balances: {
+      liquidatee_asset_balance: f64FromBits(fxToF64Bits(eAssetPost)),
+      liquidatee_liability_balance: f64FromBits(fxToF64Bits(eLiabPost)),
+      liquidator_asset_balance: f64FromBits(fxToF64Bits(rAssetPost)),
+      liquidator_liability_balance: f64FromBits(fxToF64Bits(rLiabPost)),
+      liquidator_liability_bank_asset_balance: f64FromBits(fxToF64Bits(rLiabAssetPost)),
+    },
   });
 }
 
@@ -1501,10 +1933,14 @@ export function lendingAccountRepay(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   validateBankState(bank, FAILS_IN_PAUSED_STATE, true, t);
@@ -1550,11 +1986,26 @@ export function lendingAccountRepay(
     bank.flags |= TOKENLESS_REPAYMENTS_COMPLETE;
   updateBankCache(bank, group, t);
   emit<LendingAccountRepayEvent>({
-    header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
-    bank: bank.key, mint: bank.mint, amount: repaid, close_balance: all, share_amount: { value: shares } });
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: repaid,
+    close_balance: all,
+    share_amount: { value: shares },
+  });
   if (settledNow > I80F48_ZERO || writtenOff > I80F48_ZERO)
     emit<LendingAccountPremiumSettledEvent>({
-      header: { signer: authority.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+      header: {
+        signer: authority.key,
+        marginfi_account: marginfi_account.key,
+        marginfi_account_authority: marginfi_account.authority,
+        marginfi_group: marginfi_account.group,
+      },
       bank: bank.key,
       mint: bank.mint,
       premium_settled: f64FromBits(fxToF64Bits(settledNow)),
@@ -1590,10 +2041,14 @@ export function lendingPoolCollectBankFees(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   let available = fxFromU64(liquidity_vault.amount);
@@ -1617,7 +2072,13 @@ export function lendingPoolCollectBankFees(
       [u8(12n), fxToU64(groupFees), decimals],
       ["liquidity_vault_auth", bank.key, bump],
     );
-  else invoke(token_program, [writable(liquidity_vault), writable(fee_vault), readonlySigner(liquidity_vault_authority)], [u8(3n), fxToU64(groupFees)], ["liquidity_vault_auth", bank.key, bump]);
+  else
+    invoke(
+      token_program,
+      [writable(liquidity_vault), writable(fee_vault), readonlySigner(liquidity_vault_authority)],
+      [u8(3n), fxToU64(groupFees)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
   if (t22)
     invoke(
       token_program,
@@ -1625,7 +2086,13 @@ export function lendingPoolCollectBankFees(
       [u8(12n), fxToU64(insurance), decimals],
       ["liquidity_vault_auth", bank.key, bump],
     );
-  else invoke(token_program, [writable(liquidity_vault), writable(insurance_vault), readonlySigner(liquidity_vault_authority)], [u8(3n), fxToU64(insurance)], ["liquidity_vault_auth", bank.key, bump]);
+  else
+    invoke(
+      token_program,
+      [writable(liquidity_vault), writable(insurance_vault), readonlySigner(liquidity_vault_authority)],
+      [u8(3n), fxToU64(insurance)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
   const programOwed = bank.collected_program_fees_outstanding.value;
   const programFees = fxInt(programOwed < available ? programOwed : available);
   const programLeft = fxSub(programOwed, programFees);
@@ -1639,7 +2106,13 @@ export function lendingPoolCollectBankFees(
       [u8(12n), fxToU64(programFees), decimals],
       ["liquidity_vault_auth", bank.key, bump],
     );
-  else invoke(token_program, [writable(liquidity_vault), writable(fee_ata), readonlySigner(liquidity_vault_authority)], [u8(3n), fxToU64(programFees)], ["liquidity_vault_auth", bank.key, bump]);
+  else
+    invoke(
+      token_program,
+      [writable(liquidity_vault), writable(fee_ata), readonlySigner(liquidity_vault_authority)],
+      [u8(3n), fxToU64(programFees)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
   emit<LendingPoolBankCollectFeesEvent>({
     header: { signer: null, marginfi_group: group.key },
     bank: bank.key,
@@ -1671,10 +2144,14 @@ export function lendingPoolWithdrawFees(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   if (t22)
@@ -1684,7 +2161,13 @@ export function lendingPoolWithdrawFees(
       [u8(12n), amount, decimals],
       ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
     );
-  else invoke(token_program, [writable(fee_vault), writable(dst_token_account), readonlySigner(fee_vault_authority)], [u8(3n), amount], ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump]);
+  else
+    invoke(
+      token_program,
+      [writable(fee_vault), writable(dst_token_account), readonlySigner(fee_vault_authority)],
+      [u8(3n), amount],
+      ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
+    );
 }
 
 /** Withdraw from a bank's insurance vault (admin only). */
@@ -1707,10 +2190,14 @@ export function lendingPoolWithdrawInsurance(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   if (t22)
@@ -1720,7 +2207,13 @@ export function lendingPoolWithdrawInsurance(
       [u8(12n), amount, decimals],
       ["insurance_vault_auth", bank.key, bank.insurance_vault_authority_bump],
     );
-  else invoke(token_program, [writable(insurance_vault), writable(dst_token_account), readonlySigner(insurance_vault_authority)], [u8(3n), amount], ["insurance_vault_auth", bank.key, bank.insurance_vault_authority_bump]);
+  else
+    invoke(
+      token_program,
+      [writable(insurance_vault), writable(dst_token_account), readonlySigner(insurance_vault_authority)],
+      [u8(3n), amount],
+      ["insurance_vault_auth", bank.key, bank.insurance_vault_authority_bump],
+    );
 }
 
 /** Send a bank's fee vault (up to `amount`) to the fees destination the admin set (permissionless). */
@@ -1741,10 +2234,14 @@ export function lendingPoolWithdrawFeesPermissionless(
     require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
     const mint = remainingAccounts().get(0n);
     const n = mint.dataLen;
-    require(
-      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
-      MarginfiError.T22MintRequired,
-    );
+    require(mintOk(
+      bank.mint,
+      mint.key,
+      mint.owner,
+      n,
+      n >= 82n ? readData<u8>(mint, 45n) : 0n,
+      n > 165n ? readData<u8>(mint, 165n) : 0n,
+    ), MarginfiError.T22MintRequired);
     decimals = readData<u8>(mint, 44n);
   }
   if (t22)
@@ -1754,5 +2251,11 @@ export function lendingPoolWithdrawFeesPermissionless(
       [u8(12n), amount < held ? amount : held, decimals],
       ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
     );
-  else invoke(token_program, [writable(fee_vault), writable(fees_destination_account), readonlySigner(fee_vault_authority)], [u8(3n), amount < held ? amount : held], ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump]);
+  else
+    invoke(
+      token_program,
+      [writable(fee_vault), writable(fees_destination_account), readonlySigner(fee_vault_authority)],
+      [u8(3n), amount < held ? amount : held],
+      ["fee_vault_auth", bank.key, bank.fee_vault_authority_bump],
+    );
 }

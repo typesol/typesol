@@ -206,7 +206,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(32)) {
+      switch (rng.int(33)) {
         case 0:
         case 1:
         case 2: {
@@ -718,6 +718,106 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
             by,
             [h.handleBankruptcy(group.address, by, sb, acct.address, [...(t22 ? [sb.mint.mint] : []), ...rest], sb.mint.program)],
             [acct.address, sb.address, sb.v.liquidity, sb.v.insurance],
+            "if-panics",
+          );
+          break;
+        }
+        case 32: {
+          // Liquidate (classic): an account's debt (mostly a borrower's in its bank) paid by an account of either user
+          // with some of the liquidatee's collateral; the accounts as a client sends them, now and then miscounted.
+          const pool: { address: Address; owner: KeyPairSigner; bank?: FuzzBank }[] = [...accounts, ...borrowers];
+          if (pool.length < 2) break;
+          let e = rng.pick(pool);
+          const r = rng.pick(accounts);
+          let fresh: FuzzBank | null = null;
+          if (rng.chance(50)) {
+            // A fresh account holding collateral in one bank against a debt in another, written into both, often
+            // past its Maintenance requirement.
+            const owner = rng.pick(users);
+            const k = await s.key();
+            if ((await run(label("liquidatee init"), owner, [h.accountInit(group.address, k, owner)], [k.address])) !== "ok") break;
+            const others = banks.filter((x) => x !== bank);
+            if (!others.length) break;
+            const debt = rng.pick(others);
+            const held = ((rng.next() % 1_000_000_000n) + 1_000_000n) * ONE;
+            const owed = (held * BigInt(30 + rng.int(120))) / 100n;
+            editAccount(k.address, [
+              ["lending_account.balances[0].active", 1n, 1],
+              ["lending_account.balances[0].bank_pk", keyBits(b), 32],
+              ["lending_account.balances[0].asset_shares", held, 16],
+              ["lending_account.balances[0].last_update", t, 8],
+              ["lending_account.balances[1].active", 1n, 1],
+              ["lending_account.balances[1].bank_pk", keyBits(debt.address), 32],
+              ["lending_account.balances[1].liability_shares", owed, 16],
+              ["lending_account.balances[1].last_update", t, 8],
+            ]);
+            h.editBank(b, [["total_asset_shares", read128(b, "Bank", "total_asset_shares") + held, 16]]);
+            h.editBank(debt.address, [["total_liability_shares", read128(debt.address, "Bank", "total_liability_shares") + owed, 16]]);
+            e = { address: k.address, owner, bank: debt };
+            borrowers.push({ address: k.address, owner, bank: debt });
+            fresh = bank;
+          }
+          const banksOf = (a: Address) => {
+            const d = Buffer.from((s.original.getAccount(a) as { data: Uint8Array }).data);
+            const out: FuzzBank[] = [];
+            for (let i = 0; i < 16; i++) {
+              const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+              if (d[at] === 0) continue;
+              const k = d.subarray(at + 1, at + 33);
+              const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+              if (hb) out.push(hb);
+            }
+            return out;
+          };
+          const oracles = async (x: FuzzBank) => {
+            const f = await feedsOf(x.address);
+            const setup = read64(x.address, "Bank", "config.oracle_setup") & 0xffn;
+            return setup === 8n ? [] : [setup === 4n ? f.swb : f.pyth];
+          };
+          const groups = async (list: FuzzBank[]) => {
+            const out: Address[] = [];
+            const sorted = [...new Set(list)].sort((x, y) =>
+              Buffer.compare(new web3.PublicKey(y.address).toBuffer(), new web3.PublicKey(x.address).toBuffer()),
+            );
+            for (const x of sorted) out.push(x.address, ...(await oracles(x)));
+            return out;
+          };
+          const theirs = banksOf(e.address);
+          for (const x of theirs) if (rng.chance(70)) writeFeeds(await feedsOf(x.address));
+          const liab: FuzzBank = "bank" in e && rng.chance(fresh ? 95 : 70) ? (e.bank as FuzzBank) : bank;
+          const held = theirs.filter((x) => x !== liab);
+          const asset = fresh && rng.chance(90) ? fresh : held.length && rng.chance(80) ? rng.pick(held) : rng.pick(banks);
+          const mine = await groups([...banksOf(r.address), asset, liab]);
+          const window = await groups(theirs);
+          const t22 = liab.mint.program === TOKEN_2022;
+          const rest = [...(t22 && rng.chance(95) ? [liab.mint.mint] : []), ...(await oracles(asset)), ...(await oracles(liab)), ...mine, ...window];
+          const miscount = () => (rng.chance(90) ? 0 : rng.int(5) - 2);
+          const qty =
+            fresh && rng.chance(80)
+              ? ((read128(e.address, "MarginfiAccount", "lending_account.balances[0].asset_shares") / ONE) * BigInt(1 + rng.int(40))) / 100n
+              : rng.chance(60)
+                ? rng.next() % 10_000_000_000n
+                : amount();
+          const by = signer(r.owner);
+          await run(
+            label("liquidate"),
+            by,
+            [
+              h.liquidate(
+                group.address,
+                asset.address,
+                liab,
+                r.address,
+                by,
+                e.address,
+                qty,
+                Math.max(0, window.length + miscount()),
+                Math.max(0, mine.length + miscount()),
+                rest,
+                liab.mint.program,
+              ),
+            ],
+            [e.address, r.address, asset.address, liab.address, liab.v.liquidity, liab.v.insurance],
             "if-panics",
           );
           break;
