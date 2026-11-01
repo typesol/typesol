@@ -378,6 +378,14 @@ export function configureBank(bank: Mut<Bank>, c: BankConfigFast, timestamp: i64
 function liquidationFeeFraction(fee: u32): i128 {
   return fee === 0n ? DEFAULT_LIQUIDATION_FEE : u32ToCenti(fee);
 }
+/** The liquidator's cut of a liquidation. */
+export function liquidatorFee(bank: Mut<Bank>): i128 {
+  return liquidationFeeFraction(bank.liquidation_liquidator_fee);
+}
+/** The insurance fund's cut of a liquidation. */
+export function insuranceFee(bank: Mut<Bank>): i128 {
+  return liquidationFeeFraction(bank.liquidation_insurance_fee);
+}
 /** The liquidator's and the insurance fund's cut together (a plain sum: it cannot overflow). */
 export function totalLiquidationFee(bank: Mut<Bank>): i128 {
   return liquidationFeeFraction(bank.liquidation_liquidator_fee) + liquidationFeeFraction(bank.liquidation_insurance_fee);

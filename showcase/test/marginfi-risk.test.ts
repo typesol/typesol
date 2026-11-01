@@ -5,7 +5,7 @@
 // programs directly, to set up the withdrawals; the borrows make their own.
 import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
-import { afterAll, beforeAll, describe, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, report } from "./jito-helpers.js";
 import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
@@ -852,6 +852,199 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editBank(usdc.address, [["flags", 0n, 8]]);
   });
 
+  /** [bank, oracle…] groups for these banks, sorted as an account's balances are (descending key). */
+  const groupsOf = (list: Priced[]) =>
+    [...list].sort((x, y) => Buffer.compare(keyBytes(y.address), keyBytes(x.address))).flatMap((b) => (b.oracle ? [b.address, b.oracle] : [b.address]));
+  const oraclesOf = (b: Priced) => (b.oracle ? [b.oracle] : []);
+  type Liq = {
+    by?: KeyPairSigner;
+    liquidator?: User;
+    after?: Priced[];
+    liquidatee?: Address[];
+    counts?: [number, number];
+    failing?: boolean | "if-panics";
+    noMint?: boolean;
+  };
+  const liq = (label: string, e: User, r: User, asset: Priced, liab: Priced, amount: bigint, o: Liq = {}) => {
+    refresh();
+    const by = o.by ?? r.owner;
+    const liquidator = o.liquidator ?? r;
+    const mine = groupsOf(o.after ?? [asset, liab]);
+    const theirs = o.liquidatee ?? healthAccounts(e.account);
+    const rest = [...(liab.program === TOKEN_2022 && !o.noMint ? [liab.mint] : []), ...oraclesOf(asset), ...oraclesOf(liab), ...mine, ...theirs];
+    return run(
+      `liquidate: ${label}`,
+      by,
+      [
+        h.liquidate(
+          group.address,
+          asset.address,
+          liab,
+          liquidator.account,
+          by,
+          e.account,
+          amount,
+          o.counts?.[0] ?? theirs.length,
+          o.counts?.[1] ?? mine.length,
+          rest,
+          liab.program,
+        ),
+      ],
+      [e.account, liquidator.account, asset.address, liab.address, liab.v.liquidity, liab.v.insurance],
+      o.failing ?? false,
+    );
+  };
+
+  it("liquidates as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    const gold = await newBank("fixed", 2_000_000n);
+    await user([
+      [usdc, 500_000_000_000n],
+      [sol, 500_000_000_000n],
+      [gold, 500_000_000_000n],
+    ]);
+    // 10 SOL ($1,500) against 1,400 USDC: liquidatable at Maintenance. The liquidator holds USDC to pay with.
+    const e = await user([[sol, 10_000_000_000n]]);
+    owe(e.account, usdc, 1_400n * 1_000_000n * ONE);
+    const r = await user([[usdc, 5_000_000_000n]]);
+    tick();
+    await liq("zero amount", e, r, sol, usdc, 0n);
+    await liq("same bank twice", e, r, usdc, usdc, 1_000_000n);
+    await liq("liquidatee's accounts left out", e, r, sol, usdc, 1_000_000_000n, { liquidatee: [] });
+    await liq("more liquidatee accounts than sent", e, r, sol, usdc, 1_000_000_000n, { counts: [40, 4], failing: "if-panics" });
+    await liq("more liquidator accounts than sent", e, r, sol, usdc, 1_000_000_000n, { counts: [4, 40], failing: "if-panics" });
+    await liq("a bank it owes nothing", e, r, sol, gold, 1_000_000_000n);
+    await liq("past its collateral", e, r, sol, usdc, 11_000_000_000n);
+    const other = await s.funded();
+    await liq("not the liquidator's signer", e, r, sol, usdc, 1_000_000_000n, { by: other });
+    await liq("the liquidatee itself", e, e, sol, usdc, 1_000_000_000n, { failing: true });
+    editAccount(r.account, [["account_flags", 16n, 8]]);
+    await liq("liquidator in receivership", e, r, sol, usdc, 1_000_000_000n);
+    editAccount(r.account, [["account_flags", 0n, 8]]);
+    editAccount(e.account, [["account_flags", 16n, 8]]);
+    await liq("liquidatee in receivership", e, r, sol, usdc, 1_000_000_000n);
+    editAccount(e.account, [["account_flags", 2n, 8]]);
+    await liq("liquidatee in a flash loan", e, r, sol, usdc, 1_000_000_000n);
+    editAccount(e.account, [["account_flags", 0n, 8]]);
+    editGroup(group.address, [
+      ["panic_state_cache.pause_flags", 1n, 1],
+      ["panic_state_cache.pause_start_timestamp", t - 10n, 8],
+    ]);
+    await liq("protocol paused", e, r, sol, usdc, 1_000_000_000n);
+    editGroup(group.address, [["panic_state_cache.pause_flags", 0n, 1]]);
+    await liq("part of it", e, r, sol, usdc, 1_000_000_000n);
+    // Tagged first: a liquidation that repays enough restarts the tag.
+    await run("tag", admin, [h.tagLiqRecord(e.account, group.address, healthAccounts(e.account, [], true))], [e.account]);
+    tick(7200n);
+    await liq("tagged, a little", e, r, sol, usdc, 10_000_000n);
+    await liq("tagged, a quarter of the debt", e, r, sol, usdc, 3_000_000_000n);
+    // A liquidator with nothing else takes on the debt against the seized SOL alone: short at Initial.
+    const poor = await user([]);
+    await liq("liquidator without collateral", e, poor, sol, usdc, 1_000_000_000n, { after: [sol, usdc] });
+    // The liquidator's accounts short of what its balances need.
+    await liq("liquidator's accounts left out", e, r, sol, usdc, 100_000_000n, { after: [sol] });
+    // A halted bank: only the admins liquidate, past the breaker's gate.
+    editBank(usdc.address, [["config.operational_state", 6n, 1]]);
+    await liq("circuit-broken bank, not an admin", e, r, sol, usdc, 100_000_000n);
+    // The risk admin liquidating with its own account: past the halt and the gates.
+    const riskAt = offsetOf("MarginfiGroup", "risk_admin");
+    const riskWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(riskAt, riskAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    editGroup(group.address, [["risk_admin", keyBits(r.owner.address), 32]]);
+    await liq("circuit-broken bank, by the risk admin", e, r, sol, usdc, 100_000_000n);
+    editBank(usdc.address, [
+      ["config.operational_state", 1n, 1],
+      ["flags", 2048n, 8],
+      ["cb_tier", 1n, 1],
+      ["cb_halt_ended_at", t + 1000n, 8],
+    ]);
+    await liq("halted bank, by the risk admin", e, r, sol, usdc, 100_000_000n);
+    editBank(usdc.address, [
+      ["flags", 0n, 8],
+      ["cb_tier", 0n, 1],
+      ["cb_halt_ended_at", 0n, 8],
+    ]);
+    editGroup(group.address, [["risk_admin", riskWas, 32]]);
+    editBank(usdc.address, [["config.operational_state", 1n, 1]]);
+    // A liquidator owing a premium in the asset bank settles it from the seized collateral first.
+    const r3 = await user([[usdc, 5_000_000_000n]]);
+    owe(r3.account, sol, 100_000_000n * ONE);
+    const slotOf = (account: Address, bank: Priced) => {
+      const d = data(account);
+      for (let i = 0; i < 16; i++) {
+        const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].bank_pk`);
+        if (d.subarray(at, at + 32).equals(keyBytes(bank.address))) return i;
+      }
+      throw new Error("no balance");
+    };
+    const k3 = slotOf(r3.account, sol);
+    editAccount(r3.account, [
+      [`lending_account.balances[${k3}].premium_outstanding`, 30_000_000n * ONE, 16],
+      [`lending_account.balances[${k3}].premium_rate_snapshot`, 50_000_000n, 4],
+    ]);
+    editBank(sol.address, [
+      ["flags", 8192n, 8],
+      ["premium_activated_at", t - 50_000n, 8],
+    ]);
+    tick();
+    await liq("premium settled from the seized collateral", e, r3, sol, usdc, 200_000_000n);
+    editBank(sol.address, [["flags", 0n, 8]]);
+    // A liquidator in a flash loan: no health check now. A premium-active debt it takes on that way is raised to the
+    // highest rate configured for its tag.
+    const fl = await user([[gold, 10_000_000_000n]]);
+    editAccount(fl.account, [["account_flags", 2n, 8]]);
+    await liq("liquidator in a flash loan", e, fl, sol, usdc, 50_000_000n, { after: [gold, sol, usdc] });
+    const countAt = offsetOf("MarginfiGroup", "premium_settings.entry_count");
+    const countWas = BigInt(data(group.address).readUInt16LE(countAt));
+    editGroup(group.address, [
+      ["premium_settings.entry_count", 2n, 2],
+      ["premium_entries[0].collateral_tag", 5n, 2],
+      ["premium_entries[0].liability_tag", 9n, 2],
+      ["premium_entries[0].rate", 40_000_000n, 4],
+      ["premium_entries[1].collateral_tag", 6n, 2],
+      ["premium_entries[1].liability_tag", 9n, 2],
+      ["premium_entries[1].rate", 90_000_000n, 4],
+    ]);
+    editBank(usdc.address, [
+      ["flags", 8192n, 8],
+      ["premium_tag", 9n, 2],
+      ["premium_activated_at", t - 50_000n, 8],
+    ]);
+    tick(3600n);
+    await liq("liquidator in a flash loan, a premium-active debt", e, fl, sol, usdc, 50_000_000n, { after: [gold, sol, usdc] });
+    const snapshotAt = offsetOf("MarginfiAccount", `lending_account.balances[${slotOf(fl.account, usdc)}].premium_rate_snapshot`);
+    expect(data(fl.account).readUInt32LE(snapshotAt)).toBe(90_000_000);
+    tick(3600n);
+    await liq("again, the debt's rate already raised", e, fl, sol, usdc, 50_000_000n, { after: [gold, sol, usdc] });
+    editAccount(fl.account, [["account_flags", 0n, 8]]);
+    editBank(usdc.address, [
+      ["flags", 0n, 8],
+      ["premium_tag", 0n, 2],
+    ]);
+    editGroup(group.address, [["premium_settings.entry_count", countWas, 2]]);
+    // One liquidation too many: healthy after.
+    const near = await user([[sol, 10_000_000_000n]]);
+    owe(near.account, usdc, 800n * 1_000_000n * ONE);
+    await liq("too much: healthy after", near, r, sol, usdc, 1_000_000_000n);
+    await liq("just enough", near, r, sol, usdc, 500_000_000n);
+    // A liquidatee healthy again.
+    const fine = await user([[sol, 10_000_000_000n]]);
+    owe(fine.account, usdc, 100n * 1_000_000n * ONE);
+    await liq("healthy account", fine, r, sol, usdc, 100_000_000n);
+    // Debt in a fixed-price bank, paid by a liquidator owing a premium-free USDC debt already.
+    const g = await user([[usdc, 2_000_000_000n]]);
+    owe(g.account, gold, 900n * 1_000_000n * ONE);
+    const r2 = await user([[gold, 50_000_000_000n]]);
+    owe(r2.account, sol, 1_000_000_000n * ONE);
+    tick();
+    await liq("a fixed-price debt", g, r2, usdc, gold, 100_000_000n, { after: [usdc, gold, sol] });
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());
@@ -878,5 +1071,14 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     tick();
     await settle("t22 insurance covers part", z, p, admin, [m, ...healthAccounts(z.account, [], true)]);
     await settle("t22 no mint", z, p, admin, healthAccounts(z.account, [], true));
+    // Liquidating a debt in the fee bank: the insurance fund's cut moves with transfer_checked.
+    const nb = await newBank("swb", 150_000_000n, {}, 9);
+    await user([[nb, 100_000_000_000n]]);
+    const q = await user([[nb, 10_000_000_000n]]);
+    owe(q.account, p, 1_400n * 1_000_000n * ONE);
+    const lq = await user([[p, 3_000_000_000n]]);
+    tick();
+    await liq("t22 debt", q, lq, nb, p, 1_000_000_000n);
+    await liq("t22 debt, no mint", q, lq, nb, p, 1_000_000_000n, { noMint: true });
   });
 });

@@ -698,6 +698,38 @@ export function marginfiPair() {
       ]),
       rest,
     );
+  const liquidate = (
+    group: Address,
+    assetBank: Address,
+    liabBank: BankRef,
+    liquidator: Address,
+    by: KeyPairSigner,
+    liquidatee: Address,
+    amount: bigint,
+    liquidateeCount: number,
+    liquidatorCount: number,
+    rest: Address[] = [],
+    program: Address = TOKEN_PROGRAM,
+  ) =>
+    withRest(
+      s.ix(
+        "lending_account_liquidate",
+        { asset_amount: new BN(amount.toString()), liquidatee_accounts: liquidateeCount, liquidator_accounts: liquidatorCount },
+        [
+          { address: group },
+          { address: assetBank, writable: true },
+          { address: liabBank.address, writable: true },
+          { address: liquidator, writable: true },
+          { address: by.address, signer: by },
+          { address: liquidatee, writable: true },
+          { address: liabBank.v.liquidityAuth },
+          { address: liabBank.v.liquidity, writable: true },
+          { address: liabBank.v.insurance, writable: true },
+          { address: program },
+        ],
+      ),
+      rest,
+    );
   const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
 
@@ -716,6 +748,7 @@ export function marginfiPair() {
     pulseHealth,
     tagLiqRecord,
     handleBankruptcy,
+    liquidate,
     createAta,
     repay,
     ata,
