@@ -148,7 +148,7 @@ export abstract class AliasEmitter extends EmitterBase {
           found = true; // a function a function returns
         else if (ts.isIdentifier(callee)) {
           if (this.lookup(callee.text)?.closure) found = true;
-          else if (["realloc", "close"].includes(this.exportName(callee) ?? "")) found = true;
+          else if (["realloc", "resizeAccount", "close"].includes(this.exportName(callee) ?? "")) found = true;
           else if (this.helperOf(n) && (this.helperTakesMutAccounts(n) || n.arguments.some(isClosure))) found = true;
         }
       }

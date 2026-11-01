@@ -30,6 +30,7 @@ import {
   type Option,
   type Pubkey,
   type Seeds,
+  type Owner,
   type Signer,
   type SystemProgram,
   type u32,
@@ -38,6 +39,7 @@ import {
   constraint,
   loadAccount,
   rentExempt,
+  close,
   currentSlot,
   fixedArray,
   loadAccountMut,
@@ -48,6 +50,8 @@ import {
   invoke,
   programId,
   readData,
+  writeData,
+  resizeAccount,
   readonly,
   readonlySigner,
   remainingAccounts,
@@ -153,6 +157,20 @@ import {
 } from "./bank";
 import { MarginfiError } from "./errors";
 import {
+  accrueNative,
+  checkRateModel,
+  depositRoom,
+  holds,
+  isVenueBank,
+  parseBanks,
+  supplyRate,
+  tagIn,
+  toNative,
+  underlying,
+  venueMultiplier,
+  whole,
+} from "./rebalance";
+import {
   REQ_INITIAL,
   REQ_MAINTENANCE,
   cachedHealthComponents,
@@ -200,6 +218,8 @@ import {
   type KeeperCloseRebalanceOrderEvent,
   type RebalanceFeePoolTopUpEvent,
   type RebalanceFeePoolWithdrawEvent,
+  type RebalanceExecutedEvent,
+  type RebalanceTipSettledEvent,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
@@ -249,6 +269,7 @@ import {
   fxTryAdd,
   fxTryMul,
   fxTrySub,
+  exp10Fx,
   fxWrappingMul,
   fxAbs,
 } from "./i80f48";
@@ -280,6 +301,8 @@ import {
   type Order,
   type ExecuteOrderRecord,
   type RebalanceOrder,
+  type RebalanceRecord,
+  type RebalanceMove,
   OrderTriggerType,
   type WrappedI80F48,
   BankOperationalState,
@@ -4285,6 +4308,8 @@ const REBALANCE_DEFAULT_MIN_IMPROVEMENT: i128 = 14073748835533n;
 const REBALANCE_DEFAULT_COOLDOWN: u64 = 86400n;
 /** ORDER_BLOCKING_FLAGS (disabled, flash loan, frozen, receivership, deleverage), executing an order, rebalancing. */
 const REBALANCE_BLOCKING_FLAGS: u64 = 499n;
+/** ORDER_BLOCKING_FLAGS: disabled, flash loan, frozen, receivership, deleverage. */
+const ORDER_BLOCKING: u64 = 115n;
 
 /** validate_allowlist_positions: the account deposits into one of the banks (RebalanceNoAllowlistPosition) and owes none. */
 function checkAllowlist(account: Account<MarginfiAccount>, banks: Vec<Pubkey>): void {
@@ -4505,5 +4530,680 @@ export function marginfiAccountWithdrawRebalanceFeePool(
     fee_pool: fee_pool.key,
     amount: take,
     new_balance: fee_pool.lamports,
+  });
+}
+
+// ---- resizing -----------------------------------------------------------------------------------------------------
+
+const GROUP_DISCRIMINATOR: u64 = 4879314398275770294n;
+const FEE_STATE_DISCRIMINATOR: u64 = 15918857720645607487n;
+
+/**
+ * Grow a v1-sized group to the current struct size (anyone): the payer tops up the rent first, the new bytes are
+ * zeroed (grow_account).
+ */
+export function lendingPoolResizeGroupAccount(group: Mut<AccountInfo>, payer: Mut<Signer>, system_program: SystemProgram): void {
+  require(group.owner === programId(), MarginfiError.InvalidGroup);
+  require(group.dataLen >= 8n && readData<u64>(group, 0n) === GROUP_DISCRIMINATOR, MarginfiError.InvalidGroup);
+  const before = group.dataLen;
+  const size = 8n + 9248n;
+  require(before < size, MarginfiError.InvalidResize);
+  const rent = rentExempt(size);
+  if (rent > group.lamports) system_program.transfer(payer, group, rent - group.lamports);
+  resizeAccount(group, size);
+  log(`account resized: ${before} -> ${size} bytes`);
+}
+
+/** Grow a v1-sized bank to the current struct size (anyone), as a group. */
+export function lendingPoolResizeBankAccount(bank: Mut<AccountInfo>, payer: Mut<Signer>, system_program: SystemProgram): void {
+  require(bank.owner === programId(), MarginfiError.InvalidBankAccount);
+  require(bank.dataLen >= 8n && readData<u64>(bank, 0n) === BANK_DISCRIMINATOR, MarginfiError.InvalidBankAccount);
+  const before = bank.dataLen;
+  const size = 8n + 3904n;
+  require(before < size, MarginfiError.InvalidResize);
+  const rent = rentExempt(size);
+  if (rent > bank.lamports) system_program.transfer(payer, bank, rent - bank.lamports);
+  resizeAccount(bank, size);
+  log(`account resized: ${before} -> ${size} bytes`);
+}
+
+/** Grow the v1-sized fee state to the current struct size (anyone), as a group. */
+export function resizeGlobalFeeState(fee_state: Seeds<Mut<AccountInfo>, ["feestate"]>, payer: Mut<Signer>, system_program: SystemProgram): void {
+  require(fee_state.owner === programId(), MarginfiError.InvalidGroup);
+  require(fee_state.dataLen >= 8n && readData<u64>(fee_state, 0n) === FEE_STATE_DISCRIMINATOR, MarginfiError.InvalidGroup);
+  const before = fee_state.dataLen;
+  const size = 8n + 512n;
+  require(before < size, MarginfiError.InvalidResize);
+  const rent = rentExempt(size);
+  if (rent > fee_state.lamports) system_program.transfer(payer, fee_state, rent - fee_state.lamports);
+  resizeAccount(fee_state, size);
+  log(`account resized: ${before} -> ${size} bytes`);
+}
+
+// ---- monitor archive ----------------------------------------------------------------------------------------------
+
+/**
+ * The monitor snapshot archive, raw bytes: an 8-byte type tag ("MNTSNPRC"), the meta (version, record count, the
+ * snapshot manager), an index map of 300 64-byte entries, then one 4,073-byte record per mint (its key, version 1, a
+ * ring of 168 hourly snapshots with head and tail).
+ */
+const ARCHIVE_TAG: u64 = 4851028045967150669n;
+const ARCHIVE_META: u64 = 8n;
+const ARCHIVE_DATA: u64 = 19256n;
+const RECORD_LEN: u64 = 4073n;
+const SNAPSHOTS: u64 = 168n;
+
+/** SnapshotUpdateInput */
+export interface SnapshotUpdateInput {
+  snapshot_hour: u64;
+  price: u64;
+  native_apy: u64;
+}
+
+/** Initialize an archive the client allocated (owned by this program, large enough, tag still zero, no manager yet). */
+export function monitorArchiveInitialize(
+  payer: Mut<Signer>,
+  archive: Owner<Mut<AccountInfo>, "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA">,
+  snapshot_manager: Pubkey,
+): void {
+  require(archive.dataLen >= ARCHIVE_DATA, MarginfiError.InvalidConfig);
+  require(readData<u64>(archive, 0n) === 0n, MarginfiError.InvalidConfig);
+  require(readData<Pubkey>(archive, ARCHIVE_META + 16n) === ZERO_KEY, MarginfiError.InvalidConfig);
+  writeData<u64>(archive, 0n, ARCHIVE_TAG);
+  writeData<u8>(archive, ARCHIVE_META, 1n);
+  writeData<u64>(archive, ARCHIVE_META + 8n, 0n);
+  writeData<Pubkey>(archive, ARCHIVE_META + 16n, snapshot_manager);
+}
+
+/**
+ * MintSnapshotRecords::push_latest_snapshot_bytes on the record at `at` (an account offset): the first snapshot into
+ * an empty ring, later ones only for a later hour, the oldest overwritten when full. False where Rust's gives None.
+ */
+function pushSnapshot(archive: Mut<AccountInfo>, at: u64, hour: u64, price: u64, apy: u64): boolean {
+  if (hour === 0n && price === 0n && apy === 0n) return false;
+  if (readData<u8>(archive, at + 32n) !== 1n) return false;
+  const head = u64(readData<u16>(archive, at + 33n));
+  const tail = u64(readData<u16>(archive, at + 35n));
+  if (head >= SNAPSHOTS || tail >= SNAPSHOTS) return false;
+  const first = at + 41n;
+  const empty = readData<u64>(archive, first) === 0n && readData<u64>(archive, first + 8n) === 0n && readData<u64>(archive, first + 16n) === 0n;
+  let write = 0n;
+  let nextHead = head;
+  let nextTail = tail;
+  if (head === 0n && tail === 0n && empty) {
+    write = 0n;
+  } else {
+    if (hour <= readData<u64>(archive, first + tail * 24n)) return false;
+    const wrapped = tail + 1n === SNAPSHOTS ? 0n : tail + 1n;
+    if (wrapped === head) {
+      nextTail = head;
+      nextHead = head + 1n === SNAPSHOTS ? 0n : head + 1n;
+      write = head;
+    } else {
+      nextTail = wrapped;
+      write = wrapped;
+    }
+  }
+  const slot = first + write * 24n;
+  writeData<u64>(archive, slot, hour);
+  writeData<u64>(archive, slot + 8n, price);
+  writeData<u64>(archive, slot + 16n, apy);
+  if (!(head === 0n && tail === 0n && empty)) {
+    writeData<u16>(archive, at + 33n, u16(nextHead));
+    writeData<u16>(archive, at + 35n, u16(nextTail));
+  }
+  return true;
+}
+
+/**
+ * Record snapshots, one per remaining account (its key the mint), the snapshot manager signing: into the mint's record,
+ * or a new one after the last; any refusal is InvalidConfig.
+ */
+export function monitorArchiveUpsertBatch(
+  snapshot_manager: Signer,
+  archive: Owner<Mut<AccountInfo>, "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA">,
+  updates: Vec<SnapshotUpdateInput>,
+): void {
+  const len = archive.dataLen;
+  require(len >= ARCHIVE_DATA, MarginfiError.InvalidConfig);
+  require(readData<u64>(archive, 0n) === ARCHIVE_TAG, MarginfiError.InvalidConfig);
+  require(readData<Pubkey>(archive, ARCHIVE_META + 16n) === snapshot_manager.key, MarginfiError.Unauthorized);
+  require(updates.length <= remainingAccounts().length, MarginfiError.InvalidConfig);
+  const size = len - ARCHIVE_DATA;
+  for (let i = 0n; i < updates.length; i++) {
+    const u = updates.get(i);
+    const mint = remainingAccounts().get(i).key;
+    // Archive::position: the record whose key is the mint, scanning while records are version 1.
+    let found = false;
+    let at = 0n;
+    let scanning = true;
+    while (scanning && at < size) {
+      if (size - at < 33n) scanning = false;
+      else if (readData<Pubkey>(archive, ARCHIVE_DATA + at) === mint) {
+        found = true;
+        scanning = false;
+      } else if (readData<u8>(archive, ARCHIVE_DATA + at + 32n) !== 1n) scanning = false;
+      else at += RECORD_LEN;
+    }
+    if (found) {
+      require(readData<u8>(archive, ARCHIVE_DATA + at + 32n) === 1n && at + RECORD_LEN <= size, MarginfiError.InvalidConfig);
+      require(pushSnapshot(archive, ARCHIVE_DATA + at, u.snapshot_hour, u.price, u.native_apy), MarginfiError.InvalidConfig);
+    } else {
+      // Archive::append_slot: the first record whose key is zero, while records before it are version 1.
+      let free = false;
+      let p = 0n;
+      let looking = true;
+      while (looking && p < size) {
+        if (size - p < 33n) looking = false;
+        else if (readData<Pubkey>(archive, ARCHIVE_DATA + p) === ZERO_KEY) {
+          free = true;
+          looking = false;
+        } else if (readData<u8>(archive, ARCHIVE_DATA + p + 32n) !== 1n) looking = false;
+        else p += RECORD_LEN;
+      }
+      require(free && p + RECORD_LEN <= size, MarginfiError.InvalidConfig);
+      const count = readData<u64>(archive, ARCHIVE_META + 8n);
+      require(count < 18446744073709551615n, MarginfiError.InvalidConfig);
+      writeData<u64>(archive, ARCHIVE_META + 8n, count + 1n);
+      const at2 = ARCHIVE_DATA + p;
+      writeData<Pubkey>(archive, at2, mint);
+      writeData<u8>(archive, at2 + 32n, 1n);
+      writeData<u16>(archive, at2 + 33n, 0n);
+      writeData<u16>(archive, at2 + 35n, 0n);
+      require(pushSnapshot(archive, at2, u.snapshot_hour, u.price, u.native_apy), MarginfiError.InvalidConfig);
+    }
+  }
+}
+
+// ---- rebalance execution ------------------------------------------------------------------------------------------
+
+const IX_START_REBALANCE: u64 = 17007108263279033083n;
+const IX_END_REBALANCE: u64 = 11232495159589724463n;
+const IX_DEPOSIT: u64 = 10147806583047544491n;
+const IX_KAMINO_DEPOSIT: u64 = 6138797115804748013n;
+const IX_DRIFT_DEPOSIT: u64 = 901343772862463996n;
+const IX_JUPLEND_DEPOSIT: u64 = 18415119608112089970n;
+const JUPLEND_UPDATE_EXCHANGE_PRICE: u64 = 10823585269623223535n;
+const JUPLEND_LIQUIDITY_ID = pubkey("jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC");
+const TOKEN_2022_PROGRAM = pubkey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+/** REBALANCE_CONSERVATION_DUST_ATOMS (3), the settlement delay's bounds (10 minutes to an hour). */
+const DUST_ATOMS: i128 = 844424930131968n;
+const SETTLE_DELAY_MIN: u64 = 600n;
+const SETTLE_DELAY_MAX: u64 = 3600n;
+
+/** A withdraw or deposit leg of this program (native or venue): its account is meta 1, its bank meta 3. */
+function isMoveLeg(d: u64): boolean {
+  return (
+    d === IX_WITHDRAW ||
+    d === IX_DEPOSIT ||
+    d === IX_KAMINO_WITHDRAW ||
+    d === IX_KAMINO_DEPOSIT ||
+    d === IX_DRIFT_WITHDRAW ||
+    d === IX_DRIFT_DEPOSIT ||
+    d === IX_JUPLEND_WITHDRAW ||
+    d === IX_JUPLEND_DEPOSIT
+  );
+}
+
+/**
+ * validate_rebalance_instructions: allowed programs only (ForbiddenIx), the end last (EndNotLast), every leg on this
+ * account (RebalanceForeignAccountLeg) and one of the order's banks (RebalanceForeignBankLeg), one start and one end
+ * (RebalanceMalformedSandwich), nothing else of this program and only the venues' refresh cranks (ForbiddenIx), not
+ * called through CPI.
+ */
+function validateRebalance(ixs: InstructionsSysvar, account: Pubkey, order: Account<RebalanceOrder>): void {
+  const n = ixs.length;
+  for (let i = 0n; i < n; i++) {
+    const p = ixs.get(i).programId;
+    require(
+      p === programId() ||
+        p === COMPUTE_BUDGET_ID ||
+        p === KAMINO_ID ||
+        p === DRIFT_ID ||
+        p === JUPLEND_EARN_ID ||
+        p === JUPLEND_LIQUIDITY_ID ||
+        p === ATA_PROGRAM_ID ||
+        p === TOKEN_PROGRAM_ID ||
+        p === TOKEN_2022_PROGRAM,
+      MarginfiError.ForbiddenIx,
+    );
+  }
+  const last = ixs.get(n - 1n);
+  require(last.dataLength >= 8n, MarginfiError.EndNotLast);
+  require(last.programId === programId(), MarginfiError.EndNotLast);
+  require(last.readU64(0n) === IX_END_REBALANCE, MarginfiError.EndNotLast);
+  const banks = u64(order.allowed_bank_count);
+  let starts = 0n;
+  let ends = 0n;
+  for (let i = 0n; i < n; i++) {
+    const ix = ixs.get(i);
+    if (ix.programId !== programId() || ix.dataLength < 8n) continue;
+    const d = ix.readU64(0n);
+    if (isMoveLeg(d)) {
+      require(ix.accountsLength > 1n && ix.accountKey(1n) === account, MarginfiError.RebalanceForeignAccountLeg);
+      let allowed = false;
+      if (ix.accountsLength > 3n) for (let k = 0n; k < banks; k++) if (order.allowed_banks.get(k) === ix.accountKey(3n)) allowed = true;
+      require(allowed, MarginfiError.RebalanceForeignBankLeg);
+    }
+    if (d === IX_START_REBALANCE) starts += 1n;
+    if (d === IX_END_REBALANCE) ends += 1n;
+  }
+  require(starts === 1n, MarginfiError.RebalanceMalformedSandwich);
+  require(ends === 1n, MarginfiError.RebalanceMalformedSandwich);
+  for (let i = 0n; i < n; i++) {
+    const ix = ixs.get(i);
+    const p = ix.programId;
+    if (p !== programId() && p !== KAMINO_ID && p !== DRIFT_ID && p !== JUPLEND_LIQUIDITY_ID && p !== JUPLEND_EARN_ID) continue;
+    // A malformed instruction of these programs: the original panics.
+    require(ix.dataLength >= 8n, MarginfiError.InternalLogicError);
+    const d = ix.readU64(0n);
+    if (p === programId()) require(d === IX_START_REBALANCE || d === IX_END_REBALANCE || isMoveLeg(d), MarginfiError.ForbiddenIx);
+    else if (p === KAMINO_ID) require(d === KAMINO_REFRESH_RESERVE || d === KAMINO_REFRESH_OBLIGATION, MarginfiError.ForbiddenIx);
+    else if (p === DRIFT_ID) require(d === DRIFT_UPDATE_SPOT_MARKET_CUMULATIVE_INTEREST, MarginfiError.ForbiddenIx);
+    else if (p === JUPLEND_LIQUIDITY_ID) require(d === JUPLEND_UPDATE_EXCHANGE_PRICE, MarginfiError.ForbiddenIx);
+    else require(d === JUPLEND_UPDATE_RATE, MarginfiError.ForbiddenIx);
+  }
+  require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
+}
+
+/**
+ * Start a rebalance (anyone, as the executor): the account's deposit moved across its order's banks as `moves` declare
+ * (whole tokens, source and destination by their place in the order's list), each destination's supply rate with its
+ * whole inflow landed beating its source's by the order's minimum improvement, and no other bank paying those tokens
+ * more. The record keeps the start: each bank's amount, rate and tag, the moves, every other balance. The executor
+ * may then withdraw and deposit for the account until the end.
+ */
+export function marginfiAccountStartRebalance(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  rebalance_order: HasOne<Account<RebalanceOrder>, "marginfi_account", MarginfiError.Unauthorized>,
+  executor: AccountInfo,
+  rebalance_record: Init<RebalanceRecord>,
+  fee_payer: Mut<Signer>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  system_program: SystemProgram,
+  moves: Vec<RebalanceMove>,
+  execution_seq: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & REBALANCE_BLOCKING_FLAGS) === 0n, MarginfiError.UnexpectedOrderExecutionState);
+  rebalance_record.create(fee_payer, ["rebalance_record", marginfi_account.key, execution_seq]);
+  require(execution_seq === marginfi_account.rebalance_execution_seq, MarginfiError.RebalanceStaleExecutionSeq);
+  require(execution_seq < 18446744073709551615n, MarginfiError.MathError);
+  marginfi_account.rebalance_execution_seq = execution_seq + 1n;
+  const t = now();
+  const rest = remainingAccounts();
+  const m = moves.length;
+  require(m > 0n && m <= 8n, MarginfiError.IllegalBalanceState);
+  require(rebalance_order.cooldown_seconds <= 18446744073709551615n - rebalance_order.last_exec_timestamp, MarginfiError.MathError);
+  require(u64(t) >= rebalance_order.last_exec_timestamp + rebalance_order.cooldown_seconds, MarginfiError.RebalanceCooldown);
+  const n = u64(rebalance_order.allowed_bank_count);
+  let referenced = 0n;
+  for (let k = 0n; k < m; k++) {
+    const mv = moves.get(k);
+    const top = (mv.src_index > mv.dst_index ? u64(mv.src_index) : u64(mv.dst_index)) + 1n;
+    if (top > referenced) referenced = top;
+  }
+  require(n >= 2n && n <= 8n && referenced <= n, MarginfiError.RebalanceBankNotAllowed);
+  const minImprovement = rebalance_order.min_improvement.value;
+  const p = parseBanks(rest, group.key, n, true);
+  require(p.end === rest.length, MarginfiError.WrongNumberOfOracleAccounts);
+  for (let i = 0n; i < n; i++) accrueNative(rest, p.at.get(i), group, t);
+  // Each bank: in the allowlist, of the order's mint, not Solend; its rate now, its room, the account's amount there.
+  const rates = fixedArray<i128, 8>(0n);
+  const room = fixedArray<i128, 8>(0n);
+  const pre = fixedArray<i128, 8>(0n);
+  const tags = fixedArray<u64, 8>(0n);
+  let decimals: u8 = 0n;
+  for (let i = 0n; i < n; i++) {
+    const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
+    let listed = false;
+    for (let k = 0n; k < n; k++) if (rebalance_order.allowed_banks.get(k) === bank.key) listed = true;
+    require(listed, MarginfiError.RebalanceBankNotAllowed);
+    require(bank.mint === rebalance_order.mint, MarginfiError.RebalanceMintMismatch);
+    require(bank.config.asset_tag !== 5n, MarginfiError.RebalanceVenueUnsupported);
+    if (!isVenueBank(bank.config.asset_tag)) checkRateModel(bank);
+    rates.set(i, supplyRate(bank, 0n));
+    venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
+    pre.set(i, underlying(marginfi_account, bank.key, bank));
+    room.set(i, depositRoom(bank));
+    tags.set(i, tagIn(marginfi_account, bank.key));
+    if (i === 0n) decimals = bank.mint_decimals;
+  }
+  // The tokens each bank receives; a bank is a source or a destination, not both.
+  const inflow = fixedArray<i128, 8>(0n);
+  for (let k = 0n; k < m; k++) {
+    const mv = moves.get(k);
+    for (let o = 0n; o < m; o++) require(moves.get(o).dst_index !== mv.src_index, MarginfiError.RebalanceBankSourceAndDestination);
+    const d = u64(mv.dst_index);
+    inflow.set(d, fxAdd(inflow.get(d), mv.amount.value));
+  }
+  // An order-tagged balance moves whole, alone, into a bank the account holds nothing in.
+  const taggedDst = fixedArray<u8, 8>(0n);
+  for (let k = 0n; k < m; k++) {
+    const mv = moves.get(k);
+    const s = u64(mv.src_index);
+    const d = u64(mv.dst_index);
+    require(tags.get(d) === 0n, MarginfiError.RebalanceTaggedBalanceSplit);
+    if (tags.get(s) !== 0n) {
+      taggedDst.set(d, 1n);
+      let alone = !holds(marginfi_account, rest.get(p.at.get(d)).key);
+      for (let o = 0n; o < m; o++) if ((moves.get(o).src_index === mv.src_index) !== (moves.get(o).dst_index === mv.dst_index)) alone = false;
+      require(alone, MarginfiError.RebalanceTaggedBalanceSplit);
+    }
+  }
+  const inflowNative = fixedArray<u64, 8>(0n);
+  for (let i = 0n; i < n; i++) inflowNative.set(i, toNative(decimals, inflow.get(i)));
+  // Each bank's rate with all of its inflow landed.
+  const landed = fixedArray<i128, 8>(0n);
+  for (let i = 0n; i < n; i++) {
+    const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
+    landed.set(i, inflowNative.get(i) === 0n ? rates.get(i) : supplyRate(bank, inflowNative.get(i)));
+  }
+  for (let k = 0n; k < m; k++) {
+    const mv = moves.get(k);
+    const s = u64(mv.src_index);
+    const d = u64(mv.dst_index);
+    require(landed.get(d) > fxAdd(rates.get(s), minImprovement), MarginfiError.RebalanceNotImproving);
+    const tagged = tags.get(s) !== 0n;
+    const amount = tagged ? inflow.get(d) : mv.amount.value;
+    const amountNative = tagged ? inflowNative.get(d) : toNative(decimals, mv.amount.value);
+    for (let i = 0n; i < n; i++) {
+      // Full banks, banks already at or under the destination's landed rate (more only lowers a native rate), tagged
+      // ones and banks these tokens may not enter are not candidates.
+      if (i === d || inflow.get(i) >= room.get(i) || landed.get(i) <= landed.get(d) || tags.get(i) !== 0n || taggedDst.get(i) !== 0n) continue;
+      if (tagged && (inflow.get(i) > I80F48_ZERO || amount > room.get(i) || holds(marginfi_account, rest.get(p.at.get(i)).key))) continue;
+      let extra: u64 = 0n;
+      if (fxAdd(inflow.get(i), amount) <= room.get(i)) {
+        require(amountNative <= 18446744073709551615n - inflowNative.get(i), MarginfiError.MathError);
+        extra = inflowNative.get(i) + amountNative;
+      } else extra = toNative(decimals, room.get(i));
+      if (extra === inflowNative.get(i)) continue;
+      const candidate = loadAccount<Bank>(rest.get(p.at.get(i)));
+      require(supplyRate(candidate, extra) <= landed.get(d), MarginfiError.RebalanceNotBestVenue);
+    }
+  }
+  // RebalanceRecord::initialize.
+  for (let k = 0n; k < m; k++) {
+    const mv = moves.get(k);
+    require(u64(mv.src_index) < n && u64(mv.dst_index) < n && mv.src_index !== mv.dst_index && mv.amount.value > I80F48_ZERO, MarginfiError.IllegalBalanceState);
+  }
+  rebalance_record.order = rebalance_order.key;
+  rebalance_record.marginfi_account = marginfi_account.key;
+  rebalance_record.executor = executor.key;
+  for (let i = 0n; i < n; i++) {
+    const r = rebalance_record.ref_banks.get(i);
+    r.bank = rest.get(p.at.get(i)).key;
+    r.pre_underlying.value = pre.get(i);
+    r.tag = u16(tags.get(i));
+    rebalance_record.pre_rate.get(i).value = rates.get(i);
+  }
+  rebalance_record.ref_bank_count = u8(n);
+  for (let k = 0n; k < m; k++) {
+    const mv = moves.get(k);
+    const to = rebalance_record.moves.get(k);
+    to.src_index = mv.src_index;
+    to.dst_index = mv.dst_index;
+    to.amount.value = mv.amount.value;
+  }
+  rebalance_record.move_count = u8(m);
+  let active = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = marginfi_account.lending_account.balances.get(i);
+    if (b.active === 0n) continue;
+    let referencedBank = false;
+    for (let j = 0n; j < n; j++) if (rest.get(p.at.get(j)).key === b.bank_pk) referencedBank = true;
+    if (referencedBank) continue;
+    const side = balanceSide(marginfi_account, i);
+    if (side === 0n) continue;
+    require(active < 15n, MarginfiError.IllegalBalanceState);
+    const slot = rebalance_record.balance_states.get(active);
+    slot.bank = b.bank_pk;
+    slot.is_asset = side === 1n ? 1n : 0n;
+    slot.tag = b.tag;
+    slot.shares.value = side === 1n ? b.asset_shares.value : b.liability_shares.value;
+    active += 1n;
+  }
+  rebalance_record.active_balance_count = u8(active);
+  marginfi_account.account_flags |= ACCOUNT_IN_REBALANCE;
+  validateRebalance(instruction_sysvar, marginfi_account.key, rebalance_order);
+}
+
+/**
+ * End a rebalance (its executor): every move's destination still beats its source after its own deposit, each bank's
+ * token amount moved as declared (within 3 native units per move), something moved, within the order's budget; the
+ * account healthy at Maintenance over the health accounts after the banks, every other balance as it was, tags carried
+ * with their balances. The keeper's tip, its share of the order's tip by what moved, waits in the record for
+ * settlement (no tip closes it).
+ */
+export function marginfiAccountEndRebalance(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  rebalance_order: HasOne<Mut<RebalanceOrder>, "marginfi_account", MarginfiError.Unauthorized>,
+  rebalance_record: HasOne<Mut<RebalanceRecord>, "executor", MarginfiError.Unauthorized>,
+  executor: Mut<Signer>,
+  fee_pool: Seeds<Mut<SystemAccount>, ["rebalance_fee_pool", "@marginfi_account"]>,
+  system_program: SystemProgram,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags & ACCOUNT_IN_REBALANCE) !== 0n && (marginfi_account.account_flags & ORDER_BLOCKING) === 0n,
+    MarginfiError.UnexpectedOrderExecutionState,
+  );
+  constraint(rebalance_record, rebalance_record.order === rebalance_order.key, MarginfiError.Unauthorized);
+  require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
+  const t = now();
+  const rest = remainingAccounts();
+  require(rebalance_record.move_timestamp === 0n, MarginfiError.RebalanceMalformedSandwich);
+  const n = u64(rebalance_record.ref_bank_count);
+  const m = u64(rebalance_record.move_count);
+  const cooldown = rebalance_order.cooldown_seconds;
+  const settleDelay = cooldown < SETTLE_DELAY_MIN ? SETTLE_DELAY_MIN : cooldown > SETTLE_DELAY_MAX ? SETTLE_DELAY_MAX : cooldown;
+  const minImprovement = rebalance_order.min_improvement.value;
+  const p = parseBanks(rest, group.key, n, true);
+  for (let i = 0n; i < n; i++) require(rest.get(p.at.get(i)).key === rebalance_record.ref_banks.get(i).bank, MarginfiError.InvalidBankAccount);
+  const post = fixedArray<i128, 8>(0n);
+  const yields = fixedArray<i128, 8>(0n);
+  let decimals: u8 = 0n;
+  for (let i = 0n; i < n; i++) {
+    const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
+    if (i === 0n) decimals = bank.mint_decimals;
+    const multiplier = venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
+    post.set(i, underlying(marginfi_account, bank.key, bank));
+    yields.set(i, fxMul(bank.asset_share_value.value, multiplier));
+  }
+  // Each move's destination, priced after its own deposit, still beats the source's rate before it.
+  for (let k = 0n; k < m; k++) {
+    const mv = rebalance_record.moves.get(k);
+    const bank = loadAccount<Bank>(rest.get(p.at.get(u64(mv.dst_index))));
+    const postRate = supplyRate(bank, 0n);
+    require(postRate > fxAdd(rebalance_record.pre_rate.get(u64(mv.src_index)).value, minImprovement), MarginfiError.RebalanceOvershoot);
+  }
+  // RebalanceRecord::reconcile: each bank's change is its declared net flow within the dust.
+  const dust = fxDiv(fxMul(fxMul(DUST_ATOMS, fxFromU64(m)), I80F48_ONE), exp10Fx(u64(decimals)));
+  let moved = I80F48_ZERO;
+  let refPre = I80F48_ZERO;
+  let actualTotal = I80F48_ZERO;
+  for (let i = 0n; i < n; i++) {
+    let declared = I80F48_ZERO;
+    for (let k = 0n; k < m; k++) {
+      const mv = rebalance_record.moves.get(k);
+      if (u64(mv.dst_index) === i) declared = fxAdd(declared, mv.amount.value);
+      if (u64(mv.src_index) === i) declared = fxSub(declared, mv.amount.value);
+    }
+    const before = rebalance_record.ref_banks.get(i).pre_underlying.value;
+    const actual = fxSub(post.get(i), before);
+    const gap = fxSub(declared, actual);
+    require((gap < 0n ? -gap : gap) <= dust, MarginfiError.RebalanceValueLeak);
+    actualTotal = fxAdd(actualTotal, actual);
+    refPre = fxAdd(refPre, before);
+    if (actual > I80F48_ZERO) moved = fxAdd(moved, actual);
+  }
+  require(actualTotal >= -dust, MarginfiError.RebalanceValueLeak);
+  require(moved > I80F48_ZERO, MarginfiError.RebalanceIncompleteMove);
+  // check_account_maint_health over the health accounts that follow the banks, then the premium snapshots.
+  const h = healthComponents(marginfi_account, group, rest, p.end, rest.length, REQ_MAINTENANCE, false, true, t);
+  require(h.err === 0n, h.err);
+  const healthy = h.assets >= h.liabs;
+  require(healthy, MarginfiError.WorseHealthPostExecution);
+  const tiers = riskTiersErr(marginfi_account, rest, p.end, rest.length);
+  require(tiers === 0n, tiers);
+  updatePremiumSnapshots(marginfi_account, group, h, u64(t), false);
+  if (hasLiabilities(marginfi_account)) {
+    const gate = cbPriceGate(marginfi_account, rest, p.end, rest.length, t);
+    require(gate === 0n, gate);
+  }
+  // verify_others_unchanged: no balance outside the banks added, every recorded one as it was.
+  let untracked = 0n;
+  for (let i = 0n; i < 16n; i++) {
+    const b = marginfi_account.lending_account.balances.get(i);
+    if (b.active === 0n || balanceSide(marginfi_account, i) === 0n) continue;
+    let referencedBank = false;
+    for (let j = 0n; j < n; j++) if (rebalance_record.ref_banks.get(j).bank === b.bank_pk) referencedBank = true;
+    if (!referencedBank) untracked += 1n;
+  }
+  require(untracked === u64(rebalance_record.active_balance_count), MarginfiError.RebalanceUntrackedBalance);
+  for (let r = 0n; r < u64(rebalance_record.active_balance_count); r++) {
+    const rec = rebalance_record.balance_states.get(r);
+    const at = balanceIndex(marginfi_account, rec.bank);
+    const side = balanceSide(marginfi_account, at);
+    require(side !== 0n, MarginfiError.IllegalBalanceState);
+    const b = marginfi_account.lending_account.balances.get(at);
+    require(rec.is_asset === (side === 1n ? 1n : 0n), MarginfiError.IllegalBalanceState);
+    require(rec.tag === b.tag, MarginfiError.IllegalBalanceState);
+    require(rec.shares.value === (side === 1n ? b.asset_shares.value : b.liability_shares.value), MarginfiError.IllegalBalanceState);
+  }
+  // carry_tags: a tagged source drained moves its tag to its destination; one not moved keeps it.
+  for (let i = 0n; i < n; i++) {
+    const rb = rebalance_record.ref_banks.get(i);
+    if (rb.tag === 0n) continue;
+    let dst = 8n;
+    for (let k = 0n; k < m && dst === 8n; k++) if (u64(rebalance_record.moves.get(k).src_index) === i) dst = u64(rebalance_record.moves.get(k).dst_index);
+    const own = findBalance(marginfi_account, rb.bank);
+    if (dst === 8n) {
+      require(own >= 0n, MarginfiError.IllegalBalanceState);
+      require(marginfi_account.lending_account.balances.get(u64(own)).tag === rb.tag, MarginfiError.IllegalBalanceState);
+    } else {
+      require(own < 0n, MarginfiError.RebalanceTaggedBalanceSplit);
+      const at = findBalance(marginfi_account, rebalance_record.ref_banks.get(dst).bank);
+      require(at >= 0n, MarginfiError.IllegalBalanceState);
+      const b = marginfi_account.lending_account.balances.get(u64(at));
+      require(b.tag === 0n, MarginfiError.IllegalBalanceState);
+      b.tag = rb.tag;
+    }
+  }
+  // The budget, in whole tokens, with the dust's cushion.
+  const budget = rebalance_order.amount;
+  const cap = budget === 0n ? I80F48_ZERO : whole(fxFromU64(budget), decimals);
+  if (budget !== 0n) require(moved <= fxAdd(cap, dust), MarginfiError.RebalanceExceedsAmount);
+  // The tip: the order's tip times the share of the target moved, from what the pool holds above its reserve.
+  const reserve = rentExempt(0n);
+  const spendable = fee_pool.lamports > reserve ? fee_pool.lamports - reserve : 0n;
+  const target = budget !== 0n && cap < refPre ? cap : refPre;
+  let tip: u64 = 0n;
+  if (rebalance_order.keeper_tip !== 0n && target > I80F48_ZERO) {
+    const share = fxDiv(moved, target);
+    const fraction = share < I80F48_ONE ? share : I80F48_ONE;
+    const owed = fxMul(fxFromU64(rebalance_order.keeper_tip), fraction) >> 48n;
+    tip = u64(owed) < spendable ? u64(owed) : spendable;
+  }
+  for (let i = 0n; i < n; i++) rebalance_record.move_yield_index.get(i).value = yields.get(i);
+  rebalance_record.move_timestamp = u64(t);
+  rebalance_record.pending_tip = tip;
+  rebalance_record.settle_delay = settleDelay;
+  resetHealthCache(marginfi_account, t, 3n, HEALTH_HEALTHY | HEALTH_ENGINE_OK | (h.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n));
+  marginfi_account.health_cache.asset_value_maint.value = h.assets;
+  marginfi_account.health_cache.liability_value_maint.value = h.liabs;
+  if (h.err_index !== 255n) {
+    marginfi_account.health_cache.err_index = h.err_index;
+    marginfi_account.health_cache.internal_err = h.internal_err;
+  }
+  marginfi_account.liquidation_tagged_at = 0n;
+  marginfi_account.account_flags &= ~ACCOUNT_IN_REBALANCE;
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  marginfi_account.last_update = u64(t);
+  rebalance_order.last_exec_timestamp = u64(t);
+  if (tip > 0n) system_program.transfer(fee_pool, rebalance_record, tip, ["rebalance_fee_pool", marginfi_account.key, fee_pool.pdaBump]);
+  if (tip === 0n) close(rebalance_record, executor);
+  emit<RebalanceExecutedEvent>({
+    header: {
+      signer: executor.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    rebalance_order: rebalance_order.key,
+    executor: executor.key,
+    bank_count: u8(n),
+    value_moved: { value: moved },
+    tip_escrowed: tip,
+  });
+}
+
+/**
+ * Settle a rebalance's escrowed tip once its delay passed (anyone): to the keeper if every move's destination out-
+ * yielded its source since the move, else back to the fee pool (to the keeper when the pool was drained below its
+ * reserve). The record closes to the keeper.
+ */
+export function marginfiAccountSettleRebalanceTip(
+  group: Account<MarginfiGroup>,
+  marginfi_account: AccountInfo,
+  rebalance_record: CloseTo<HasOne<Mut<RebalanceRecord>, "marginfi_account", MarginfiError.Unauthorized>, "executor">,
+  executor: Mut<AccountInfo>,
+  fee_pool: Seeds<Mut<SystemAccount>, ["rebalance_fee_pool", "@marginfi_account"]>,
+  // The keeper may settle its own tip: the caller may be the executor.
+  caller: Dup<Mut<Signer>>,
+): void {
+  constraint(executor, executor.key === rebalance_record.executor, MarginfiError.Unauthorized);
+  const t = now();
+  const rest = remainingAccounts();
+  const n = u64(rebalance_record.ref_bank_count);
+  const m = u64(rebalance_record.move_count);
+  const pending = rebalance_record.pending_tip;
+  require(rebalance_record.settle_delay <= 18446744073709551615n - rebalance_record.move_timestamp, MarginfiError.MathError);
+  require(u64(t) >= rebalance_record.move_timestamp + rebalance_record.settle_delay, MarginfiError.RebalanceSettleTooEarly);
+  const p = parseBanks(rest, group.key, n, false);
+  for (let i = 0n; i < n; i++) require(rest.get(p.at.get(i)).key === rebalance_record.ref_banks.get(i).bank, MarginfiError.InvalidBankAccount);
+  const current = fixedArray<i128, 8>(0n);
+  for (let i = 0n; i < n; i++) {
+    accrueNative(rest, p.at.get(i), group, t);
+    const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
+    current.set(i, fxMul(bank.asset_share_value.value, venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t)));
+  }
+  // Realized: each destination's index grew more than its source's (cross-multiplied).
+  let realized = true;
+  for (let k = 0n; k < m && realized; k++) {
+    const mv = rebalance_record.moves.get(k);
+    const s = u64(mv.src_index);
+    const d = u64(mv.dst_index);
+    const lhs = fxMul(current.get(d), rebalance_record.move_yield_index.get(s).value);
+    const rhs = fxMul(current.get(s), rebalance_record.move_yield_index.get(d).value);
+    if (lhs <= rhs) realized = false;
+  }
+  const refunded = !realized && fee_pool.lamports >= rentExempt(0n);
+  if (pending > 0n) {
+    require(rebalance_record.lamports >= pending, MarginfiError.MathError);
+    rebalance_record.lamports -= pending;
+    if (refunded) fee_pool.lamports += pending;
+    else executor.lamports += pending;
+  }
+  let authority = ZERO_KEY;
+  let accountGroup = ZERO_KEY;
+  if (!(marginfi_account.owner === SYSTEM_PROGRAM_ID && marginfi_account.dataLen === 0n)) {
+    require(marginfi_account.owner === programId(), MarginfiError.InternalLogicError);
+    require(marginfi_account.dataLen >= 8n + 2304n, MarginfiError.InternalLogicError);
+    require(readData<u64>(marginfi_account, 0n) === MARGINFI_ACCOUNT_DISCRIMINATOR, MarginfiError.InternalLogicError);
+    const account = loadAccount<MarginfiAccount>(marginfi_account);
+    authority = account.authority;
+    accountGroup = account.group;
+  }
+  emit<RebalanceTipSettledEvent>({
+    header: { signer: caller.key, marginfi_account: marginfi_account.key, marginfi_account_authority: authority, marginfi_group: accountGroup },
+    rebalance_order: rebalance_record.order,
+    executor: executor.key,
+    realized,
+    tip_paid: refunded ? 0n : pending,
   });
 }

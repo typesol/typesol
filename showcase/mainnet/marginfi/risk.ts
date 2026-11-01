@@ -90,7 +90,7 @@ export interface Count {
 }
 
 /** AccountLoader::<Bank>::try_from's checks on a remaining account: owner (3007), then a discriminator (3001, 3002). */
-function loaderErr(a: RemainingAccount): u32 {
+export function loaderErr(a: RemainingAccount): u32 {
   if (a.owner !== programId()) return 3007n;
   if (a.dataLen < 8n) return 3001n;
   if (readData<u64>(a, 0n) !== BANK_DISC) return 3002n;

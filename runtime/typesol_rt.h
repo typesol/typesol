@@ -1311,6 +1311,15 @@ static inline uint64_t ts_resize(TsParams *params, TsAccount *payer, TsAccount *
   return SUCCESS;
 }
 
+/* resizeAccount(): the data length only (AccountInfo::resize), new bytes zeroed; no rent moves. */
+static inline uint64_t ts_resize_raw(TsAccount *acct, uint64_t new_len, uint64_t entry_len) {
+  if (new_len > entry_len + MAX_PERMITTED_DATA_INCREASE)
+    TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
+  if (new_len > acct->data_len) ts_memzero(acct->data + acct->data_len, new_len - acct->data_len);
+  acct->data_len = new_len;
+  return SUCCESS;
+}
+
 /*
  * InitIfNeeded: create the PDA like ts_create_pda, or accept it when it already exists as this program's
  * account of the right type (owner, discriminator, size). The PDA is re-derived either way.

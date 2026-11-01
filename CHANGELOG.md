@@ -6,6 +6,16 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `writeData<T>(account, offset, value)`, a little-endian write into a `Mut<AccountInfo>` of this program
+  (bounds-checked); `resizeAccount(account, newSize)`, Rust's `AccountInfo::resize` (the length only, new bytes
+  zeroed, no rent moved, at most 10 KiB of growth).
+- `Dup<…>` may name the twin of a close destination (a keeper settling its own record): duplicates share one record,
+  so the rent reaches it either way. The closed account itself is still refused as a twin.
+- Examples: Marginfi's rebalance execution (`marginfi_account_start_rebalance`, `end_rebalance`,
+  `settle_rebalance_tip`, native banks), account resizing (`lending_pool_resize_group_account`,
+  `lending_pool_resize_bank_account`, `resize_global_fee_state`) and the monitor archive
+  (`monitor_archive_initialize`, `monitor_archive_upsert_batch`). Against the binary on mainnet: 1,396 transactions,
+  the same IDL for all 96 ported instructions.
 - Fixed: an event's fields go out in the order declared, as Anchor's Borsh sends them (a `Vec<T>` field went last,
   after the fixed-size fields as account data stores it), and the IDL lists them so.
 - Examples: Marginfi's rebalance orders, kept: `marginfi_account_place_rebalance_order`, `update_rebalance_order`,

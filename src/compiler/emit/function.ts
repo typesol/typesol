@@ -148,7 +148,13 @@ export class FunctionEmitter extends StatementEmitter {
       const reallocated = (() => {
         let found = false;
         const visit = (nd: ts.Node) => {
-          if (ts.isCallExpression(nd) && this.exportName(nd.expression) === "realloc" && nd.arguments[0] && this.accountAt(nd.arguments[0]) === a) found = true;
+          if (
+            ts.isCallExpression(nd) &&
+            ["realloc", "resizeAccount"].includes(this.exportName(nd.expression) ?? "") &&
+            nd.arguments[0] &&
+            this.accountAt(nd.arguments[0]) === a
+          )
+            found = true;
           ts.forEachChild(nd, visit);
         };
         visit(ix.node.body!);
@@ -179,8 +185,9 @@ export class FunctionEmitter extends StatementEmitter {
     // so two parameters name the same account exactly when their pointers are equal.
     const writable = ix.accounts.filter((a) => isWritable(a.kind));
     // Dup<…> (Anchor's `dup`) lifts the check for a pair when both accounts are read and written in place: not created
-    // here, not closed or a close destination, not a @layout borsh heap copy (a lost update when packed back).
-    const closing = new Set(ix.accounts.flatMap((a) => (a.constraints.closeTo ? [a.name, a.constraints.closeTo] : [])));
+    // here, not closed, not a @layout borsh heap copy (a lost update when packed back). A close destination is in place:
+    // a duplicate shares its record, so the rent lands in both views.
+    const closing = new Set(ix.accounts.flatMap((a) => (a.constraints.closeTo ? [a.name] : [])));
     const inPlace = (a: (typeof writable)[number]) => {
       const k = a.kind;
       if (closing.has(a.name)) return false;
@@ -190,7 +197,7 @@ export class FunctionEmitter extends StatementEmitter {
     };
     for (const a of writable)
       if (a.constraints.dup && !inPlace(a))
-        this.reporter.fail(a.node, "Dup<…> is for accounts read and written in place: not created, closed, a close destination or @layout borsh");
+        this.reporter.fail(a.node, "Dup<…> is for accounts read and written in place: not created, closed or @layout borsh");
     for (const a of ix.accounts)
       if (a.constraints.dup && !isWritable(a.kind)) this.reporter.fail(a.node, "Dup<…> lets a writable account alias another; this one is not writable");
     const pairs: string[] = [];
