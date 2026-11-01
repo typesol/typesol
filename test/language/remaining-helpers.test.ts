@@ -100,7 +100,10 @@ describe("remaining accounts as helper parameters", () => {
     expect(Buffer.from(acct(d.svm, c).data).readBigUInt64LE(8)).toBe(6n);
     // A helper's loadAccountMut claims the account for the rest of the instruction, as one in the instruction does:
     // a second call on the same account is refused (2040) and nothing is written.
-    const twice = ix(d, "regrow", { by: new BN(2) }, [{ address: payer.address, signer: payer }, { address: c, writable: true }]);
+    const twice = ix(d, "regrow", { by: new BN(2) }, [
+      { address: payer.address, signer: payer },
+      { address: c, writable: true },
+    ]);
     expect(customError(await send(d.svm, payer, [twice]))).toBe(2040);
     expect(Buffer.from(acct(d.svm, c).data).readBigUInt64LE(8)).toBe(6n);
   });
