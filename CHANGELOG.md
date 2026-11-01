@@ -15,6 +15,10 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's bank administration, part one: `lending_pool_configure_bank_emode`, `lending_pool_clone_emode`,
+  `lending_pool_configure_bank_premium`, `lending_pool_clear_circuit_breaker`, `lending_pool_backfill_bank_is_t22_flag`
+  and `lending_pool_close_bank`. Against the binary on mainnet: 1,061 transactions, the same IDL for all 66 ported
+  instructions. 45–96% fewer compute units.
 - New: instruction arguments of type `Option<S>` (or `S | null`) for a fixed-size struct S, as Anchor's
   `Option<WrappedI80F48>`: Borsh (a tag byte, then S when Some), validated on entry like struct arguments (102),
   `{ option: { defined } }` in the IDL, read after `x !== null`. Helpers still take the struct itself.

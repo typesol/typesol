@@ -296,7 +296,7 @@ function cbEffectiveOperationalState(bank: Mut<Bank>): BankOperationalState {
 }
 
 /** reset_cb_runtime_state: the halt ends (its elapsed part is banked as frozen seconds) and the breaker's state clears. */
-function resetCbRuntimeState(bank: Mut<Bank>, timestamp: i64): void {
+export function resetCbRuntimeState(bank: Mut<Bank>, timestamp: i64): void {
   bank.config.operational_state = cbEffectiveOperationalState(bank);
   const halted = cbFrozenSeconds(bank, bank.last_update, timestamp);
   const pending = bank.cb_frozen_seconds_pending;

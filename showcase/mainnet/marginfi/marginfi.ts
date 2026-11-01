@@ -11,6 +11,7 @@ import {
   type Account,
   type AccountInfo,
   type CloseTo,
+  type FixedArray,
   AnchorError,
   type Dup,
   type RemainingAccounts,
@@ -65,6 +66,7 @@ import {
   DECREASE_BYPASS_BORROW_LIMIT,
   INCREASE_BYPASS_DEPOSIT_LIMIT,
   claimPremium,
+  isZeroWithTolerance,
   purgeBalance,
   ZERO_AMOUNT_THRESHOLD,
   writeOffPremiumAmount,
@@ -134,6 +136,8 @@ import {
   validateBankConfig,
   validateBankState,
   validateEmodeEntries,
+  resetCbRuntimeState,
+  CLOSE_ENABLED_FLAG,
 } from "./bank";
 import { MarginfiError } from "./errors";
 import {
@@ -181,6 +185,8 @@ import {
   type LendingAccountBorrowEvent,
   type LendingAccountLiquidateEvent,
   type LiquidationReceiverEvent,
+  type CircuitBreakerClearedEvent,
+  type LendingPoolBankPremiumConfigureEvent,
   type SetGovernanceAdminEvent,
   type LendingPoolGroupPremiumConfigureEvent,
   type AdminCloseAccountEvent,
@@ -237,6 +243,7 @@ import {
 } from "./oracle";
 import { PROGRAM_FEES_ENABLED, basisToU32, u32ToBasis, validateInterestRateConfig } from "./interest_rate";
 import {
+  type EmodeEntry,
   type Bank,
   type FeeState,
   type LiquidationRecord,
@@ -2923,6 +2930,159 @@ export function lendingPoolConfigureGroupPremium(
     old_rate: old,
     new_rate: rate,
   });
+}
+
+// ---- bank administration -------------------------------------------------------------------------------------------
+
+/**
+ * Set a bank's e-mode tag and entries (the governance admin): the entries sorted by collateral tag (stably), their
+ * padding cleared, checked against the bank's liability weights and the group's leverage caps; e-mode on when any
+ * entry is set.
+ */
+export function lendingPoolConfigureBankEmode(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  emode_tag: u16,
+  entries: FixedArray<EmodeEntry, 10>,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  // sort_by_key is stable: insertion sort of the entries' indices by tag.
+  const order = fixedArray<u8, 10>(0n);
+  for (let i = 0n; i < 10n; i++) order.set(i, u8(i));
+  for (let i = 1n; i < 10n; i++)
+    for (let j = i; j > 0n && entries.get(u64(order.get(j - 1n))).collateral_bank_emode_tag > entries.get(u64(order.get(j))).collateral_bank_emode_tag; j--) {
+      const swap = order.get(j);
+      order.set(j, order.get(j - 1n));
+      order.set(j - 1n, swap);
+    }
+  bank.emode.emode_tag = emode_tag;
+  let any = false;
+  for (let i = 0n; i < 10n; i++) {
+    const from = u64(order.get(i));
+    const to = bank.emode.emode_config.entries.get(i);
+    to.collateral_bank_emode_tag = entries.get(from).collateral_bank_emode_tag;
+    to.flags = entries.get(from).flags;
+    for (let k = 0n; k < 5n; k++) to.pad0.set(k, 0n);
+    to.asset_weight_init.value = entries.get(from).asset_weight_init.value;
+    to.asset_weight_maint.value = entries.get(from).asset_weight_maint.value;
+    if (to.collateral_bank_emode_tag !== 0n) any = true;
+  }
+  bank.emode.timestamp = now();
+  validateEmodeEntries(bank, totalLiquidationFee(bank), group.emode_max_init_leverage, group.emode_max_maint_leverage);
+  if (any) bank.emode.flags |= 1n;
+  else bank.emode.flags &= ~1n;
+}
+
+/** Copy one bank's e-mode settings to another (the governance admin), checked against the destination's weights. */
+export function lendingPoolCloneEmode(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  copy_from_bank: HasOne<Account<Bank>, "group", MarginfiError.InvalidGroup>,
+  copy_to_bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  copy_to_bank.emode = copy_from_bank.emode;
+  validateEmodeEntries(copy_to_bank, totalLiquidationFee(copy_to_bank), group.emode_max_init_leverage, group.emode_max_maint_leverage);
+}
+
+/** Tag a bank's premium rates and turn them on or off (the admin); off forgives what its borrowers owe in premium. */
+export function lendingPoolConfigureBankPremium(
+  group: HasOne<Account<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  premium_tag: u16,
+  active: boolean,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  bank.premium_tag = premium_tag;
+  const was = (bank.flags & PREMIUM_ACTIVE) !== 0n;
+  if (active) {
+    bank.flags |= PREMIUM_ACTIVE;
+    if (!was) bank.premium_activated_at = now();
+  } else {
+    if (was) log("WARNING: premium deactivation forgives all unpaid premium on this bank");
+    bank.flags &= ~PREMIUM_ACTIVE;
+  }
+  emit<LendingPoolBankPremiumConfigureEvent>({
+    header: { signer: admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank.mint,
+    premium_tag,
+    active,
+  });
+}
+
+/**
+ * Clear a bank's circuit breaker (the admin or the risk admin): interest accrued up to now, the halt and its tier
+ * reset; with `reseed_reference`, the breaker's references too.
+ */
+export function lendingPoolClearCircuitBreaker(
+  group: Account<MarginfiGroup>,
+  authority: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  reseed_reference: boolean,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require(authority.key === group.admin || authority.key === group.risk_admin, MarginfiError.Unauthorized);
+  const t = now();
+  accrueInterest(bank, group, bank.key, t);
+  const prior = bank.cb_tier;
+  resetCbRuntimeState(bank, t);
+  if (reseed_reference) {
+    bank.cb_reference_price.value = I80F48_ZERO;
+    bank.cb_window_reference_price.value = I80F48_ZERO;
+    bank.cb_window_started_at = 0n;
+  }
+  emit<CircuitBreakerClearedEvent>({ prior_tier: prior, reason: 0n, current_timestamp: t });
+}
+
+const STAGING_PROGRAM_ID = pubkey("stag8sTKds2h4KzjUw3zKTsxbqvT4XKHdaR9X9E6Rct");
+const MAINNET_PROGRAM_ID = pubkey("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA");
+
+/**
+ * Backfill a bank's flags (anyone): its seed, when it derives the bank's address from the group and mint (under the
+ * mainnet program, or staging's), and IS_T22 when its mint is a Token-2022 mint.
+ */
+export function lendingPoolBackfillBankIsT22Flag(
+  bank: HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "mint", MarginfiError.InvalidMint>,
+  group: Account<MarginfiGroup>,
+  mint: AccountInfo,
+  bank_seed: Option<u64>,
+): void {
+  if (bank_seed !== null) {
+    const seed: u64 = bank_seed;
+    const derived = findProgramAddress([group.key, mint.key, seed], programId() === STAGING_PROGRAM_ID ? STAGING_PROGRAM_ID : MAINNET_PROGRAM_ID);
+    require(derived === bank.key, MarginfiError.InvalidBankAccount);
+    bank.bank_seed = seed;
+    bank.flags |= BANK_SEED_KNOWN;
+  }
+  if ((bank.flags & IS_T22) === 0n && mint.owner === TOKEN_2022_ID) bank.flags |= IS_T22;
+}
+
+/**
+ * Close an empty bank (the admin), its rent to the admin: created to close (0.1.4 or later) with no positions, unless
+ * forced; no shares or emissions left either way.
+ */
+export function lendingPoolCloseBank(
+  group: HasOne<Mut<MarginfiGroup>, "admin", MarginfiError.Unauthorized>,
+  bank: CloseTo<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "admin">,
+  admin: Mut<Signer>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  force_close: Option<boolean>,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  group.banks = group.banks === 0n ? 0n : group.banks - 1n;
+  if (!(force_close ?? false)) {
+    require((bank.flags & CLOSE_ENABLED_FLAG) !== 0n, MarginfiError.BankCannotClose);
+    require(bank.lending_position_count === 0n && bank.borrowing_position_count === 0n, MarginfiError.BankCannotClose);
+  }
+  require(isZeroWithTolerance(bank.total_asset_shares.value) && isZeroWithTolerance(bank.total_liability_shares.value), MarginfiError.BankCannotClose);
+  require(isZeroWithTolerance(bank.emissions_remaining.value), MarginfiError.BankCannotClose);
 }
 
 // ---- repayments and fees -------------------------------------------------------------------------------------------
