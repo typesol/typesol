@@ -544,6 +544,17 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return { c: String(this.ix.accounts.length), type: { kind: "remaining" } };
       case "readData":
         return this.readData(node);
+      case "writeData":
+        return this.writeData(node);
+      case "resizeAccount": {
+        if (args.length !== 2) this.fail(node, "resizeAccount(account, newSize) takes the account and its new size");
+        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions");
+        const acct = this.accountParam(args[0], "resizeAccount's account");
+        if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter");
+        const size = this.expect(this.expr(args[1], U64), U64, args[1]);
+        this.line(`TS_TRY(ts_resize_raw(a_${acct.name}, ${size.c}, entry_${acct.name}));`);
+        return undefined;
+      }
       case "bigEndian":
         this.fail(node, "bigEndian(value) is a PDA seed: use it inside a seeds list");
       case "loadAccount":
@@ -1162,6 +1173,32 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (t.kind === "enum")
       this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: invalid enum value");`);
     return { c: out, type: t };
+  }
+
+  /** `writeData<T>(account, offset, value)`: a little-endian store into a writable AccountInfo's data. */
+  protected writeData(node: ts.CallExpression): undefined {
+    const targ = node.typeArguments?.[0];
+    const t = targ && resolveScalarType(targ, this.scope);
+    if (!t) this.fail(node, "writeData needs a value type: writeData<u64>(account, offset, value)");
+    if (node.arguments.length !== 3) this.fail(node, "writeData<T>(account, offset, value) takes an account, a byte offset and a value");
+    const acct = this.accountParam(node.arguments[0], "writeData's account");
+    if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(node.arguments[0], "writeData needs a Mut<AccountInfo> parameter");
+    const off = this.expect(this.expr(node.arguments[1], U64), U64, node.arguments[1]);
+    const o = this.tmp("off");
+    this.line(`uint64_t ${o} = ${off.c};`);
+    const v = this.expect(this.expr(node.arguments[2], t), t, node.arguments[2]);
+    const size = scalarSize(t);
+    const a = `a_${acct.name}`;
+    this.line(
+      `if (${o} > ${a}->data_len || ${a}->data_len - ${o} < ${size}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: write past the end of the account data");`,
+    );
+    if (t.kind === "pubkey") this.line(`ts_memcpy(${a}->data + ${o}, ${v.c}, 32);`);
+    else {
+      const w = this.tmp("wr");
+      this.line(`${scalarStorageC(t)} ${w} = (${scalarStorageC(t)})(${v.c});`);
+      this.line(`ts_memcpy(${a}->data + ${o}, &${w}, ${size});`);
+    }
+    return undefined;
   }
 
   /** `loadForeign<T>(account, owner)`: read-only view of another program's Anchor account. */

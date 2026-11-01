@@ -657,6 +657,12 @@ export declare const AuthorityType: {
  * the struct size. Accounts ending in a Vec size themselves through push/pop/clear.
  */
 export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<Signer>): void;
+/**
+ * Resize a `Mut<AccountInfo>` of this program to `newSize` bytes (Rust's `AccountInfo::resize`): the data length only,
+ * the new bytes zeroed. No rent moves: fund the account first (`rentExempt(newSize)`), the runtime refuses an account
+ * left short. At most 10 KiB past its size when the instruction started (3016).
+ */
+export declare function resizeAccount(account: Mut<AccountInfo>, newSize: u64): void;
 
 /**
  * Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none).
@@ -833,7 +839,7 @@ export type MintOf<A, AuthorityParam extends string, FreezeAuthorityParam extend
 /**
  * Anchor's `dup`: this writable account may be the same account as another writable parameter (TypeSOL refuses that
  * otherwise, 2040). Both are read and written in place, so a write through one is seen through the other: read
- * what you need before writing. Not for accounts that are created, closed, a close destination or `@layout borsh`.
+ * what you need before writing. Not for accounts that are created, closed or `@layout borsh` (a close destination may be one: it receives the rent through either).
  */
 export type Dup<A> = A & { readonly __dup?: true };
 /**
@@ -2059,6 +2065,11 @@ export declare function max<T extends bigint>(a: T, b: T): T;
  * `readData<u64>(pool, 72n)`, `readData<Pubkey>(pool, 8n)`. Check the account's owner yourself first.
  */
 export declare function readData<T extends bigint | boolean | Pubkey | Hash>(account: AccountMeta | RemainingAccount, offset: u64): T;
+/**
+ * Write a little-endian value at `offset` in a `Mut<AccountInfo>`'s data (bounds-checked, error 3003):
+ * `writeData<u64>(archive, 72n, count)`. Only this program's accounts can change: check the owner first.
+ */
+export declare function writeData<T extends bigint | boolean | Pubkey | Hash>(account: Mut<AccountInfo>, offset: u64, value: T): void;
 
 /**
  * View another program's Anchor account as a struct declared here (same field layout): the owner must be

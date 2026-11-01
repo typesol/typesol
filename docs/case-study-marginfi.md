@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing and the monitor archive done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -271,7 +271,22 @@ budget and keeper tip, defaults where not given), `marginfi_account_update_rebal
 or is closed; an optional signer), `marginfi_account_top_up_rebalance_fee_pool` (anyone: the account's system PDA,
 its rent reserve first) and `marginfi_account_withdraw_rebalance_fee_pool` (the authority; all of it rather than leave
 it short of the reserve). Their events carry the allowed banks as a Vec, sent in declared order as Anchor does.
-Running them (start and end of a rebalance, settling the tip) needs each bank's supply rate and comes next.
+`marginfi_account_start_rebalance`, `marginfi_account_end_rebalance` and `marginfi_account_settle_rebalance_tip` run
+them: the start reads the order's banks from the remaining accounts, accrues them, and checks each move's destination
+with its whole inflow landed beats its source by the order's minimum improvement while no other bank with room pays
+those tokens more (the supply rate from each bank's curve at the utilization after the deposit), then records the
+banks' amounts, rates and tags; the executor withdraws and deposits in between; the end checks each destination still
+beats its source, every bank's token amount moved as declared (within 3 native units per move), the budget, the
+account's Maintenance health and every other balance, carries order tags with their balances, and escrows the
+keeper's share of the tip; settlement pays it once the destinations out-yielded their sources, else refunds it.
+Rebalances across Kamino, Drift, Solend and JupLend banks price from those venues' state, which comes with part 5f;
+until then the port refuses them (RebalanceVenueUnsupported).
+
+**Part 5, resizing and the monitor archive.** `lending_pool_resize_group_account`, `lending_pool_resize_bank_account`
+and `resize_global_fee_state` grow a v1-sized account to the current struct size (anyone pays the rent short of it;
+TypeSOL's `resizeAccount`, Rust's `AccountInfo::resize`). `monitor_archive_initialize` and
+`monitor_archive_upsert_batch` keep the snapshot manager's archive, raw bytes in a large account the client allocated
+(a tag, the meta, an index map, then a ring of 168 hourly snapshots per mint), written with `writeData`.
 
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
@@ -348,7 +363,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 896 in
+for the oracles, and 978 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -397,7 +412,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (896, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (978, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -620,6 +635,10 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `marginfi_account_place_rebalance_order` | 10,820 | 3,570 | −67% |
 | `marginfi_account_update_rebalance_order` | 3,980 | 1,610 | −60% |
 | `marginfi_account_top_up_rebalance_fee_pool` | 6,498 | 2,970 | −54% |
+| a rebalance (start, withdraw, deposit, end), a tip escrowed | 270,773 | 116,319 | −57% |
+| `marginfi_account_settle_rebalance_tip`, paid | 72,189 | 36,058 | −50% |
+| `lending_pool_resize_bank_account` | 4,711 | 2,807 | −40% |
+| `monitor_archive_upsert_batch`, two mints | 2,741 | 973 | −65% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -627,7 +646,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%;
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%, rebalances 56–57% (whole transactions), monitor snapshots 28–80% (the least: 20 snapshots, byte by byte);
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.

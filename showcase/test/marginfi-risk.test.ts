@@ -2899,4 +2899,386 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
       vm.setAccount({ address: v.account, data: new Uint8Array(0), executable: false, lamports: lamports(0n), programAddress: SYSTEM, space: 0n });
     await close("its account closed", null, sol.mint, v.account);
   });
+  it("resizes accounts and keeps the monitor archive as the original does", async () => {
+    const bank = await newBank("pyth", 1_000_000n);
+    const payer = await s.funded();
+    /** Cut an account down to `len` bytes (a v1 layout) in both, with `lamports`. */
+    const shrink = (at: Address, len: number, lamportsLeft?: bigint) => {
+      for (const vm of s.vms()) {
+        const a = vm.getAccount(at) as { data: Uint8Array; lamports: bigint; programAddress: Address; executable: boolean };
+        vm.setAccount({ ...a, address: at, data: a.data.slice(0, len), lamports: lamports(lamportsLeft ?? a.lamports), space: BigInt(len) } as never);
+      }
+    };
+    const resize = (label: string, name: string, at: Address) =>
+      run(
+        `${name}: ${label}`,
+        payer,
+        [s.ix(name, {}, [{ address: at, writable: true }, { address: payer.address, signer: payer, writable: true }, { address: SYSTEM }] as never)],
+        [at, payer.address],
+      );
+    await resize("already full size", "lending_pool_resize_group_account", group.address);
+    await resize("not a group", "lending_pool_resize_group_account", bank.address);
+    await resize("someone's wallet", "lending_pool_resize_group_account", (await s.funded()).address);
+    const g2 = await generateKeyPairSigner();
+    await run("a second group", admin, [groupInit(g2, admin)], [g2.address]);
+    shrink(g2.address, 8 + 8000);
+    await resize("a v1 group", "lending_pool_resize_group_account", g2.address);
+    await resize("already full size", "lending_pool_resize_bank_account", bank.address);
+    await resize("not a bank", "lending_pool_resize_bank_account", group.address);
+    shrink(bank.address, 8 + 3000, s.original.minimumBalanceForRentExemption(8n + 3000n));
+    await resize("a v1 bank, short of rent", "lending_pool_resize_bank_account", bank.address);
+    await resize("already full size", "resize_global_fee_state", h.feeState);
+    shrink(h.feeState, 8 + 300, s.original.minimumBalanceForRentExemption(8n + 300n));
+    await resize("a v1 fee state", "resize_global_fee_state", h.feeState);
+    await resize("not the fee state", "resize_global_fee_state", group.address);
+    // The monitor archive: allocated by the client (owned by the program), then initialized with its manager.
+    const manager = await s.funded();
+    const archiveAt = async (len: number, owner: Address = PROGRAM) => {
+      const a = (await generateKeyPairSigner()).address;
+      for (const vm of s.vms())
+        vm.setAccount({
+          address: a,
+          data: new Uint8Array(len),
+          executable: false,
+          lamports: lamports(vm.minimumBalanceForRentExemption(BigInt(len))),
+          programAddress: owner,
+          space: BigInt(len),
+        });
+      return a;
+    };
+    const HEADER = 8 + 48 + 300 * 64;
+    const RECORD = 41 + 168 * 24;
+    const archive = await archiveAt(HEADER + 3 * RECORD);
+    const init = (label: string, at: Address, who: Address = manager.address) =>
+      run(
+        `monitor init: ${label}`,
+        payer,
+        [
+          s.ix("monitor_archive_initialize", { snapshot_manager: new web3.PublicKey(who) }, [
+            { address: payer.address, signer: payer, writable: true },
+            { address: at, writable: true },
+          ] as never),
+        ],
+        [at],
+      );
+    await init("owned by someone else", await archiveAt(HEADER, SYSTEM));
+    await init("too small", await archiveAt(HEADER - 1));
+    await init("a zero manager", await archiveAt(HEADER), SYSTEM);
+    await init("the archive", archive);
+    await init("again", archive);
+    const mints = await Promise.all(Array.from({ length: 4 }, async () => (await generateKeyPairSigner()).address));
+    const upsert = (label: string, by: KeyPairSigner, list: [Address, bigint, bigint, bigint][], extra: Address[] = []) =>
+      run(
+        `monitor upsert: ${label}`,
+        by,
+        [
+          withRest(
+            s.ix(
+              "monitor_archive_upsert_batch",
+              {
+                updates: list.map(([, hour, price, apy]) => ({
+                  snapshot_hour: new BN(hour.toString()),
+                  price: new BN(price.toString()),
+                  native_apy: new BN(apy.toString()),
+                })),
+              },
+              [
+                { address: by.address, signer: by },
+                { address: archive, writable: true },
+              ] as never,
+            ),
+            [...list.map(([m]) => m), ...extra],
+          ),
+        ],
+        [archive],
+      );
+    await upsert("by someone else", payer, [[mints[0]!, 1n, 2n, 3n]]);
+    await upsert("no updates", manager, []);
+    await upsert("an empty snapshot", manager, [[mints[0]!, 0n, 0n, 0n]]);
+    await upsert("two mints", manager, [
+      [mints[0]!, 100n, 1_000n, 5n],
+      [mints[1]!, 100n, 2_000n, 6n],
+    ]);
+    await upsert("a later hour", manager, [[mints[0]!, 101n, 1_001n, 5n]]);
+    await upsert("the same hour", manager, [[mints[0]!, 101n, 1_002n, 5n]]);
+    await upsert("an earlier hour", manager, [[mints[1]!, 99n, 1n, 1n]]);
+    // Round the ring: 168 snapshots, then the oldest goes.
+    for (let batch = 0; batch < 9; batch++)
+      await upsert(
+        `a ring, batch ${batch}`,
+        manager,
+        Array.from({ length: 20 }, (_, k) => [mints[1]!, BigInt(101 + batch * 20 + k), BigInt(k), 7n] as [Address, bigint, bigint, bigint]),
+      );
+    await upsert("the third mint", manager, [[mints[2]!, 5n, 5n, 5n]]);
+    await upsert("no room for a fourth", manager, [[mints[3]!, 5n, 5n, 5n]]);
+    await upsert("a zero mint", manager, [[SYSTEM, 5n, 5n, 5n]]);
+  });
+  it("rebalances between banks of one mint as the original does", async () => {
+    // Two banks of one mint, one priced by the other's oracle: a lends at nothing, b is well borrowed.
+    const a = await newBank("pyth", 1_000_000n);
+    const [bIx, bBank] = await addBank(group.address, admin, a.mint, TOKEN_PROGRAM, bankConfig(), { seed: 31n });
+    await run("add a second bank of the mint", admin, [bIx], [bBank.address]);
+    await run("its oracle", admin, [h.configureOracle(group.address, admin, bBank.address, 3, a.oracle!, [a.oracle!])], [bBank.address]);
+    const b: Priced = { ...bBank, oracle: a.oracle, kind: "pyth", price: 1_000_000n, decimals: 6, mint: a.mint, program: TOKEN_PROGRAM };
+    banks.push(b);
+    const sol = await newBank("swb", 150_000_000n, {}, 9);
+    await user([[b, 1_000_000_000n]]);
+    const borrower = await user([[sol, 100_000_000_000n]]);
+    tick();
+    await run(
+      "borrow from b",
+      borrower.owner,
+      [
+        h.borrow(group.address, borrower.account, borrower.owner, b, borrower.wallets.get(b.address)!, 800_000_000n, {
+          rest: [b.address, sol.address].sort((x, y) => Buffer.compare(keyBytes(y), keyBytes(x))).flatMap((k) => [k, byAddress(k).oracle!]),
+        }),
+      ],
+      [borrower.account, b.address],
+    );
+    const u = await user([
+      [a, 1_000_000_000n],
+      [b, 1_000_000n],
+    ]);
+    const executor = await s.funded();
+    const exWallet = await h.tokenAccount(a.mint, executor.address, 0n);
+    const key = (x: Address) => new web3.PublicKey(x);
+    const [order] = await pda(PROGRAM, ["rebalance_order", u.account, a.mint]);
+    const [pool] = await pda(PROGRAM, ["rebalance_fee_pool", u.account]);
+    await run(
+      "place a rebalance order",
+      u.owner,
+      [
+        s.ix(
+          "marginfi_account_place_rebalance_order",
+          {
+            allowed_banks: [a.address, b.address].map(key),
+            min_improvement: fx(ONE / 100n),
+            cooldown_seconds: new BN(60),
+            amount: null,
+            keeper_tip: new BN(1_000_000),
+          },
+          [
+            { address: group.address },
+            { address: u.account, writable: true },
+            { address: u.owner.address, signer: u.owner },
+            { address: a.mint },
+            { address: order, writable: true },
+            { address: u.owner.address, signer: u.owner, writable: true },
+            { address: SYSTEM },
+          ] as never,
+        ),
+      ],
+      [u.account, order],
+    );
+    await run(
+      "fund the fee pool",
+      u.owner,
+      [
+        s.ix("marginfi_account_top_up_rebalance_fee_pool", { amount: new BN(5_000_000) }, [
+          { address: u.account },
+          { address: pool, writable: true },
+          { address: u.owner.address, signer: u.owner, writable: true },
+          { address: SYSTEM },
+        ] as never),
+      ],
+      [pool],
+    );
+    const seqAt = offsetOf("MarginfiAccount", "rebalance_execution_seq");
+    const seqNow = () => data(u.account).readBigUInt64LE(seqAt);
+    const recordAt = async (seq: bigint) => {
+      const le = Buffer.alloc(8);
+      le.writeBigUInt64LE(seq);
+      return (await pda(PROGRAM, ["rebalance_record", u.account, new Uint8Array(le)]))[0];
+    };
+    const blocks = [a.address, a.oracle!, b.address, b.oracle!];
+    type Move = [number, number, bigint];
+    const moveArg = (list: Move[]) => list.map(([src, dst, amount]) => ({ src_index: src, dst_index: dst, _pad0: [0, 0, 0, 0, 0, 0], amount: fx(amount) }));
+    /** The account's health accounts once the legs ran: the balances it will hold, by descending bank key. */
+    const sortedHealth = (keys: Address[]) =>
+      [...keys]
+        .sort((x, y) => Buffer.compare(keyBytes(y), keyBytes(x)))
+        .flatMap((k) => {
+          const pb = byAddress(k);
+          return pb.oracle ? [k, pb.oracle] : [k];
+        });
+    const rebalancerFor =
+      (who: User, ord: Address, poolAt: Address, blk: Address[], from: Priced, to: Priced) =>
+      async (
+        label: string,
+        list: Move[],
+        legs: { withdraw?: bigint; deposit?: bigint; depositInto?: Priced },
+        opts: { seq?: bigint; noEnd?: boolean; before?: Instruction[] } = {},
+      ) => {
+        refresh();
+        const seq = opts.seq ?? data(who.account).readBigUInt64LE(seqAt);
+        const le = Buffer.alloc(8);
+        le.writeBigUInt64LE(seq);
+        const [record] = await pda(PROGRAM, ["rebalance_record", who.account, new Uint8Array(le)]);
+        const startIx = withRest(
+          s.ix("marginfi_account_start_rebalance", { moves: moveArg(list), execution_seq: new BN(seq.toString()) }, [
+            { address: group.address },
+            { address: who.account, writable: true },
+            { address: ord },
+            { address: executor.address },
+            { address: record, writable: true },
+            { address: executor.address, signer: executor, writable: true },
+            { address: INSTRUCTIONS },
+            { address: SYSTEM },
+          ] as never),
+          [],
+        );
+        // The banks are accrued in place: writable; their oracles read-only.
+        const start: Instruction = {
+          ...startIx,
+          accounts: [...startIx.accounts!, ...blk.map((address, i) => ({ address, role: i % 2 === 0 ? 1 : 0 }) as never)],
+        };
+        const middle: Instruction[] = [];
+        if (legs.withdraw)
+          middle.push(h.withdraw(group.address, who.account, executor, from, exWallet, legs.withdraw, { rest: healthAccounts(who.account, [], true) }));
+        if (legs.deposit) {
+          const into = legs.depositInto ?? to;
+          middle.push(h.deposit(group.address, who.account, executor, into.address, exWallet, into.v.liquidity, legs.deposit));
+        }
+        const end = withRest(
+          s.ix("marginfi_account_end_rebalance", {}, [
+            { address: group.address },
+            { address: who.account, writable: true },
+            { address: ord, writable: true },
+            { address: record, writable: true },
+            { address: executor.address, signer: executor, writable: true },
+            { address: poolAt, writable: true },
+            { address: SYSTEM },
+          ] as never),
+          [
+            ...blk,
+            ...sortedHealth([
+              ...new Set([
+                ...healthAccounts(who.account).filter((x) => banks.some((y) => y.address === x)),
+                ...(legs.deposit ? [(legs.depositInto ?? to).address] : []),
+              ]),
+            ]),
+          ],
+        );
+        return run(
+          `rebalance: ${label}`,
+          executor,
+          [...(opts.before ?? []), start, ...middle, ...(opts.noEnd ? [] : [end])],
+          [who.account, ord, record, poolAt, from.address, to.address, from.v.liquidity, to.v.liquidity, exWallet, executor.address],
+        );
+      };
+    const rebalance = rebalancerFor(u, order, pool, blocks, a, b);
+
+    // The banks are accrued in place, so they come writable.
+    const writableRest = (ix: Instruction, _: Address[]): Instruction => ({
+      ...ix,
+      accounts: [...ix.accounts!, ...blocks.map((address, i) => ({ address, role: i % 2 === 0 ? 1 : 0 }) as never)],
+    });
+    const settle = async (label: string, seq: bigint, caller: KeyPairSigner = executor) => {
+      refresh();
+      const record = await recordAt(seq);
+      return run(
+        `settle rebalance tip: ${label}`,
+        caller,
+        [
+          writableRest(
+            s.ix("marginfi_account_settle_rebalance_tip", {}, [
+              { address: group.address },
+              { address: u.account },
+              { address: record, writable: true },
+              { address: executor.address, writable: true },
+              { address: pool, writable: true },
+              { address: caller.address, signer: caller, writable: true },
+            ] as never),
+            [],
+          ),
+        ],
+        [record, pool, executor.address, caller.address],
+      );
+    };
+    tick(120n);
+    await rebalance("a stale sequence", [[0, 1, 500n * ONE]], { withdraw: 500_000_000n, deposit: 500_000_000n }, { seq: 5n });
+    await rebalance("no end", [[0, 1, 500n * ONE]], { withdraw: 500_000_000n, deposit: 500_000_000n }, { noEnd: true });
+    await rebalance("no moves", [], {});
+    await rebalance("into the bank that pays less", [[1, 0, 1n * ONE]], { withdraw: 1_000_000n, deposit: 1_000_000n });
+    await rebalance("a bank out of the list", [[0, 2, 500n * ONE]], { withdraw: 500_000_000n, deposit: 500_000_000n });
+    await rebalance("a leg into another bank", [[0, 1, 500n * ONE]], { withdraw: 500_000_000n, deposit: 500_000_000n, depositInto: sol });
+    await rebalance("less deposited than declared", [[0, 1, 500n * ONE]], { withdraw: 500_000_000n, deposit: 400_000_000n });
+    await rebalance("a negative amount", [[0, 1, -5n * ONE]], { withdraw: 5_000_000n, deposit: 5_000_000n });
+    await rebalance(
+      "an instruction before the start",
+      [[0, 1, 500n * ONE]],
+      { withdraw: 500_000_000n, deposit: 500_000_000n },
+      { before: [h.accrue(group.address, a.address)] },
+    );
+    const first = seqNow();
+    await rebalance("half of it into b", [[0, 1, 500n * ONE]], { withdraw: 500_000_000n, deposit: 500_000_000n });
+    await rebalance("again, in the cooldown", [[0, 1, 100n * ONE]], { withdraw: 100_000_000n, deposit: 100_000_000n });
+    await settle("too early", first);
+    tick(4_000n);
+    await settle("after the delay, by its keeper", first);
+    await settle("again", first);
+    // A second run: settled by someone else, after b's borrower repaid (nothing realized: the tip goes back).
+    tick(120n);
+    const second = seqNow();
+    await rebalance("the rest into b", [[0, 1, 400n * ONE]], { withdraw: 400_000_000n, deposit: 400_000_000n });
+    editBank(b.address, [["total_liability_shares", 0n, 16]]);
+    tick(4_000n);
+    await settle("nothing realized, by someone else", second, await s.funded());
+    // Three banks: c pays less than b, so a move into c is refused while b would pay those tokens more.
+    const [cIx, cBank] = await addBank(group.address, admin, a.mint, TOKEN_PROGRAM, bankConfig(), { seed: 32n });
+    await run("add a third bank of the mint", admin, [cIx], [cBank.address]);
+    await run("its oracle too", admin, [h.configureOracle(group.address, admin, cBank.address, 3, a.oracle!, [a.oracle!])], [cBank.address]);
+    const c: Priced = { ...cBank, oracle: a.oracle, kind: "pyth", price: 1_000_000n, decimals: 6, mint: a.mint, program: TOKEN_PROGRAM };
+    banks.push(c);
+    editBank(b.address, [["total_liability_shares", 800_000_000n * ONE, 16]]);
+    await user([[c, 1_000_000_000n]]);
+    const borrower2 = await user([[sol, 100_000_000_000n]]);
+    tick();
+    await run(
+      "borrow from c",
+      borrower2.owner,
+      [
+        h.borrow(group.address, borrower2.account, borrower2.owner, c, borrower2.wallets.get(c.address)!, 300_000_000n, {
+          rest: [c.address, sol.address].sort((x, y) => Buffer.compare(keyBytes(y), keyBytes(x))).flatMap((k) => [k, byAddress(k).oracle!]),
+        }),
+      ],
+      [borrower2.account, c.address],
+    );
+    const v = await user([[a, 1_000_000_000n]]);
+    const [order2] = await pda(PROGRAM, ["rebalance_order", v.account, a.mint]);
+    const [pool2] = await pda(PROGRAM, ["rebalance_fee_pool", v.account]);
+    await run(
+      "place a three-bank order with a budget",
+      v.owner,
+      [
+        s.ix(
+          "marginfi_account_place_rebalance_order",
+          {
+            allowed_banks: [a.address, b.address, c.address].map(key),
+            min_improvement: fx(ONE / 100n),
+            cooldown_seconds: new BN(0),
+            amount: new BN(100_000_000),
+            keeper_tip: null,
+          },
+          [
+            { address: group.address },
+            { address: v.account, writable: true },
+            { address: v.owner.address, signer: v.owner },
+            { address: a.mint },
+            { address: order2, writable: true },
+            { address: v.owner.address, signer: v.owner, writable: true },
+            { address: SYSTEM },
+          ] as never,
+        ),
+      ],
+      [v.account, order2],
+    );
+    const blocks3 = [a.address, a.oracle!, b.address, b.oracle!, c.address, c.oracle!];
+    const intoC = rebalancerFor(v, order2, pool2, blocks3, a, c);
+    const intoB = rebalancerFor(v, order2, pool2, blocks3, a, b);
+    tick();
+    await intoC("into c while b pays more", [[0, 2, 50n * ONE]], { withdraw: 50_000_000n, deposit: 50_000_000n });
+    await intoB("past the budget", [[0, 1, 150n * ONE]], { withdraw: 150_000_000n, deposit: 150_000_000n });
+    await intoB("within the budget, no tip", [[0, 1, 80n * ONE]], { withdraw: 80_000_000n, deposit: 80_000_000n });
+  });
 });

@@ -17,7 +17,6 @@ describe("Dup<…>", () => {
   it.each([
     ["a @layout borsh account", "export function f(a: Dup<Mut<Note>>, b: Mut<Note>): void {}"],
     ["an account it closes", 'export function f(a: Dup<CloseTo<Mut<Wallet>, "b">>, b: Mut<Signer>): void {}'],
-    ["a close destination", 'export function f(a: Dup<Mut<Signer>>, w: CloseTo<Mut<Wallet>, "a">): void {}'],
     ["an account created here", "export function f(p: Mut<Signer>, a: Dup<Init<Wallet>>, s: SystemProgram): void { a.create(p, null); }"],
   ])("is refused on %s", (_, fn) => {
     expect(compileErrors(HEAD + fn)).toMatch(/Dup<…> is for accounts read and written in place/);
@@ -47,6 +46,8 @@ export function strict(from: Mut<Wallet>, to: Mut<Wallet>, amount: u64): void {
   from.balance -= amount;
   to.balance += amount;
 }
+/** Closes the wallet into \`to\`, which may be the transaction's payer too (a keeper settling its own record). */
+export function sweep(to: Mut<Signer>, w: CloseTo<Mut<Wallet>, "to">, payer: Dup<Mut<Signer>>): void {}
 `,
     );
     const d = await deployFile(path.join(dir, "dup.ts"));
@@ -80,5 +81,18 @@ export function strict(from: Mut<Wallet>, to: Mut<Wallet>, amount: u64): void {
     expectOk(await call("move", a, a)); // allowed: in place, so -30 then +30
     expect(balance(a)).toBe("70");
     expect(customError(await call("strict", a, a))).toBe(2040); // without Dup, still refused
+    // A close destination may be a Dup account's twin: the rent reaches the one account.
+    const before = d.svm.getBalance(payer.address)!;
+    const rent = d.svm.getBalance(b)!;
+    const sweep = (to: { address: typeof a; signer: typeof payer }, w: typeof a) =>
+      send(d.svm, payer, [
+        ix(d, "sweep", {}, [
+          { address: to.address, signer: to.signer, writable: true },
+          { address: w, writable: true },
+          { address: payer.address, signer: payer, writable: true },
+        ]),
+      ]);
+    expectOk(await sweep({ address: payer.address, signer: payer }, b));
+    expect(d.svm.getBalance(payer.address)! - before).toBe(rent - 5000n);
   });
 });
