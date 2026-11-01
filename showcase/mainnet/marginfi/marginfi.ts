@@ -2,8 +2,8 @@
 // MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA), Copyright mrgnlabs, licensed under the Apache License, Version 2.0
 // (https://www.apache.org/licenses/LICENSE-2.0). Changes: rewritten in TypeSOL; this file holds the instructions ported
 // so far: group and bank administration, oracles, accounts, deposits, withdrawals, borrows, repayments, fees, health
-// pulses, liquidation records, bankruptcy, classic and receivership liquidation (see docs/case-study-marginfi.md for
-// what is and is not).
+// pulses, liquidation records, bankruptcy, classic and receivership liquidation and deleverage (see
+// docs/case-study-marginfi.md for what is and is not).
 //
 // A lending protocol: groups of banks, one per mint, whose deposits earn what borrowers pay on a seven-point interest
 // curve; the group, insurance and program take fees from the borrowing rate.
@@ -63,6 +63,7 @@ import {
   DECREASE_BYPASS_BORROW_LIMIT,
   INCREASE_BYPASS_DEPOSIT_LIMIT,
   claimPremium,
+  purgeBalance,
   ZERO_AMOUNT_THRESHOLD,
   writeOffPremiumAmount,
   DECREASE_BORROW_ONLY,
@@ -136,6 +137,7 @@ import {
   clearLiquidationLocks,
   lockLiquidationPrices,
   tagAdjustedPremium,
+  type Moved,
   accountsPerBank,
   anyBankHalted,
   calcAmount,
@@ -173,6 +175,7 @@ import {
   type LendingAccountBorrowEvent,
   type LendingAccountLiquidateEvent,
   type LiquidationReceiverEvent,
+  type DeleverageEvent,
   type HealthPulseEvent,
   type LiquidationTagEvent,
   type LendingPoolBankHandleBankruptcyEvent,
@@ -204,6 +207,7 @@ import {
   fxTryMul,
   fxTrySub,
   fxWrappingMul,
+  fxAbs,
 } from "./i80f48";
 import {
   ASSET_TAG_DEFAULT,
@@ -1904,6 +1908,8 @@ const TITAN_ID = pubkey("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");
 /** Anchor discriminators (the first 8 data bytes, little-endian). */
 const IX_START_LIQUIDATION: u64 = 1567154542508400116n;
 const IX_END_LIQUIDATION: u64 = 13264989748540476270n;
+const IX_START_DELEVERAGE: u64 = 13958599354534758922n;
+const IX_END_DELEVERAGE: u64 = 15120388232899595890n;
 const IX_INIT_LIQUIDATION_RECORD: u64 = 622899259392316908n;
 const IX_WITHDRAW: u64 = 13889333050519210020n;
 const IX_REPAY: u64 = 10929448902254711119n;
@@ -1984,6 +1990,111 @@ function validateReceivership(ixs: InstructionsSysvar, start: u64, end: u64): vo
 }
 
 /**
+ * start_receivership: Maintenance health at the prices taken (unhealthy, unless `ignoreHealthy`), then equity; the
+ * banks' prices locked; the health cache as those passes leave it (no time, no version, no ENGINE_OK); the account
+ * in receivership; the record's snapshot of both.
+ */
+function startReceivership(
+  acc: Mut<MarginfiAccount>,
+  group: Account<MarginfiGroup>,
+  record: Mut<LiquidationRecord>,
+  rest: RemainingAccounts,
+  ignoreHealthy: boolean,
+  t: i64,
+): void {
+  const m = healthComponents(acc, group, rest, 0n, rest.length, REQ_MAINTENANCE, true, false, t);
+  require(m.err === 0n, m.err);
+  const health = fxTrySub(m.assets, m.liabs);
+  require(health.err === 0n, health.err);
+  const healthy = health.v > I80F48_ZERO;
+  require(!healthy || ignoreHealthy, MarginfiError.HealthyAccount);
+  const q = healthComponents(acc, group, rest, 0n, rest.length, REQ_EQUITY, true, false, t);
+  require(q.err === 0n, q.err);
+  lockLiquidationPrices(acc, rest, t);
+  resetHealthCache(acc, 0n, 0n, (healthy ? HEALTH_HEALTHY : 0n) | (m.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n));
+  acc.health_cache.asset_value_maint.value = m.assets;
+  acc.health_cache.liability_value_maint.value = m.liabs;
+  acc.health_cache.asset_value_equity.value = q.assets;
+  acc.health_cache.liability_value_equity.value = q.liabs;
+  acc.account_flags |= ACCOUNT_IN_RECEIVERSHIP;
+  acc.indexer_flags.has_ever_been_liquidated = 1n;
+  record.cache.asset_value_maint.value = m.assets;
+  record.cache.liability_value_maint.value = m.liabs;
+  record.cache.asset_value_equity.value = q.assets;
+  record.cache.liability_value_equity.value = q.liabs;
+}
+
+/**
+ * end_receivership: the account's health at the locked prices (healthy only below the close-out threshold, or when
+ * `belowCloseout` says so), the locks cleared, its premium rates from the new mix; with `capped`, health may fall by no
+ * more than the value taken out and a solvent account stays solvent, else it may not fall at all; out of
+ * receivership, its tag after it, the record's newest entry (the oldest rotated out, its unused bytes kept).
+ */
+function endReceivership(
+  acc: Mut<MarginfiAccount>,
+  group: Account<MarginfiGroup>,
+  record: Mut<LiquidationRecord>,
+  rest: RemainingAccounts,
+  belowCloseout: boolean,
+  capped: boolean,
+  t: i64,
+): Moved {
+  const preEquityAssets = record.cache.asset_value_equity.value;
+  const preEquityLiabs = record.cache.liability_value_equity.value;
+  const preHealth = fxSub(record.cache.asset_value_maint.value, record.cache.liability_value_maint.value);
+  const m = cachedHealthComponents(acc, group, rest, 0n, rest.length, REQ_MAINTENANCE, false, t);
+  require(m.err === 0n, m.err);
+  const post = fxTrySub(m.assets, m.liabs);
+  require(post.err === 0n, post.err);
+  const healthy = post.v > I80F48_ZERO;
+  require(!healthy || belowCloseout, MarginfiError.HealthyAccount);
+  const q = cachedHealthComponents(acc, group, rest, 0n, rest.length, REQ_EQUITY, true, t);
+  require(q.err === 0n, q.err);
+  clearLiquidationLocks(acc, rest);
+  resetHealthCache(acc, 0n, 0n, (healthy ? HEALTH_HEALTHY : 0n) | (m.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n));
+  acc.health_cache.asset_value_maint.value = m.assets;
+  acc.health_cache.liability_value_maint.value = m.liabs;
+  acc.health_cache.asset_value_equity.value = q.assets;
+  acc.health_cache.liability_value_equity.value = q.liabs;
+  updatePremiumSnapshots(acc, group, q, u64(t), false);
+  const seized = fxSub(preEquityAssets, q.assets);
+  const repaid = fxSub(preEquityLiabs, q.liabs);
+  if (capped) {
+    // Health may fall by no more than what was taken out, and a solvent account stays solvent.
+    const net = fxSub(seized, repaid);
+    const extracted = net > I80F48_ZERO ? net : I80F48_ZERO;
+    require(fxSub(preHealth, post.v) <= extracted, MarginfiError.WorseHealthPostLiquidation);
+    require(!(preEquityAssets >= preEquityLiabs && q.assets < q.liabs), MarginfiError.WorseHealthPostLiquidation);
+  } else require(preHealth <= post.v, MarginfiError.WorseHealthPostLiquidation);
+  acc.account_flags &= ~(ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_RISK_ADMIN_LIQUIDATION);
+  record.liquidation_receiver = SYSTEM_PROGRAM_ID;
+  acc.liquidation_tagged_at = tagAfterLiquidation(acc.liquidation_tagged_at, preHealth, post.v, preEquityLiabs, repaid, t);
+  // entries.rotate_left(1), then the newest entry's amounts and time.
+  const oldPlaceholder = record.entries.get(0n).placeholder0;
+  const oldReserved = fixedArray<u8, 16>(0n);
+  for (let k = 0n; k < 16n; k++) oldReserved.set(k, record.entries.get(0n).reserved0.get(k));
+  for (let j = 0n; j < 3n; j++) {
+    for (let k = 0n; k < 8n; k++) {
+      record.entries.get(j).asset_amount_seized.set(k, record.entries.get(j + 1n).asset_amount_seized.get(k));
+      record.entries.get(j).liab_amount_repaid.set(k, record.entries.get(j + 1n).liab_amount_repaid.get(k));
+    }
+    record.entries.get(j).placeholder0 = record.entries.get(j + 1n).placeholder0;
+    record.entries.get(j).timestamp = record.entries.get(j + 1n).timestamp;
+    for (let k = 0n; k < 16n; k++) record.entries.get(j).reserved0.set(k, record.entries.get(j + 1n).reserved0.get(k));
+  }
+  const seizedBits = fxToF64Bits(seized);
+  const repaidBits = fxToF64Bits(repaid);
+  for (let k = 0n; k < 8n; k++) {
+    record.entries.get(3n).asset_amount_seized.set(k, u8((seizedBits >> (8n * k)) & 255n));
+    record.entries.get(3n).liab_amount_repaid.set(k, u8((repaidBits >> (8n * k)) & 255n));
+  }
+  record.entries.get(3n).placeholder0 = oldPlaceholder;
+  record.entries.get(3n).timestamp = t;
+  for (let k = 0n; k < 16n; k++) record.entries.get(3n).reserved0.set(k, oldReserved.get(k));
+  return { seized, repaid };
+}
+
+/**
  * Start a receivership liquidation (anyone): an account unhealthy at Maintenance is put in receivership until the
  * transaction's last instruction, `end_liquidation`; meanwhile the receiver withdraws and repays for it. Its health
  * and the prices taken are kept (the banks' prices locked) for the end to compare against. The account's banks and
@@ -2012,28 +2123,7 @@ export function startLiquidation(
   require(halted.n === 0n, MarginfiError.CircuitBreakerAdminOnly);
   const gate = cbPriceGate(marginfi_account, remainingAccounts(), 0n, len, t);
   require(gate === 0n, gate);
-  // start_receivership: Maintenance health (unhealthy, or HealthyAccount), then equity, both at the prices recorded.
-  const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, len, REQ_MAINTENANCE, true, false, t);
-  require(m.err === 0n, m.err);
-  const health = fxTrySub(m.assets, m.liabs);
-  require(health.err === 0n, health.err);
-  require(health.v <= I80F48_ZERO, MarginfiError.HealthyAccount);
-  const q = healthComponents(marginfi_account, group, remainingAccounts(), 0n, len, REQ_EQUITY, true, false, t);
-  require(q.err === 0n, q.err);
-  lockLiquidationPrices(marginfi_account, remainingAccounts(), t);
-  // HealthCache::zeroed() and what the passes wrote: no time, no version, no ENGINE_OK.
-  resetHealthCache(marginfi_account, 0n, 0n, m.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n);
-  const c = marginfi_account.health_cache;
-  c.asset_value_maint.value = m.assets;
-  c.liability_value_maint.value = m.liabs;
-  c.asset_value_equity.value = q.assets;
-  c.liability_value_equity.value = q.liabs;
-  marginfi_account.account_flags |= ACCOUNT_IN_RECEIVERSHIP;
-  marginfi_account.indexer_flags.has_ever_been_liquidated = 1n;
-  liquidation_record.cache.asset_value_maint.value = m.assets;
-  liquidation_record.cache.liability_value_maint.value = m.liabs;
-  liquidation_record.cache.asset_value_equity.value = q.assets;
-  liquidation_record.cache.liability_value_equity.value = q.liabs;
+  startReceivership(marginfi_account, group, liquidation_record, remainingAccounts(), false, t);
   validateReceivership(instruction_sysvar, IX_START_LIQUIDATION, IX_END_LIQUIDATION);
 }
 
@@ -2061,68 +2151,16 @@ export function endLiquidation(
   );
   require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
   const t = now();
-  const len = remainingAccounts().length;
   const preEquityAssets = liquidation_record.cache.asset_value_equity.value;
-  const preEquityLiabs = liquidation_record.cache.liability_value_equity.value;
-  const belowCloseout = preEquityAssets < CLOSEOUT_THRESHOLD;
-  const inBadDebt = preEquityAssets < preEquityLiabs;
+  const inBadDebt = preEquityAssets < liquidation_record.cache.liability_value_equity.value;
   const taggedAt = marginfi_account.liquidation_tagged_at;
   const emodeBoosted = (marginfi_account.health_cache.flags & HEALTH_EMODE_BOOSTED) !== 0n;
-  // end_receivership
-  const preHealth = fxSub(liquidation_record.cache.asset_value_maint.value, liquidation_record.cache.liability_value_maint.value);
-  const m = cachedHealthComponents(marginfi_account, group, remainingAccounts(), 0n, len, REQ_MAINTENANCE, false, t);
-  require(m.err === 0n, m.err);
-  const post = fxTrySub(m.assets, m.liabs);
-  require(post.err === 0n, post.err);
-  const healthy = post.v > I80F48_ZERO;
-  require(!healthy || belowCloseout, MarginfiError.HealthyAccount);
-  const q = cachedHealthComponents(marginfi_account, group, remainingAccounts(), 0n, len, REQ_EQUITY, true, t);
-  require(q.err === 0n, q.err);
-  clearLiquidationLocks(marginfi_account, remainingAccounts());
-  resetHealthCache(marginfi_account, 0n, 0n, (healthy ? HEALTH_HEALTHY : 0n) | (m.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n));
-  const c = marginfi_account.health_cache;
-  c.asset_value_maint.value = m.assets;
-  c.liability_value_maint.value = m.liabs;
-  c.asset_value_equity.value = q.assets;
-  c.liability_value_equity.value = q.liabs;
-  updatePremiumSnapshots(marginfi_account, group, q, u64(t), false);
-  const seized = fxSub(preEquityAssets, q.assets);
-  const repaid = fxSub(preEquityLiabs, q.liabs);
-  // The premium cap: health may fall by no more than what was taken out, and a solvent account stays solvent.
-  const net = fxSub(seized, repaid);
-  const extracted = net > I80F48_ZERO ? net : I80F48_ZERO;
-  require(fxSub(preHealth, post.v) <= extracted, MarginfiError.WorseHealthPostLiquidation);
-  require(!(preEquityAssets >= preEquityLiabs && q.assets < q.liabs), MarginfiError.WorseHealthPostLiquidation);
-  marginfi_account.account_flags &= ~(ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_RISK_ADMIN_LIQUIDATION);
-  liquidation_record.liquidation_receiver = SYSTEM_PROGRAM_ID;
-  marginfi_account.liquidation_tagged_at = tagAfterLiquidation(marginfi_account.liquidation_tagged_at, preHealth, post.v, preEquityLiabs, repaid, t);
-  // entries.rotate_left(1), then the newest entry's amounts and time (the rest of the oldest entry's bytes stay).
-  const oldPlaceholder = liquidation_record.entries.get(0n).placeholder0;
-  const oldReserved = fixedArray<u8, 16>(0n);
-  for (let k = 0n; k < 16n; k++) oldReserved.set(k, liquidation_record.entries.get(0n).reserved0.get(k));
-  for (let j = 0n; j < 3n; j++) {
-    for (let k = 0n; k < 8n; k++) {
-      liquidation_record.entries.get(j).asset_amount_seized.set(k, liquidation_record.entries.get(j + 1n).asset_amount_seized.get(k));
-      liquidation_record.entries.get(j).liab_amount_repaid.set(k, liquidation_record.entries.get(j + 1n).liab_amount_repaid.get(k));
-    }
-    liquidation_record.entries.get(j).placeholder0 = liquidation_record.entries.get(j + 1n).placeholder0;
-    liquidation_record.entries.get(j).timestamp = liquidation_record.entries.get(j + 1n).timestamp;
-    for (let k = 0n; k < 16n; k++) liquidation_record.entries.get(j).reserved0.set(k, liquidation_record.entries.get(j + 1n).reserved0.get(k));
-  }
-  const seizedBits = fxToF64Bits(seized);
-  const repaidBits = fxToF64Bits(repaid);
-  for (let k = 0n; k < 8n; k++) {
-    liquidation_record.entries.get(3n).asset_amount_seized.set(k, u8((seizedBits >> (8n * k)) & 255n));
-    liquidation_record.entries.get(3n).liab_amount_repaid.set(k, u8((repaidBits >> (8n * k)) & 255n));
-  }
-  liquidation_record.entries.get(3n).placeholder0 = oldPlaceholder;
-  liquidation_record.entries.get(3n).timestamp = t;
-  for (let k = 0n; k < 16n; k++) liquidation_record.entries.get(3n).reserved0.set(k, oldReserved.get(k));
+  const moved = endReceivership(marginfi_account, group, liquidation_record, remainingAccounts(), preEquityAssets < CLOSEOUT_THRESHOLD, true, t);
   // The premium the receiver may have taken.
   const maxFee = fee_state.liquidation_max_fee.value;
   const base = maxFee > BONUS_FEE_MINIMUM ? maxFee : BONUS_FEE_MINIMUM;
   const premium = emodeBoosted || inBadDebt ? base : tagAdjustedPremium(base, taggedAt, t);
-  require(seized <= fxWrappingMul(repaid, fxAdd(I80F48_ONE, premium)), MarginfiError.LiquidationPremiumTooHigh);
+  require(moved.seized <= fxWrappingMul(moved.repaid, fxAdd(I80F48_ONE, premium)), MarginfiError.LiquidationPremiumTooHigh);
   const fee = fee_state.liquidation_flat_sol_fee;
   if (fee > 0n) {
     if (fee_payer !== null) system_program.transfer(fee_payer, global_fee_wallet, u64(fee));
@@ -2131,10 +2169,154 @@ export function endLiquidation(
   emit<LiquidationReceiverEvent>({
     marginfi_account: marginfi_account.key,
     liquidation_receiver: liquidation_receiver.key,
-    liquidatee_assets_seized: f64FromBits(seizedBits),
-    liquidatee_liability_repaid: f64FromBits(repaidBits),
+    liquidatee_assets_seized: f64FromBits(fxToF64Bits(moved.seized)),
+    liquidatee_liability_repaid: f64FromBits(fxToF64Bits(moved.repaid)),
     lamps_fee_paid: fee,
   });
+}
+
+/**
+ * Start a deleverage (the risk admin): any account, healthy or not, is put in receivership with the risk admin as its
+ * receiver until `end_deleverage`; no circuit-breaker checks. As start_liquidation otherwise.
+ */
+export function startDeleverage(
+  marginfi_account: HasOne<HasOne<Mut<MarginfiAccount>, "liquidation_record">, "group", MarginfiError.InvalidGroup>,
+  liquidation_record: Mut<LiquidationRecord>,
+  group: HasOne<Account<MarginfiGroup>, "risk_admin">,
+  risk_admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags &
+      (ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_FLASHLOAN | ACCOUNT_DISABLED | ACCOUNT_IN_ORDER_EXECUTION)) ===
+      0n,
+    MarginfiError.UnexpectedLiquidationState,
+  );
+  checkNoDurableNonce(instruction_sysvar);
+  const t = now();
+  liquidation_record.liquidation_receiver = risk_admin.key;
+  marginfi_account.account_flags |= ACCOUNT_IN_DELEVERAGE;
+  marginfi_account.indexer_flags.has_ever_been_deleveraged = 1n;
+  startReceivership(marginfi_account, group, liquidation_record, remainingAccounts(), true, t);
+  validateReceivership(instruction_sysvar, IX_START_DELEVERAGE, IX_END_DELEVERAGE);
+}
+
+/** End a deleverage (the risk admin): the account's health at the locked prices may not have fallen. */
+export function endDeleverage(
+  marginfi_account: HasOne<HasOne<Mut<MarginfiAccount>, "liquidation_record">, "group", MarginfiError.InvalidGroup>,
+  liquidation_record: Mut<LiquidationRecord>,
+  group: HasOne<Account<MarginfiGroup>, "risk_admin">,
+  risk_admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n &&
+      (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n &&
+      (marginfi_account.account_flags & (ACCOUNT_IN_FLASHLOAN | ACCOUNT_DISABLED | ACCOUNT_IN_ORDER_EXECUTION)) === 0n,
+    MarginfiError.UnexpectedLiquidationState,
+  );
+  constraint(liquidation_record, liquidation_record.liquidation_receiver === risk_admin.key, MarginfiError.Unauthorized);
+  checkNoDurableNonce(instruction_sysvar);
+  require(stackHeight() === 1n, MarginfiError.NotAllowedInCPI);
+  const t = now();
+  marginfi_account.account_flags &= ~ACCOUNT_IN_DELEVERAGE;
+  const moved = endReceivership(marginfi_account, group, liquidation_record, remainingAccounts(), true, false, t);
+  emit<DeleverageEvent>({
+    marginfi_account: marginfi_account.key,
+    risk_admin: risk_admin.key,
+    deleveragee_assets_seized: f64FromBits(fxToF64Bits(moved.seized)),
+    deleveragee_liability_repaid: f64FromBits(fxToF64Bits(moved.repaid)),
+  });
+}
+
+/**
+ * Purge a balance (the risk admin) in a bank whose tokenless repayments are complete: what is left of the deposit is
+ * written off, the balance closed (its bank's price lock cleared in receivership). Refused while it owes more than
+ * dust.
+ */
+export function purgeDeleverageBalance(
+  group: HasOne<Account<MarginfiGroup>, "risk_admin", MarginfiError.Unauthorized>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  risk_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(bank, (bank.flags & TOKENLESS_REPAYMENTS_COMPLETE) !== 0n, MarginfiError.ForbiddenIx);
+  checkNoDurableNonce(instruction_sysvar);
+  const found = findBalance(marginfi_account, bank.key);
+  require(found >= 0n, MarginfiError.BankAccountNotFound);
+  const i = u64(found);
+  const owed = marginfi_account.lending_account.balances.get(i).liability_shares.value;
+  require(fxAbs(owed) <= ZERO_AMOUNT_THRESHOLD, MarginfiError.OperationWithdrawOnly);
+  purgeBalance(marginfi_account, i, bank, (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n);
+  sortBalances(marginfi_account);
+  syncIndexerFlags(marginfi_account);
+  marginfi_account.last_update = u64(now());
+}
+
+/** Mark a bank's tokenless repayments complete (the risk admin), when they are allowed, to purge what dust is left. */
+export function lendingPoolForceTokenlessRepayComplete(
+  group: HasOne<Account<MarginfiGroup>, "risk_admin", MarginfiError.Unauthorized>,
+  risk_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  if ((bank.flags & TOKENLESS_REPAYMENTS_ALLOWED) !== 0n) bank.flags |= TOKENLESS_REPAYMENTS_COMPLETE;
+}
+
+/** Set the group's daily limit on deleverage withdrawals, in whole dollars (the admin or the limit admin). */
+export function configureDeleverageWithdrawalLimit(
+  marginfi_group: Mut<MarginfiGroup>,
+  admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  limit: u32,
+): void {
+  constraint(marginfi_group, admin.key === marginfi_group.admin || admin.key === marginfi_group.delegate_limit_admin, MarginfiError.Unauthorized);
+  checkNoDurableNonce(instruction_sysvar);
+  require(limit > 0n, MarginfiError.ZeroWithdrawalLimit);
+  marginfi_group.deleverage_withdraw_window_cache.daily_limit = limit;
+  marginfi_group.deleverage_withdraw_window_cache.last_daily_reset_timestamp = now();
+}
+
+/**
+ * Record deleverage withdrawals (the delegate flow admin), aggregated off-chain from the withdrawal events: in order of
+ * sequence and slots, recent, past the day's limit refused.
+ */
+export function updateDeleverageWithdrawals(
+  marginfi_group: HasOne<Mut<MarginfiGroup>, "delegate_flow_admin", MarginfiError.Unauthorized>,
+  delegate_flow_admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  outflow_usd: u32,
+  update_seq: u64,
+  event_start_slot: u64,
+  event_end_slot: u64,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require(outflow_usd > 0n, MarginfiError.DeleverageWithdrawalUpdateEmpty);
+  require(event_start_slot <= event_end_slot, MarginfiError.DeleverageWithdrawalUpdateInvalidSlotRange);
+  require(event_start_slot > marginfi_group.deleverage_withdraw_last_admin_update_slot, MarginfiError.DeleverageWithdrawalUpdateOutOfOrderSlot);
+  const slot = currentSlot();
+  require(event_end_slot <= slot, MarginfiError.DeleverageWithdrawalUpdateFutureSlot);
+  require(slot - event_end_slot <= 1500n, MarginfiError.DeleverageWithdrawalUpdateStale);
+  const last = marginfi_group.deleverage_withdraw_last_admin_update_seq;
+  require(update_seq === (last === 18446744073709551615n ? last : last + 1n), MarginfiError.DeleverageWithdrawalUpdateOutOfOrderSeq);
+  // update_withdrawn_equity: the day's total (reset after a day), saturating, under the limit (0: none).
+  const t = now();
+  const window = marginfi_group.deleverage_withdraw_window_cache;
+  const elapsed = saturatingSubI64(t, window.last_daily_reset_timestamp) >= 86400n;
+  const today: u32 = elapsed ? 0n : window.withdrawn_today;
+  const projected: u32 = today > 4294967295n - outflow_usd ? 4294967295n : today + outflow_usd;
+  if (elapsed) {
+    window.withdrawn_today = 0n;
+    window.last_daily_reset_timestamp = t;
+  }
+  window.withdrawn_today = projected;
+  require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
+  marginfi_group.deleverage_withdraw_last_admin_update_slot = event_end_slot;
+  marginfi_group.deleverage_withdraw_last_admin_update_seq = update_seq;
 }
 
 // ---- repayments and fees -------------------------------------------------------------------------------------------

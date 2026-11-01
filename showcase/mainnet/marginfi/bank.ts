@@ -1,7 +1,25 @@
 // Marginfi's bank (programs/marginfi/src/state/bank.rs, bank_config.rs and bank_cache.rs @ c5d440f6): creating one
 // from its compact config, checking a config, the interest accrual and the rate cache. Amounts and share values are
 // I80F48 (showcase/mainnet/marginfi/i80f48.ts).
-import { type Account, type Mut, type Pubkey, type i128, type i64, type u16, type u32, type u64, type u8, emit, f64FromBits, require, i128 as toI128, i64 as toI64, u32 as toU32, u64 as toU64, u8 as toU8 } from "typesol";
+import {
+  type Account,
+  type Mut,
+  type Pubkey,
+  type i128,
+  type i64,
+  type u16,
+  type u32,
+  type u64,
+  type u8,
+  emit,
+  f64FromBits,
+  require,
+  i128 as toI128,
+  i64 as toI64,
+  u32 as toU32,
+  u64 as toU64,
+  u8 as toU8,
+} from "typesol";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import { MarginfiError } from "./errors";
 import {
@@ -300,10 +318,7 @@ function validateCircuitBreaker(config: BankConfig): void {
     const dur = config.cb_tier_durations_seconds.get(i);
     require(dev > 0n && dev <= 5000n && dur > 0n, MarginfiError.CircuitBreakerInvalidConfig);
     if (i > 0n)
-      require(
-        dur > config.cb_tier_durations_seconds.get(i - 1n) && dev > config.cb_deviation_bps_tiers.get(i - 1n),
-        MarginfiError.CircuitBreakerInvalidConfig,
-      );
+      require(dur > config.cb_tier_durations_seconds.get(i - 1n) && dev > config.cb_deviation_bps_tiers.get(i - 1n), MarginfiError.CircuitBreakerInvalidConfig);
   }
   require(config.cb_window_seconds <= 604800n, MarginfiError.CircuitBreakerInvalidConfig);
   require(config.cb_window_max_up_bps <= 10000n && config.cb_window_max_down_bps <= 10000n, MarginfiError.CircuitBreakerInvalidConfig);
@@ -319,14 +334,10 @@ export function configureBank(bank: Mut<Bank>, c: BankConfigFast, timestamp: i64
   if (c.borrow_limit !== null) bank.config.borrow_limit = c.borrow_limit;
   if (c.operational_state !== null) {
     const next = c.operational_state;
-    require(
-      !(bank.config.asset_tag === ASSET_TAG_JUPLEND && bank.config.operational_state === BankOperationalState.Uninitialized),
-      MarginfiError.Unauthorized,
-    );
-    require(
-      next !== BankOperationalState.KilledByBankruptcy && next !== BankOperationalState.Uninitialized && next !== BankOperationalState.CircuitBroken,
-      MarginfiError.Unauthorized,
-    );
+    require(!(bank.config.asset_tag === ASSET_TAG_JUPLEND && bank.config.operational_state === BankOperationalState.Uninitialized), MarginfiError.Unauthorized);
+    require(next !== BankOperationalState.KilledByBankruptcy &&
+      next !== BankOperationalState.Uninitialized &&
+      next !== BankOperationalState.CircuitBroken, MarginfiError.Unauthorized);
     require(bank.config.operational_state !== BankOperationalState.CircuitBroken, MarginfiError.BankCircuitBreakerHalted);
     bank.config.operational_state = next;
   }
@@ -363,8 +374,7 @@ export function configureBank(bank: Mut<Bank>, c: BankConfigFast, timestamp: i64
     setFlag(bank, on, CIRCUIT_BREAKER_ENABLED);
   }
   if (c.cb_deviation_bps_tiers !== null) for (let i = 0n; i < 3n; i++) bank.config.cb_deviation_bps_tiers.set(i, c.cb_deviation_bps_tiers.get(i));
-  if (c.cb_tier_durations_seconds !== null)
-    for (let i = 0n; i < 3n; i++) bank.config.cb_tier_durations_seconds.set(i, c.cb_tier_durations_seconds.get(i));
+  if (c.cb_tier_durations_seconds !== null) for (let i = 0n; i < 3n; i++) bank.config.cb_tier_durations_seconds.set(i, c.cb_tier_durations_seconds.get(i));
   if (c.cb_escalation_window_mult !== null) bank.config.cb_escalation_window_mult = c.cb_escalation_window_mult;
   if (c.cb_ema_alpha_bps !== null) bank.config.cb_ema_alpha_bps = c.cb_ema_alpha_bps;
   if (c.cb_window_seconds !== null) bank.config.cb_window_seconds = c.cb_window_seconds;
@@ -599,7 +609,8 @@ function windowOutflow(w: RateLimitWindow, amount: u64, timestamp: i64): RateLim
   const a = windowAdvance(w, timestamp);
   require(amount <= 9223372036854775807n, MarginfiError.InternalLogicError);
   const n = toI64(amount);
-  require(n <= windowCapacity(a.max_outflow, a.window_duration, a.window_start, a.prev_window_outflow, a.cur_window_outflow, timestamp), MarginfiError.InternalLogicError);
+  require(n <=
+    windowCapacity(a.max_outflow, a.window_duration, a.window_start, a.prev_window_outflow, a.cur_window_outflow, timestamp), MarginfiError.InternalLogicError);
   return {
     max_outflow: a.max_outflow,
     window_duration: a.window_duration,
@@ -640,11 +651,29 @@ export function recordWithdrawalOutflow(
     const fits = amount <= 9223372036854775807n;
     if (hourlyOn) {
       const w = bank.rate_limiter.hourly;
-      require(fits && toI64(amount) <= windowCapacity(w.max_outflow, w.window_duration, w.window_start, w.prev_window_outflow, w.cur_window_outflow, timestamp), MarginfiError.BankHourlyRateLimitExceeded);
+      require(fits &&
+        toI64(amount) <=
+          windowCapacity(
+            w.max_outflow,
+            w.window_duration,
+            w.window_start,
+            w.prev_window_outflow,
+            w.cur_window_outflow,
+            timestamp,
+          ), MarginfiError.BankHourlyRateLimitExceeded);
     }
     if (dailyOn) {
       const w = bank.rate_limiter.daily;
-      require(fits && toI64(amount) <= windowCapacity(w.max_outflow, w.window_duration, w.window_start, w.prev_window_outflow, w.cur_window_outflow, timestamp), MarginfiError.BankDailyRateLimitExceeded);
+      require(fits &&
+        toI64(amount) <=
+          windowCapacity(
+            w.max_outflow,
+            w.window_duration,
+            w.window_start,
+            w.prev_window_outflow,
+            w.cur_window_outflow,
+            timestamp,
+          ), MarginfiError.BankDailyRateLimitExceeded);
     }
     if (hourlyOn) bank.rate_limiter.hourly = windowOutflow(bank.rate_limiter.hourly, amount, timestamp);
     if (dailyOn) bank.rate_limiter.daily = windowOutflow(bank.rate_limiter.daily, amount, timestamp);
@@ -653,8 +682,10 @@ export function recordWithdrawalOutflow(
   require(price > I80F48_ZERO, MarginfiError.InvalidRateLimitPrice);
   require(bank.mint_decimals < 24n, MarginfiError.InternalLogicError);
   const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(amount), price), exp10Fx(toU64(bank.mint_decimals))));
-  if (group.rate_limiter.hourly.max_outflow > 0n) require(value <= windowEffectiveCapacity(group.rate_limiter.hourly, timestamp), MarginfiError.GroupHourlyRateLimitExceeded);
-  if (group.rate_limiter.daily.max_outflow > 0n) require(value <= windowEffectiveCapacity(group.rate_limiter.daily, timestamp), MarginfiError.GroupDailyRateLimitExceeded);
+  if (group.rate_limiter.hourly.max_outflow > 0n)
+    require(value <= windowEffectiveCapacity(group.rate_limiter.hourly, timestamp), MarginfiError.GroupHourlyRateLimitExceeded);
+  if (group.rate_limiter.daily.max_outflow > 0n)
+    require(value <= windowEffectiveCapacity(group.rate_limiter.daily, timestamp), MarginfiError.GroupDailyRateLimitExceeded);
   emit<RateLimitFlowEvent>({
     group: groupKey,
     bank: bankKey,
@@ -687,7 +718,15 @@ export function saturatingAddI64(a: i64, b: i64): i64 {
  * record_deposit_inflow: outside flash loans, receiverships, deleverages and rebalances, a deposit gives back the
  * bank's rate-limit capacity and, when the group limits flows, is reported for the flow admin to aggregate.
  */
-export function recordDepositInflow(bank: Mut<Bank>, group: Account<MarginfiGroup>, groupKey: Pubkey, bankKey: Pubkey, accountFlags: u64, amount: u64, timestamp: i64): void {
+export function recordDepositInflow(
+  bank: Mut<Bank>,
+  group: Account<MarginfiGroup>,
+  groupKey: Pubkey,
+  bankKey: Pubkey,
+  accountFlags: u64,
+  amount: u64,
+  timestamp: i64,
+): void {
   // ACCOUNT_IN_FLASHLOAN | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_REBALANCE
   if ((accountFlags & 306n) !== 0n) return;
   if (bank.rate_limiter.hourly.max_outflow > 0n) bank.rate_limiter.hourly = windowInflow(bank.rate_limiter.hourly, amount, timestamp);
@@ -840,7 +879,8 @@ function updateCircuitBreaker(bank: Mut<Bank>, timestamp: i64, slot: u64, curren
     tripCbHalt(bank, timestamp, windowDeviation, tier > 0n ? tier : 1n);
     // A breach after the window ran out is a window's slow drift: the anchor creeps to the cap's edge and restarts.
     if (expired) {
-      const step = upBps >= maxUp ? I80F48_ONE + fxWrappingDiv(fxFromU64(maxUp), fxFromU64(10000n)) : I80F48_ONE - fxWrappingDiv(fxFromU64(maxDown), fxFromU64(10000n));
+      const step =
+        upBps >= maxUp ? I80F48_ONE + fxWrappingDiv(fxFromU64(maxUp), fxFromU64(10000n)) : I80F48_ONE - fxWrappingDiv(fxFromU64(maxDown), fxFromU64(10000n));
       bank.cb_window_reference_price.value = fxWrappingMul(windowRef, step);
       bank.cb_window_started_at = timestamp;
     }

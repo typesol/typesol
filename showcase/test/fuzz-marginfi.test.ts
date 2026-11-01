@@ -862,12 +862,17 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
             const setup = read64(x.address, "Bank", "config.oracle_setup") & 0xffn;
             rest.push(...(setup === 8n ? [x.address] : [x.address, setup === 4n ? f.swb : f.pyth]));
           }
-          const receiver = rng.pick(users);
+          // Now and then a deleverage instead, by the admin (mostly made the risk admin first).
+          const delev = rng.chance(30);
+          if (delev && rng.chance(90)) h.editGroup(group.address, [["risk_admin", keyBits(h.admin.address), 32]]);
+          const receiver = delev ? h.admin : rng.pick(users);
           const ixs = [
-            h.startLiquidation(group.address, acct.address, record, rng.chance(80) ? receiver : receiver.address, rng.chance(90) ? rest : rest.slice(1)),
+            delev
+              ? h.deleverage("start", group.address, acct.address, record, receiver, rng.chance(90) ? rest : rest.slice(1))
+              : h.startLiquidation(group.address, acct.address, record, rng.chance(80) ? receiver : receiver.address, rng.chance(90) ? rest : rest.slice(1)),
           ];
           const debt = "bank" in acct ? (acct.bank as FuzzBank) : null;
-          if (debt && rng.chance(70))
+          if (debt && !delev && rng.chance(70))
             ixs.push(
               h.repay(
                 group.address,
@@ -881,13 +886,22 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
               ),
             );
           ixs.push(
-            h.endLiquidation(
-              group.address,
-              acct.address,
-              record,
-              receiver,
-              held.map((x) => x.address),
-            ),
+            delev
+              ? h.deleverage(
+                  "end",
+                  group.address,
+                  acct.address,
+                  record,
+                  receiver,
+                  held.map((x) => x.address),
+                )
+              : h.endLiquidation(
+                  group.address,
+                  acct.address,
+                  record,
+                  receiver,
+                  held.map((x) => x.address),
+                ),
           );
           await run(label("receivership"), receiver, ixs, [acct.address, record, ...held.map((x) => x.address), h.feeWallet], "if-panics");
           break;
