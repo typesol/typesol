@@ -238,7 +238,8 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         ...idlMetaFields(s.idlMeta),
         type: {
           kind: "struct",
-          fields: s.fields.map((f) => ({
+          // An event lists its fields as it sends them (declared order); account data as it stores them.
+          fields: (s.declared && !model.accountStructs.has(s.name) ? s.declared.map((n) => s.fields.find((f) => f.name === n)!) : s.fields).map((f) => ({
             name: f.idlName ?? fieldIdlName(f.name),
             ...docsOf(s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name)),
             type: f.idlBytes

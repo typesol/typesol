@@ -302,7 +302,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
             ),
           );
         return (put) => {
-          for (const x of sd.fields) parts.get(x.name)!(put);
+          for (const name of sd.declared ?? sd.fields.map((x) => x.name)) parts.get(name)!(put);
         };
       }
       if (f.type.kind === "vec" && f.type.cap !== undefined) {
@@ -394,7 +394,8 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         ),
       );
     this.sendEvent(s, obj, cpi, (put) => {
-      for (const f of s.fields) staged.get(f.name)!(put);
+      // Borsh order: as declared (the fixed layout stores growable Vecs last).
+      for (const name of s.declared ?? s.fields.map((f) => f.name)) staged.get(name)!(put);
     });
     return undefined;
   }

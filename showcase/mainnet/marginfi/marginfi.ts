@@ -16,6 +16,7 @@ import {
   type Dup,
   type RemainingAccounts,
   type SystemAccount,
+  type FixedVec,
   type Address,
   type Mint,
   type TokenAccount,
@@ -36,6 +37,7 @@ import {
   type Hash,
   constraint,
   loadAccount,
+  rentExempt,
   currentSlot,
   fixedArray,
   loadAccountMut,
@@ -192,6 +194,12 @@ import {
   type MarginfiAccountCloseOrderEvent,
   type KeeperCloseOrderEvent,
   type SetKeeperCloseFlagsEvent,
+  type MarginfiAccountPlaceRebalanceOrderEvent,
+  type MarginfiAccountUpdateRebalanceOrderEvent,
+  type MarginfiAccountCloseRebalanceOrderEvent,
+  type KeeperCloseRebalanceOrderEvent,
+  type RebalanceFeePoolTopUpEvent,
+  type RebalanceFeePoolWithdrawEvent,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
@@ -271,6 +279,7 @@ import {
   type BankMetadata,
   type Order,
   type ExecuteOrderRecord,
+  type RebalanceOrder,
   OrderTriggerType,
   type WrappedI80F48,
   BankOperationalState,
@@ -4267,4 +4276,234 @@ export function marginfiAccountEndExecuteOrder(
   updatePremiumSnapshots(marginfi_account, group, h, u64(t), false);
   marginfi_account.account_flags &= ~ACCOUNT_IN_ORDER_EXECUTION;
   if (marginfi_account.active_orders > 0n) marginfi_account.active_orders -= 1n;
+}
+
+// ---- rebalance orders ---------------------------------------------------------------------------------------------
+
+/** REBALANCE_DEFAULT_MIN_IMPROVEMENT (0.05) and REBALANCE_DEFAULT_COOLDOWN_SECONDS (a day). */
+const REBALANCE_DEFAULT_MIN_IMPROVEMENT: i128 = 14073748835533n;
+const REBALANCE_DEFAULT_COOLDOWN: u64 = 86400n;
+/** ORDER_BLOCKING_FLAGS (disabled, flash loan, frozen, receivership, deleverage), executing an order, rebalancing. */
+const REBALANCE_BLOCKING_FLAGS: u64 = 499n;
+
+/** validate_allowlist_positions: the account deposits into one of the banks (RebalanceNoAllowlistPosition) and owes none. */
+function checkAllowlist(account: Account<MarginfiAccount>, banks: Vec<Pubkey>): void {
+  let deposit = false;
+  let liability = false;
+  for (let i = 0n; i < 16n; i++) {
+    const b = account.lending_account.balances.get(i);
+    if (b.active === 0n || !banks.includes(b.bank_pk)) continue;
+    const side = balanceSide(account, i);
+    if (side === 1n) deposit = true;
+    if (side === 2n) liability = true;
+  }
+  require(deposit, MarginfiError.RebalanceNoAllowlistPosition);
+  require(!liability, MarginfiError.RebalanceAllowlistLiability);
+}
+
+/** set_allowed_banks: 2 to 8 banks (InvalidBalanceCount), the unused slots zeroed. */
+function setAllowedBanks(order: Mut<RebalanceOrder>, banks: Vec<Pubkey>): void {
+  require(banks.length >= 2n && banks.length <= 8n, MarginfiError.InvalidBalanceCount);
+  for (let i = 0n; i < 8n; i++) order.allowed_banks.set(i, i < banks.length ? banks.get(i) : ZERO_KEY);
+  order.allowed_bank_count = u8(banks.length);
+}
+
+/**
+ * Place a rebalance order (the authority): the PDA ["rebalance_order", account, mint], rotating the account's deposit
+ * of that mint across 2 to 8 allowed banks (it must deposit into one and owe none), with a minimum improvement (5%), a
+ * cooldown (a day), a per-execution budget (none) and a keeper tip (none) unless given.
+ */
+export function marginfiAccountPlaceRebalanceOrder(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, "authority", MarginfiError.Unauthorized>,
+  authority: Signer,
+  mint: Mint,
+  rebalance_order: Init<RebalanceOrder>,
+  fee_payer: Mut<Signer>,
+  system_program: SystemProgram,
+  allowed_banks: Vec<Pubkey>,
+  min_improvement: Option<WrappedI80F48>,
+  cooldown_seconds: Option<u64>,
+  amount: Option<u64>,
+  keeper_tip: Option<u64>,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & REBALANCE_BLOCKING_FLAGS) === 0n, MarginfiError.UnexpectedOrderExecutionState);
+  const bump = rebalance_order.create(fee_payer, ["rebalance_order", marginfi_account.key, mint.key]);
+  const improvement = min_improvement !== null ? min_improvement.value : REBALANCE_DEFAULT_MIN_IMPROVEMENT;
+  const cooldown = cooldown_seconds !== null ? cooldown_seconds : REBALANCE_DEFAULT_COOLDOWN;
+  const budget = amount !== null ? amount : 0n;
+  const tip = keeper_tip !== null ? keeper_tip : 0n;
+  checkAllowlist(marginfi_account, allowed_banks);
+  require(improvement >= I80F48_ZERO, MarginfiError.RebalanceInvalidMinImprovement);
+  rebalance_order.marginfi_account = marginfi_account.key;
+  rebalance_order.authority = authority.key;
+  rebalance_order.mint = mint.key;
+  setAllowedBanks(rebalance_order, allowed_banks);
+  rebalance_order.min_improvement.value = improvement;
+  rebalance_order.cooldown_seconds = cooldown;
+  rebalance_order.amount = budget;
+  rebalance_order.keeper_tip = tip;
+  rebalance_order.last_exec_timestamp = 0n;
+  rebalance_order.bump = bump;
+  require(marginfi_account.active_orders < 255n, MarginfiError.IllegalAction);
+  marginfi_account.active_orders += 1n;
+  emit<MarginfiAccountPlaceRebalanceOrderEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    rebalance_order: rebalance_order.key,
+    mint: mint.key,
+    allowed_banks: allowed_banks,
+    min_improvement: { value: improvement },
+    cooldown_seconds: cooldown,
+    amount: budget,
+    keeper_tip: tip,
+  });
+}
+
+/**
+ * Close a rebalance order: the authority any time but mid-rebalance; anyone once the account is closed or holds
+ * nothing in the allowed banks. Its rent goes to whoever is named.
+ */
+export function marginfiAccountCloseRebalanceOrder(
+  marginfi_account: Mut<AccountInfo>,
+  authority: Signer | null,
+  fee_recipient: Mut<AccountInfo>,
+  rebalance_order: CloseTo<HasOne<Mut<RebalanceOrder>, "marginfi_account", MarginfiError.Unauthorized>, "fee_recipient">,
+): void {
+  let accountAuthority = ZERO_KEY;
+  let group = ZERO_KEY;
+  let byAuthority = false;
+  if (!(marginfi_account.owner === SYSTEM_PROGRAM_ID && marginfi_account.dataLen === 0n)) {
+    require(marginfi_account.owner === programId(), MarginfiError.InternalLogicError);
+    require(marginfi_account.dataLen >= 8n + 2304n, MarginfiError.InternalLogicError);
+    require(readData<u64>(marginfi_account, 0n) === MARGINFI_ACCOUNT_DISCRIMINATOR, MarginfiError.InternalLogicError);
+    const account = loadAccountMut<MarginfiAccount>(marginfi_account);
+    byAuthority = authority !== null && authority.key === account.authority;
+    let held = false;
+    const n = u64(rebalance_order.allowed_bank_count);
+    for (let i = 0n; i < 16n; i++) {
+      const b = account.lending_account.balances.get(i);
+      if (b.active === 0n) continue;
+      for (let k = 0n; k < n; k++) if (rebalance_order.allowed_banks.get(k) === b.bank_pk) held = true;
+    }
+    require(byAuthority || !held, MarginfiError.LiquidatorOrderCloseNotAllowed);
+    if (byAuthority) require((account.account_flags & ACCOUNT_IN_REBALANCE) === 0n, MarginfiError.IllegalAction);
+    if (account.active_orders > 0n) account.active_orders -= 1n;
+    accountAuthority = account.authority;
+    group = account.group;
+  }
+  if (byAuthority)
+    emit<MarginfiAccountCloseRebalanceOrderEvent>({
+      header: { signer: authority!.key, marginfi_account: marginfi_account.key, marginfi_account_authority: accountAuthority, marginfi_group: group },
+      rebalance_order: rebalance_order.key,
+    });
+  else
+    emit<KeeperCloseRebalanceOrderEvent>({
+      header: { signer: null, marginfi_account: marginfi_account.key, marginfi_account_authority: accountAuthority, marginfi_group: group },
+      rebalance_order: rebalance_order.key,
+    });
+}
+
+/** Change a rebalance order's allowlist, minimum improvement, cooldown, budget or tip (the authority; each when given). */
+export function marginfiAccountUpdateRebalanceOrder(
+  marginfi_account: HasOne<Account<MarginfiAccount>, "authority", MarginfiError.Unauthorized>,
+  authority: Signer,
+  rebalance_order: HasOne<HasOne<Mut<RebalanceOrder>, "marginfi_account", MarginfiError.Unauthorized>, "authority", MarginfiError.Unauthorized>,
+  allowed_banks: Option<Vec<Pubkey>>,
+  min_improvement: Option<WrappedI80F48>,
+  cooldown_seconds: Option<u64>,
+  amount: Option<u64>,
+  keeper_tip: Option<u64>,
+): void {
+  require((marginfi_account.account_flags & ACCOUNT_IN_REBALANCE) === 0n, MarginfiError.IllegalAction);
+  if (allowed_banks !== null) {
+    checkAllowlist(marginfi_account, allowed_banks);
+    setAllowedBanks(rebalance_order, allowed_banks);
+  }
+  if (min_improvement !== null) {
+    require(min_improvement.value >= I80F48_ZERO, MarginfiError.RebalanceInvalidMinImprovement);
+    rebalance_order.min_improvement.value = min_improvement.value;
+  }
+  if (cooldown_seconds !== null) rebalance_order.cooldown_seconds = cooldown_seconds;
+  if (amount !== null) rebalance_order.amount = amount;
+  if (keeper_tip !== null) rebalance_order.keeper_tip = keeper_tip;
+  const n = u64(rebalance_order.allowed_bank_count);
+  const allowed: FixedVec<Pubkey, 8> = rebalance_order.allowed_banks.filter((_, i) => i < n);
+  emit<MarginfiAccountUpdateRebalanceOrderEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    rebalance_order: rebalance_order.key,
+    allowed_banks: allowed,
+    min_improvement: { value: rebalance_order.min_improvement.value },
+    cooldown_seconds: rebalance_order.cooldown_seconds,
+    amount: rebalance_order.amount,
+    keeper_tip: rebalance_order.keeper_tip,
+  });
+}
+
+/**
+ * Fund an account's rebalance fee pool (anyone): the system PDA ["rebalance_fee_pool", account], topped up to its
+ * rent-exempt reserve first, so `amount` is all tip budget.
+ */
+export function marginfiAccountTopUpRebalanceFeePool(
+  marginfi_account: Account<MarginfiAccount>,
+  fee_pool: Seeds<Mut<SystemAccount>, ["rebalance_fee_pool", "@marginfi_account"]>,
+  payer: Mut<Signer>,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  const reserve = rentExempt(0n);
+  const held = fee_pool.lamports;
+  const seed = reserve > held ? reserve - held : 0n;
+  require(amount <= 18446744073709551615n - seed, MarginfiError.MathError);
+  system_program.transfer(payer, fee_pool, amount + seed);
+  emit<RebalanceFeePoolTopUpEvent>({
+    header: {
+      signer: payer.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    fee_pool: fee_pool.key,
+    amount,
+    new_balance: fee_pool.lamports,
+  });
+}
+
+/**
+ * Withdraw from the fee pool (the authority), at most what it holds; a withdrawal that would leave it under its
+ * rent-exempt reserve takes everything instead.
+ */
+export function marginfiAccountWithdrawRebalanceFeePool(
+  marginfi_account: HasOne<Account<MarginfiAccount>, "authority", MarginfiError.Unauthorized>,
+  authority: Signer,
+  fee_pool: Seeds<Mut<SystemAccount>, ["rebalance_fee_pool", "@marginfi_account"]>,
+  destination: Mut<AccountInfo>,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  const balance = fee_pool.lamports;
+  let take = amount < balance ? amount : balance;
+  if (balance - take < rentExempt(0n)) take = balance;
+  if (take > 0n) system_program.transfer(fee_pool, destination, take, ["rebalance_fee_pool", marginfi_account.key, fee_pool.pdaBump]);
+  emit<RebalanceFeePoolWithdrawEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    fee_pool: fee_pool.key,
+    amount: take,
+    new_balance: fee_pool.lamports,
+  });
 }

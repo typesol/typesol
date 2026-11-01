@@ -2718,4 +2718,185 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await execute("the other balance left alone", f, 155_000_000n);
     refresh();
   });
+  it("keeps rebalance orders and their fee pools as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const [twinIx, twin] = await addBank(group.address, admin, usdc.mint, TOKEN_PROGRAM, bankConfig(), { seed: 21n });
+    await run("add a twin bank", admin, [twinIx], [twin.address]);
+    const sol = await newBank("swb", 150_000_000n, {}, 9);
+    await user([[usdc, 10_000_000_000n]]);
+    const u = await user([
+      [usdc, 1_000_000_000n],
+      [sol, 2_000_000_000n],
+    ]);
+    const other = await s.funded();
+    const key = (a: Address) => new web3.PublicKey(a);
+    const orderOf = async (account: Address, m: Address) => (await pda(PROGRAM, ["rebalance_order", account, m]))[0];
+    const place = async (
+      label: string,
+      by: KeyPairSigner,
+      m: Address,
+      banks: Address[],
+      opts: { min?: bigint; cooldown?: bigint; amount?: bigint; tip?: bigint } = {},
+      account: Address = u.account,
+    ) => {
+      const order = await orderOf(account, m);
+      return run(
+        `place rebalance order: ${label}`,
+        by,
+        [
+          s.ix(
+            "marginfi_account_place_rebalance_order",
+            {
+              allowed_banks: banks.map(key),
+              min_improvement: opts.min === undefined ? null : fx(opts.min),
+              cooldown_seconds: opts.cooldown === undefined ? null : new BN(opts.cooldown.toString()),
+              amount: opts.amount === undefined ? null : new BN(opts.amount.toString()),
+              keeper_tip: opts.tip === undefined ? null : new BN(opts.tip.toString()),
+            },
+            [
+              { address: group.address },
+              { address: account, writable: true },
+              { address: by.address, signer: by },
+              { address: m },
+              { address: order, writable: true },
+              { address: other.address, signer: other, writable: true },
+              { address: SYSTEM },
+            ] as never,
+          ),
+        ],
+        [account, order, other.address],
+      );
+    };
+    const random = async () => (await generateKeyPairSigner()).address;
+    await place("one bank", u.owner, usdc.mint, [usdc.address]);
+    await place("nine banks", u.owner, usdc.mint, [usdc.address, ...(await Promise.all(Array.from({ length: 8 }, random)))]);
+    await place("no deposit in them", u.owner, usdc.mint, [twin.address, await random()]);
+    await place("a negative improvement", u.owner, usdc.mint, [usdc.address, twin.address], { min: -1n });
+    await place("by someone else", other, usdc.mint, [usdc.address, twin.address]);
+    const flags = data(u.account).readBigUInt64LE(offsetOf("MarginfiAccount", "account_flags"));
+    editAccount(u.account, [["account_flags", flags | 256n, 8]]);
+    await place("mid-rebalance", u.owner, usdc.mint, [usdc.address, twin.address]);
+    editAccount(u.account, [["account_flags", flags, 8]]);
+    await place("the defaults", u.owner, usdc.mint, [usdc.address, twin.address]);
+    await place("again", u.owner, usdc.mint, [twin.address, usdc.address]);
+    await place("sol, all given", u.owner, sol.mint, [sol.address, await random(), await random()], {
+      min: ONE / 100n,
+      cooldown: 3_600n,
+      amount: 5_000_000_000n,
+      tip: 50_000n,
+    });
+    // A liability in an allowed bank: refused.
+    const v = await user([[sol, 1_000_000_000n]]);
+    tick();
+    await b("from the twin", v, usdc, 1_000_000n);
+    await place("a debt in one", v.owner, usdc.mint, [usdc.address, sol.address], {}, v.account);
+    // Updates (the authority): each field when given; the allowlist checked again.
+    const update = async (
+      label: string,
+      by: KeyPairSigner,
+      m: Address,
+      f: { banks?: Address[]; min?: bigint; cooldown?: bigint; amount?: bigint; tip?: bigint },
+    ) => {
+      const order = await orderOf(u.account, m);
+      return run(
+        `update rebalance order: ${label}`,
+        by,
+        [
+          s.ix(
+            "marginfi_account_update_rebalance_order",
+            {
+              allowed_banks: f.banks ? f.banks.map(key) : null,
+              min_improvement: f.min === undefined ? null : fx(f.min),
+              cooldown_seconds: f.cooldown === undefined ? null : new BN(f.cooldown.toString()),
+              amount: f.amount === undefined ? null : new BN(f.amount.toString()),
+              keeper_tip: f.tip === undefined ? null : new BN(f.tip.toString()),
+            },
+            [{ address: u.account }, { address: by.address, signer: by }, { address: order, writable: true }] as never,
+          ),
+        ],
+        [order],
+      );
+    };
+    await update("by someone else", other, usdc.mint, { tip: 1n });
+    await update("nothing", u.owner, usdc.mint, {});
+    await update("everything", u.owner, usdc.mint, { banks: [twin.address, usdc.address, await random()], min: ONE / 10n, cooldown: 60n, amount: 7n, tip: 9n });
+    await update("an allowlist without the deposit", u.owner, usdc.mint, { banks: [twin.address, await random()] });
+    await update("a negative improvement", u.owner, usdc.mint, { min: -5n });
+    await update("one bank", u.owner, usdc.mint, { banks: [usdc.address] });
+    editAccount(u.account, [["account_flags", flags | 256n, 8]]);
+    await update("mid-rebalance", u.owner, usdc.mint, { tip: 1n });
+    editAccount(u.account, [["account_flags", flags, 8]]);
+    // The fee pool: anyone tops it up (its reserve first); the authority withdraws, all of it rather than leave it short.
+    const [pool] = await pda(PROGRAM, ["rebalance_fee_pool", u.account]);
+    const topUp = (label: string, amount: bigint, at: Address = pool) =>
+      run(
+        `top up fee pool: ${label}`,
+        other,
+        [
+          s.ix("marginfi_account_top_up_rebalance_fee_pool", { amount: new BN(amount.toString()) }, [
+            { address: u.account },
+            { address: at, writable: true },
+            { address: other.address, signer: other, writable: true },
+            { address: SYSTEM },
+          ] as never),
+        ],
+        [at, other.address],
+      );
+    const withdraw = (label: string, by: KeyPairSigner, amount: bigint) =>
+      run(
+        `withdraw fee pool: ${label}`,
+        by,
+        [
+          s.ix("marginfi_account_withdraw_rebalance_fee_pool", { amount: new BN(amount.toString()) }, [
+            { address: u.account },
+            { address: by.address, signer: by },
+            { address: pool, writable: true },
+            { address: other.address, writable: true },
+            { address: SYSTEM },
+          ] as never),
+        ],
+        [pool, other.address],
+      );
+    await withdraw("nothing there", u.owner, 1_000n);
+    await topUp("the wrong pool", 1_000n, await random());
+    await topUp("nothing, the reserve only", 0n);
+    await topUp("a tip budget", 2_000_000n);
+    await topUp("more", 500_000n);
+    await withdraw("by someone else", other, 1_000n);
+    await withdraw("part", u.owner, 1_000_000n);
+    await withdraw("leaving it short", u.owner, 1_400_000n);
+    await topUp("again", 300_000n);
+    await withdraw("more than it holds", u.owner, 1_000_000_000n);
+    // Closing: the authority any time; anyone once the account holds nothing in the allowed banks or is closed.
+    const close = async (label: string, by: KeyPairSigner | null, m: Address, account: Address = u.account) => {
+      const order = await orderOf(account, m);
+      return run(
+        `close rebalance order: ${label}`,
+        by ?? other,
+        [
+          s.ix("marginfi_account_close_rebalance_order", {}, [
+            { address: account, writable: true },
+            by ? { address: by.address, signer: by } : { address: PROGRAM },
+            { address: other.address, writable: true },
+            { address: order, writable: true },
+          ] as never),
+        ],
+        [account, order, other.address],
+      );
+    };
+    await close("by a keeper, the deposit still there", null, usdc.mint);
+    await close("by someone else", other, usdc.mint);
+    editAccount(u.account, [["account_flags", flags | 256n, 8]]);
+    await close("by its authority, mid-rebalance", u.owner, usdc.mint);
+    editAccount(u.account, [["account_flags", flags, 8]]);
+    await close("by its authority", u.owner, sol.mint);
+    await close("again", u.owner, sol.mint);
+    tick();
+    await w("all of it", u, usdc, 0n, { all: true });
+    await close("by a keeper, nothing left in the banks", null, usdc.mint);
+    await place("for a closed account", v.owner, sol.mint, [sol.address, await random()], {}, v.account);
+    for (const vm of s.vms())
+      vm.setAccount({ address: v.account, data: new Uint8Array(0), executable: false, lamports: lamports(0n), programAddress: SYSTEM, space: 0n });
+    await close("its account closed", null, sol.mint, v.account);
+  });
 });
