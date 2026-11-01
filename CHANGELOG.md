@@ -23,6 +23,12 @@ codes, and says so here.
   `WrappedI80F48 { value: [u8; 16] }`); `/** @idlName _pad0 */` names a field in the IDL where the source cannot (a
   leading underscore); a `key_` or `lamports_` field is `key` / `lamports` in the IDL. `typesol port` writes these
   tags from the IDL, so a ported zero-copy account's IDL is the original's.
+- New: a `loadAccountMut` view declared in a loop body ends with its iteration, so a later iteration may load the
+  same account again. `loadAccountMut<Dup<T>>` there also lets a remaining account be passed more than once, one view
+  at a time (without `Dup<…>` a repeat is still refused, 2040). Raydium CLMM's `swap_router_base_in` uses it: routes
+  back through a pool now run as on mainnet (two more transactions in its differential test). Only programs with
+  `loadAccountMut` in a loop compile differently (here examples/airdrop.ts and examples/raydium-clmm).
+
 - Tests: random transactions against the mainnet binaries. `test/verification/fuzz-jito.test.ts` drives Jito's three
   MEV programs and their ports through random tips, receiver and builder changes, epochs, roots, Merkle claims and
   closes (with injected faults); Raydium CLMM's differential test adds a random run of swaps, positions and liquidity

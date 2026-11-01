@@ -3181,13 +3181,14 @@ export function swapRouterBaseIn(
       continue;
     }
     require(pos + 7n <= rest.length, ErrorCode.AccountLack);
+    // Dup<…>: a route may come back to a pool (its accounts passed again); each hop loads them for its own iteration.
     const config = loadAccount<AmmConfig>(rest.get(pos));
-    const pool = loadAccountMut<PoolState>(rest.get(pos + 1n));
+    const pool = loadAccountMut<Dup<PoolState>>(rest.get(pos + 1n));
     const outAccount = rest.get(pos + 2n);
     const inVault = rest.get(pos + 3n);
     const outVault = rest.get(pos + 4n);
     const outMint = rest.get(pos + 5n);
-    const obs = loadAccountMut<ObservationState>(rest.get(pos + 6n));
+    const obs = loadAccountMut<Dup<ObservationState>>(rest.get(pos + 6n));
     // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program, holding one.
     for (let k = 2n; k < 5n; k++) {
       const t = rest.get(pos + k);
@@ -3311,11 +3312,11 @@ export function swapRouterBaseIn(
     // The swap, one tick array at a time.
     let finished = false;
     while (!finished) {
-      const array = loadAccountMut<TickArrayState>(rest.get(u64(at)));
+      const array = loadAccountMut<Dup<TickArrayState>>(rest.get(u64(at)));
       run.s = swapInArray(pool, config, array, run.s, limit, zeroForOne, true, isFeeOnInput, dynamic);
       if (run.s.ext_flip) {
         require(extAt < rest.length, ErrorCode.MissingTickArrayBitmapExtensionAccount);
-        const ext = loadAccountMut<TickArrayBitmapExtension>(rest.get(extAt));
+        const ext = loadAccountMut<Dup<TickArrayBitmapExtension>>(rest.get(extAt));
         flipBitExtension(ext, run.s.ext_flip_start, spacing);
         run.s.ext_flip = false;
       }

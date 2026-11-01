@@ -235,7 +235,8 @@ export abstract class StatementEmitter extends CpiEmitter {
     void place;
     const ci = this.tmp("of_i");
     const label = this.tmp("ts_continue_");
-    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true }, (element) => {
+    const release = this.iterationClaims(stmt.statement);
+    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true, atNext: release }, (element) => {
       // The element's declaration: the source's own name (so aliasing checks find its uses) bound to the element.
       const decl = f.createVariableDeclaration(d.name, undefined, undefined, element);
       ts.setTextRange(decl, d);
@@ -296,7 +297,7 @@ export abstract class StatementEmitter extends CpiEmitter {
   protected eachElement(
     list: ts.Expression,
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void {
     const f = ts.factory;
@@ -361,6 +362,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         }
         body(element, idx);
         if (next && (names.alwaysNext || counters.length)) this.line(`${next}:;`);
+        names.atNext?.();
         this.line(`${ci}++;`);
       });
       this.line(`}`);
@@ -472,12 +474,14 @@ export abstract class StatementEmitter extends CpiEmitter {
         const c = this.expect(this.expr(cond, BOOL), BOOL, cond);
         this.line(`if (!${c.c}) break;`);
       }
+      const release = this.iterationClaims(body);
       this.loops.push(label);
       this.line(`{`);
       this.block(() => this.body(body));
       this.line(`}`);
       this.loops.pop();
       this.line(`${label}:;`);
+      release();
       if (step) this.expressionStatement(step, false);
     });
     this.line(`}`);
@@ -770,16 +774,84 @@ export abstract class StatementEmitter extends CpiEmitter {
     const label = this.tmp("ts_continue_");
     this.line(`while (1) {`);
     this.block(() => {
+      const release = this.iterationClaims(stmt.statement);
       this.loops.push(label);
       this.line(`{`);
       this.block(() => this.body(stmt.statement));
       this.line(`}`);
       this.loops.pop();
       this.line(`${label}:;`);
+      release();
       const c = this.expect(this.expr(stmt.expression, BOOL), BOOL, stmt.expression);
       this.line(`if (!${c.c}) break;`);
     });
     this.line(`}`);
+  }
+
+  /**
+   * The loadAccountMut calls of a loop body whose views end with the iteration: `const v = loadAccountMut<T>(…)` in the
+   * body (not in a loop nested in it, which handles its own), with `v` never assigned or copied to a name, returned, put in
+   * an object, or used in a function written in the body (other than a const closure of the body that stays in it). Their claims are recorded (declared here) and dropped at each iteration's end, so a
+   * later iteration may load the same account again: the earlier view is out of scope by then. Returns the release.
+   */
+  protected iterationClaims(body: ts.Statement): () => void {
+    const sites: ts.CallExpression[] = [];
+    const isLoop = (n: ts.Node) => ts.isForStatement(n) || ts.isForOfStatement(n) || ts.isForInStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n);
+    const isFunction = (n: ts.Node) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n);
+    // A function written in the body may use the view when it is a const of the body that does not escape either (a
+    // closure TypeSOL expands where it is called, within the iteration).
+    const localFunction = (n: ts.Node, seen: Set<string>): boolean => {
+      const d = n.parent;
+      if (!d || !ts.isVariableDeclaration(d) || d.initializer !== n || !ts.isIdentifier(d.name)) return false;
+      const list = d.parent;
+      if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return false;
+      return !seen.has(d.name.text) && !escapes(d.name.text, new Set([...seen, d.name.text]));
+    };
+    const escapes = (name: string, seen = new Set([name])): boolean => {
+      let found = false;
+      const scan = (n: ts.Node, inFunction: boolean): void => {
+        if (found) return;
+        if (ts.isIdentifier(n) && n.text === name) {
+          const p = n.parent;
+          if (inFunction) found = true;
+          else if (p && ts.isBinaryExpression(p) && p.right === n && p.operatorToken.kind === ts.SyntaxKind.EqualsToken) found = true;
+          else if (p && ts.isReturnStatement(p)) found = true;
+          else if (p && ts.isVariableDeclaration(p) && p.initializer === n) found = true;
+          else if (p && (ts.isShorthandPropertyAssignment(p) || (ts.isPropertyAssignment(p) && p.initializer === n))) found = true;
+        }
+        ts.forEachChild(n, (c) => scan(c, inFunction || (isFunction(n) && !localFunction(n, seen))));
+      };
+      scan(body, false);
+      return found;
+    };
+    const visit = (n: ts.Node): void => {
+      if (n !== body && (isLoop(n) || isFunction(n))) return;
+      if (ts.isVariableDeclarationList(n) && n.flags & ts.NodeFlags.Const)
+        for (const d of n.declarations) {
+          let init = d.initializer;
+          while (init && ts.isParenthesizedExpression(init)) init = init.expression;
+          if (
+            ts.isIdentifier(d.name) &&
+            init &&
+            ts.isCallExpression(init) &&
+            ts.isIdentifier(init.expression) &&
+            init.expression.text === "loadAccountMut" &&
+            !escapes(d.name.text)
+          )
+            sites.push(init);
+        }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    const slots = sites.map((call) => {
+      const slot = this.tmp("claim");
+      this.line(`uint64_t ${slot} = (uint64_t)-1;`);
+      this.claimSlots.set(call, slot);
+      return slot;
+    });
+    return () => {
+      for (const slot of slots) this.line(`ts_release_mut(params, &${slot});`);
+    };
   }
 
   protected body(stmt: ts.Statement) {
