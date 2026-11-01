@@ -379,8 +379,11 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
                 [acct.address, acct.owner.address],
                 "if-panics",
               )) === "ok"
-            )
+            ) {
               accounts.splice(i, 1);
+              // An account that borrowed is a borrower too.
+              for (let j = borrowers.length - 1; j >= 0; j--) if (borrowers[j]!.address === acct.address) borrowers.splice(j, 1);
+            }
           }
           break;
         }
@@ -678,6 +681,8 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           const pool = [...accounts, ...borrowers];
           if (!pool.length) break;
           const acct = rng.pick(pool);
+          // A borrower owes only its own bank, and nothing backs it: mostly settle that bank, so some succeed.
+          const sb: FuzzBank = "bank" in acct && rng.chance(70) ? (acct.bank as FuzzBank) : bank;
           const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
           const rest: Address[] = [];
           for (let i = 0; i < 16; i++) {
@@ -698,21 +703,21 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           if (rng.chance(30)) {
             const held = rng.next() % 1_000_000_000n;
             for (const vm of s.vms()) {
-              const x = vm.getAccount(bank.v.insurance);
+              const x = vm.getAccount(sb.v.insurance);
               if (!x.exists) continue;
               const dd = Buffer.from(x.data);
               dd.writeBigUInt64LE(held, 64);
-              vm.setAccount({ ...x, address: bank.v.insurance, data: new Uint8Array(dd) });
+              vm.setAccount({ ...x, address: sb.v.insurance, data: new Uint8Array(dd) });
             }
           }
-          if (rng.chance(20)) h.editBank(b, [["flags", read64(b, "Bank", "flags") | 4n, 8]]);
+          if (rng.chance(20)) h.editBank(sb.address, [["flags", read64(sb.address, "Bank", "flags") | 4n, 8]]);
           const by = rng.chance(70) ? h.admin : other;
-          const t22 = bank.mint.program === TOKEN_2022;
+          const t22 = sb.mint.program === TOKEN_2022;
           await run(
             label("bankruptcy"),
             by,
-            [h.handleBankruptcy(group.address, by, bank, acct.address, [...(t22 ? [bank.mint.mint] : []), ...rest], bank.mint.program)],
-            [acct.address, b, bank.v.liquidity, bank.v.insurance],
+            [h.handleBankruptcy(group.address, by, sb, acct.address, [...(t22 ? [sb.mint.mint] : []), ...rest], sb.mint.program)],
+            [acct.address, sb.address, sb.v.liquidity, sb.v.insurance],
             "if-panics",
           );
           break;

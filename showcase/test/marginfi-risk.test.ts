@@ -713,6 +713,37 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editBank(usdc.address, [["flags", 0n, 8]]);
   });
 
+  const setAmount = (at: Address, amount: bigint) => {
+    for (const vm of s.vms()) {
+      const x = vm.getAccount(at);
+      if (!x.exists) throw new Error("no token account");
+      const d = Buffer.from(x.data);
+      d.writeBigUInt64LE(amount, 64);
+      vm.setAccount({ ...x, address: at, data: new Uint8Array(d) });
+    }
+  };
+  const settle = (label: string, u: User, bank: Priced, by: KeyPairSigner = admin, rest?: Address[], failing: boolean | "if-panics" = false) => {
+    refresh();
+    const ix = s.ix("lending_pool_handle_bankruptcy", {}, [
+      { address: group.address },
+      { address: by.address, signer: by },
+      { address: bank.address, writable: true },
+      { address: u.account, writable: true },
+      { address: bank.v.liquidity, writable: true },
+      { address: bank.v.insurance, writable: true },
+      { address: bank.v.insuranceAuth },
+      { address: bank.program },
+      { address: INSTRUCTIONS },
+    ]);
+    return run(
+      `bankruptcy: ${label}`,
+      by,
+      [withRest(ix, rest ?? healthAccounts(u.account, [], true))],
+      [u.account, bank.address, bank.v.liquidity, bank.v.insurance],
+      failing,
+    );
+  };
+
   it("tags accounts, keeps liquidation records and settles bankruptcies as the original does", async () => {
     const usdc = await newBank("pyth", 1_000_000n);
     const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
@@ -791,36 +822,6 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
 
     // Bankruptcy: next to nothing left against a USDC debt; the insurance fund covers what it can, the rest is
     // shared by USDC's depositors.
-    const setAmount = (at: Address, amount: bigint) => {
-      for (const vm of s.vms()) {
-        const x = vm.getAccount(at);
-        if (!x.exists) throw new Error("no token account");
-        const d = Buffer.from(x.data);
-        d.writeBigUInt64LE(amount, 64);
-        vm.setAccount({ ...x, address: at, data: new Uint8Array(d) });
-      }
-    };
-    const settle = (label: string, u: User, bank: Priced, by: KeyPairSigner = admin, rest?: Address[], failing: boolean | "if-panics" = false) => {
-      refresh();
-      const ix = s.ix("lending_pool_handle_bankruptcy", {}, [
-        { address: group.address },
-        { address: by.address, signer: by },
-        { address: bank.address, writable: true },
-        { address: u.account, writable: true },
-        { address: bank.v.liquidity, writable: true },
-        { address: bank.v.insurance, writable: true },
-        { address: bank.v.insuranceAuth },
-        { address: bank.program },
-        { address: INSTRUCTIONS },
-      ]);
-      return run(
-        `bankruptcy: ${label}`,
-        by,
-        [withRest(ix, rest ?? healthAccounts(u.account, [], true))],
-        [u.account, bank.address, bank.v.liquidity, bank.v.insurance],
-        failing,
-      );
-    };
     const z = await user([[gold, 10_000n]]);
     owe(z.account, usdc, 50n * 1_000_000n * ONE);
     tick();
@@ -870,5 +871,12 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     tick();
     await b("t22 with fee", c, p, 10_000_000n);
     await b("t22 no mint", c, p, 1n, { rest: [] });
+    // Bankruptcy in the fee bank: the vault's balance after the fee covers part, the transfer grossed up for it.
+    const z = await user([[byKind("fixed"), 10_000n]]);
+    owe(z.account, p, 50n * 1_000_000n * ONE);
+    setAmount(p.v.insurance, 20_000_000n);
+    tick();
+    await settle("t22 insurance covers part", z, p, admin, [m, ...healthAccounts(z.account, [], true)]);
+    await settle("t22 no mint", z, p, admin, healthAccounts(z.account, [], true));
   });
 });

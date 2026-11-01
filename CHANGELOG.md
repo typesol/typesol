@@ -19,7 +19,7 @@ codes, and says so here.
   `marginfi_account_init_liq_record`, `marginfi_account_tag_liq_record` (a liquidatable account tagged, the health
   cache from the Maintenance pass), `marginfi_account_close_liq_record` and `lending_pool_handle_bankruptcy` (the
   insurance vault first, Token-2022 fees included, the rest socialized, a bank killed when nothing is left). Against
-  the binary on mainnet: 732 transactions, the same IDL for all 31 ported instructions; the fuzzer tags and settles
+  the binary on mainnet: 736 transactions, the same IDL for all 31 ported instructions; the fuzzer tags and settles
   bankruptcies too. 44–52% fewer compute units on bankruptcies, 45% on a tag.
 - Examples: Marginfi's borrows and health pulses, which completes part 3 of the port: `lending_account_borrow`
   (origination fees, the premium check, rate limits after health) and `lending_account_pulse_health` (three passes

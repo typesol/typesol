@@ -212,13 +212,13 @@ lamports, owner and data for every account involved, and the same events byte fo
 describe every ported instruction as the on-chain IDL does (accounts with their flags, PDA seeds, relations and
 addresses; discriminators; arguments), and their events, so a client generated from either IDL works with both.
 
-Borrows are not ported yet, so the test writes liabilities and a bank's asset and liability shares straight into both
-before it accrues or takes a repayment, and the same for other state no ported instruction reaches yet (e-mode entries, a recorded circuit-breaker
-halt, a frozen bank, the fee state's pause, an account's flags and balances, rate limits).
+To reach a state quickly, the tests also write it straight into both ledgers: liabilities and a bank's asset and
+liability shares (a debt to accrue, repay or settle without borrowing it first), e-mode entries, a recorded
+circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags and balances, rate limits.
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 314 in
+for the oracles, and 318 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -267,7 +267,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy and the risk engine (314, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy and the risk engine (318, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -291,7 +291,8 @@ byte into both ledgers:
   payer, used lately, with a receiver set, in receivership, after 61 idle days, initialized after a close. Bankruptcy
   by someone who is not the admin, of a bank the account owes nothing, of an account still solvent, in receivership,
   without its health accounts; the insurance covering part of the debt, the bank disabled after, a permissionless
-  bank fully covered, a debt past every deposit (the bank killed).
+  bank fully covered, a debt past every deposit (the bank killed); in a Token-2022 bank with a transfer fee, and
+  without its mint.
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -304,8 +305,8 @@ random walk with jumps, random confidence, exponents and ages, now and then a br
 the circuit breaker counts them; withdrawals of part of a deposit or all of it over those prices, the health
 accounts as a client sends them or now and then short, out of order or with extras, account flags (disabled,
 receivership, deleverage, frozen, flash loan) and liquidation tags; borrows with origination and program fees; health
-pulses of any account; liquidation tags and bankruptcies of any account, the insurance vault's balance rewritten now
-and then. The keys come from the seed too (the order of keys decides how balances sort), so a seed
+pulses of any account; liquidation tags and bankruptcies of any account (mostly a borrower's in its own bank, so some
+succeed), the insurance vault's balance rewritten now and then. The keys come from the seed too (the order of keys decides how balances sort), so a seed
 reproduces a run exactly.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
@@ -401,6 +402,7 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_pool_handle_bankruptcy`, insurance covering part | 91,747 | 50,194 | −45% |
 | `lending_pool_handle_bankruptcy`, permissionless, covered | 69,730 | 33,815 | −52% |
 | `lending_pool_handle_bankruptcy`, past the deposits | 35,143 | 19,516 | −44% |
+| `lending_pool_handle_bankruptcy`, Token-2022 with a transfer fee | 97,583 | 52,399 | −46% |
 
 Across the 125 transactions of the first file that succeed, the port uses 36–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
