@@ -12,7 +12,7 @@ import { describe, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { Rng } from "./fuzz-rng.js";
 import { SYSTEM, report } from "./jito-helpers.js";
-import { ONE, PROGRAM, U32_MAX, bankConfig, fx, marginfiPair, offsetOf } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, U32_MAX, bankConfig, fx, marginfiPair, offsetOf } from "./marginfi-helpers.js";
 import { web3 } from "@anchor-lang/core";
 
 const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
@@ -206,7 +206,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(34)) {
+      switch (rng.int(35)) {
         case 0:
         case 1:
         case 2: {
@@ -904,6 +904,56 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
                 ),
           );
           await run(label("receivership"), receiver, ixs, [acct.address, record, ...held.map((x) => x.address), h.feeWallet], "if-panics");
+          break;
+        }
+        case 34: {
+          // A flash loan: start, now and then a borrow from this bank (any amount, no health check in between), end;
+          // the accounts as the balances sort, the end index now and then wrong.
+          const acct = rng.pick(accounts);
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const keys = new Set<Address>();
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (hb) keys.add(hb.address);
+          }
+          const borrowing = rng.chance(60);
+          if (borrowing) keys.add(b);
+          const sorted = [...keys].sort((x, y) => Buffer.compare(Buffer.from(new web3.PublicKey(y).toBytes()), Buffer.from(new web3.PublicKey(x).toBytes())));
+          const rest: Address[] = [];
+          for (const k of sorted) {
+            const f = await feedsOf(k);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(k, "Bank", "config.oracle_setup") & 0xffn;
+            rest.push(...(setup === 8n ? [k] : [k, setup === 4n ? f.swb : f.pyth]));
+          }
+          const by = signer(acct.owner);
+          const middle = borrowing
+            ? [
+                h.borrow(group.address, acct.address, by, bank, wallets.get(`${acct.owner.address}:${bank.mint.mint}`)!, rng.next() % 1_000_000_000n, {
+                  program: bank.mint.program,
+                  rest: [...(bank.mint.program === TOKEN_2022 ? [bank.mint.mint] : []), ...rest],
+                }),
+              ]
+            : [];
+          const endAt = rng.chance(90) ? middle.length + 2 : rng.int(5);
+          const startIx = s.ix("lending_account_start_flashloan", { end_index: new BN(endAt) }, [
+            { address: acct.address, writable: true },
+            { address: by.address, signer: by },
+            { address: INSTRUCTIONS },
+          ]);
+          const endIx = s.ix("lending_account_end_flashloan", {}, [
+            { address: acct.address, writable: true },
+            { address: group.address },
+            { address: by.address, signer: by },
+          ]);
+          const endWith = {
+            ...endIx,
+            accounts: [...endIx.accounts!, ...(rng.chance(90) ? rest : rest.slice(1)).map((address) => ({ address, role: 0 }) as never)],
+          };
+          await run(label("flash loan"), by, [startIx, ...middle, endWith], [acct.address, b, bank.v.liquidity], "if-panics");
           break;
         }
         default: {

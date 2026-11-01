@@ -1358,6 +1358,73 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     ]);
   });
 
+  it("lends in flash loans as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    await user([
+      [usdc, 500_000_000_000n],
+      [sol, 500_000_000_000n],
+    ]);
+    const start = (u: User, endIndex: number, by: KeyPairSigner = u.owner, account = u.account) =>
+      s.ix("lending_account_start_flashloan", { end_index: new BN(endIndex) }, [
+        { address: account, writable: true },
+        { address: by.address, signer: by },
+        { address: INSTRUCTIONS },
+      ]);
+    const end = (u: User, rest: Address[], by: KeyPairSigner = u.owner, account = u.account): Instruction => {
+      const ix = s.ix("lending_account_end_flashloan", {}, [
+        { address: account, writable: true },
+        { address: group.address },
+        { address: by.address, signer: by },
+      ]);
+      return { ...ix, accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: 0 }) as never)] };
+    };
+    /** [start, …middle, end]: the end at index middle + 2 (after the compute budget instruction), unless `endAt`. */
+    const fl = (
+      label: string,
+      u: User,
+      middle: Instruction[],
+      o: { endAt?: number; endRest?: Address[]; by?: KeyPairSigner; noEnd?: boolean; failing?: boolean } = {},
+    ) => {
+      refresh();
+      const endAt = o.endAt ?? middle.length + 2;
+      const ixs = [start(u, endAt, o.by), ...middle];
+      if (!o.noEnd) ixs.push(end(u, o.endRest ?? healthAccounts(u.account), o.by));
+      return run(`flash loan: ${label}`, o.by ?? u.owner, ixs, [u.account, usdc.address, sol.address, usdc.v.liquidity], o.failing ?? false);
+    };
+    const u = await user([[sol, 10_000_000_000n]]);
+    tick();
+    const borrow = (amount: bigint, rest: Address[]) => h.borrow(group.address, u.account, u.owner, usdc, u.wallets.get(usdc.address)!, amount, { rest });
+    const repayAll = () => h.repay(group.address, u.account, u.owner, usdc.address, u.wallets.get(usdc.address)!, usdc.v.liquidity, 0n, { all: true });
+    /** [bank, oracle] groups as the balances sort (descending bank key). */
+    const groups = (list: Priced[]) =>
+      [...list].sort((x, y) => Buffer.compare(keyBytes(y.address), keyBytes(x.address))).flatMap((b) => (b.oracle ? [b.address, b.oracle] : [b.address]));
+    const both = () => groups([sol, usdc]);
+    await fl("nothing in between", u, []);
+    // Borrowed past what the collateral allows, repaid before the end: no health check in between.
+    await fl("borrow past the limit, repay it all", u, [borrow(2_000_000_000n, both()), repayAll()], { endRest: groups([sol]) });
+    await fl("borrow past the limit and keep it", u, [borrow(2_000_000_000n, both())], { endRest: both() });
+    await fl("borrow within it and keep it", u, [borrow(100_000_000n, both())], { endRest: both() });
+    await fl("health accounts left out at the end", u, [], { endRest: [] });
+    await fl("the end index at another instruction", u, [repayAll()], { endAt: 2 });
+    await fl("the end index past the transaction", u, [], { endAt: 9, failing: true });
+    await fl("the end index at the start", u, [], { endAt: 1 });
+    await fl("no end", u, [], { noEnd: true, endAt: 5, failing: true });
+    const other = await user([[sol, 1_000_000_000n]]);
+    await fl("another signer", u, [], { by: other.owner });
+    await run("flash loan: an end alone", u.owner, [end(u, healthAccounts(u.account))], [u.account]);
+    await run(
+      "flash loan: the end names another account",
+      u.owner,
+      [start(u, 2), end(other, healthAccounts(other.account), other.owner)],
+      [u.account, other.account],
+    );
+    await run("flash loan: started twice", u.owner, [start(u, 3), start(u, 3), end(u, healthAccounts(u.account))], [u.account]);
+    editAccount(u.account, [["account_flags", 64n, 8]]);
+    await fl("a frozen account", u, []);
+    editAccount(u.account, [["account_flags", 0n, 8]]);
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());

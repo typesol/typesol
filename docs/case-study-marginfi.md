@@ -14,6 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -193,6 +194,13 @@ liquidation, then the liquidatee's; the last two counted by the instruction's ar
 - `lending_pool_force_tokenless_repay_complete` (the risk admin) and `purge_deleverage_balance` (the risk admin): a
   bank whose tokenless repayments are done has the deposits left in it written off, balance by balance.
 
+**Part 5, flash loans.** `lending_account_start_flashloan` and `lending_account_end_flashloan` (the account's
+authority): the start checks, through the Instructions sysvar, that it is called top-level, that `end_index` comes
+after it and is this program's end instruction naming the same account; until then the account's withdrawals and
+borrows skip their health checks. The end runs them: Initial health over the account's banks and oracles, the
+isolated tier, the tag cleared when healthy at Maintenance, every collateral priced when it owes a premium-active
+bank, the premium rates (ratcheted), the breaker's gate while it owes anything.
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -265,9 +273,9 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 472 in
+for the oracles, and 497 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
-for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage and the risk engine. The last two write Pyth and Switchboard accounts byte for
+for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
@@ -314,7 +322,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage and the risk engine (472, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans and the risk engine (497, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -355,7 +363,10 @@ byte into both ledgers:
   someone else or alone, a durable nonce. The limit set (not by an admin, zero) and the flow admin's updates (by
   someone else, empty, slots reversed, in the future, stale, out of sequence, an old slot, past the limit, in order,
   a day later). Tokenless repayments forced complete (by someone else, not allowed, allowed) and balances purged
-  (before that, by someone else, none there, owing, a deposit).
+  (before that, by someone else, none there, owing, a deposit). Flash loans with nothing in between, borrowing past
+  the limit and repaying it all, borrowing within it; refused at the end: kept past the limit, the health accounts
+  left out; refused at the start: the end index at another instruction, at the start, past the transaction, no end,
+  another signer, an end naming another account, an end alone, a second start, a frozen account.
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -372,13 +383,16 @@ pulses of any account; liquidation tags and bankruptcies of any account (mostly 
 succeed), the insurance vault's balance rewritten now and then; liquidations of any account by any account, or of a
 fresh account holding collateral against a debt written in, with the accounts now and then miscounted;
 receiverships and deleverages of any account (its record created when missing) around a repayment or nothing, the
-receiver signing or not, the accounts now and then short. The keys come from the seed too (the order of keys decides how balances sort), so a seed
+receiver signing or not, the accounts now and then short; flash loans around a borrow of any amount or nothing, the
+end index now and then wrong. The keys come from the seed too (the order of keys decides how balances sort), so a seed
 reproduces a run exactly.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
 
 ## Differences
 
+- **A flash loan's end index past the transaction.** The original fails reading that instruction with
+  `InvalidArgument`, a runtime error without a custom code; the port with 5104. The tests check that both fail.
 - **This program's id in the receivership checks.** The original compares the transaction's instructions with its
   mainnet id; the port with the id it runs under. At `MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA` they are the same.
 - **The liquidatee as its own liquidator.** The original fails loading the second account (`AccountBorrowFailed`, a
@@ -482,13 +496,15 @@ Compute units per transaction, mainnet original against the port, from one run o
 | a receivership: start, end | 87,094 | 61,272 | −30% |
 | a receivership: a close-out under $5 | 130,094 | 78,290 | −40% |
 | a deleverage: start, withdraw 1 SOL, repay 150 USDC, end | 160,288 | 94,646 | −41% |
+| a flash loan: start, borrow past the limit, repay it all, end | 75,214 | 35,898 | −52% |
+| a flash loan: start, end | 18,114 | 10,818 | −40% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
 40%). In the oracle file, the 72 that succeed use 47–83% fewer; the 76 refused ones 46–92% fewer. In the risk file,
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
-receiverships 30–40% and deleverages 41–42% (whole transactions, the withdrawals and repayments in them included);
+receiverships 30–40%, deleverages 41–42% and flash loans 40–52% (whole transactions, the withdrawals and repayments in them included);
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
