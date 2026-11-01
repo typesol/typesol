@@ -1,0 +1,6 @@
+[package]
+name = "i80oracle"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+fixed = "=1.28.0"

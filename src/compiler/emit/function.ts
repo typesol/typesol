@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { snakeCase, argIdlName } from "../analyze.js";
+import { snakeCase, argIdlName, fieldIdlName } from "../analyze.js";
 import { decodeAddress } from "../../keys.js";
 import {
   INT_INFO,
@@ -660,7 +660,7 @@ export class FunctionEmitter extends StatementEmitter {
         else if (t.kind === "pubkey") parts.push(`{(const uint8_t *)&d_${owner}->${field}, 32}`);
         else if (t.kind === "enum") parts.push(`{(const uint8_t *)&d_${owner}->${field}, ${scalarSize(t)}}`);
         else this.reporter.fail(a.node, `Seeds: field "${ref}" of type ${typeName(t)} cannot be a seed (use a Pubkey, an integer or a unit enum)`);
-        idl.push({ kind: "account", path: `${snakeCase(owner!)}.${snakeCase(field!)}`, account: st.name });
+        idl.push({ kind: "account", path: `${snakeCase(owner!)}.${fieldIdlName(field!)}`, account: st.name });
         continue;
       }
       const acct = ref ? ix.accounts.find((o) => o.name === ref) : undefined;

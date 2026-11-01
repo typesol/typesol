@@ -53,6 +53,32 @@ describe("typesol port", () => {
       }
     });
 
+  it("keeps Marginfi's zero-copy accounts as its on-chain IDL describes them (repr, serialization, _pad and key fields)", () => {
+    const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as AnyIdl & {
+      types: { name: string }[];
+    };
+    // Its accounts and the types they hold; the instructions are not part of this check.
+    const keep = new Set<string>();
+    const visit = (name: string) => {
+      if (keep.has(name)) return;
+      keep.add(name);
+      JSON.stringify(
+        onchain.types.find((t) => t.name === name),
+        (k, v) => (k === "defined" && visit(typeof v === "string" ? v : v.name), v),
+      );
+    };
+    for (const a of onchain.accounts ?? []) visit(a.name);
+    const idl = { ...onchain, instructions: [], events: [], errors: [], types: onchain.types.filter((t) => keep.has(t.name)) };
+    const { source } = generatePort(idl as unknown as PortIdl);
+    const file = path.join(tmp(), "marginfi.ts");
+    // An instruction that holds every account, so the port's IDL lists them.
+    const accounts = (onchain.accounts ?? []).map((a, i) => `a${i}: Account<${a.name}>`).join(", ");
+    writeFileSync(file, `${source.replace(/import \{ /, "import { type Account, ")}\nexport function all(${accounts}): void {}\n`);
+    const ported = buildIdl(generate(file).model, ADDRESS) as unknown as { types: { name: string }[] };
+    const strip = (t: unknown) => JSON.parse(JSON.stringify(t, (k, v) => (k === "docs" ? undefined : v)));
+    for (const name of keep) expect(strip(ported.types.find((t) => t.name === name)), name).toEqual(strip(onchain.types.find((t) => t.name === name)));
+  });
+
   it("keeps a discriminator the name would not derive, and Anchor's account bytes (@layout borsh)", () => {
     const idl: PortIdl = {
       metadata: { name: "legacy" },
@@ -92,7 +118,13 @@ describe("typesol port", () => {
     expect(notes.join("\n")).toMatch(/Thing\.name: set the String's capacity to Anchor's #\[max_len\]/);
     expect(notes.join("\n")).not.toMatch(/Thing\.items/); // a Vec<u64> is Anchor's Vec as is
     expect(notes.join("\n")).not.toMatch(/layout differs/);
-    expect(notes.join("\n")).toMatch(/errors: .*6100/);
+    // An error code that skips ahead is kept (@code), and the port's IDL has it.
+    expect(source).toContain("/** @code 6100 */");
+    expect(notes.join("\n")).not.toMatch(/errors:/);
+    expect(ported.errors).toEqual([
+      { code: 6100, name: "Bad", msg: "bad" },
+      { code: 6101, name: "NotPorted", msg: "This instruction is not ported yet" },
+    ]);
     expect(notes.join("\n")).toMatch(/account Thing: its discriminator is not/);
   });
 
