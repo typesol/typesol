@@ -9,10 +9,10 @@
 // risk engine over them. An input the original panics on (a negative fee rate trips its asserts) only has to fail in the port too.
 import { type Address, type KeyPairSigner } from "@solana/kit";
 import { describe, it } from "vitest";
-import { BN, TOKEN_2022, TOKEN_PROGRAM } from "../../test/harness.js";
+import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { Rng } from "./fuzz-rng.js";
-import { report } from "./jito-helpers.js";
-import { ONE, U32_MAX, bankConfig, fx, marginfiPair, offsetOf } from "./marginfi-helpers.js";
+import { SYSTEM, report } from "./jito-helpers.js";
+import { ONE, PROGRAM, U32_MAX, bankConfig, fx, marginfiPair, offsetOf } from "./marginfi-helpers.js";
 import { web3 } from "@anchor-lang/core";
 
 const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
@@ -206,7 +206,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(33)) {
+      switch (rng.int(34)) {
         case 0:
         case 1:
         case 2: {
@@ -820,6 +820,76 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
             [e.address, r.address, asset.address, liab.address, liab.v.liquidity, liab.v.insurance],
             "if-panics",
           );
+          break;
+        }
+        case 33: {
+          // Receivership: start and end around a repayment (or nothing) for any account, by a receiver of either user,
+          // its record created first when missing; the account's banks as a client sends them, now and then short.
+          const pool: { address: Address; owner: KeyPairSigner; bank?: FuzzBank }[] = [...accounts, ...borrowers];
+          if (!pool.length) break;
+          const acct = rng.pick(pool);
+          const [record] = await pda(PROGRAM, ["liq_record", acct.address]);
+          if (!s.original.getAccount(record).exists) {
+            const payer = rng.pick(users);
+            await run(
+              label("liquidation record"),
+              payer,
+              [
+                s.ix("marginfi_account_init_liq_record", {}, [
+                  { address: acct.address, writable: true },
+                  { address: payer.address, signer: payer, writable: true },
+                  { address: record, writable: true },
+                  { address: SYSTEM },
+                ]),
+              ],
+              [acct.address, record],
+              "if-panics",
+            );
+          }
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const held: FuzzBank[] = [];
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (hb) held.push(hb);
+          }
+          const rest: Address[] = [];
+          for (const x of held) {
+            const f = await feedsOf(x.address);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(x.address, "Bank", "config.oracle_setup") & 0xffn;
+            rest.push(...(setup === 8n ? [x.address] : [x.address, setup === 4n ? f.swb : f.pyth]));
+          }
+          const receiver = rng.pick(users);
+          const ixs = [
+            h.startLiquidation(group.address, acct.address, record, rng.chance(80) ? receiver : receiver.address, rng.chance(90) ? rest : rest.slice(1)),
+          ];
+          const debt = "bank" in acct ? (acct.bank as FuzzBank) : null;
+          if (debt && rng.chance(70))
+            ixs.push(
+              h.repay(
+                group.address,
+                acct.address,
+                receiver,
+                debt.address,
+                wallets.get(`${receiver.address}:${debt.mint.mint}`)!,
+                debt.v.liquidity,
+                rng.chance(30) ? 0n : rng.next() % 1_000_000_000n,
+                { all: rng.chance(30) ? true : null, program: debt.mint.program, rest: debt.mint.program === TOKEN_2022 ? [debt.mint.mint] : [] },
+              ),
+            );
+          ixs.push(
+            h.endLiquidation(
+              group.address,
+              acct.address,
+              record,
+              receiver,
+              held.map((x) => x.address),
+            ),
+          );
+          await run(label("receivership"), receiver, ixs, [acct.address, record, ...held.map((x) => x.address), h.feeWallet], "if-panics");
           break;
         }
         default: {

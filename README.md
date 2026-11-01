@@ -185,8 +185,8 @@ compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) f
 payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–79% fewer
 compute units, up to 95% on refused calls), and [docs/case-study-marginfi.md](docs/case-study-marginfi.md) for
 Marginfi v2 as far as it goes (administration, interest, accounts, deposits, repayments, fees, oracles, the risk
-engine, withdrawals, borrows, health pulses, liquidation records, bankruptcy and classic liquidation: the same on 803 transactions; 34–97% fewer compute units, 34–39% on
-liquidations, 15–64% on health pulses). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+engine, withdrawals, borrows, health pulses, liquidation records, bankruptcy, classic and receivership liquidation: the same on 847 transactions; 29–97% fewer compute
+units, 29–45% on receiverships, 34–39% on liquidations, 15–64% on health pulses). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
@@ -348,7 +348,7 @@ outcomes, account bytes and events; [`showcase/test`](showcase/test)), and the p
 | [`raydium-cp-swap/`](showcase/mainnet/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
 | [`raydium-clmm/`](showcase/mainnet/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](showcase/mainnet/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
-| [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2, in progress: I80F48 fixed-point arithmetic, zero-copy accounts, group and bank administration, interest, accounts, deposits, repayments, fees, Pyth and Switchboard oracles, the circuit breaker, the risk engine, withdrawals, borrows and health pulses, liquidation records, bankruptcy and classic liquidation, checked against the mainnet binary; receivership and deleverage to come |
+| [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2, in progress: I80F48 fixed-point arithmetic, zero-copy accounts, group and bank administration, interest, accounts, deposits, repayments, fees, Pyth and Switchboard oracles, the circuit breaker, the risk engine, withdrawals, borrows and health pulses, liquidation records, bankruptcy, classic and receivership liquidation, checked against the mainnet binary; deleverage to come |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

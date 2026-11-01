@@ -13,7 +13,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 1 | Errors, I80F48 arithmetic, the zero-copy accounts and the types they hold | done |
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
-| 4 | Liquidation and bankruptcy | in progress: liquidation records, bankruptcy and classic liquidation done |
+| 4 | Liquidation and bankruptcy | in progress: liquidation records, bankruptcy, classic and receivership liquidation done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -166,6 +166,22 @@ breaker's gate on the liquidator. The remaining accounts: a Token-2022 liability
 oracles (only their count matters), the liability bank's, the liquidator's [bank, oracle…] groups after the
 liquidation, then the liquidatee's; the last two counted by the instruction's arguments.
 
+**Part 4, receivership.** Two instructions that open and close one transaction:
+
+- `start_liquidation` (anyone): an account unhealthy at Maintenance, none of whose banks is halted and which passes
+  the breaker's gate, is put in receivership; its Maintenance and equity health are recorded (in its record and its
+  health cache, with no time or version, as the original leaves it) and each of its banks locks the prices those
+  passes took (real-time and time-weighted, with their confidence; 0 where a leg took none), so the bank must be
+  writable. The transaction is checked as the original checks it: only allowed programs, the start first but for
+  compute budget, integration refreshes and creating the record, once; the end last; between them only this
+  program's withdrawals and repayments; not through CPI. A receiver signing as the risk admin is marked so;
+- `end_liquidation` (the receiver): the account's health at the locked prices (one bank account per balance, the
+  locks cleared after), its premium rates from the new mix; health may fall by no more than the value taken out and
+  a solvent account must stay solvent; the account must still be unhealthy unless its collateral was under $5 (a
+  close-out); the collateral seized within the premium (the fee state's, at least 5%, grown since the tag unless the
+  account is e-mode boosted or in bad debt); the tag after it, the record's newest entry (the oldest rotated out,
+  its unused bytes kept), the flat SOL fee from the fee payer or the receiver.
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -238,9 +254,9 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 385 in
+for the oracles, and 429 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
-for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation and the risk engine. The last two write Pyth and Switchboard accounts byte for
+for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
@@ -287,7 +303,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation and the risk engine (385, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership and the risk engine (429, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -320,6 +336,10 @@ byte into both ledgers:
   or the liquidator's accounts left out or miscounted, another signer, the liquidatee as its own liquidator, either
   in receivership, the liquidatee in a flash loan, a circuit-broken bank,
   the protocol paused.
+  Receiverships: seizing and repaying, again, seizing without repaying, too high a premium, repaying only, nothing
+  in between, a separate fee payer, a close-out under $5, a tagged account's grown premium; refused: the end
+  missing, an instruction before the start, two starts, a borrow in between, a bank not writable, the end by
+  someone else or alone, another account's record, a healthy account, a circuit-broken bank.
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -334,7 +354,9 @@ accounts as a client sends them or now and then short, out of order or with extr
 receivership, deleverage, frozen, flash loan) and liquidation tags; borrows with origination and program fees; health
 pulses of any account; liquidation tags and bankruptcies of any account (mostly a borrower's in its own bank, so some
 succeed), the insurance vault's balance rewritten now and then; liquidations of any account by any account, or of a
-fresh account holding collateral against a debt written in, with the accounts now and then miscounted. The keys come from the seed too (the order of keys decides how balances sort), so a seed
+fresh account holding collateral against a debt written in, with the accounts now and then miscounted;
+receiverships of any account (its record created when missing) around a repayment or nothing, the receiver signing
+or not, the accounts now and then short. The keys come from the seed too (the order of keys decides how balances sort), so a seed
 reproduces a run exactly.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
@@ -438,11 +460,14 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_account_liquidate`, a liquidator owing a premium | 222,725 | 141,854 | −36% |
 | `lending_account_liquidate`, a fixed-price debt | 225,558 | 142,906 | −37% |
 | `lending_account_liquidate`, Token-2022 | 199,447 | 127,370 | −36% |
+| a receivership: start, withdraw 1 SOL, repay 140 USDC, end | 131,197 | 72,040 | −45% |
+| a receivership: start, end | 87,092 | 61,605 | −29% |
+| a receivership: a close-out under $5 | 153,308 | 91,201 | −41% |
 
 Across the 125 transactions of the first file that succeed, the port uses 36–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
 In the oracle file, the 72 that succeed use 47–84% fewer; the 76 refused ones 46–93% fewer. In the risk file, the
 withdrawals that succeed use 38–63% fewer, the borrows 41–47%, the health pulses 15–64% (the least: an empty account,
-where the original does little), a tag 45%, records 69–74%, bankruptcies 44–52%, liquidations 34–39%; refused
+where the original does little), a tag 45%, records 69–74%, bankruptcies 44–52%, liquidations 34–39%, receiverships 29–45% (whole transactions); refused
 withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48
 products and quotients, like accrual.

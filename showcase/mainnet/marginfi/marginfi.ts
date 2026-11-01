@@ -2,8 +2,8 @@
 // MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA), Copyright mrgnlabs, licensed under the Apache License, Version 2.0
 // (https://www.apache.org/licenses/LICENSE-2.0). Changes: rewritten in TypeSOL; this file holds the instructions ported
 // so far: group and bank administration, oracles, accounts, deposits, withdrawals, borrows, repayments, fees, health
-// pulses, liquidation records, bankruptcy and classic liquidation (see docs/case-study-marginfi.md for what is and is
-// not).
+// pulses, liquidation records, bankruptcy, classic and receivership liquidation (see docs/case-study-marginfi.md for
+// what is and is not).
 //
 // A lending protocol: groups of banks, one per mint, whose deposits earn what borrowers pay on a seven-point interest
 // curve; the group, insurance and program take fees from the borrowing rate.
