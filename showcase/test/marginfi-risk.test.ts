@@ -3,12 +3,12 @@
 // fails on, the isolated tier, e-mode, the deposit cap's discount, premiums, the liquidation tag, the circuit breaker's
 // gate, rate limits, receivership and deleverage paths, origination fees, Token-2022. Most debts are written into both
 // programs directly, to set up the withdrawals; the borrows make their own.
-import { type Address, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { TOKEN_2022, TOKEN_PROGRAM } from "../../test/harness.js";
-import { report } from "./jito-helpers.js";
-import { ONE, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
+import { TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
+import { SYSTEM, report } from "./jito-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
 
 type Bank = Awaited<ReturnType<ReturnType<typeof marginfiPair>["addBank"]>>[1];
 
@@ -25,6 +25,10 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     setClock(t, slot);
   };
   const editAccount = h.edit("MarginfiAccount");
+  const withRest = (ix: Instruction, rest: Address[]): Instruction => ({
+    ...ix,
+    accounts: [...ix.accounts!, ...rest.map((address) => ({ address, role: 0 }) as never)],
+  });
   const keyBits = (a: Address) => BigInt("0x" + Buffer.from(new web3.PublicKey(a).toBytes()).reverse().toString("hex"));
   const keyBytes = (a: Address) => Buffer.from(new web3.PublicKey(a).toBytes());
   const data = (a: Address) => Buffer.from((s.original.getAccount(a) as { data: Uint8Array }).data);
@@ -709,6 +713,145 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editBank(usdc.address, [["flags", 0n, 8]]);
   });
 
+  const setAmount = (at: Address, amount: bigint) => {
+    for (const vm of s.vms()) {
+      const x = vm.getAccount(at);
+      if (!x.exists) throw new Error("no token account");
+      const d = Buffer.from(x.data);
+      d.writeBigUInt64LE(amount, 64);
+      vm.setAccount({ ...x, address: at, data: new Uint8Array(d) });
+    }
+  };
+  const settle = (label: string, u: User, bank: Priced, by: KeyPairSigner = admin, rest?: Address[], failing: boolean | "if-panics" = false) => {
+    refresh();
+    const ix = s.ix("lending_pool_handle_bankruptcy", {}, [
+      { address: group.address },
+      { address: by.address, signer: by },
+      { address: bank.address, writable: true },
+      { address: u.account, writable: true },
+      { address: bank.v.liquidity, writable: true },
+      { address: bank.v.insurance, writable: true },
+      { address: bank.v.insuranceAuth },
+      { address: bank.program },
+      { address: INSTRUCTIONS },
+    ]);
+    return run(
+      `bankruptcy: ${label}`,
+      by,
+      [withRest(ix, rest ?? healthAccounts(u.account, [], true))],
+      [u.account, bank.address, bank.v.liquidity, bank.v.insurance],
+      failing,
+    );
+  };
+
+  it("tags accounts, keeps liquidation records and settles bankruptcies as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, { asset_tag: 1 }, 9);
+    const gold = await newBank("fixed", 2_000_000n);
+    await user([
+      [usdc, 500_000_000_000n],
+      [sol, 500_000_000_000n],
+      [gold, 500_000_000_000n],
+    ]);
+    const tag = (label: string, u: User, rest?: Address[]) => {
+      refresh();
+      return run(
+        `tag: ${label}`,
+        admin,
+        [
+          withRest(
+            s.ix("marginfi_account_tag_liq_record", {}, [{ address: u.account, writable: true }, { address: group.address }]),
+            rest ?? healthAccounts(u.account, [], true),
+          ),
+        ],
+        [u.account],
+      );
+    };
+    // Tagging: a healthy account has nothing to clear; a liquidatable one is tagged once; healthy again, cleared.
+    const a = await user([[sol, 10_000_000_000n]]);
+    tick();
+    await tag("healthy, untagged", a);
+    owe(a.account, usdc, 1_400n * 1_000_000n * ONE);
+    await tag("liquidatable", a);
+    await tag("tagged already", a);
+    await tag("accounts left out", a, []);
+    owe(a.account, usdc, 100n * 1_000_000n * ONE);
+    await tag("healthy again", a);
+    editAccount(a.account, [["account_flags", 1n, 8]]);
+    await tag("disabled", a);
+    editAccount(a.account, [["account_flags", 0n, 8]]);
+    editGroup(group.address, [
+      ["panic_state_cache.pause_flags", 1n, 1],
+      ["panic_state_cache.pause_start_timestamp", t - 10n, 8],
+    ]);
+    await tag("protocol paused", a);
+    editGroup(group.address, [["panic_state_cache.pause_flags", 0n, 1]]);
+    // Liquidation records: created once, closed unused or after 60 idle days, by the payer's key only.
+    const payer = await s.funded();
+    const [record] = await pda(PROGRAM, ["liq_record", a.account]);
+    const init = () =>
+      s.ix("marginfi_account_init_liq_record", {}, [
+        { address: a.account, writable: true },
+        { address: payer.address, signer: payer, writable: true },
+        { address: record, writable: true },
+        { address: SYSTEM },
+      ]);
+    const close = (to: Address = payer.address) =>
+      s.ix("marginfi_account_close_liq_record", {}, [
+        { address: a.account, writable: true },
+        { address: record, writable: true },
+        { address: to, writable: true },
+      ]);
+    await run("record: init", payer, [init()], [a.account, record, payer.address]);
+    await run("record: init again", payer, [init()], [a.account, record]);
+    await run("record: close to another", payer, [close(admin.address)], [a.account, record]);
+    h.edit("LiquidationRecord")(record, [["entries[2].timestamp", t - 100n, 8]]);
+    await run("record: close, used lately", payer, [close()], [a.account, record]);
+    h.edit("LiquidationRecord")(record, [["liquidation_receiver", keyBits(admin.address), 32]]);
+    await run("record: close, a receiver set", payer, [close()], [a.account, record]);
+    h.edit("LiquidationRecord")(record, [
+      ["liquidation_receiver", 0n, 32],
+      ["entries[2].timestamp", t - 61n * 86_400n, 8],
+    ]);
+    editAccount(a.account, [["account_flags", 16n, 8]]);
+    await run("record: close, in receivership", payer, [close()], [a.account, record]);
+    editAccount(a.account, [["account_flags", 0n, 8]]);
+    await run("record: close, idle 61 days", payer, [close()], [a.account, record, payer.address]);
+    await run("record: init after close", payer, [init()], [a.account, record, payer.address]);
+    await run("record: close, unused", payer, [close()], [a.account, record, payer.address]);
+
+    // Bankruptcy: next to nothing left against a USDC debt; the insurance fund covers what it can, the rest is
+    // shared by USDC's depositors.
+    const z = await user([[gold, 10_000n]]);
+    owe(z.account, usdc, 50n * 1_000_000n * ONE);
+    tick();
+    const other = await s.funded();
+    await settle("not an admin", z, usdc, other);
+    await settle("no debt in that bank", z, sol);
+    const rich = await user([[sol, 10_000_000_000n]]);
+    owe(rich.account, usdc, 10n * 1_000_000n * ONE);
+    await settle("not bankrupt", rich, usdc);
+    editAccount(z.account, [["account_flags", 16n, 8]]);
+    await settle("in receivership", z, usdc);
+    editAccount(z.account, [["account_flags", 0n, 8]]);
+    await settle("health accounts left out", z, usdc, admin, []);
+    setAmount(usdc.v.insurance, 20_000_000n);
+    tick(3600n);
+    await settle("insurance covers part", z, usdc);
+    await settle("again (disabled now)", z, usdc);
+    // Permissionless where the bank allows it; insurance covering all of it.
+    editBank(usdc.address, [["flags", 4n, 8]]);
+    const y = await user([[gold, 10_000n]]);
+    owe(y.account, usdc, 5n * 1_000_000n * ONE);
+    setAmount(usdc.v.insurance, 100_000_000n);
+    await settle("permissionless, covered", y, usdc, other);
+    // A debt past the bank's deposits kills it.
+    const k = await user([[sol, 1_000n]]);
+    owe(k.account, gold, 900_000n * 1_000_000n * ONE);
+    await settle("past the deposits", k, gold);
+    editBank(usdc.address, [["flags", 0n, 8]]);
+  });
+
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
     const m = await h.feeMint(6, 150, 1_000_000n);
     const [ix, tb] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());
@@ -728,5 +871,12 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     tick();
     await b("t22 with fee", c, p, 10_000_000n);
     await b("t22 no mint", c, p, 1n, { rest: [] });
+    // Bankruptcy in the fee bank: the vault's balance after the fee covers part, the transfer grossed up for it.
+    const z = await user([[byKind("fixed"), 10_000n]]);
+    owe(z.account, p, 50n * 1_000_000n * ONE);
+    setAmount(p.v.insurance, 20_000_000n);
+    tick();
+    await settle("t22 insurance covers part", z, p, admin, [m, ...healthAccounts(z.account, [], true)]);
+    await settle("t22 no mint", z, p, admin, healthAccounts(z.account, [], true));
   });
 });

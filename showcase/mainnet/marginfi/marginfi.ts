@@ -38,6 +38,7 @@ import {
   readonly,
   readonlySigner,
   remainingAccounts,
+  transferFee,
   transferFeeInverse,
   writable,
   log,
@@ -52,6 +53,9 @@ import {
   ACCOUNT_DISABLED,
   ACCOUNT_FROZEN,
   ACCOUNT_IN_FLASHLOAN,
+  ACCOUNT_IN_REBALANCE,
+  ZERO_AMOUNT_THRESHOLD,
+  writeOffPremiumAmount,
   DECREASE_BORROW_ONLY,
   DECREASE_WITHDRAW_ONLY,
   EMPTY_BALANCE_THRESHOLD,
@@ -98,6 +102,8 @@ import {
   initBank,
   recordDepositInflow,
   recordWithdrawalOutflow,
+  socializeLoss,
+  PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG,
   saturatingSubI64,
   remainingDepositCapacity,
   totalLiquidationFee,
@@ -115,6 +121,10 @@ import {
   cachePrice,
   calcValue,
   cbPriceGate,
+  bankruptcy,
+  preLiquidation,
+  resetHealthCache,
+  BANKRUPT_THRESHOLD,
   hasIsolatedLiability,
   healthComponents,
   isOracleError,
@@ -137,6 +147,8 @@ import {
   type LendingAccountWithdrawEvent,
   type LendingAccountBorrowEvent,
   type HealthPulseEvent,
+  type LiquidationTagEvent,
+  type LendingPoolBankHandleBankruptcyEvent,
   type DeleverageWithdrawFlowEvent,
   type LendingPoolBankCollectFeesEvent,
   type LendingPoolBankConfigureOracleEvent,
@@ -146,7 +158,7 @@ import {
   type MarginfiGroupConfigureEvent,
   type MarginfiGroupCreateEvent,
 } from "./events";
-import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxMul, fxSaturatingAdd, fxSaturatingSub, fxSub, fxToF64Bits, fxToU32Wrapping, fxToU64, fxTrySub } from "./i80f48";
+import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxMul, fxSaturatingAdd, fxCeil, fxSaturatingSub, fxSub, fxToF64Bits, fxToU32Wrapping, fxToU64, fxTrySub } from "./i80f48";
 import {
   ASSET_TAG_DEFAULT,
   ASSET_TAG_SOL,
@@ -161,7 +173,7 @@ import {
   validatesFeedAccount,
 } from "./oracle";
 import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
-import { type Bank, type FeeState, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState, OracleSetup, RiskTier } from "./state";
+import { type Bank, type FeeState, type LiquidationRecord, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState, OracleSetup, RiskTier } from "./state";
 
 /** Anchor takes as many accounts as the runtime passes: a withdrawal's health check reads a bank and its oracle per balance. */
 export const MAX_ACCOUNTS = 255n;
@@ -1156,8 +1168,6 @@ export function lendingAccountBorrow(
   writeHealthCache(marginfi_account, h, t, !flash);
 }
 
-/** BANKRUPT_THRESHOLD (0.1) and TRIVIAL_BALANCE_THRESHOLD (1). */
-const BANKRUPT_THRESHOLD: i128 = 28147497671066n;
 const HEALTH_ORACLE_OK: u32 = 4n;
 const HEALTH_EMODE_BOOSTED: u32 = 8n;
 
@@ -1272,6 +1282,174 @@ export function lendingAccountPulseHealth(marginfi_account: HasOne<Mut<MarginfiA
   for (let j = 0n; j < 32n; j++) c.reserved0.set(j, 0n);
   for (let j = 0n; j < 16n; j++) c.reserved1.set(j, 0n);
   emit<HealthPulseEvent>({ account: marginfi_account.key, health_cache: marginfi_account.health_cache });
+}
+
+// ---- liquidation records and bankruptcy ----------------------------------------------------------------------------
+
+/**
+ * Tag an account (anyone): at or below zero Maintenance health (with debt) it is tagged from now on, which lets the
+ * liquidation premium grow; healthy again, a tagged account loses its tag. The account's banks and oracles follow.
+ */
+export function marginfiAccountTagLiqRecord(marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, group: Account<MarginfiGroup>): void {
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags &
+      (ACCOUNT_DISABLED | ACCOUNT_IN_FLASHLOAN | ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_ORDER_EXECUTION | ACCOUNT_IN_REBALANCE)) ===
+      0n,
+    MarginfiError.UnexpectedLiquidationState,
+  );
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  const t = now();
+  const m = preLiquidation(marginfi_account, group, remainingAccounts(), 0n, t);
+  require(m.err === 0n, m.err);
+  if (m.health > I80F48_ZERO || m.liabs === I80F48_ZERO) {
+    require(marginfi_account.liquidation_tagged_at !== 0n, MarginfiError.HealthyAccount);
+    marginfi_account.liquidation_tagged_at = 0n;
+  } else {
+    require(marginfi_account.liquidation_tagged_at === 0n, MarginfiError.AccountAlreadyTagged);
+    marginfi_account.liquidation_tagged_at = t;
+  }
+  emit<LiquidationTagEvent>({ marginfi_account: marginfi_account.key, tagged_at: marginfi_account.liquidation_tagged_at });
+}
+
+/** Create an account's liquidation record, at ["liq_record", account] (anyone pays for it). */
+export function marginfiAccountInitLiqRecord(
+  marginfi_account: Mut<MarginfiAccount>,
+  fee_payer: Mut<Signer>,
+  liquidation_record: Init<LiquidationRecord>,
+  system_program: SystemProgram,
+): void {
+  liquidation_record.create(fee_payer, ["liq_record", marginfi_account.key]);
+  liquidation_record.key_ = liquidation_record.key;
+  liquidation_record.record_payer = fee_payer.key;
+  liquidation_record.marginfi_account = marginfi_account.key;
+  marginfi_account.liquidation_record = liquidation_record.key;
+}
+
+/** Close an account's liquidation record, its rent back to who paid: unused, or idle for 60 days. */
+export function marginfiAccountCloseLiqRecord(
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "liquidation_record", MarginfiError.InvalidLiquidationRecord>,
+  liquidation_record: CloseTo<HasOne<Mut<LiquidationRecord>, "marginfi_account", MarginfiError.InvalidLiquidationRecord>, "record_payer">,
+  record_payer: Mut<AccountInfo>,
+): void {
+  constraint(
+    marginfi_account,
+    (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) === 0n && (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) === 0n,
+    MarginfiError.IllegalAction,
+  );
+  constraint(liquidation_record, liquidation_record.liquidation_receiver === SYSTEM_PROGRAM_ID, MarginfiError.IllegalAction);
+  constraint(record_payer, liquidation_record.record_payer === record_payer.key, MarginfiError.Unauthorized);
+  let last: i64 = 0n;
+  for (let i = 0n; i < 4n; i++) {
+    const ts = liquidation_record.entries.get(i).timestamp;
+    if (ts > last) last = ts;
+  }
+  if (last > 0n) require(saturatingSubI64(now(), last) >= 5184000n, MarginfiError.IllegalAction);
+  marginfi_account.liquidation_record = SYSTEM_PROGRAM_ID;
+}
+
+/**
+ * Settle a bankrupt account's debt in a bank (the admin or risk admin; anyone where the bank allows it): the insurance
+ * fund covers what it can, the bank's depositors share the rest (a bank whose deposits it exceeds is killed), and the
+ * account is disabled. The account's banks and oracles follow (after a Token-2022 bank's mint).
+ */
+export function lendingPoolHandleBankruptcy(
+  group: Account<MarginfiGroup>,
+  signer: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  liquidity_vault: Seeds<Mut<AccountInfo>, ["liquidity_vault", "@bank"], "@bank.liquidity_vault_bump">,
+  insurance_vault: Seeds<Mut<TokenAccount>, ["insurance_vault", "@bank"], "@bank.insurance_vault_bump">,
+  insurance_vault_authority: Seeds<AccountInfo, ["insurance_vault_auth", "@bank"], "@bank.insurance_vault_authority_bump">,
+  token_program: TokenInterface,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(group, !protocolPaused(group) || signer.key === group.admin || signer.key === group.risk_admin, MarginfiError.ProtocolPaused);
+  constraint(bank, isMarginfiAssetTag(bank.config.asset_tag), MarginfiError.WrongAssetTagForStandardInstructions);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) === 0n, MarginfiError.UnexpectedLiquidationState);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) === 0n, MarginfiError.AccountInFlashloan);
+  checkNoDurableNonce(instruction_sysvar);
+  const t = now();
+  const admin = signer.key === group.risk_admin || signer.key === group.admin;
+  if ((bank.flags & PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG) === PERMISSIONLESS_BAD_DEBT_SETTLEMENT_FLAG) validateBankState(bank, FAILS_IN_PAUSED_STATE, false, t);
+  else {
+    validateBankState(bank, 0n, true, t);
+    require(admin, MarginfiError.Unauthorized);
+  }
+  // maybe_take_bank_mint
+  let decimals: u8 = 0n;
+  const t22 = token_program.key !== TOKEN_PROGRAM_ID;
+  if (t22) {
+    require(remainingAccounts().length > 0n, MarginfiError.T22MintRequired);
+    const mint = remainingAccounts().get(0n);
+    const n = mint.dataLen;
+    require(
+      mintOk(bank.mint, mint.key, mint.owner, n, n >= 82n ? readData<u8>(mint, 45n) : 0n, n > 165n ? readData<u8>(mint, 165n) : 0n),
+      MarginfiError.T22MintRequired,
+    );
+    decimals = readData<u8>(mint, 44n);
+  }
+  const start: u64 = t22 ? 1n : 0n;
+  // The breaker's gate, unless an admin settles; then the equity check on the bank before its interest accrues.
+  if (!admin) {
+    const gate = cbPriceGate(marginfi_account, remainingAccounts(), start, t);
+    require(gate === 0n, gate);
+  }
+  const q = bankruptcy(marginfi_account, group, remainingAccounts(), start, t);
+  require(q.err === 0n, q.err);
+  const p = cachePrice(bank, bank.key, remainingAccounts(), start, t);
+  resetHealthCache(marginfi_account, t, 3n, HEALTH_ENGINE_OK);
+  marginfi_account.health_cache.asset_value_equity.value = q.assets;
+  marginfi_account.health_cache.liability_value_equity.value = q.liabs;
+  accrueInterest(bank, group, bank.key, t);
+  const found = findBalance(marginfi_account, bank.key);
+  require(found >= 0n, MarginfiError.LendingAccountBalanceNotFound);
+  const i = u64(found);
+  const badDebt = fxMul(marginfi_account.lending_account.balances.get(i).liability_shares.value, bank.liability_share_value.value);
+  require(badDebt > ZERO_AMOUNT_THRESHOLD, MarginfiError.BalanceNotBadDebt);
+  // The insurance fund, net of a Token-2022 transfer fee.
+  let held = insurance_vault.amount;
+  if (t22) held = held - transferFee(remainingAccounts().get(0n), held);
+  const available = fxFromU64(held);
+  const covered = badDebt < available ? badDebt : available;
+  const rest = fxSub(badDebt, covered);
+  const socialized = rest > I80F48_ZERO ? rest : I80F48_ZERO;
+  const coveredTokens = fxToU64(fxCeil(covered));
+  const pre = t22 ? coveredTokens + transferFeeInverse(remainingAccounts().get(0n), coveredTokens) : coveredTokens;
+  const bump = bank.insurance_vault_authority_bump;
+  if (t22)
+    invoke(
+      token_program,
+      [writable(insurance_vault), readonly(remainingAccounts().get(0n)), writable(liquidity_vault), readonlySigner(insurance_vault_authority)],
+      [u8(12n), pre, decimals],
+      ["insurance_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      token_program,
+      [writable(insurance_vault), writable(liquidity_vault), readonlySigner(insurance_vault_authority)],
+      [u8(3n), pre],
+      ["insurance_vault_auth", bank.key, bump],
+    );
+  const kill = socializeLoss(bank, socialized);
+  claimBalancePremium(marginfi_account, i, bank, u64(t));
+  const writtenOff = writeOffPremiumAmount(marginfi_account, i);
+  increaseBalance(marginfi_account, i, bank, badDebt, INCREASE_REPAY_ONLY, u64(t));
+  updateBankCache(bank, group, t);
+  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
+  marginfi_account.account_flags |= ACCOUNT_DISABLED;
+  marginfi_account.indexer_flags.has_been_bankrupted = 1n;
+  marginfi_account.last_update = u64(t);
+  if (kill) bank.config.operational_state = BankOperationalState.KilledByBankruptcy;
+  emit<LendingPoolBankHandleBankruptcyEvent>({
+    header: { signer: signer.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: marginfi_account.group },
+    bank: bank.key,
+    mint: bank.mint,
+    bad_debt: f64FromBits(fxToF64Bits(badDebt)),
+    covered_amount: f64FromBits(fxToF64Bits(covered)),
+    socialized_amount: f64FromBits(fxToF64Bits(socialized)),
+    premium_written_off: f64FromBits(fxToF64Bits(writtenOff)),
+  });
 }
 
 // ---- repayments and fees -------------------------------------------------------------------------------------------

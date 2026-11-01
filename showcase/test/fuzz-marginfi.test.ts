@@ -206,7 +206,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(30)) {
+      switch (rng.int(32)) {
         case 0:
         case 1:
         case 2: {
@@ -379,8 +379,11 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
                 [acct.address, acct.owner.address],
                 "if-panics",
               )) === "ok"
-            )
+            ) {
               accounts.splice(i, 1);
+              // An account that borrowed is a borrower too.
+              for (let j = borrowers.length - 1; j >= 0; j--) if (borrowers[j]!.address === acct.address) borrowers.splice(j, 1);
+            }
           }
           break;
         }
@@ -669,6 +672,54 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
           if (rng.chance(10)) editAccount(acct.address, [["liquidation_tagged_at", t - 10n, 8]]);
           await run(label("pulse health"), other, [h.pulseHealth(acct.address, group.address, rest)], [acct.address], "if-panics");
           editAccount(acct.address, [["account_flags", 0n, 8]]);
+          break;
+        }
+        case 30:
+        case 31: {
+          // Tag an account (its banks as its balances sit), or settle a debt of it as bankrupt (the admin, or anyone
+          // where the bank allows it), the insurance fund now and then holding something.
+          const pool = [...accounts, ...borrowers];
+          if (!pool.length) break;
+          const acct = rng.pick(pool);
+          // A borrower owes only its own bank, and nothing backs it: mostly settle that bank, so some succeed.
+          const sb: FuzzBank = "bank" in acct && rng.chance(70) ? (acct.bank as FuzzBank) : bank;
+          const d = Buffer.from((s.original.getAccount(acct.address) as { data: Uint8Array }).data);
+          const rest: Address[] = [];
+          for (let i = 0; i < 16; i++) {
+            const at = offsetOf("MarginfiAccount", `lending_account.balances[${i}].active`);
+            if (d[at] === 0) continue;
+            const k = d.subarray(at + 1, at + 33);
+            const hb = banks.find((x) => Buffer.from(new web3.PublicKey(x.address).toBytes()).equals(k));
+            if (!hb) continue;
+            const f = await feedsOf(hb.address);
+            if (rng.chance(70)) writeFeeds(f);
+            const setup = read64(hb.address, "Bank", "config.oracle_setup") & 0xffn;
+            rest.push(...(setup === 8n ? [hb.address] : [hb.address, setup === 4n ? f.swb : f.pyth]));
+          }
+          if (rng.chance(50)) {
+            await run(label("tag"), other, [h.tagLiqRecord(acct.address, group.address, rest)], [acct.address], "if-panics");
+            break;
+          }
+          if (rng.chance(30)) {
+            const held = rng.next() % 1_000_000_000n;
+            for (const vm of s.vms()) {
+              const x = vm.getAccount(sb.v.insurance);
+              if (!x.exists) continue;
+              const dd = Buffer.from(x.data);
+              dd.writeBigUInt64LE(held, 64);
+              vm.setAccount({ ...x, address: sb.v.insurance, data: new Uint8Array(dd) });
+            }
+          }
+          if (rng.chance(20)) h.editBank(sb.address, [["flags", read64(sb.address, "Bank", "flags") | 4n, 8]]);
+          const by = rng.chance(70) ? h.admin : other;
+          const t22 = sb.mint.program === TOKEN_2022;
+          await run(
+            label("bankruptcy"),
+            by,
+            [h.handleBankruptcy(group.address, by, sb, acct.address, [...(t22 ? [sb.mint.mint] : []), ...rest], sb.mint.program)],
+            [acct.address, sb.address, sb.v.liquidity, sb.v.insurance],
+            "if-panics",
+          );
           break;
         }
         default: {

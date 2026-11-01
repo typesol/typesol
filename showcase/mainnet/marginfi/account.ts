@@ -27,6 +27,7 @@ export const ACCOUNT_IN_DELEVERAGE: u64 = 32n;
 export const ACCOUNT_FROZEN: u64 = 64n;
 export const ACCOUNT_IN_ORDER_EXECUTION: u64 = 128n;
 export const ACCOUNT_IN_REBALANCE: u64 = 256n;
+export const ACCOUNT_IN_RISK_ADMIN_LIQUIDATION: u64 = 512n;
 
 /** 0.0001 and 1 as I80F48: below the first an amount counts as zero, below the second a balance side as empty. */
 export const ZERO_AMOUNT_THRESHOLD: i128 = 28147497671n;
@@ -515,4 +516,11 @@ export function hasLiabilities(account: Account<MarginfiAccount>): boolean {
     if (b.active !== 0n && b.liability_shares.value >= EMPTY_BALANCE_THRESHOLD) return true;
   }
   return false;
+}
+
+/** BankAccountWrapper::write_off_premium: the booked premium forgiven (and the rate cleared); returns what it was. */
+export function writeOffPremiumAmount(account: Mut<MarginfiAccount>, i: u64): i128 {
+  const was = account.lending_account.balances.get(i).premium_outstanding.value;
+  writeOffPremium(account, i);
+  return was;
 }
