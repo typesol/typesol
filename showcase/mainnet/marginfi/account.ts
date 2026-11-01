@@ -261,6 +261,14 @@ export function purgeBalance(account: Mut<MarginfiAccount>, i: u64, bank: Mut<Ba
   changeAssetShares(bank, -shares, false);
 }
 
+/** LendingAccount::zeroed(): every balance empty and inactive, the tag counter and padding cleared. */
+export function clearLendingAccount(account: Mut<MarginfiAccount>): void {
+  for (let i = 0n; i < 16n; i++) emptyBalance(account, i);
+  account.lending_account.last_tag_used = 0n;
+  for (let k = 0n; k < 6n; k++) account.lending_account.pad1.set(k, 0n);
+  for (let k = 0n; k < 7n; k++) account.lending_account.padding.set(k, 0n);
+}
+
 /** Balance::empty_deactivated. */
 function emptyBalance(account: Mut<MarginfiAccount>, i: u64): void {
   const b = account.lending_account.balances.get(i);
@@ -331,7 +339,7 @@ export function balanceSide(account: Mut<MarginfiAccount>, i: u64): u8 {
 }
 
 /** MarginfiAccount::sync_indexer_flags: what the balances say about the account, and that it was active now. */
-export function syncIndexerFlags(account: Mut<MarginfiAccount>): void {
+export function refreshIndexerFlags(account: Mut<MarginfiAccount>): void {
   syncBalanceDerived(account);
   const f = account.indexer_flags;
   f.was_active_30d = 1n;

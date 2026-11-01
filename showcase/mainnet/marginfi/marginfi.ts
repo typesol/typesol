@@ -11,6 +11,7 @@ import {
   type Account,
   type AccountInfo,
   type CloseTo,
+  AnchorError,
   type Dup,
   type RemainingAccounts,
   type SystemAccount,
@@ -33,6 +34,7 @@ import {
   constraint,
   currentSlot,
   fixedArray,
+  loadAccountMut,
   stackHeight,
   emit,
   f64FromBits,
@@ -92,7 +94,8 @@ import {
   signerAuthorized,
   sortBalances,
   syncBalanceDerived,
-  syncIndexerFlags,
+  refreshIndexerFlags,
+  clearLendingAccount,
 } from "./account";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import {
@@ -175,6 +178,9 @@ import {
   type LendingAccountBorrowEvent,
   type LendingAccountLiquidateEvent,
   type LiquidationReceiverEvent,
+  type AdminCloseAccountEvent,
+  type MarginfiAccountTransferToNewAccount,
+  type MarginfiAccountFreezeEvent,
   type DeleverageEvent,
   type HealthPulseEvent,
   type LiquidationTagEvent,
@@ -899,7 +905,7 @@ export function lendingAccountCloseBalance(
   require(i >= 0n, MarginfiError.BankAccountNotFound);
   closeBalance(marginfi_account, u64(i), bank, inReceivership);
   sortBalances(marginfi_account);
-  syncIndexerFlags(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
   marginfi_account.last_update = u64(t);
 }
 
@@ -981,7 +987,7 @@ export function lendingAccountDeposit(
     share_amount: { value: shares },
   });
   sortBalances(marginfi_account);
-  syncIndexerFlags(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
 }
 
 // ---- withdrawals -----------------------------------------------------------------------------------------------------
@@ -1106,7 +1112,7 @@ export function lendingAccountWithdraw(
     share_amount: { value: shares },
   });
   sortBalances(marginfi_account);
-  syncIndexerFlags(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
   if (!deferred) {
     // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
     const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
@@ -1234,7 +1240,7 @@ export function lendingAccountBorrow(
     bank.collected_group_fees_outstanding.value = groupFees;
   }
   sortBalances(marginfi_account);
-  syncIndexerFlags(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
   if (bank.config.risk_tier === RiskTier.Isolated) marginfi_account.indexer_flags.has_isolated = 1n;
   // check_account_init_health_and_clear_tag, as a withdrawal runs it.
   const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
@@ -1841,9 +1847,9 @@ export function lendingAccountLiquidate(
     t,
   );
   liquidatee_marginfi_account.indexer_flags.has_ever_been_liquidated = 1n;
-  syncIndexerFlags(liquidatee_marginfi_account);
+  refreshIndexerFlags(liquidatee_marginfi_account);
   sortBalances(liquidator_marginfi_account);
-  syncIndexerFlags(liquidator_marginfi_account);
+  refreshIndexerFlags(liquidator_marginfi_account);
   liquidatorAfter(liquidator_marginfi_account, group, remainingAccounts(), liqr, liqe, liab_bank, t);
   if (!cbAdmin) {
     const gate = cbPriceGate(liquidator_marginfi_account, remainingAccounts(), liqr, liqe, t);
@@ -2252,7 +2258,7 @@ export function purgeDeleverageBalance(
   require(fxAbs(owed) <= ZERO_AMOUNT_THRESHOLD, MarginfiError.OperationWithdrawOnly);
   purgeBalance(marginfi_account, i, bank, (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n);
   sortBalances(marginfi_account);
-  syncIndexerFlags(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
   marginfi_account.last_update = u64(now());
 }
 
@@ -2394,6 +2400,180 @@ export function lendingAccountEndFlashloan(
   }
 }
 
+// ---- account administration ----------------------------------------------------------------------------------------
+
+/** Freeze an account (the admin) or unfreeze it (the governance admin): a frozen account answers only to the latter. */
+export function marginfiAccountSetFreeze(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  frozen: boolean,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  require(admin.key === (frozen ? group.admin : group.governance_admin), MarginfiError.Unauthorized);
+  if (frozen) marginfi_account.account_flags |= ACCOUNT_FROZEN;
+  else marginfi_account.account_flags &= ~ACCOUNT_FROZEN;
+  marginfi_account.last_update = u64(now());
+  emit<MarginfiAccountFreezeEvent>({
+    header: { signer: admin.key, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: group.key },
+    frozen,
+  });
+}
+
+/** Where the account's emissions go (its authority; not while frozen). */
+export function marginfiAccountUpdateEmissionsDestinationAccount(
+  marginfi_account: Mut<MarginfiAccount>,
+  authority: Signer,
+  destination_account: AccountInfo,
+): void {
+  constraint(authority, authority.key === marginfi_account.authority, AnchorError.ConstraintAddress);
+  require((marginfi_account.account_flags & ACCOUNT_FROZEN) === 0n, MarginfiError.AccountFrozen);
+  marginfi_account.emissions_destination_account = destination_account.key;
+}
+
+/** Recompute the balance-derived indexer flags of the marginfi accounts that follow (anyone). */
+export function syncIndexerFlags(payer: Mut<Signer>): void {
+  for (let i = 0n; i < remainingAccounts().length; i++) {
+    const account = loadAccountMut<MarginfiAccount>(remainingAccounts().get(i));
+    syncBalanceDerived(account);
+  }
+}
+
+/** DEFAULT_ACCOUNT_TRANSFER_FEE_LAMPORTS: the fee state's account transfer fee when it stores 0. */
+const DEFAULT_ACCOUNT_TRANSFER_FEE: u64 = 5000000n;
+
+/**
+ * The checks and moves a transfer to a new account shares: the fee wallet the group caches (paid the fee state's
+ * transfer fee), the old account free to move; the new account the old one's balances, flags and tag under its new
+ * authority, the old one emptied, disabled and pointing at it.
+ */
+function transferStateChecks(old: Mut<MarginfiAccount>): void {
+  const flags = old.account_flags;
+  require((flags & ACCOUNT_IN_FLASHLOAN) === 0n, MarginfiError.AccountInFlashloan);
+  require((flags & ACCOUNT_IN_RECEIVERSHIP) === 0n, MarginfiError.ForbiddenIx);
+  require((flags & ACCOUNT_IN_ORDER_EXECUTION) === 0n, MarginfiError.ForbiddenIx);
+  require(old.active_orders === 0n, MarginfiError.IllegalAction);
+  require(old.migrated_to === SYSTEM_PROGRAM_ID, MarginfiError.AccountAlreadyMigrated);
+  require((flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+}
+function migrate(to: Mut<MarginfiAccount>, old: Mut<MarginfiAccount>, newAuthority: Pubkey, timestamp: u64): void {
+  initMarginfiAccount(to, old.group, newAuthority, timestamp);
+  to.lending_account = old.lending_account;
+  to.emissions_destination_account = old.emissions_destination_account;
+  to.account_flags = old.account_flags;
+  to.migrated_from = old.key;
+  to.indexer_flags = old.indexer_flags;
+  to.liquidation_tagged_at = old.liquidation_tagged_at;
+  refreshIndexerFlags(to);
+  old.migrated_to = to.key;
+  old.last_update = timestamp;
+  clearLendingAccount(old);
+  old.account_flags |= ACCOUNT_DISABLED;
+  refreshIndexerFlags(old);
+}
+
+/**
+ * Move an account to a new one under a new authority (its authority, or the governance admin when frozen), for the
+ * fee state's transfer fee: the new account takes its balances, flags and tag; the old one is emptied and disabled.
+ */
+export function transferToNewAccount(
+  group: Account<MarginfiGroup>,
+  old_marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  new_marginfi_account: Init<MarginfiAccount>,
+  authority: Signer,
+  fee_payer: Mut<Signer>,
+  new_authority: AccountInfo,
+  global_fee_wallet: Mut<AccountInfo>,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  system_program: SystemProgram,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(old_marginfi_account, notFrozenForAuthority(old_marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(
+    old_marginfi_account,
+    signerAuthorized(old_marginfi_account, group.governance_admin, authority.key, false, false, false),
+    MarginfiError.Unauthorized,
+  );
+  new_marginfi_account.create(fee_payer, null);
+  require(global_fee_wallet.key === group.fee_state_cache.global_fee_wallet, MarginfiError.InvalidFeeAta);
+  const fee = fee_state.account_transfer_fee;
+  system_program.transfer(fee_payer, global_fee_wallet, fee === 0n ? DEFAULT_ACCOUNT_TRANSFER_FEE : u64(fee));
+  transferStateChecks(old_marginfi_account);
+  migrate(new_marginfi_account, old_marginfi_account, new_authority.key, u64(now()));
+  emit<MarginfiAccountTransferToNewAccount>({
+    header: { signer: authority.key, marginfi_account: new_marginfi_account.key, marginfi_account_authority: new_authority.key, marginfi_group: group.key },
+    old_account: old_marginfi_account.key,
+    old_account_authority: authority.key,
+    new_account_authority: new_authority.key,
+  });
+}
+
+/** transfer_to_new_account, the new account at the PDA marginfi_account_initialize_pda uses. */
+export function transferToNewAccountPda(
+  group: Account<MarginfiGroup>,
+  old_marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  new_marginfi_account: Init<MarginfiAccount>,
+  authority: Signer,
+  fee_payer: Mut<Signer>,
+  new_authority: AccountInfo,
+  global_fee_wallet: Mut<AccountInfo>,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  instructions_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  system_program: SystemProgram,
+  account_index: u16,
+  third_party_id: Option<u16>,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(old_marginfi_account, notFrozenForAuthority(old_marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(
+    old_marginfi_account,
+    signerAuthorized(old_marginfi_account, group.governance_admin, authority.key, false, false, false),
+    MarginfiError.Unauthorized,
+  );
+  const bump = new_marginfi_account.create(fee_payer, ["marginfi_account", group.key, new_authority.key, account_index, third_party_id ?? 0n]);
+  require(global_fee_wallet.key === group.fee_state_cache.global_fee_wallet, MarginfiError.InvalidFeeAta);
+  const fee = fee_state.account_transfer_fee;
+  system_program.transfer(fee_payer, global_fee_wallet, fee === 0n ? DEFAULT_ACCOUNT_TRANSFER_FEE : u64(fee));
+  transferStateChecks(old_marginfi_account);
+  if (third_party_id !== null) require(thirdPartyAllowed(instructions_sysvar, third_party_id), MarginfiError.Unauthorized);
+  migrate(new_marginfi_account, old_marginfi_account, new_authority.key, u64(now()));
+  new_marginfi_account.account_index = account_index;
+  new_marginfi_account.third_party_index = third_party_id ?? 0n;
+  new_marginfi_account.bump = bump;
+  emit<MarginfiAccountTransferToNewAccount>({
+    header: { signer: authority.key, marginfi_account: new_marginfi_account.key, marginfi_account_authority: new_authority.key, marginfi_group: group.key },
+    old_account: old_marginfi_account.key,
+    old_account_authority: authority.key,
+    new_account_authority: new_authority.key,
+  });
+}
+
+/**
+ * Close an account (anyone), its rent to the global fee wallet: empty and idle for 60 days, no deleverage, order,
+ * liquidation record or rebalance fee pool left.
+ */
+export function adminCloseAccount(
+  group: Account<MarginfiGroup>,
+  marginfi_account: CloseTo<HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>, "global_fee_wallet">,
+  global_fee_wallet: Mut<AccountInfo>,
+  rebalance_fee_pool: Seeds<SystemAccount, ["rebalance_fee_pool", "@marginfi_account"]>,
+): void {
+  constraint(global_fee_wallet, global_fee_wallet.key === group.fee_state_cache.global_fee_wallet, MarginfiError.InvalidGlobalFeeWallet);
+  const idle = saturatingSubI64(now(), i64(marginfi_account.last_update)) > 5184000n;
+  require(canBeClosed(marginfi_account) && idle, MarginfiError.IllegalAction);
+  const flags = marginfi_account.account_flags;
+  require((flags & ACCOUNT_IN_DELEVERAGE) === 0n &&
+    (flags & ACCOUNT_IN_ORDER_EXECUTION) === 0n &&
+    marginfi_account.active_orders === 0n &&
+    marginfi_account.liquidation_record === SYSTEM_PROGRAM_ID, MarginfiError.IllegalAction);
+  require(rebalance_fee_pool.lamports === 0n, MarginfiError.IllegalAction);
+  emit<AdminCloseAccountEvent>({
+    header: { signer: null, marginfi_account: marginfi_account.key, marginfi_account_authority: marginfi_account.authority, marginfi_group: group.key },
+    global_fee_wallet: global_fee_wallet.key,
+  });
+}
+
 // ---- repayments and fees -------------------------------------------------------------------------------------------
 
 const ATA_PROGRAM_ID = pubkey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
@@ -2523,7 +2703,7 @@ export function lendingAccountRepay(
       premium_outstanding_remaining: f64FromBits(fxToF64Bits(remaining)),
     });
   sortBalances(marginfi_account);
-  syncIndexerFlags(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
 }
 
 /**

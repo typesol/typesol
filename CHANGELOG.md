@@ -15,6 +15,10 @@ codes, and says so here.
   `HealthCache.prices: [[u8; 8]; 16]`, written as 16 u64s instead of 128 bytes).
 - Repository: `pnpm test:core` no longer runs the showcase tests too (a path filter of `test` matched
   `showcase/test`); CI's compiler and showcase jobs now split the suite between them.
+- Examples: Marginfi's account administration: `marginfi_account_set_freeze`,
+  `marginfi_account_update_emissions_destination_account`, `sync_indexer_flags`, `transfer_to_new_account`,
+  `transfer_to_new_account_pda` and `admin_close_account`. Against the binary on mainnet: 955 transactions, the same IDL
+  for all 48 ported instructions. 38–86% fewer compute units.
 - Examples: Marginfi's flash loans, the start of part 5 of the port: `lending_account_start_flashloan` (the end
   instruction found through the Instructions sysvar) and `lending_account_end_flashloan` (the deferred health check,
   premium rates and the breaker's gate). Against the binary on mainnet: 915 transactions, the same IDL for all 42

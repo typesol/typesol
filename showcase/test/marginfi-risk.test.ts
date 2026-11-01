@@ -3,7 +3,7 @@
 // fails on, the isolated tier, e-mode, the deposit cap's discount, premiums, the liquidation tag, the circuit breaker's
 // gate, rate limits, receivership and deleverage paths, origination fees, Token-2022. Most debts are written into both
 // programs directly, to set up the withdrawals; the borrows make their own.
-import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
@@ -1423,6 +1423,155 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     editAccount(u.account, [["account_flags", 64n, 8]]);
     await fl("a frozen account", u, []);
     editAccount(u.account, [["account_flags", 0n, 8]]);
+  });
+
+  it("administers accounts as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    await user([[usdc, 500_000_000_000n]]);
+    const gov = await s.funded();
+    const govAt = offsetOf("MarginfiGroup", "governance_admin");
+    const govWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(govAt, govAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    editGroup(group.address, [["governance_admin", keyBits(gov.address), 32]]);
+    const other = await s.funded();
+    const u = await user([[usdc, 100_000_000n]]);
+    tick();
+    // Freezing (the admin) and unfreezing (the governance admin).
+    const freeze = (label: string, by: KeyPairSigner, account: Address, frozen: boolean, extra: Instruction[] = []) =>
+      run(
+        `freeze: ${label}`,
+        by,
+        [
+          s.ix("marginfi_account_set_freeze", { frozen }, [
+            { address: group.address },
+            { address: account, writable: true },
+            { address: by.address, signer: by },
+            { address: INSTRUCTIONS },
+          ]),
+          ...extra,
+        ],
+        [account],
+      );
+    await freeze("by someone else", other, u.account, true);
+    await freeze("unfrozen by the admin", admin, u.account, false);
+    await freeze("frozen by the admin", admin, u.account, true);
+    await freeze("durable nonce", admin, u.account, true, [h.advanceNonce(admin)]);
+    // The emissions destination: the authority's, not while frozen.
+    const dest = (label: string, by: KeyPairSigner, account: Address) =>
+      run(
+        `emissions destination: ${label}`,
+        by,
+        [
+          s.ix("marginfi_account_update_emissions_destination_account", {}, [
+            { address: account, writable: true },
+            { address: by.address, signer: by },
+            { address: other.address },
+          ]),
+        ],
+        [account],
+      );
+    await dest("frozen", u.owner, u.account);
+    await freeze("unfrozen by the governance admin", gov, u.account, false);
+    await dest("by its authority", u.owner, u.account);
+    await dest("by someone else", other, u.account);
+    // Indexer flags for any accounts.
+    const sync = (label: string, accounts: { address: Address; writable: boolean }[]) =>
+      run(
+        `sync indexer flags: ${label}`,
+        other,
+        [
+          {
+            ...s.ix("sync_indexer_flags", {}, [{ address: other.address, signer: other, writable: true }]),
+            accounts: [{ address: other.address, role: 3 }, ...accounts.map((a) => ({ address: a.address, role: a.writable ? 1 : 0 }))] as never,
+          },
+        ],
+        accounts.map((a) => a.address),
+      );
+    const v = await user([[usdc, 5_000_000n]]);
+    editAccount(v.account, [["indexer_flags.is_empty", 1n, 1]]);
+    await sync("two accounts", [
+      { address: u.account, writable: true },
+      { address: v.account, writable: true },
+    ]);
+    await sync("one not writable", [{ address: u.account, writable: false }]);
+    await sync("a bank", [{ address: usdc.address, writable: true }]);
+    await sync("none", []);
+    // Transfers to a new account, for the fee state's fee.
+    const transfer = async (label: string, from: User, by: KeyPairSigner, o: { wallet?: Address; pda?: [number, number | null]; to?: KeyPairSigner } = {}) => {
+      const to = o.to ?? (await s.funded());
+      let fresh: Address;
+      let signers: KeyPairSigner[] = [];
+      if (o.pda) {
+        const le16 = (n: number) => Uint8Array.of(n & 255, n >> 8);
+        [fresh] = await pda(PROGRAM, ["marginfi_account", group.address, to.address, le16(o.pda[0]), le16(o.pda[1] ?? 0)]);
+      } else {
+        const k = await generateKeyPairSigner();
+        fresh = k.address;
+        signers = [k];
+      }
+      const accounts = [
+        { address: group.address },
+        { address: from.account, writable: true },
+        o.pda ? { address: fresh, writable: true } : { address: fresh, writable: true, signer: signers[0] },
+        { address: by.address, signer: by },
+        { address: by.address, signer: by, writable: true },
+        { address: to.address },
+        { address: o.wallet ?? h.feeWallet, writable: true },
+        { address: h.feeState },
+        ...(o.pda ? [{ address: INSTRUCTIONS }] : []),
+        { address: SYSTEM },
+      ];
+      const ix = o.pda
+        ? s.ix("transfer_to_new_account_pda", { account_index: o.pda[0], third_party_id: o.pda[1] }, accounts as never)
+        : s.ix("transfer_to_new_account", {}, accounts as never);
+      return run(`transfer: ${label}`, by, [ix], [from.account, fresh, h.feeWallet]);
+    };
+    const w = await user([[usdc, 7_000_000n]]);
+    await transfer("by someone else", w, other);
+    await transfer("to the wrong fee wallet", w, w.owner, { wallet: other.address });
+    editAccount(w.account, [["account_flags", 2n, 8]]);
+    await transfer("in a flash loan", w, w.owner);
+    editAccount(w.account, [["account_flags", 0n, 8]]);
+    await transfer("with its balances", w, w.owner);
+    await transfer("again", w, w.owner);
+    const x = await user([[usdc, 3_000_000n]]);
+    await transfer("to a PDA", x, x.owner, { pda: [3, null] });
+    const y = await user([]);
+    await transfer("to a PDA with a third-party id", y, y.owner, { pda: [1, 10001] });
+    await transfer("to a PDA with an open id", y, y.owner, { pda: [2, 7] });
+    // Closing idle empty accounts (anyone), the rent to the global fee wallet.
+    const close = (label: string, account: Address, wallet: Address = h.feeWallet) =>
+      pda(PROGRAM, ["rebalance_fee_pool", account]).then(([pool]) =>
+        run(
+          `admin close: ${label}`,
+          other,
+          [
+            s.ix("admin_close_account", {}, [
+              { address: group.address },
+              { address: account, writable: true },
+              { address: wallet, writable: true },
+              { address: pool },
+            ]),
+          ],
+          [account, wallet],
+        ),
+      );
+    const idle = await user([]);
+    await close("active lately", idle.account);
+    editAccount(idle.account, [["last_update", t - 61n * 86_400n, 8]]);
+    await close("to the wrong wallet", idle.account, other.address);
+    await close("with a balance", u.account);
+    const [pool] = await pda(PROGRAM, ["rebalance_fee_pool", idle.account]);
+    for (const vm of s.vms()) vm.airdrop(pool, lamports(1_000_000n));
+    await close("a rebalance fee pool left", idle.account);
+    const idle2 = await user([]);
+    editAccount(idle2.account, [["last_update", t - 61n * 86_400n, 8]]);
+    await close("idle 61 days", idle2.account);
+    editGroup(group.address, [["governance_admin", govWas, 32]]);
   });
 
   it("withdraws Token-2022 with its transfer fee as the original does", async () => {
