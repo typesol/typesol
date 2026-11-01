@@ -202,10 +202,10 @@ On size, the port's binary is 566,280 bytes and the deployed original 1,700,160 
   `ProgramFailedToComplete`; the port fails with a numbered error. Examples: a position past the pool's own bitmap
   opened without the extension account (the original reads `remaining_accounts[0]` of none), more than 10 operators
   (`copy_from_slice` of the wrong length). The test checks only that both fail there.
-- **Check order on double faults.** Anchor creates `init` accounts (a position, an order) before it checks the accounts
-  after them. The port follows that order where a test showed it mattered (`create_support_mint_associated`);
-  elsewhere it checks every account first and creates them at the start of the body. A transaction breaking one check
-  gets the same code. One that breaks two at once can be reported differently.
+- **Check order on double faults.** Anchor creates `init` accounts (a position, an order) before it checks the other
+  accounts' constraints. TypeSOL does the same with the creates a body starts with (since the Marginfi port, whose
+  fuzzer found a case), so a transaction breaking both gets Anchor's code there. A body that checks something before
+  its creates keeps that order, and a double fault there can still be reported differently.
 - **Reward mints' order.** The original keeps the operation account's reward mints in a hash set's order; the port
   keeps them in the order added. With two or more listed, the `OperationState` bytes differ. Only membership is ever
   read, and operators are sorted the same in both.

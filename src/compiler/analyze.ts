@@ -2031,6 +2031,9 @@ function analyzeInstruction(
         a.constraints.dup)
     )
       reporter.error(a.node, "Migrate<From, To> takes no constraints yet: check the old fields with require(…, …) on acct.from");
+  for (const a of accounts)
+    if (a.kind.kind === "instructionsSysvar" && a.constraints.address && a.constraints.address.base58 !== "Sysvar1nstructions1111111111111111111111111")
+      reporter.error(a.node, "Address<InstructionsSysvar, …> must name the Instructions sysvar (Sysvar1nstructions1111111111111111111111111)");
 
   const name = snakeCase(fn.name.text);
   // `/** @discriminator spl-transfer-hook-interface:execute */` (sha256 preimage) or `@discriminator 0x...` (raw bytes)

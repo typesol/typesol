@@ -66,9 +66,12 @@ export class FunctionEmitter extends StatementEmitter {
       // Signed<…>: Anchor's `signer` constraint (2002), right after `mut`.
       if (a.constraints.signed) head.push(`  if (!${v}->is_signer) ${this.checkFail(a, "signer", "TS_ERR_CONSTRAINT_SIGNER", `${a.name} must sign`)};`);
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
+      // A zero-copy (bytemuck) struct is checked as Anchor's AccountLoader checks it.
       if (k.kind === "account")
         head.push(
-          `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
+          k.struct.idlMeta?.serialization?.startsWith("bytemuck")
+            ? `  TS_TRY(ts_check_loader_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${emptySizeC(k.struct)}));`
+            : `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
         );
       // A token account created by this instruction is checked where it is created (create/createIfNeeded).
       if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
@@ -79,7 +82,9 @@ export class FunctionEmitter extends StatementEmitter {
           `  if (!ts_key_eq(&${v}->owner, &TS_SYSTEM_PROGRAM_ID)) TS_FAIL(TS_ERR_NOT_SYSTEM_OWNED, "TypeSOL: ${a.name} must be owned by the System Program");`,
         );
       if (k.kind === "system") head.push(`  TS_TRY(ts_check_address(${v}, &TS_SYSTEM_PROGRAM_ID));`);
-      if (k.kind === "instructionsSysvar") head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
+      // Address<InstructionsSysvar, "Sysvar1nstructions…"> leaves the address to that constraint (2012, in Anchor's
+      // constraint order), as Anchor's `#[account(address = sysvar::instructions::ID)]` on an UncheckedAccount.
+      if (k.kind === "instructionsSysvar" && !a.constraints.address) head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
       if (k.kind === "eventAuthority") head.push(`  uint8_t eb_${a.name};`, `  TS_TRY(ts_check_event_authority(${v}, params->program_id, &eb_${a.name}));`);
       if (k.kind === "selfProgram")
         head.push(`  if (!ts_key_eq(&${v}->key, params->program_id)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: expected this program");`);
@@ -386,8 +391,14 @@ export class FunctionEmitter extends StatementEmitter {
     this.scopes = [new Map()];
     const raw = this.rawConstraints(ix);
     const grouped = ix.accounts.filter((a) => a.group);
-    if (!grouped.length) head.push(...this.constraintChecks(ix, raw.lines));
-    else {
+    const body = ix.node.body!.statements.slice(raw.count);
+    // Anchor creates `init` accounts before it checks the other accounts' constraints: the create calls the body starts
+    // with run first, then the constraints (a transaction breaking both gets Anchor's code).
+    const creates = grouped.length ? 0 : this.leadingCreates(ix, body);
+    if (!grouped.length && !creates) head.push(...this.constraintChecks(ix, raw.lines));
+    else if (!grouped.length) {
+      // Emitted with the body, after the creates (below).
+    } else {
       // With account groups, Anchor's order: the arguments first, then each account in order, a group's constraints
       // right after its accounts (a composite's try_accounts runs its own constraints), the others last.
       const groups = [...new Set(grouped.map((a) => a.group!.path[0]!))];
@@ -412,7 +423,11 @@ export class FunctionEmitter extends StatementEmitter {
     this.scopes = [new Map()];
     // Two back-to-back markers measure what one marker costs, so the profiler can subtract it.
     if (this.profile) for (let i = 0; i < 2; i++) (this.line(`sol_log("ts:~");`), this.line(`sol_log_compute_units();`));
-    for (const stmt of ix.node.body!.statements.slice(raw.count)) this.reporter.guard(() => this.statement(stmt, true));
+    body.forEach((stmt, i) => {
+      if (creates && i === creates) this.lines.push(...this.constraintChecks(ix, raw.lines));
+      this.reporter.guard(() => this.statement(stmt, true));
+    });
+    if (creates && creates === body.length) this.lines.push(...this.constraintChecks(ix, raw.lines));
     for (const name of this.pendingInit) {
       const k = this.accounts.get(name)!.kind;
       const a = this.accounts.get(name)!;
@@ -438,6 +453,44 @@ export class FunctionEmitter extends StatementEmitter {
       ? [`  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${ix.name} ended without returning a value");`]
       : [...this.epilogue().map((l) => `  ${l}`), `  return SUCCESS;`];
     return [...head, ...this.hoisted, ...this.lines, ...end, `}`].join("\n");
+  }
+
+  /**
+   * How many statements at the start of `body` create this instruction's Init / InitIfNeeded accounts
+   * (`acct.create(…)`, `acct.createIfNeeded(…)`, alone, as a const's value or assigned). 0 when none do, or when one reads a
+   * bump the constraint checks find (`acct.pdaBump` of a Seeds account), which must run first.
+   */
+  protected leadingCreates(ix: Instruction, body: readonly ts.Statement[]): number {
+    const isInit = (e: ts.Expression) => {
+      const a = ts.isIdentifier(e) ? ix.accounts.find((x) => x.name === e.text) : undefined;
+      return !!a && (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || ((a.kind.kind === "token" || a.kind.kind === "mint") && !!a.kind.init));
+    };
+    const createCall = (e: ts.Expression | undefined) =>
+      !!e &&
+      ts.isCallExpression(e) &&
+      ts.isPropertyAccessExpression(e.expression) &&
+      (e.expression.name.text === "create" || e.expression.name.text === "createIfNeeded") &&
+      isInit(e.expression.expression);
+    let n = 0;
+    for (const stmt of body) {
+      const e = ts.isExpressionStatement(stmt)
+        ? ts.isBinaryExpression(stmt.expression) && stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          ? stmt.expression.right
+          : stmt.expression
+        : ts.isVariableStatement(stmt) && stmt.declarationList.declarations.length === 1
+          ? stmt.declarationList.declarations[0]!.initializer
+          : undefined;
+      if (!createCall(e)) break;
+      let readsBump = false;
+      const visit = (x: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(x) && x.name.text === "pdaBump") readsBump = true;
+        ts.forEachChild(x, visit);
+      };
+      visit(stmt);
+      if (readsBump) return 0;
+      n++;
+    }
+    return n;
   }
 
   /** CloseTo<…> accounts are closed when the instruction succeeds, at every return. */

@@ -6,9 +6,10 @@ This repository also holds third-party material used only by its tests. None of 
 
 - test/programs/: program binaries dumped from Solana clusters. The ones kept in the repository are Apache-2.0:
   SPL Account Compression and SPL Noop (solana-labs/solana-program-library), Program Metadata
-  (solana-program/program-metadata), coral-xyz/multisig, Raydium CP-Swap and Raydium CLMM (raydium-io), and Jito's tip
-  payment, tip distribution and priority fee distribution programs (jito-foundation/jito-programs). The licence text is
-  test/programs/LICENSE-Apache-2.0.txt; each binary's source, program id and sha256 are in test/programs/SOURCES.md.
+  (solana-program/program-metadata), coral-xyz/multisig, Raydium CP-Swap and Raydium CLMM (raydium-io), Jito's tip
+  payment, tip distribution and priority fee distribution programs (jito-foundation/jito-programs), and marginfi v2
+  (mrgnlabs/marginfi-v2). The licence text is test/programs/LICENSE-Apache-2.0.txt; each binary's source, program id
+  and sha256 are in test/programs/SOURCES.md.
   The Metaplex programs, under the Metaplex(TM) NFT Open Source License 1.0, are not kept here: scripts/fetch-programs.sh
   downloads them.
 - test/fixtures/marginfi/: Marginfi v2's on-chain IDL and three of its mainnet accounts (mrgnlabs/marginfi-v2,

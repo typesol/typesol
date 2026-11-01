@@ -1,14 +1,15 @@
 // Instruction introspection (the Instructions sysvar: length, currentIndex, get(i) and what an instruction holds) and
-// stackHeight(): the reads, their bounds (5104), `is(program, name)`, and refusing CPI callers.
+// stackHeight(): the reads, their bounds (5104), `is(program, name)`, refusing CPI callers, and the sysvar behind
+// Address<…> (Anchor's `address = sysvar::instructions::ID`, 2012).
 import { type Address, address, getAddressEncoder } from "@solana/kit";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
+import { BN, compileErrors, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
 
 const IXS = address("Sysvar1nstructions1111111111111111111111111");
-const SOURCE = `import { type InstructionsSysvar, type Pubkey, type UncheckedProgram, type u64, type u8, invoke, require, returnData, sighash, stackHeight } from "typesol";
+const SOURCE = `import { type Address, type InstructionsSysvar, type Pubkey, type UncheckedProgram, type u64, type u8, invoke, require, returnData, sighash, stackHeight } from "typesol";
 
 /** length, current index, and the shape of instruction i, packed in one number. */
 export function shape(ixs: InstructionsSysvar, i: u64): u64 {
@@ -48,6 +49,10 @@ export function topLevelOnly(): void {
 }
 export function viaCpi(self: UncheckedProgram): void {
   invoke(self, [], [sighash("top_level_only")]);
+}
+/** The address checked as Anchor's address constraint on an UncheckedAccount checks it. */
+export function pinned(ixs: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">): u64 {
+  return ixs.length;
 }
 `;
 
@@ -102,8 +107,21 @@ describe("instruction introspection and stackHeight", () => {
       )[0] ?? 0,
     ).toBe(0);
     expect(customError(await send(d.svm, payer, [marker, flags(2)]))).toBe(5104);
-    // Another address than the sysvar: 3008.
+    // Another address than the sysvar: 3008; with Address<InstructionsSysvar, …>, ConstraintAddress (2012).
     expect(customError(await send(d.svm, payer, [ix(d, "shape", { i: new BN(0) }, [{ address: other.address }])]))).toBe(3008);
+    expect(customError(await send(d.svm, payer, [ix(d, "pinned", {}, [{ address: other.address }])]))).toBe(2012);
+    expect(
+      Buffer.from(
+        expectOk(await send(d.svm, payer, [ix(d, "pinned", {}, [{ address: IXS }])]))
+          .returnData()
+          .data(),
+      ).readBigUInt64LE(0),
+    ).toBe(1n);
+    expect(
+      compileErrors(
+        `import { type Address, type InstructionsSysvar } from "typesol";\nexport function f(ixs: Address<InstructionsSysvar, "11111111111111111111111111111111">): void {}\n`,
+      ),
+    ).toMatch(/must name the Instructions sysvar/);
   });
 
   it("is(program, name): the next instruction must be this program's marker", async () => {

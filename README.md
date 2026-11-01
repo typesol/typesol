@@ -183,7 +183,9 @@ checks it against the binary deployed on mainnet (same outcomes and account byte
 (pools, positions, swaps and routes, limit orders, rewards, admin: the same on 302 transactions; 33–84% fewer
 compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) for Jito's three MEV programs (tip
 payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–79% fewer
-compute units, up to 95% on refused calls). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
+compute units, up to 95% on refused calls), and [docs/case-study-marginfi.md](docs/case-study-marginfi.md) for
+Marginfi v2 as far as it goes (group and bank administration and interest so far: the same on 115 transactions;
+27–97% fewer compute units). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
 mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
@@ -336,7 +338,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`raydium-cp-swap/`](examples/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
 | [`raydium-clmm/`](examples/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](examples/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
-| [`marginfi/`](examples/marginfi) | Marginfi v2, in progress: its errors, I80F48 fixed-point arithmetic and zero-copy accounts, checked against mainnet's accounts and IDL; instructions to come |
+| [`marginfi/`](examples/marginfi) | Marginfi v2, in progress: I80F48 fixed-point arithmetic, zero-copy accounts, and group and bank administration with interest accrual, checked against the mainnet binary; accounts, deposits and the risk engine to come |
 | [`multisig.ts`](examples/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

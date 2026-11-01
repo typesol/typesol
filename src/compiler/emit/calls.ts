@@ -1197,7 +1197,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (this.model.events.has(s.name) && s.fields.some((f) => f.type.kind === "option" || f.type.kind === "dataEnum"))
       this.fail(node, `${s.name} is emitted as an event and has Option or enum fields; declare a separate event struct`);
     this.model.accountStructs.add(s.name);
-    this.line(`TS_TRY(ts_check_program_account(${h}, params->program_id, TS_DISC_${s.name}, ${emptySizeC(s)}));`);
+    this.line(
+      `TS_TRY(${s.idlMeta?.serialization?.startsWith("bytemuck") ? "ts_check_loader_account" : "ts_check_program_account"}(${h}, params->program_id, TS_DISC_${s.name}, ${emptySizeC(s)}));`,
+    );
     if (s.vec) for (const l of vecLenCheck(s, h, `((TSS_${s.name} *)(${h}->data + 8))`, "")) this.line(l);
     if (mut) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);

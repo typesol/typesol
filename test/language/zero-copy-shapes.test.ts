@@ -1,12 +1,14 @@
 // What porting Marginfi's zero-copy accounts needed: error codes that jump (`/** @code 6200 */`, Anchor's `X = 200`),
 // integers the IDL shows as bytes (`/** @bytes */`, WrappedI80F48), IDL names the source cannot use (`/** @idlName _pad0 */`,
 // a `key_` field for Rust's `key`), and the IDL's repr / serialization of zero-copy types (`/** @repr c */`,
-// `/** @serialization bytemuck */`), with repr(C)'s field offsets checked.
+// `/** @serialization bytemuck */`), with repr(C)'s field offsets checked, and accounts of such types checked in the order
+// Anchor's AccountLoader checks them.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { web3 } from "@anchor-lang/core";
+import { type Address, generateKeyPairSigner, lamports } from "@solana/kit";
 import { BN, SYSTEM_PROGRAM, acct, compileErrors, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "../harness.js";
 
 const SOURCE = `import { type Account, type FixedArray, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type i128, type u8, type u16, type u32, type u64, require } from "typesol";
@@ -99,6 +101,23 @@ describe("zero-copy shapes", () => {
     expect(data.length).toBe(8 + 32 + 1 + 7 + 16 + 8 + 1 + 7);
     expect(data.readBigInt64LE(56) * (1n << 64n) + data.readBigUInt64LE(48)).toBe(-12345678901234567890123n);
     expect(data.readBigUInt64LE(64)).toBe(7n);
+  });
+
+  it("checks a zero-copy account as Anchor's AccountLoader does: owner, discriminator, then size", async () => {
+    const payer = await fundedSigner(d.svm);
+    const check = (address: Address) => send(d.svm, payer, [ix(d, "check", { n: 0 }, [{ address }])]);
+    const put = async (owner: Address, data: Uint8Array) => {
+      const a = (await generateKeyPairSigner()).address;
+      d.svm.setAccount({ address: a, data, executable: false, lamports: lamports(10_000_000n), programAddress: owner, space: BigInt(data.length) });
+      return a;
+    };
+    // An account never created: AccountOwnedByWrongProgram (3007), not AccountNotInitialized as Account<T> gives.
+    expect(customError(await check((await generateKeyPairSigner()).address))).toBe(3007);
+    expect(customError(await check(await put(d.programId, new Uint8Array(4))))).toBe(3001);
+    expect(customError(await check(await put(d.programId, new Uint8Array(80))))).toBe(3002);
+    const [book] = await pda(d.programId, ["book"]);
+    const short = Buffer.from(acct(d.svm, book).data).subarray(0, 40);
+    expect(customError(await check(await put(d.programId, new Uint8Array(short))))).toBe(3003);
   });
 
   it("describes the types as Anchor's IDL does", () => {
