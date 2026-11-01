@@ -681,6 +681,23 @@ export function marginfiPair() {
     );
   const pulseHealth = (account: Address, group: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_account_pulse_health", {}, [{ address: account, writable: true }, { address: group }]), rest);
+  const tagLiqRecord = (account: Address, group: Address, rest: Address[] = []) =>
+    withRest(s.ix("marginfi_account_tag_liq_record", {}, [{ address: account, writable: true }, { address: group }]), rest);
+  const handleBankruptcy = (group: Address, by: KeyPairSigner, bank: BankRef, account: Address, rest: Address[] = [], program: Address = TOKEN_PROGRAM) =>
+    withRest(
+      s.ix("lending_pool_handle_bankruptcy", {}, [
+        { address: group },
+        { address: by.address, signer: by },
+        { address: bank.address, writable: true },
+        { address: account, writable: true },
+        { address: bank.v.liquidity, writable: true },
+        { address: bank.v.insurance, writable: true },
+        { address: bank.v.insuranceAuth },
+        { address: program },
+        { address: INSTRUCTIONS },
+      ]),
+      rest,
+    );
   const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
     withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
 
@@ -697,6 +714,8 @@ export function marginfiPair() {
     withdraw,
     borrow,
     pulseHealth,
+    tagLiqRecord,
+    handleBankruptcy,
     createAta,
     repay,
     ata,

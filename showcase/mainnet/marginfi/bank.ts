@@ -891,3 +891,18 @@ export function updateCachePrice(bank: Mut<Bank>, price: i128, conf: i128, sourc
   bank.cache.last_oracle_price_timestamp = timestamp;
   updateCircuitBreaker(bank, timestamp, slot, price, conf, sourceTime);
 }
+
+/**
+ * Bank::socialize_loss: the depositors share a loss through a lower share value; one at or past the bank's deposits
+ * wipes them out. Returns whether the bank is dead (a share value of 0).
+ */
+export function socializeLoss(bank: Mut<Bank>, loss: i128): boolean {
+  const total = fxMul(bank.total_asset_shares.value, bank.asset_share_value.value);
+  if (total <= loss) {
+    bank.asset_share_value.value = I80F48_ZERO;
+    return true;
+  }
+  const value = fxDiv(total - loss, bank.total_asset_shares.value);
+  bank.asset_share_value.value = value;
+  return value === I80F48_ZERO;
+}

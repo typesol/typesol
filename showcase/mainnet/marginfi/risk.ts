@@ -30,7 +30,7 @@ import {
 import { ACCOUNT_IN_FLASHLOAN, EMPTY_BALANCE_THRESHOLD, ZERO_KEY, claimPremium, writeOffPremium } from "./account";
 import { BANK_SAME_ASSET_EMODE_ELIGIBLE, CIRCUIT_BREAKER_ENABLED, PREMIUM_ACTIVE, cbPriceGateErr } from "./bank";
 import { MarginfiError } from "./errors";
-import { type Fx, I80F48_ONE, I80F48_ZERO, exp10Fx, fxFromU64, fxMul, fxToF64Bits, fxTryAdd, fxTryDiv, fxTryMul } from "./i80f48";
+import { type Fx, I80F48_ONE, I80F48_ZERO, exp10Fx, fxFromU64, fxMul, fxToF64Bits, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub } from "./i80f48";
 import { SECONDS_PER_YEAR, milliToU32, u32ToBasis, u32ToMilli } from "./interest_rate";
 import {
   BIAS_HIGH,
@@ -911,4 +911,63 @@ export function hasIsolatedLiability(acc: Account<MarginfiAccount>, rest: Remain
     at += per.n;
   }
   return { err: 0n, n: found ? 1n : 0n };
+}
+
+// ---- liquidation and bankruptcy ---------------------------------------------------------------------------------
+
+/** Maintenance (or equity) health, or the error computing it. */
+export interface Totals {
+  err: u32;
+  health: i128;
+  assets: i128;
+  liabs: i128;
+}
+
+/**
+ * check_pre_liquidation_condition_and_get_account_health (no liability bank, no cache): Maintenance health at spot
+ * prices, assets less liabilities; the caller decides what a healthy account means.
+ */
+export function preLiquidation(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, t: i64): Totals {
+  const m = healthComponents(acc, group, rest, start, REQ_MAINTENANCE, false, t);
+  if (m.err !== 0n) return { err: m.err, health: 0n, assets: 0n, liabs: 0n };
+  const health = fxTrySub(m.assets, m.liabs);
+  return { err: health.err, health: health.v, assets: m.assets, liabs: m.liabs };
+}
+
+/** BANKRUPT_THRESHOLD (0.1). */
+export const BANKRUPT_THRESHOLD: i128 = 28147497671066n;
+
+/**
+ * check_account_bankrupt: equity values at EMA prices and full weights; bankrupt when it owes more than it holds with
+ * under 0.1 in assets (AccountNotBankrupt otherwise).
+ */
+export function bankruptcy(acc: Account<MarginfiAccount>, group: Account<MarginfiGroup>, rest: RemainingAccounts, start: u64, t: i64): Totals {
+  const q = healthComponents(acc, group, rest, start, REQ_EQUITY, false, t);
+  if (q.err !== 0n) return { err: q.err, health: 0n, assets: 0n, liabs: 0n };
+  const bankrupt = q.liabs > I80F48_ZERO && q.assets < BANKRUPT_THRESHOLD && q.liabs > q.assets;
+  return { err: bankrupt ? 0n : 6013n, health: 0n, assets: q.assets, liabs: q.liabs };
+}
+
+/** HealthCache::zeroed() with a time, a version and flags. */
+export function resetHealthCache(acc: Mut<MarginfiAccount>, t: i64, version: u8, flags: u32): void {
+  const c = acc.health_cache;
+  c.asset_value.value = I80F48_ZERO;
+  c.liability_value.value = I80F48_ZERO;
+  c.asset_value_maint.value = I80F48_ZERO;
+  c.liability_value_maint.value = I80F48_ZERO;
+  c.asset_value_equity.value = I80F48_ZERO;
+  c.liability_value_equity.value = I80F48_ZERO;
+  c.timestamp = t;
+  c.flags = flags;
+  c.mrgn_err = 0n;
+  for (let p = 0n; p < 16n; p++) c.prices.set(p, 0n);
+  c.internal_err = 0n;
+  c.err_index = 0n;
+  c.program_version = version;
+  c.pad0.set(0n, 0n);
+  c.pad0.set(1n, 0n);
+  c.internal_liq_err = 0n;
+  c.internal_bankruptcy_err = 0n;
+  for (let j = 0n; j < 32n; j++) c.reserved0.set(j, 0n);
+  for (let j = 0n; j < 16n; j++) c.reserved1.set(j, 0n);
 }

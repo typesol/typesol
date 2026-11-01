@@ -13,7 +13,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 1 | Errors, I80F48 arithmetic, the zero-copy accounts and the types they hold | done |
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
-| 4 | Liquidation and bankruptcy | to come |
+| 4 | Liquidation and bankruptcy | in progress: liquidation records and bankruptcy done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -137,6 +137,19 @@ balance):
   healthy account's liquidation tag cleared) and equity (bankrupt or not); the indexer flags (underwater, a trivial
   balance, isolated debt, activity over 30 and 60 days); the event carrying the cache.
 
+**Part 4, liquidation records and bankruptcy.** Four instructions:
+
+- `marginfi_account_init_liq_record` and `marginfi_account_close_liq_record`: the liquidation record a liquidator
+  pays for, closed to its payer once the account has not been liquidated for 60 days, never during receivership or
+  with a receiver set;
+- `marginfi_account_tag_liq_record` (anyone): an account the risk engine finds liquidatable at Maintenance is tagged
+  in its record, the health cache reset and filled from that pass, the event emitted; a healthy one is refused;
+- `lending_pool_handle_bankruptcy` (the risk admin, or anyone on a bank flagged for permissionless settlement, past
+  the circuit breaker's gate): an account whose equity is gone has its debt in one bank covered from the insurance
+  vault (after a Token-2022 transfer fee, the transfer grossed up for it) and the rest socialized over the
+  depositors, the bank killed when nothing is left to share it; the premium claimed and the rest written off, the
+  bank's caches updated, the account disabled and marked as having been bankrupt.
+
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
 
@@ -205,9 +218,9 @@ halt, a frozen bank, the fee state's pause, an account's flags and balances, rat
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 269 in
+for the oracles, and 314 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
-for withdrawals, borrows, health pulses and the risk engine. The last two write Pyth and Switchboard accounts byte for
+for withdrawals, borrows, health pulses, liquidation records, bankruptcy and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
 - **Fee state and groups (18).** Created; refused with the wrong fee state, the wrong sysvar, a durable nonce; roles
@@ -254,7 +267,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses and the risk engine (269, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy and the risk engine (314, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -273,7 +286,12 @@ byte into both ledgers:
   oracle; the protocol paused; Token-2022. Health pulses of an empty account, a healthy one, one short at Initial but
   not at Maintenance, a liquidatable one, one healthy again (its tag cleared), a bankrupt one; with a stale collateral
   oracle, then a stale liability oracle; without accounts, short an oracle; with isolated debt, in a flash loan, idle
-  for 45 days, with premium-active debt.
+  for 45 days, with premium-active debt. Tags of a healthy account, a liquidatable one, one tagged already, one
+  healthy again; without accounts, disabled, the protocol paused. Records initialized, again, closed to another
+  payer, used lately, with a receiver set, in receivership, after 61 idle days, initialized after a close. Bankruptcy
+  by someone who is not the admin, of a bank the account owes nothing, of an account still solvent, in receivership,
+  without its health accounts; the insurance covering part of the debt, the bank disabled after, a permissionless
+  bank fully covered, a debt past every deposit (the bank killed).
 
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
@@ -286,7 +304,8 @@ random walk with jumps, random confidence, exponents and ages, now and then a br
 the circuit breaker counts them; withdrawals of part of a deposit or all of it over those prices, the health
 accounts as a client sends them or now and then short, out of order or with extras, account flags (disabled,
 receivership, deleverage, frozen, flash loan) and liquidation tags; borrows with origination and program fees; health
-pulses of any account. The keys come from the seed too (the order of keys decides how balances sort), so a seed
+pulses of any account; liquidation tags and bankruptcies of any account, the insurance vault's balance rewritten now
+and then. The keys come from the seed too (the order of keys decides how balances sort), so a seed
 reproduces a run exactly.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
@@ -376,10 +395,17 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_account_pulse_health`, liquidatable | 74,068 | 46,340 | −37% |
 | `lending_account_pulse_health`, bankrupt | 65,817 | 39,349 | −40% |
 | `lending_account_pulse_health`, a stale collateral oracle | 36,258 | 23,946 | −34% |
+| `marginfi_account_tag_liq_record`, liquidatable | 25,168 | 13,965 | −45% |
+| `marginfi_account_init_liq_record` | 10,318 | 2,851 | −72% |
+| `marginfi_account_close_liq_record` | 2,444 | 632 | −74% |
+| `lending_pool_handle_bankruptcy`, insurance covering part | 91,747 | 50,194 | −45% |
+| `lending_pool_handle_bankruptcy`, permissionless, covered | 69,730 | 33,815 | −52% |
+| `lending_pool_handle_bankruptcy`, past the deposits | 35,143 | 19,516 | −44% |
 
 Across the 125 transactions of the first file that succeed, the port uses 36–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Accrual and repayments with a premium, nearly all I80F48 arithmetic, save least (36–61%).
 In the oracle file, the 72 that succeed use 47–84% fewer; the 76 refused ones 46–93% fewer. In the risk file, the
 withdrawals that succeed use 38–63% fewer, the borrows 41–47%, the health pulses 15–64% (the least: an empty account,
-where the original does little); refused withdrawals and borrows 41–92% fewer. A health check is mostly I80F48
+where the original does little), a tag 45%, records 69–74%, bankruptcies 44–52%; refused withdrawals and borrows
+41–92% fewer. A health check is mostly I80F48
 products and quotients, like accrual.
