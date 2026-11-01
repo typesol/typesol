@@ -187,6 +187,7 @@ export function valueC(t: ValueType): string {
       return `TSE_${t.name} *`;
     case "remaining":
     case "arrayArg":
+    case "optionArg":
     case "signerSeeds":
       throw new Error(`unreachable: ${t.kind} is not held in a C value`);
     default:

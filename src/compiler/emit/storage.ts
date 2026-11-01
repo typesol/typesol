@@ -161,6 +161,8 @@ export abstract class StorageEmitter extends AliasEmitter {
       const l = this.lookup(node.text);
       if (l && l.type.kind === "array") return { lv: l.c, type: l.type, writable: !l.readonly };
       if (l && l.type.kind === "vec") return this.withFixedVec({ lv: l.c, type: l.type, writable: true });
+      // An Option<struct> instruction argument: read like an Option<struct> field.
+      if (l && l.type.kind === "optionArg") return { lv: l.c, type: l.type.option, writable: false };
       // A struct loaded from a remaining account.
       if (l && l.type.kind === "structRef") return { lv: `(*${l.c})`, type: { kind: "struct", name: l.type.struct }, writable: l.type.writable };
       if (l && l.type.kind === "enumRef") return { lv: `(*${l.c})`, type: { kind: "dataEnum", name: l.type.name }, writable: l.type.writable };

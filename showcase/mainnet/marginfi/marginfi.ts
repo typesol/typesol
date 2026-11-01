@@ -2594,6 +2594,36 @@ export function configGroupFee(
   marginfi_group.fee_state_cache.last_update = now();
 }
 
+/** Edit the fee state (the global fee admin): each field given replaces the stored one. */
+export function editGlobalFeeState(
+  global_fee_admin: Signer,
+  fee_state: Seeds<HasOne<Mut<FeeState>, "global_fee_admin", MarginfiError.Unauthorized>, ["feestate"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  admin: Option<Pubkey>,
+  fee_wallet: Option<Pubkey>,
+  bank_init_flat_sol_fee: Option<u32>,
+  liquidation_flat_sol_fee: Option<u32>,
+  order_init_flat_sol_fee: Option<u32>,
+  program_fee_fixed: Option<WrappedI80F48>,
+  program_fee_rate: Option<WrappedI80F48>,
+  liquidation_max_fee: Option<WrappedI80F48>,
+  order_execution_max_fee: Option<WrappedI80F48>,
+  pause_delegate_admin: Option<Pubkey>,
+  account_transfer_fee: Option<u32>,
+): void {
+  if (admin !== null) fee_state.global_fee_admin = admin;
+  if (fee_wallet !== null) fee_state.global_fee_wallet = fee_wallet;
+  if (bank_init_flat_sol_fee !== null) fee_state.bank_init_flat_sol_fee = bank_init_flat_sol_fee;
+  if (program_fee_fixed !== null) fee_state.program_fee_fixed.value = program_fee_fixed.value;
+  if (program_fee_rate !== null) fee_state.program_fee_rate.value = program_fee_rate.value;
+  if (liquidation_max_fee !== null) fee_state.liquidation_max_fee.value = liquidation_max_fee.value;
+  if (liquidation_flat_sol_fee !== null) fee_state.liquidation_flat_sol_fee = liquidation_flat_sol_fee;
+  if (order_execution_max_fee !== null) fee_state.order_execution_max_fee.value = order_execution_max_fee.value;
+  if (order_init_flat_sol_fee !== null) fee_state.order_init_flat_sol_fee = order_init_flat_sol_fee;
+  if (pause_delegate_admin !== null) fee_state.pause_delegate_admin = pause_delegate_admin;
+  if (account_transfer_fee !== null) fee_state.account_transfer_fee = account_transfer_fee;
+}
+
 /** Where premium fees go (the global fee admin). */
 export function editFeeStatePremium(
   global_fee_admin: Signer,
@@ -2674,6 +2704,53 @@ export function panicUnpausePermissionless(fee_state: Seeds<Mut<FeeState>, ["fee
   require((fee_state.panic_state.pause_flags & PAUSED) !== 0n, MarginfiError.ProtocolNotPaused);
   require(pauseExpired(fee_state, t), MarginfiError.PauseLimitExceeded);
   unpause(fee_state);
+}
+
+/** validate_and_apply_emode_leverage: a leverage from 1 to 100, stored as basis points of u32::MAX. */
+function emodeLeverage(v: i128): u32 {
+  require(v >= I80F48_ONE && v <= 28147497671065600n, MarginfiError.BadEmodeConfig);
+  return basisToU32(v);
+}
+
+/**
+ * Configure a group's governance roles and e-mode leverage caps (the governance admin): the caps both set or both
+ * unset, init below maintenance; the same for same-asset e-mode.
+ */
+export function marginfiGroupConfigureGov(
+  marginfi_group: HasOne<Mut<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  new_admin: Option<Pubkey>,
+  new_emode_admin: Option<Pubkey>,
+  new_risk_admin: Option<Pubkey>,
+  emode_max_init_leverage: Option<WrappedI80F48>,
+  emode_max_maint_leverage: Option<WrappedI80F48>,
+  same_asset_emode_init_leverage: Option<WrappedI80F48>,
+  same_asset_emode_maint_leverage: Option<WrappedI80F48>,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  if (new_admin !== null) marginfi_group.admin = new_admin;
+  if (new_emode_admin !== null) marginfi_group.emode_admin = new_emode_admin;
+  if (new_risk_admin !== null) marginfi_group.risk_admin = new_risk_admin;
+  if (emode_max_init_leverage !== null) marginfi_group.emode_max_init_leverage = emodeLeverage(emode_max_init_leverage.value);
+  if (emode_max_maint_leverage !== null) marginfi_group.emode_max_maint_leverage = emodeLeverage(emode_max_maint_leverage.value);
+  const init = marginfi_group.emode_max_init_leverage;
+  const maint = marginfi_group.emode_max_maint_leverage;
+  const capsSet = init !== 0n || maint !== 0n;
+  require(!(capsSet && (init === 0n || maint === 0n)), MarginfiError.BadEmodeConfig);
+  require(!(capsSet && u32ToBasis(init) >= u32ToBasis(maint)), MarginfiError.BadEmodeConfig);
+  if (same_asset_emode_init_leverage !== null) marginfi_group.same_asset_emode_init_leverage = emodeLeverage(same_asset_emode_init_leverage.value);
+  if (same_asset_emode_maint_leverage !== null) marginfi_group.same_asset_emode_maint_leverage = emodeLeverage(same_asset_emode_maint_leverage.value);
+  const sameInit = u32ToBasis(marginfi_group.same_asset_emode_init_leverage);
+  const sameMaint = u32ToBasis(marginfi_group.same_asset_emode_maint_leverage);
+  require(sameInit > I80F48_ONE === sameMaint > I80F48_ONE, MarginfiError.BadEmodeConfig);
+  require(!(sameInit > I80F48_ONE && sameInit >= sameMaint), MarginfiError.BadEmodeConfig);
+  marginfi_group.fee_state_cache.last_update = now();
+  emit<MarginfiGroupConfigureEvent>({
+    header: { signer: governance_admin.key, marginfi_group: marginfi_group.key },
+    admin: new_admin,
+    flags: marginfi_group.group_flags,
+  });
 }
 
 /** Set a group's governance admin (the admin the first time, the governance admin after). */

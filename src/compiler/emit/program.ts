@@ -125,6 +125,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     out.push("");
   };
   for (const s of model.structs.values()) emitStruct(s);
+  for (const ix of model.instructions) for (const a of ix.args) if (a.type.kind === "optionArg") deps(a.type.option);
   for (const e of model.dataEnums.values()) deps({ kind: "dataEnum", name: e.name });
   for (const t of model.localVecs.values()) deps(t);
 
