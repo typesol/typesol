@@ -709,7 +709,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         return { c: `(a_${optionalAccount.name} ${neg ? "!=" : "=="} NULL)`, type: BOOL };
       }
       const v = this.expr(other);
-      if (v.type.kind !== "option") this.fail(other, "only Option values can be compared with null");
+      if (v.type.kind !== "option" && v.type.kind !== "optionArg") this.fail(other, "only Option values can be compared with null");
       const neg = op === K.ExclamationEqualsEqualsToken || op === K.ExclamationEqualsToken;
       return { c: neg ? `((${v.c}).some != 0)` : `((${v.c}).some == 0)`, type: BOOL };
     }

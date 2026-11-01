@@ -252,6 +252,18 @@ export class FunctionEmitter extends StatementEmitter {
           head.push(`    if (arg_${a.name}.v >= ${max}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid option argument");`);
         }
         head.push(`  }`);
+      } else if (a.type.kind === "optionArg") {
+        // Borsh Option of a fixed-size struct: one tag byte, then the struct's bytes only when Some.
+        const inner = a.type.option.inner as FieldType;
+        const size = this.fieldBytes(inner);
+        need("1");
+        head.push(`  ${optC(a.type.option.inner)} arg_${a.name} = {0};`, `  uint8_t arg_${a.name}__tag = *(${at});`, `  off += 1;`);
+        head.push(`  if (arg_${a.name}__tag > 1) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: invalid option argument");`);
+        head.push(`  if (arg_${a.name}__tag == 1) {`);
+        head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
+        head.push(`    arg_${a.name}.some = 1;`, `    ts_memcpy(&arg_${a.name}.v, ${at}, ${size});`, `    off += ${size};`);
+        head.push(...this.validation(`arg_${a.name}.v`, inner, "    "));
+        head.push(`  }`);
       } else if (a.type.kind === "vecArg" && a.type.elem.kind === "string") {
         // Borsh Vec<String>: u32 count, then each string's u32 length and UTF-8 bytes. Kept as views of the
         // instruction data in a heap array of TS_Str (each string at least 4 bytes, so the count is bounded first).

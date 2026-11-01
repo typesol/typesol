@@ -1768,6 +1768,86 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await premium("removed again", admin, 1, 1, 0);
     await premium("removed, the first", admin, 1, 2, 0);
     await premium("removed, the last", admin, 3, 1, 0);
+    // The whole fee state (the global fee admin), each field given replacing the stored one; restored after.
+    const snapshot = (a: Address) => s.vms().map((vm) => ({ vm, x: vm.getAccount(a) }));
+    const restore = (saved: ReturnType<typeof snapshot>, a: Address) => {
+      for (const { vm, x } of saved) if (x.exists) vm.setAccount({ ...x, address: a });
+    };
+    const feeSaved = snapshot(h.feeState);
+    const groupSaved = snapshot(group.address);
+    const editFee = (label: string, by: KeyPairSigner, args: Record<string, unknown>) =>
+      fee(
+        `fee state: ${label}`,
+        "edit_global_fee_state",
+        by,
+        {
+          admin: null,
+          fee_wallet: null,
+          bank_init_flat_sol_fee: null,
+          liquidation_flat_sol_fee: null,
+          order_init_flat_sol_fee: null,
+          program_fee_fixed: null,
+          program_fee_rate: null,
+          liquidation_max_fee: null,
+          order_execution_max_fee: null,
+          pause_delegate_admin: null,
+          account_transfer_fee: null,
+          ...args,
+        },
+        [{ address: by.address, signer: by }, { address: h.feeState, writable: true }, { address: INSTRUCTIONS }],
+        [h.feeState],
+      );
+    await editFee("by someone else", other, { liquidation_flat_sol_fee: 1 });
+    await editFee("nothing", admin, {});
+    await editFee("every field", admin, {
+      fee_wallet: new web3.PublicKey(other.address),
+      bank_init_flat_sol_fee: 1_000,
+      liquidation_flat_sol_fee: 2_000,
+      order_init_flat_sol_fee: 3_000,
+      program_fee_fixed: fx(ratio(2n, 100n)),
+      program_fee_rate: fx(ratio(7n, 100n)),
+      liquidation_max_fee: fx(ratio(15n, 100n)),
+      order_execution_max_fee: fx(ratio(4n, 100n)),
+      pause_delegate_admin: new web3.PublicKey(flow.address),
+      account_transfer_fee: 1_234_567,
+      admin: new web3.PublicKey(other.address),
+    });
+    await editFee("by the new admin", other, { admin: new web3.PublicKey(admin.address) });
+    restore(feeSaved, h.feeState);
+    // Governance roles and e-mode leverage caps (the governance admin).
+    const govAdmin = await s.funded();
+    editGroup(group.address, [["governance_admin", keyBits(govAdmin.address), 32]]);
+    const caps = (label: string, by: KeyPairSigner, args: Record<string, unknown>) =>
+      fee(
+        `group gov: ${label}`,
+        "marginfi_group_configure_gov",
+        by,
+        {
+          new_admin: null,
+          new_emode_admin: null,
+          new_risk_admin: null,
+          emode_max_init_leverage: null,
+          emode_max_maint_leverage: null,
+          same_asset_emode_init_leverage: null,
+          same_asset_emode_maint_leverage: null,
+          ...args,
+        },
+        [{ address: group.address, writable: true }, { address: by.address, signer: by }, { address: INSTRUCTIONS }],
+        [group.address],
+      );
+    const lev = (n: bigint, d = 1n) => fx(ratio(n, d));
+    await caps("by someone else", other, { new_risk_admin: new web3.PublicKey(other.address) });
+    await caps("roles", govAdmin, { new_emode_admin: new web3.PublicKey(other.address), new_risk_admin: new web3.PublicKey(flow.address) });
+    await caps("a leverage under 1", govAdmin, { emode_max_init_leverage: lev(1n, 2n), emode_max_maint_leverage: lev(10n) });
+    await caps("a leverage over 100", govAdmin, { emode_max_init_leverage: lev(10n), emode_max_maint_leverage: lev(101n) });
+    await caps("only one cap", govAdmin, { emode_max_init_leverage: lev(10n) });
+    await caps("init at maint", govAdmin, { emode_max_init_leverage: lev(20n), emode_max_maint_leverage: lev(20n) });
+    await caps("caps", govAdmin, { emode_max_init_leverage: lev(10n), emode_max_maint_leverage: lev(20n) });
+    await caps("same-asset, only init", govAdmin, { same_asset_emode_init_leverage: lev(5n) });
+    await caps("same-asset, init over maint", govAdmin, { same_asset_emode_init_leverage: lev(9n), same_asset_emode_maint_leverage: lev(8n) });
+    await caps("same-asset", govAdmin, { same_asset_emode_init_leverage: lev(5n), same_asset_emode_maint_leverage: lev(10n) });
+    await caps("a new admin", govAdmin, { new_admin: new web3.PublicKey(other.address) });
+    restore(groupSaved, group.address);
     editGroup(group.address, [["group_flags", flagsWas, 8]]);
   });
 

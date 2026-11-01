@@ -960,6 +960,21 @@ export function resolveArgAggregate(node: ts.TypeNode, scope: TypeScope, structs
   };
   const top = fixed(node);
   if (top?.kind === "struct") return { kind: "structRef", struct: top.name, writable: false };
+  // Option<S> / S | null of a fixed-size struct whose Borsh bytes are its layout (no Options or Vecs inside).
+  {
+    let inner: ts.TypeNode | undefined;
+    if (typesolName(node, scope.imports) === "Option") inner = (node as ts.TypeReferenceNode).typeArguments?.[0];
+    else if (ts.isUnionTypeNode(node) && node.types.length === 2) {
+      const isNull = (t: ts.TypeNode) => ts.isLiteralTypeNode(t) && t.literal.kind === ts.SyntaxKind.NullKeyword;
+      inner = isNull(node.types[1]) ? node.types[0] : isNull(node.types[0]) ? node.types[1] : undefined;
+    }
+    const s =
+      inner && ts.isTypeReferenceNode(inner) && ts.isIdentifier(inner.typeName) && !inner.typeArguments?.length
+        ? structs.get(structNameOf(inner, scope)!)
+        : undefined;
+    if (s && s.size !== undefined && !s.vec && s.layout !== "borsh" && s.wire !== "borsh")
+      return { kind: "optionArg", option: { kind: "option", inner: { kind: "struct", name: s.name } } };
+  }
   if (top?.kind === "array") return { kind: "arrayArg", array: top };
   const list = typesolName(node, scope.imports);
   if (list === "Vec" || list === "FixedVec") {
@@ -1603,6 +1618,8 @@ function analyzeHelper(
       // `p_<name>__n` carries a SignerSeeds count: "__" in a name could collide with it.
       if (p.name.text.includes("__") || p.name.text.includes("$")) reporter.error(p.name, `"${p.name.text}": "__" and "$" are reserved in names`);
       const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
+      if (type?.kind === "optionArg")
+        reporter.fail(p.type, "helpers take the struct itself: check the Option argument is not null and pass it (or its fields)");
       if (type) return { name: p.name.text, type, node: p };
       if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
       // One of the remaining accounts (remainingAccounts().get(i)), as the instruction holds it: read with readData or
@@ -1792,7 +1809,7 @@ function analyzeInstruction(
         minArgsSize +=
           value.kind === "string" || value.kind === "vecArg"
             ? 4
-            : value.kind === "option" || value.kind === "dataEnumArg"
+            : value.kind === "option" || value.kind === "optionArg" || value.kind === "dataEnumArg"
               ? 1
               : value.kind === "structRef"
                 ? structs.get(value.struct)!.size!

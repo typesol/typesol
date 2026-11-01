@@ -45,6 +45,8 @@ export type ValueType =
   | { kind: "vecArg"; elem: FieldType; cap?: number }
   /** `FixedArray<T, N>` instruction argument (Borsh [T; N]), parsed into a read-only copy. */
   | { kind: "arrayArg"; array: FieldType & { kind: "array" } }
+  /** `Option<S>` instruction argument of a fixed-size struct (Borsh tag + S), parsed into a read-only `TS_Opt_s_S`. */
+  | { kind: "optionArg"; option: FieldType & { kind: "option" } }
   /** A Solana `SignerSeeds` helper parameter: the seeds of one PDA signature, built with signer([...]). */
   | { kind: "signerSeeds" }
   /** An extra account from remainingAccounts(): `SolAccountInfo *`. */
@@ -435,6 +437,8 @@ export function typeName(t: ValueType | FieldType): string {
       return `Vec<${typeName(t.elem)}>`;
     case "arrayArg":
       return typeName(t.array);
+    case "optionArg":
+      return typeName(t.option);
     case "signerSeeds":
       return "SignerSeeds";
     case "account":
@@ -473,6 +477,8 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
       return sameType(a.elem, (b as typeof a).elem);
     case "arrayArg":
       return sameType(a.array, (b as typeof a).array);
+    case "optionArg":
+      return sameType(a.option, (b as typeof a).option);
     case "structRef":
       return a.struct === (b as typeof a).struct;
     case "dataEnum":

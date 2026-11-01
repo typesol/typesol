@@ -104,6 +104,8 @@ function idlType(t: FieldType | ValueType, borshOption = false): unknown {
       return { vec: idlType(t.elem) };
     case "arrayArg":
       return idlType(t.array);
+    case "optionArg":
+      return { option: idlType(t.option.inner) };
     case "structRef":
       return { defined: { name: t.struct } };
     default:
