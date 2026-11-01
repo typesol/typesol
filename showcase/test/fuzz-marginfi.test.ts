@@ -206,7 +206,7 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
       t += rng.chance(10) ? 0n : rng.chance(5) ? rng.next() % 40_000_000n : rng.next() % 100_000n;
       slot += rng.chance(10) ? 1n : BigInt(2 + rng.int(20));
       h.setClock(t, slot);
-      switch (rng.int(35)) {
+      switch (rng.int(36)) {
         case 0:
         case 1:
         case 2: {
@@ -954,6 +954,30 @@ describe(`fuzz: Marginfi administration against mainnet (seed ${SEED}, ${STEPS} 
             accounts: [...endIx.accounts!, ...(rng.chance(90) ? rest : rest.slice(1)).map((address) => ({ address, role: 0 }) as never)],
           };
           await run(label("flash loan"), by, [startIx, ...middle, endWith], [acct.address, b, bank.v.liquidity], "if-panics");
+          break;
+        }
+        case 35: {
+          // Emissions into the bank from a user's wallet (any amount, now and then nothing): the share value rises.
+          const by = rng.pick(users);
+          const amount = rng.chance(10) ? 0n : rng.next() % 1_000_000_000n;
+          const from = wallets.get(`${by.address}:${bank.mint.mint}`)!;
+          await run(
+            label("emissions"),
+            by,
+            [
+              s.ix("lending_pool_emissions_deposit", { amount: new BN(amount.toString()) }, [
+                { address: group.address },
+                { address: b, writable: true },
+                { address: bank.mint.mint },
+                { address: from, writable: true },
+                { address: by.address, signer: by, writable: true },
+                { address: bank.v.liquidity, writable: true },
+                { address: bank.mint.program },
+              ] as never),
+            ],
+            [b, bank.v.liquidity, from],
+            "if-panics",
+          );
           break;
         }
         default: {

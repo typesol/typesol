@@ -2168,4 +2168,141 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await liq("t22 debt", q, lq, nb, p, 1_000_000_000n);
     await liq("t22 debt, no mint", q, lq, nb, p, 1_000_000_000n, { noMint: true });
   });
+  it("deposits emissions and keeps the same-asset e-mode registry as the original does", async () => {
+    const usdc = await newBank("pyth", 1_000_000n);
+    const sol = await newBank("swb", 150_000_000n, {}, 9);
+    const t22 = await newBank("pyth", 1_000_000n, {}, 6, TOKEN_2022);
+    const lender = await user([
+      [usdc, 500_000_000n],
+      [t22, 500_000_000n],
+    ]);
+    const donor = await user([]);
+    const other = await user([]);
+    // Same-mint emissions straight into the vault (anyone): the share value rises; fee and hook mints are refused.
+    const emissions = (
+      label: string,
+      by: KeyPairSigner,
+      bank: Bank,
+      m: Address,
+      from: Address,
+      amount: bigint,
+      program: Address = TOKEN_PROGRAM,
+      vault: Address = bank.v.liquidity,
+    ) =>
+      run(
+        `emissions: ${label}`,
+        by,
+        [
+          s.ix("lending_pool_emissions_deposit", { amount: new BN(amount.toString()) }, [
+            { address: group.address },
+            { address: bank.address, writable: true },
+            { address: m },
+            { address: from, writable: true },
+            { address: by.address, signer: by, writable: true },
+            { address: vault, writable: true },
+            { address: program },
+          ] as never),
+        ],
+        [bank.address, bank.v.liquidity, from],
+      );
+    const give = (label: string, bank: Priced, amount: bigint) =>
+      emissions(label, donor.owner, bank, bank.mint, donor.wallets.get(bank.address)!, amount, bank.program);
+    tick();
+    await give("nothing", usdc, 0n);
+    await emissions("the wrong mint", donor.owner, usdc, sol.mint, donor.wallets.get(usdc.address)!, 1_000n);
+    await emissions("the wrong vault", donor.owner, usdc, usdc.mint, donor.wallets.get(usdc.address)!, 1_000n, TOKEN_PROGRAM, sol.v.liquidity);
+    await emissions("someone else's tokens", donor.owner, usdc, usdc.mint, other.wallets.get(usdc.address)!, 1_000n);
+    await give("into usdc", usdc, 25_000_000n);
+    tick(3_600n);
+    await give("after an hour", usdc, 1n);
+    await give("into a Token-2022 bank", t22, 7_000_000n);
+    await give("into a bank without deposits", sol, 1_000n);
+    await user([[sol, 1_000n]]);
+    await give("too few shares", sol, 1_000n);
+    editBank(usdc.address, [["config.operational_state", 0n, 1]]);
+    await give("a paused bank", usdc, 1_000n);
+    editBank(usdc.address, [["config.operational_state", 1n, 1]]);
+    const extMint = async (label: string, m: Address) => {
+      const [ix, bank] = await addBank(group.address, admin, m, TOKEN_2022, bankConfig());
+      await run(`add ${label} bank`, admin, [ix], [bank.address]);
+      const from = await h.t22Account(m, donor.owner.address, 0n);
+      await emissions(label, donor.owner, bank, m, from, 1_000n, TOKEN_2022);
+    };
+    await extMint("a transfer fee", await h.feeMint(6, 150, 1_000_000n));
+    await extMint("a zero transfer fee", await h.feeMint(6, 0, 0n));
+    await extMint("a transfer hook", await h.hookMint(6, (await generateKeyPairSigner()).address));
+    tick();
+    await w("all of it, after emissions", lender, usdc, 0n, { all: true });
+
+    // The same-asset e-mode registry (the governance admin): banks grouped by (mint, oracle_keys[0]).
+    const fixed = await newBank("fixed", 1_000_000n);
+    const [twinIx, twin] = await addBank(group.address, admin, usdc.mint, TOKEN_PROGRAM, bankConfig(), { seed: 1n });
+    await run("add a twin bank", admin, [twinIx], [twin.address]);
+    await run("twin oracle", admin, [h.configureOracle(group.address, admin, twin.address, 3, usdc.oracle!, [usdc.oracle!])], [twin.address]);
+    const third = await newBank("pyth", 2_000_000n);
+    const gov = await s.funded();
+    const govAt = offsetOf("MarginfiGroup", "governance_admin");
+    const govWas = BigInt(
+      "0x" +
+        Buffer.from(data(group.address).subarray(govAt, govAt + 32))
+          .reverse()
+          .toString("hex"),
+    );
+    editGroup(group.address, [["governance_admin", keyBits(gov.address), 32]]);
+    const [registry] = await pda(PROGRAM, ["same_asset_emode_registry", group.address]);
+    const init = (label: string, by: KeyPairSigner) =>
+      run(
+        `emode registry: ${label}`,
+        by,
+        [
+          s.ix("lending_pool_init_same_asset_emode_registry", {}, [
+            { address: group.address },
+            { address: by.address, signer: by, writable: true },
+            { address: registry, writable: true },
+            { address: SYSTEM },
+            { address: INSTRUCTIONS },
+          ] as never),
+        ],
+        [registry, by.address],
+      );
+    const eligible = (label: string, by: KeyPairSigner, bank: Address, enabled: boolean, at: Address = registry) =>
+      run(
+        `same-asset emode: ${label}`,
+        by,
+        [
+          s.ix("lending_pool_set_bank_same_asset_emode_eligibility", { enabled }, [
+            { address: group.address },
+            { address: by.address, signer: by },
+            { address: bank, writable: true },
+            { address: at, writable: true },
+            { address: INSTRUCTIONS },
+          ] as never),
+        ],
+        [bank, registry],
+      );
+    await eligible("before the registry", gov, usdc.address, true);
+    await init("by someone else", other.owner);
+    await init("created", gov);
+    await init("again", gov);
+    await eligible("by someone else", other.owner, usdc.address, true);
+    await eligible("another account as the registry", gov, usdc.address, true, group.address);
+    await eligible("a fixed price", gov, fixed.address, true);
+    await eligible("usdc", gov, usdc.address, true);
+    await eligible("usdc again", gov, usdc.address, true);
+    await eligible("its twin", gov, twin.address, true);
+    await eligible("sol", gov, sol.address, true);
+    await eligible("a third", gov, third.address, true);
+    await eligible("usdc off", gov, usdc.address, false);
+    await eligible("sol off, its group emptied", gov, sol.address, false);
+    await eligible("sol off again", gov, sol.address, false);
+    editBank(third.address, [["flags", 4096n + 8n, 8]]);
+    await eligible("a frozen bank", gov, third.address, false);
+    editBank(third.address, [["flags", 4096n, 8]]);
+    editBank(sol.address, [["config.oracle_keys[0]", 0n, 32]]);
+    await eligible("no oracle key", gov, sol.address, true);
+    await eligible("the twin off, its group emptied", gov, twin.address, false);
+    await eligible("the third off, the registry empty", gov, third.address, false);
+    await eligible("usdc back", gov, usdc.address, true);
+    editGroup(group.address, [["governance_admin", govWas, 32]]);
+  });
 });
