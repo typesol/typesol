@@ -709,8 +709,10 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         return { c: `(a_${optionalAccount.name} ${neg ? "!=" : "=="} NULL)`, type: BOOL };
       }
       const v = this.expr(other);
-      if (v.type.kind !== "option" && v.type.kind !== "optionArg") this.fail(other, "only Option values can be compared with null");
       const neg = op === K.ExclamationEqualsEqualsToken || op === K.ExclamationEqualsToken;
+      // An Option<Vec<T>> argument: None leaves its view's pointer NULL (a Some, empty or not, points into the data).
+      if (v.type.kind === "vecArg" && v.type.optional) return { c: `((${v.c}).ptr ${neg ? "!=" : "=="} NULL)`, type: BOOL };
+      if (v.type.kind !== "option" && v.type.kind !== "optionArg") this.fail(other, "only Option values can be compared with null");
       return { c: neg ? `((${v.c}).some != 0)` : `((${v.c}).some == 0)`, type: BOOL };
     }
     const isCmp = op === K.LessThanToken || op === K.LessThanEqualsToken || op === K.GreaterThanToken || op === K.GreaterThanEqualsToken;

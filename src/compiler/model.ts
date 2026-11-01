@@ -42,7 +42,7 @@ export type ValueType =
   | { kind: "option"; inner: ScalarType }
   /** `Vec<T>` instruction argument: a read-only view into instruction data. T is a scalar or a fixed-size struct. */
   /** A Vec argument (Borsh), read in place; `FixedVec<T, N>` arguments are the same with at most `cap` elements. */
-  | { kind: "vecArg"; elem: FieldType; cap?: number }
+  | { kind: "vecArg"; elem: FieldType; cap?: number; optional?: boolean }
   /** `FixedArray<T, N>` instruction argument (Borsh [T; N]), parsed into a read-only copy. */
   | { kind: "arrayArg"; array: FieldType & { kind: "array" } }
   /** `Option<S>` instruction argument of a fixed-size struct (Borsh tag + S), parsed into a read-only `TS_Opt_s_S`. */
@@ -434,7 +434,7 @@ export function typeName(t: ValueType | FieldType): string {
     case "vec":
       return t.cap === undefined ? `Vec<${typeName(t.elem)}>` : `FixedVec<${typeName(t.elem)}, ${t.cap}>`;
     case "vecArg":
-      return `Vec<${typeName(t.elem)}>`;
+      return t.optional ? `Option<Vec<${typeName(t.elem)}>>` : `Vec<${typeName(t.elem)}>`;
     case "arrayArg":
       return typeName(t.array);
     case "optionArg":
@@ -474,7 +474,7 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
     case "vec":
       return a.cap === (b as typeof a).cap && !a.heap === !(b as typeof a).heap && sameType(a.elem, (b as typeof a).elem);
     case "vecArg":
-      return sameType(a.elem, (b as typeof a).elem);
+      return !a.optional === !(b as typeof a).optional && sameType(a.elem, (b as typeof a).elem);
     case "arrayArg":
       return sameType(a.array, (b as typeof a).array);
     case "optionArg":

@@ -72,7 +72,7 @@ describe("PDA signers (test/fixtures/pda-signers.ts)", () => {
               { pubkey: pk(vault), is_signer: true, is_writable: true },
               { pubkey: pk(crate), is_signer: true, is_writable: true },
             ],
-            data: [...data],
+            data,
             vault_bump: vaultBump,
             crate_bump: bump,
           },

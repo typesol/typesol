@@ -56,7 +56,7 @@ describe("Marginfi v2 port against the mainnet binary", () => {
     const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as Idl;
     const strip = (v: unknown) => JSON.parse(JSON.stringify(v, (k, x) => (k === "docs" ? undefined : x)));
     // Accounts with their writable / signer flags, PDA seeds, relations and addresses; discriminators; arguments.
-    expect(s.d.idl.instructions.length).toBe(73);
+    expect(s.d.idl.instructions.length).toBe(77);
     for (const ix of s.d.idl.instructions) expect(strip(ix), ix.name).toEqual(strip(onchain.instructions.find((o) => o.name === ix.name)));
     for (const e of s.d.idl.events ?? []) expect(e, e.name).toEqual(onchain.events!.find((o) => o.name === e.name));
   });

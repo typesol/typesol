@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, part of bank administration done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing) done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -239,7 +239,12 @@ a transfer fee or a transfer hook, and below 2^20 asset shares), `lending_pool_i
 `lending_pool_set_bank_same_asset_emode_eligibility` (the governance admin: the group's registry PDA, and a bank in or
 out of it under its (mint, `oracle_keys[0]`) group, removed by moving the last entry into its place and an emptied
 group by moving the last group into its, as the original does; Pyth push or Switchboard pull feeds only, not frozen
-banks).
+banks). `init_bank_metadata` (anyone pays: the metadata PDA of a bank that may not exist yet; a bank of
+the program whose seed is known must be its own PDA), `write_bank_metadata` and `write_bank_metadata_pre_init` (the
+metadata admin: a ticker of at most 64 bytes and a description of at most 128, each when given, zero-filled, the index
+of its last byte kept; before the bank exists, for the PDA its group, mint and seed will give). These take
+`Option<Vec<u8>>` arguments, which TypeSOL reads as Anchor does. `lending_pool_clone_bank` copies a mainnet bank on
+staging and localnet builds; the mainnet build panics once the bank and its vaults are created, and so does the port.
 
 Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
 multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
@@ -316,7 +321,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 722 in
+for the oracles, and 752 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -365,7 +370,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (722, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (752, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -577,6 +582,9 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `lending_pool_emissions_deposit` | 12,486 | 5,070 | −59% |
 | `lending_pool_init_same_asset_emode_registry` | 9,301 | 2,314 | −75% |
 | `lending_pool_set_bank_same_asset_emode_eligibility` | 7,346 | 1,677 | −77% |
+| `init_bank_metadata` | 8,789 | 2,541 | −71% |
+| `write_bank_metadata`, ticker and description | 5,354 | 1,988 | −63% |
+| `write_bank_metadata_pre_init` | 8,719 | 2,764 | −68% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -584,7 +592,7 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%;
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.

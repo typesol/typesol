@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `Option<Vec<T>>` instruction arguments (or `Vec<T> | null`, or of a FixedVec; Anchor's `Option<Vec<u8>>`): a
+  tag byte, then the Vec when Some; `x !== null` before reading it as a list or passing it to a helper that takes the
+  list.
+- IDL: `Vec<u8>` arguments and account fields are `bytes`, as Anchor writes them (were `{ vec: "u8" }`; the bytes on
+  the wire are the same, but an Anchor client now wants a Buffer for them).
+- Examples: Marginfi's bank metadata (`init_bank_metadata`, `write_bank_metadata`, `write_bank_metadata_pre_init`) and
+  `lending_pool_clone_bank` (which panics in the mainnet build, as the original does). Against the binary on mainnet:
+  1,170 transactions, the same IDL for all 77 ported instructions.
 - Faster: a struct a function holds itself (a literal, or what a helper returned) passes to a helper that takes
   accounts in place instead of being copied first (only account data can change under a helper); a struct literal
   fills a new `const` directly instead of a temporary; `fixedArray<T, N>(fill)` may be a struct field's value in a

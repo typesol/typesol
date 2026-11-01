@@ -1471,7 +1471,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "vecArg": {
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
-        if (!l || !sameType(l.type, p.type)) this.fail(n, `expected a ${typeName(p.type)} instruction argument`);
+        // An Option<Vec<T>> argument passes as its list once checked against null (TypeScript narrows it).
+        const t = l?.type.kind === "vecArg" && l.type.optional ? { ...l.type, optional: undefined } : l?.type;
+        if (!l || !t || !sameType(t, p.type)) this.fail(n, `expected a ${typeName(p.type)} instruction argument`);
         return l.c;
       }
       default:

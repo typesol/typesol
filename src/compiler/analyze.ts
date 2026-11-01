@@ -976,6 +976,8 @@ export function resolveArgAggregate(node: ts.TypeNode, scope: TypeScope, structs
       return { kind: "optionArg", option: { kind: "option", inner: { kind: "struct", name: s.name } } };
   }
   if (top?.kind === "array") return { kind: "arrayArg", array: top };
+  const optionalList = optionalVecArg(node, scope, (n) => resolveArgAggregate(n, scope, structs));
+  if (optionalList) return optionalList;
   const list = typesolName(node, scope.imports);
   if (list === "Vec" || list === "FixedVec") {
     const [e, n] = (node as ts.TypeReferenceNode).typeArguments ?? [];
@@ -1011,14 +1013,31 @@ export function resolveScalarType(node: ts.TypeNode, scope: TypeScope): ScalarTy
 }
 
 /** `Option<T>` or `T | null` with a scalar T. Records the use so a C typedef / IDL type is emitted. */
-export function resolveOptionType(node: ts.TypeNode, scope: TypeScope): (ValueType & { kind: "option" }) | undefined {
-  let innerNode: ts.TypeNode | undefined;
-  if (typesolName(node, scope.imports) === "Option") innerNode = (node as ts.TypeReferenceNode).typeArguments?.[0];
-  else if (ts.isUnionTypeNode(node) && node.types.length === 2) {
+/** The T of `Option<T>` or `T | null`. */
+function optionInner(node: ts.TypeNode, scope: TypeScope): ts.TypeNode | undefined {
+  if (typesolName(node, scope.imports) === "Option") return (node as ts.TypeReferenceNode).typeArguments?.[0];
+  if (ts.isUnionTypeNode(node) && node.types.length === 2) {
     const isNull = (t: ts.TypeNode) => ts.isLiteralTypeNode(t) && t.literal.kind === ts.SyntaxKind.NullKeyword;
-    if (isNull(node.types[1])) innerNode = node.types[0];
-    else if (isNull(node.types[0])) innerNode = node.types[1];
+    if (isNull(node.types[1])) return node.types[0];
+    if (isNull(node.types[0])) return node.types[1];
   }
+  return undefined;
+}
+
+/**
+ * `Option<Vec<T>>` (or `Vec<T> | null`, or a FixedVec) as an instruction argument: Anchor's `Option<Vec<u8>>`. A tag
+ * byte, then the Borsh Vec when Some; a None reads as an empty list, and `x !== null` tells them apart.
+ */
+function optionalVecArg(node: ts.TypeNode, scope: TypeScope, inner: (n: ts.TypeNode) => ValueType | undefined): ValueType | undefined {
+  const n = optionInner(node, scope);
+  const list = n && typesolName(n, scope.imports);
+  if (!n || (list !== "Vec" && list !== "FixedVec")) return undefined;
+  const v = inner(n);
+  return v?.kind === "vecArg" && v.elem.kind !== "string" ? { ...v, optional: true } : undefined;
+}
+
+export function resolveOptionType(node: ts.TypeNode, scope: TypeScope): (ValueType & { kind: "option" }) | undefined {
+  const innerNode = optionInner(node, scope);
   if (!innerNode) return undefined;
   const inner = resolveScalarType(innerNode, scope);
   if (!inner) return undefined;
@@ -1031,6 +1050,10 @@ export function resolveValueType(node: ts.TypeNode, scope: TypeScope, allowVec =
   if (node.kind === ts.SyntaxKind.StringKeyword) return { kind: "string" };
   const opt = resolveOptionType(node, scope);
   if (opt) return opt;
+  if (allowVec) {
+    const v = optionalVecArg(node, scope, (n) => resolveValueType(n, scope, true));
+    if (v) return v;
+  }
   if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && scope.dataEnums?.has(node.typeName.text))
     return { kind: "dataEnumArg", name: node.typeName.text };
   if (allowVec && typesolName(node, scope.imports) === "Vec") {
@@ -1620,6 +1643,7 @@ function analyzeHelper(
       const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
       if (type?.kind === "optionArg")
         reporter.fail(p.type, "helpers take the struct itself: check the Option argument is not null and pass it (or its fields)");
+      if (type?.kind === "vecArg" && type.optional) reporter.fail(p.type, "helpers take the list itself: check the Option argument is not null and pass it");
       if (type) return { name: p.name.text, type, node: p };
       if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
       // One of the remaining accounts (remainingAccounts().get(i)), as the instruction holds it: read with readData or
@@ -1807,15 +1831,17 @@ function analyzeInstruction(
       if (value) {
         args.push({ name: p.name.text, type: value, node: p });
         minArgsSize +=
-          value.kind === "string" || value.kind === "vecArg"
-            ? 4
-            : value.kind === "option" || value.kind === "optionArg" || value.kind === "dataEnumArg"
-              ? 1
-              : value.kind === "structRef"
-                ? structs.get(value.struct)!.size!
-                : isScalar(value)
-                  ? scalarSize(value)
-                  : 0;
+          value.kind === "vecArg" && value.optional
+            ? 1
+            : value.kind === "string" || value.kind === "vecArg"
+              ? 4
+              : value.kind === "option" || value.kind === "optionArg" || value.kind === "dataEnumArg"
+                ? 1
+                : value.kind === "structRef"
+                  ? structs.get(value.struct)!.size!
+                  : isScalar(value)
+                    ? scalarSize(value)
+                    : 0;
         return;
       }
       // An account group: its accounts are this instruction's, in their order, named `<param>__<field>`.
