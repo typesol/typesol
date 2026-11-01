@@ -6,6 +6,20 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `f64`, a 64-bit float held as its IEEE bits, for event and account fields (`f64FromBits`, `f64Bits`; the IDL
+  says `f64`). No float arithmetic.
+- New: `Option<FixedArray<T, N>>` fields (Anchor's `Option<[u16; 3]>`), readable after narrowing with `.get(i)` or
+  copied whole into a `FixedArray` field.
+- New: structs holding Options at any depth (Anchor's `BankConfigOpt`, an `Option<InterestRateConfigOpt>` inside it)
+  are Borsh where they travel: in instruction arguments, and in `@layout borsh` events and accounts that hold them.
+  Their C layout stays fixed; the IDL describes them as Anchor's. Programs without such structs compile as before.
+- `typesol port`: f64 fields, Borsh events for headers holding Options, data-enum `repr`; Marginfi's whole on-chain
+  IDL ports with every type and instruction argument as on chain, apart from seven instructions whose arguments are
+  an Option of a struct, an array, bytes or a Vec (not supported yet).
+- Fix: a `Vec<FixedArray<T, N>>` argument (Anchor's `Vec<[u8; 32]>` proof) no longer fails in code generation.
+- The repr(C) offset check applies to bytemuck zero-copy types and what they hold, not to repr(C) structs that only
+  travel as Borsh.
+
 - Releases: each GitHub Release gets a manifest (`scripts/release-manifest.ts`): compiler and toolchain versions, the
   sha256 of every example's and port's binary, IDL and C, the reference binaries and the test corpus. It also gets the
   previous release's sources built by both packages, with their diff, so "the same binaries" can be checked and
@@ -55,7 +69,7 @@ same binaries as in 0.37.0.
   bytes and events, 33–84% fewer compute units.
 - Examples: examples/jito-mev, ports of Jito's three MEV programs (tip payment, tip distribution, priority fee
   distribution; all 24 instructions), checked against the mainnet binaries (test/programs/jito_*.so) on 150
-  transactions: the same outcomes, account bytes, events and log lines, with 58–79% fewer compute units (up to 95% on refused calls). The tip
+  transactions: the same outcomes, account bytes, events and log lines, with 58–95% fewer compute units. The tip
   payment port follows the binary on mainnet, which is the program of Jito's #143 (no `claim_tips`). See
   docs/case-study-jito-mev.md.
 - New: a `Seeds<…>` bump stored in a struct field of another account, `"@config.bumps.vault"` (Anchor's

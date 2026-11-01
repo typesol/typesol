@@ -1,5 +1,6 @@
 import ts from "typescript";
 import {
+  type OptionInner,
   INT_INFO,
   type AccountParam,
   type FieldType,
@@ -161,7 +162,7 @@ export function scalarStorageC(t: ScalarType): string {
   return t.kind === "int" ? INT_INFO[t.name].c : t.kind === "pubkey" ? "SolPubkey" : "uint8_t";
 }
 
-export const optC = (inner: ScalarType | { kind: "struct"; name: string }) => `TS_Opt_${optionKey(inner)}`;
+export const optC = (inner: OptionInner) => `TS_Opt_${optionKey(inner)}`;
 
 /** C type of any value held in a local. */
 export function valueC(t: ValueType): string {

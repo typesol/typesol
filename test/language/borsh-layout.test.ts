@@ -132,7 +132,7 @@ describe("@layout borsh", () => {
     expect(errors(`/** @layout packed */\nexport interface S { n: u64 }\nexport function f(s: Mut<S>): void {}`)).toMatch(/@layout is borsh/);
     expect(
       errors(`export interface In { name: FixedString<8> }\n/** @layout borsh */\nexport interface S { inner: In }\nexport function f(s: Mut<S>): void {}`),
-    ).toMatch(/nested structs and lists hold fixed-size values only/);
+    ).toMatch(/nested structs hold fixed-size values and Options, lists fixed-size values only/);
     // Whole arguments, return values and events are Borsh (test/language/borsh-values.test.ts); inside a list they are not.
     expect(errors(`${S}export function f(s: S): S { return s; }`)).toBe("");
     expect(errors(`${S}export function f(s: FixedArray<S, 2>): void {}`)).toMatch(/pass it as a whole argument/);

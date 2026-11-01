@@ -2040,6 +2040,15 @@ export declare function mulDiv(a: u64, b: u64, c: u64): u64;
 export declare function mulDivCeil(a: u64, b: u64, c: u64): u64;
 /** floor(sqrt(x)) for unsigned integers up to u128. */
 export declare function isqrt<T extends bigint>(x: T): T;
+
+/**
+ * A 64-bit float, held as its IEEE 754 bits (Borsh writes an f64 as those 8 bytes, little-endian); the IDL calls it
+ * f64. There is no float arithmetic: make one from bits the program computed in integers (`f64FromBits`), as
+ * Marginfi's events report I80F48 amounts, and read the bits back with `f64Bits`.
+ */
+export type f64 = bigint & { readonly __f64: unique symbol };
+export declare function f64FromBits(bits: u64): f64;
+export declare function f64Bits(value: f64): u64;
 export declare function min<T extends bigint>(a: T, b: T): T;
 export declare function max<T extends bigint>(a: T, b: T): T;
 
