@@ -25,7 +25,7 @@ export function unsignedC(name: IntName): string {
 
 /** Fixed-size scalars: what fits in a register and in account data as-is. `enum` is a unit-variant enum stored as u8. */
 export type ScalarType =
-  | { kind: "int"; name: IntName }
+  | { kind: "int"; name: IntName; f64?: boolean }
   | { kind: "bool" }
   /** 32 bytes. `hash` marks a Hash (sha256/keccak output, Merkle roots): same layout, distinct type. */
   | { kind: "pubkey"; hash?: boolean }
@@ -70,7 +70,7 @@ export type FieldType =
   /** Borsh `string` (u32 length + bytes, variable). Only allowed in events. */
   | { kind: "string" }
   /** `Option<T>` in account data: fixed { u8 is_some; T value } (value zeroed when None). T may be a struct here. */
-  | { kind: "option"; inner: ScalarType | { kind: "struct"; name: string } }
+  | { kind: "option"; inner: OptionInner }
   /** A data-carrying enum (discriminated union): fixed { u8 tag; payload sized for the largest variant }. */
   | { kind: "dataEnum"; name: string }
   /**
@@ -115,6 +115,8 @@ export interface StructDef {
    * Anchor's bytes, where strings, Vecs and Options take only what they hold).
    */
   layout: "fixed" | "borsh";
+  /** "borsh": a struct with Options that only travels in instruction data and events: Borsh there, fixed in C. */
+  wire?: "borsh";
   /** `/** @repr … *\/` and `/** @serialization … *\/`: what the IDL says of an Anchor zero-copy type (see IdlMeta). */
   idlMeta?: IdlMeta;
   /**
@@ -309,6 +311,7 @@ export interface ConstDef {
 /** A data-carrying enum: `export type Action = { kind: "Deposit"; amount: u64 } | { kind: "Pause" }`. */
 export interface DataEnumDef {
   name: string;
+  idlMeta?: IdlMeta;
   variants: { name: string; fields: StructField[]; size: number }[];
   /** Largest variant size: the fixed payload in account data. */
   payload: number;
@@ -369,7 +372,7 @@ export interface ProgramModel {
   /** Top-level `const NAME = literal` compile-time constants. */
   constants: Map<string, ConstDef>;
   /** Types used inside Option<...>, for C typedefs and IDL types (scalars, or structs in account data). */
-  options: Map<string, ScalarType | { kind: "struct"; name: string }>;
+  options: Map<string, OptionInner>;
   /** Structs passed to emit(), filled in while emitting. */
   events: Set<string>;
   /** Structs used as Account/Mut/Init. */
@@ -490,7 +493,11 @@ export function isScalar(t: ValueType | FieldType): t is ScalarType {
 }
 
 /** Stable C identifier suffix for a scalar, used in TS_Opt_<suffix>. */
-export function optionKey(t: ScalarType | { kind: "struct"; name: string }): string {
+/** What an Option holds: a scalar, a struct, or a fixed array of those (Anchor's Option<[u16; 3]>). */
+export type OptionInner = ScalarType | { kind: "struct"; name: string } | { kind: "array"; elem: FieldType; len: number };
+
+export function optionKey(t: OptionInner): string {
+  if (t.kind === "array") return `a${t.len}_${optionKey(t.elem as OptionInner)}`;
   return t.kind === "struct" ? `s_${t.name}` : scalarKey(t);
 }
 

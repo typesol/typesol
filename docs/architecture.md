@@ -33,7 +33,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `examples/` | Example programs; the `typesol init` templates are copies of three of them |
 | `test/` | The test suite, by subject: `language/`, `security/`, `examples/`, `integrations/` (token, Metaplex, oracle and other CPIs), `client/`, `cli/`, `porting/`, `verification/` (differential and fuzz tests). Shared: `harness.ts` and the `*-helpers.ts`, `fixtures/` (programs the tests compile), `ports/` (TypeSOL rewrites of solana-developers/program-examples), `golden/` (pinned generated C and clients), `programs/` (third-party program binaries, see its SOURCES.md), `anchor-twins/` (below) |
 | `test/anchor-twins/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm build:twins`) and the zero-copy client test; the benchmarks themselves are in [typesol/benchmarks](https://github.com/typesol/benchmarks) |
-| `scripts/` | `smoke.ts`, `localnet.sh` and `localnet-fixtures.ts` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers), `codegen-snapshot.ts` (the generated C and IDL of every program, to diff a refactor), `release-manifest.ts` (a release's binary, IDL and toolchain hashes) |
+| `scripts/` | `smoke.ts` and `localnet.sh` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers) |
 | `docs/` | User and contributor documentation (also published on typesol.com) |
 | `assets/` | The CLI's logo and the README images (`readme/`, generated) |
 
@@ -101,7 +101,7 @@ representation in between. We reviewed this on 2026-10-30 and kept it that way f
   named in the source, see `alias.ts`), a second backend (SBF without clang), and optimizations clang cannot see
   because they depend on account semantics (dropping a repeated check, packing a `@layout borsh` account only where
   it changed).
-- **What it would cost now:** rewriting most of the compiler's 14,000 lines, and losing the property every release
+- **What it would cost now:** rewriting most of the compiler's 12,000 lines, and losing the property every release
   relies on: programs that do not use a change compile to the same binaries. Audit scope and differential results
   would start over.
 - **What we have instead:** the layers above, each owning one concern; `Ref` / `Value` as the typed place and value

@@ -6,6 +6,7 @@ import { CompileError, Reporter, type Diagnostic } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
 import {
+  type OptionInner,
   optionKey,
   INT_INFO,
   INT_NAMES,
@@ -96,6 +97,7 @@ function checkSnakeDuplicates(names: { name: string; node: ts.Node }[], what: st
 /** Exports of the `typesol` module that are types (everything else is a function). */
 const TYPE_EXPORTS = new Set([
   ...INT_NAMES,
+  "f64",
   "Pubkey",
   "AccountMeta",
   "Signer",
@@ -198,7 +200,7 @@ export interface TypeScope {
   structArgs?: Map<string, string>;
   enums: Map<string, EnumDef>;
   dataEnums?: Map<string, DataEnumDef>;
-  options: Map<string, ScalarType | { kind: "struct"; name: string }>;
+  options: Map<string, OptionInner>;
 }
 
 export function snakeCase(name: string): string {
@@ -398,7 +400,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const reporter: Reporter = new Reporter();
   const errorEnums = new Map<string, Map<string, ErrorDef>>();
   const enums = new Map<string, EnumDef>();
-  const options = new Map<string, ScalarType | { kind: "struct"; name: string }>();
+  const options = new Map<string, OptionInner>();
   const dataEnums = new Map<string, DataEnumDef>();
   const constants = new Map<string, ConstDef>();
   const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string> }[] = [];
@@ -776,6 +778,20 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   // nowhere else (not account data, not nested, not returned) is read as Anchor sends it: @layout borsh, implied.
   // Anywhere else its FixedVec keeps the padded layout of account data, which an argument cannot have.
   const hasFixedVec = (n: string) => structs.get(n)!.fields.some((f) => f.type.kind === "vec" && f.type.cap !== undefined);
+  // An Option anywhere in it (Anchor's BankConfigOpt): Borsh in arguments, one byte when empty.
+  const hasOption = (n: string, seen = new Set<string>()): boolean =>
+    !seen.has(n) &&
+    structs.get(n)!.fields.some((f) => {
+      const inner =
+        f.type.kind === "option"
+          ? "option"
+          : f.type.kind === "struct"
+            ? f.type.name
+            : f.type.kind === "array" && f.type.elem.kind === "struct"
+              ? f.type.elem.name
+              : undefined;
+      return inner === "option" || (inner !== undefined && hasOption(inner, new Set([...seen, n])));
+    });
   const holds = (f: StructField, n: string) => {
     const inner = f.type.kind === "array" || f.type.kind === "vec" ? f.type.elem : f.type.kind === "option" ? (f.type.inner as FieldType) : f.type;
     return inner.kind === "struct" && inner.name === n;
@@ -809,6 +825,38 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
         );
       }
     }
+  // Structs with Options (at any depth) that travel only in instruction data and events (Anchor's BankConfigOpt):
+  // Borsh on the wire, an empty Option one byte, while their C layout stays fixed. Not when they are also account
+  // data, nested in a fixed-layout struct that is not one of these, or returned.
+  {
+    const argStructs = new Set<string>();
+    for (const ix of instructions) for (const a of ix.args) collectStructs(a.type, structs, dataEnums, argStructs);
+    // Also what @layout borsh structs (events, accounts) hold: their bytes there are Borsh at every depth.
+    const inBorsh = new Set<string>();
+    const collectHeld = (n: string) => {
+      for (const f of structs.get(n)?.fields ?? []) {
+        const t = f.type.kind === "option" ? (f.type.inner as FieldType) : f.type.kind === "array" ? f.type.elem : f.type;
+        if (t.kind === "struct" && !inBorsh.has(t.name)) {
+          inBorsh.add(t.name);
+          collectHeld(t.name);
+        }
+      }
+    };
+    for (const sd of structs.values()) if (sd.layout === "borsh") collectHeld(sd.name);
+    const wire = new Set([...argStructs, ...inBorsh].filter((n) => structs.get(n)!.layout !== "borsh" && hasOption(n)));
+    const returned = (n: string) => instructions.some((i) => i.returns?.kind === "struct" && i.returns.name === n);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const n of [...wire]) {
+        const heldBy = [...structs.values()].filter((o) => o.fields.some((f) => holds(f, n)));
+        if (accountStructs.has(n) || returned(n) || heldBy.some((o) => o.layout !== "borsh" && !wire.has(o.name))) {
+          wire.delete(n);
+          changed = true;
+        }
+      }
+    }
+    for (const n of wire) structs.get(n)!.wire = "borsh";
+  }
   checkSnakeDuplicates(
     instructions.map((ix) => ({ name: ix.node.name!.text, node: ix.node.name! })),
     "instructions",
@@ -941,6 +989,8 @@ export function resolveScalarType(node: ts.TypeNode, scope: TypeScope): ScalarTy
   if (n && (INT_NAMES as readonly string[]).includes(n)) return { kind: "int", name: n as IntName };
   if (n === "Pubkey") return { kind: "pubkey" };
   if (n === "Hash") return { kind: "pubkey", hash: true };
+  // An f64 is held as its IEEE bits, a u64 (Borsh writes it as those 8 bytes); the IDL calls it f64.
+  if (n === "f64") return { kind: "int", name: "u64", f64: true };
   if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && scope.enums.has(node.typeName.text)) return { kind: "enum", name: node.typeName.text };
   return undefined;
 }
@@ -1009,6 +1059,7 @@ function analyzeStructs(
   let scope: TypeScope = scopeFor(new Map());
   let imports = scope.imports;
 
+  const isScalarField = (t: FieldType) => t.kind === "int" || t.kind === "bool" || t.kind === "pubkey" || t.kind === "enum";
   const fieldType = (node: ts.TypeNode): FieldType => {
     if (node.kind === ts.SyntaxKind.StringKeyword) return { kind: "string" };
     const scalar = resolveScalarType(node, scope);
@@ -1027,6 +1078,15 @@ function analyzeStructs(
         const t = { kind: "struct" as const, name: inner.typeName.text };
         scope.options.set(optionKey(t), t);
         return { kind: "option", inner: t };
+      }
+      // Option<FixedArray<T, N>> of fixed-size elements (Anchor's Option<[u16; 3]>).
+      if (inner && typesolName(inner, imports) === "FixedArray") {
+        const arr = fieldType(inner);
+        if (arr.kind === "array" && (isScalarField(arr.elem) || arr.elem.kind === "struct")) {
+          const t = { kind: "array" as const, elem: arr.elem, len: arr.len };
+          scope.options.set(optionKey(t), t);
+          return { kind: "option", inner: t };
+        }
       }
     }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && enumNames.has(node.typeName.text))
@@ -1169,7 +1229,8 @@ function analyzeStructs(
         variants.push({ name: vname, fields, size: 0 });
       }
       if (variants.length < 1 || variants.length > 256) reporter.fail(decl, "data enums need 1..256 variants");
-      dataEnums.set(decl.name.text, { name: decl.name.text, variants, payload: 0, node: decl });
+      const idlMeta = idlMetaOf(decl, reporter);
+      dataEnums.set(decl.name.text, { name: decl.name.text, variants, payload: 0, node: decl, ...(idlMeta ? { idlMeta } : {}) });
     });
   }
 
@@ -1183,7 +1244,7 @@ function analyzeStructs(
       case "enum":
         return scalarSize(t);
       case "option":
-        return 1 + (t.inner.kind === "struct" ? sizeOf(t.inner, at)! : scalarSize(t.inner));
+        return 1 + (t.inner.kind === "struct" || t.inner.kind === "array" ? sizeOf(t.inner as FieldType, at)! : scalarSize(t.inner));
       case "dataEnum": {
         const e = dataEnums.get(t.name);
         if (!e) return 0; // its declaration failed and was reported
@@ -1298,7 +1359,6 @@ function analyzeStructs(
       total = total === undefined || fsz === undefined ? undefined : total + fsz;
     }
     s.size = total;
-    if (s.idlMeta?.repr?.kind === "c" && !s.idlMeta.repr.packed) zeroCopyOffsets(s, s.idlMeta.repr.align);
     if (total !== undefined && total + 8 > MAX_ACCOUNT_SIZE)
       reporter.fail(s.node.name, `${s.name} is ${total + 8} bytes with its discriminator; Solana accounts are at most ${MAX_ACCOUNT_SIZE} bytes`);
     // Growable Vecs (stored last, see above): the first one's length and elements end the C struct; the others follow
@@ -1315,6 +1375,26 @@ function analyzeStructs(
     state.set(s.name, "done");
   };
   for (const s of structs.values()) reporter.guard(() => visit(s));
+  // The repr(C) offsets matter where the bytes are the struct's memory (bytemuck zero-copy accounts and what they
+  // hold), not for a repr(C) struct that only travels as Borsh (an argument).
+  {
+    const inMemory = new Set<string>();
+    const hold = (n: string) => {
+      if (inMemory.has(n)) return;
+      inMemory.add(n);
+      const sd = structs.get(n);
+      for (const f of sd?.fields ?? []) {
+        const t = f.type.kind === "array" ? f.type.elem : f.type.kind === "option" ? (f.type.inner as FieldType) : f.type;
+        if (t.kind === "struct") hold(t.name);
+      }
+    };
+    for (const sd of structs.values()) if (sd.idlMeta?.serialization?.startsWith("bytemuck")) hold(sd.name);
+    for (const n of inMemory) {
+      const sd = structs.get(n)!;
+      if (sd.idlMeta?.repr?.kind === "c" && !sd.idlMeta.repr.packed && sd.size !== undefined)
+        reporter.guard(() => zeroCopyOffsets(sd, sd.idlMeta!.repr!.align));
+    }
+  }
   for (const s of structs.values()) if (s.layout === "borsh") reporter.guard(() => checkBorshLayout(s, structs, dataEnums, reporter));
   for (const e of dataEnums.values()) reporter.guard(() => sizeOf({ kind: "dataEnum", name: e.name }, e.node));
   return structs;
@@ -1436,6 +1516,21 @@ export function heapVecOf(s: StructDef): StructField | undefined {
 function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, dataEnums: Map<string, DataEnumDef>, reporter: Reporter) {
   const model = { structs };
   const fixed = (t: FieldType) => borshIdentical(t, model);
+  // A nested struct with Options in it (at any depth) and otherwise fixed-size values: Borsh, field by field.
+  const nestedOptions = (t: FieldType): boolean => {
+    if (t.kind !== "struct") return false;
+    const n = structs.get(t.name);
+    return (
+      !!n &&
+      n.layout !== "borsh" &&
+      n.fields.every(
+        (f) =>
+          fixed(f.type) ||
+          nestedOptions(f.type) ||
+          (f.type.kind === "option" && (fixed(f.type.inner as FieldType) || nestedOptions(f.type.inner as FieldType))),
+      )
+    );
+  };
   for (const f of s.fields) {
     const t = f.type;
     const at = s.node.members.find((m) => m.name && ts.isIdentifier(m.name) && m.name.text === f.name) ?? s.node;
@@ -1455,12 +1550,13 @@ function checkBorshLayout(s: StructDef, structs: Map<string, StructDef>, dataEnu
       continue;
     }
     if (t.kind === "vec" && (fixed(t.elem) || t.elem.kind === "fstring")) continue;
-    if (t.kind === "option" && fixed(t.inner as FieldType)) continue;
+    if (t.kind === "option" && (fixed(t.inner as FieldType) || nestedOptions(t.inner as FieldType))) continue;
+    if (nestedOptions(t)) continue;
     if (t.kind === "struct" && structs.get(t.name)?.layout === "borsh")
       reporter.fail(at, `${t.name} is @layout borsh itself: only account structs take a layout; nest a struct without one`);
     reporter.fail(
       at,
-      `${typeName(t)} in a @layout borsh struct: its fields may be fixed-size values, FixedString<N>, FixedVec<T, N> (of those or of FixedString) and Option<T>; nested structs and lists hold fixed-size values only`,
+      `${typeName(t)} in a @layout borsh struct: its fields may be fixed-size values, FixedString<N>, FixedVec<T, N> (of those or of FixedString) and Option<T>; nested structs hold fixed-size values and Options, lists fixed-size values only`,
     );
   }
   for (const other of structs.values())

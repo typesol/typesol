@@ -79,6 +79,33 @@ describe("typesol port", () => {
     for (const name of keep) expect(strip(ported.types.find((t) => t.name === name)), name).toEqual(strip(onchain.types.find((t) => t.name === name)));
   });
 
+  it("ports Marginfi's whole IDL: every type and every instruction's arguments as on chain", () => {
+    const onchain = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/marginfi/marginfi.idl.json", import.meta.url)), "utf8")) as AnyIdl & {
+      types: { name: string; type: unknown }[];
+      events?: unknown[];
+    };
+    // Not yet expressible: an Option of a struct, an array, a Vec or bytes as an instruction argument, an Option<Vec<…>> field.
+    const unsupported = (t: unknown) => /"option":(\{"(defined|vec|array)"|"bytes")/.test(JSON.stringify(t));
+    const deferredTypes = new Set(onchain.types.filter((t) => /"option":\{"vec"/.test(JSON.stringify(t.type))).map((t) => t.name));
+    const idl = {
+      ...onchain,
+      instructions: onchain.instructions.filter((ix) => !ix.args.some((a) => unsupported((a as { type: unknown }).type))),
+      types: onchain.types.filter((t) => !deferredTypes.has(t.name)),
+    };
+    const { source } = generatePort(idl as unknown as PortIdl);
+    const file = path.join(tmp(), "marginfi.ts");
+    writeFileSync(file, source);
+    const ported = buildIdl(generate(file).model, ADDRESS) as unknown as AnyIdl & { types: { name: string }[] };
+    const strip = (t: unknown) => JSON.parse(JSON.stringify(t, (k, v) => (k === "docs" ? undefined : v)));
+    for (const t of idl.types) expect(strip(ported.types.find((x) => x.name === t.name)), t.name).toEqual(strip(t));
+    for (const ix of idl.instructions) {
+      const p = ported.instructions.find((x) => x.name === ix.name)!;
+      expect({ d: p.discriminator, args: p.args }, ix.name).toEqual({ d: ix.discriminator, args: ix.args });
+    }
+    expect(idl.types.length).toBeGreaterThan(120);
+    expect(idl.instructions.length).toBeGreaterThan(110);
+  });
+
   it("keeps a discriminator the name would not derive, and Anchor's account bytes (@layout borsh)", () => {
     const idl: PortIdl = {
       metadata: { name: "legacy" },

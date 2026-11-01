@@ -212,6 +212,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_mul_div${wide ? "_u128" : ""}(${x.c}, ${y.c}, ${z.c}, ${builtin === "mulDivCeil"}, &${t}));`);
         return { c: t, type: ty };
       }
+      case "f64FromBits":
+      case "f64Bits": {
+        // An f64 is its IEEE bits held as a u64: both are the same value, typed for the IDL and for TypeScript.
+        if (args.length !== 1) this.fail(node, `${builtin}(x) takes one ${builtin === "f64Bits" ? "f64" : "u64"}`);
+        const v = this.expr(args[0]);
+        const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : this.expect(v, U64, args[0]);
+        return { c: x.c, type: builtin === "f64Bits" ? U64 : { kind: "int", name: "u64", f64: true } };
+      }
       case "isqrt": {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");
         const v = this.expr(args[0]);
