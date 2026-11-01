@@ -78,6 +78,51 @@ export const le = (n: bigint, bytes: number) => {
   return b;
 };
 
+export const PYTH_RECEIVER = address("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
+export const SWITCHBOARD = address("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
+/** A Pyth update: spot and EMA pairs (EMA defaults to spot), Full or Partial; `len`, `disc`, `level` to break it. */
+export type Pyth = {
+  price: bigint;
+  conf: bigint;
+  expo: number;
+  publishTime: bigint;
+  emaPrice?: bigint;
+  emaConf?: bigint;
+  partial?: boolean;
+  len?: number;
+  disc?: number[];
+  level?: number;
+};
+/** A Switchboard pull feed: result.value (the price × 10^18) and last_update_timestamp; `len`, `owner`, `disc` to break it. */
+export type Swb = { value: bigint; lastUpdate: bigint; len?: number; owner?: Address; disc?: number[] };
+
+/** A Pyth PriceUpdateV2 as Borsh lays it out (the verification level is one byte for Full, two for Partial). */
+export const pythData = (p: Pyth) => {
+  const d = Buffer.alloc(p.len ?? 134);
+  const put = (b: Buffer, at: number) => b.copy(d, at, 0, Math.max(0, Math.min(b.length, d.length - at)));
+  put(Buffer.from(p.disc ?? [34, 241, 35, 99, 157, 126, 244, 205]), 0);
+  const m = p.partial ? 42 : 41;
+  if (d.length > 40) d[40] = p.level ?? (p.partial ? 0 : 1);
+  if (p.partial && d.length > 41) d[41] = 13;
+  put(le(BigInt.asUintN(64, p.price), 8), m + 32);
+  put(le(p.conf, 8), m + 40);
+  put(le(BigInt.asUintN(32, BigInt(p.expo)), 4), m + 48);
+  put(le(BigInt.asUintN(64, p.publishTime), 8), m + 52);
+  put(le(BigInt.asUintN(64, p.publishTime - 1n), 8), m + 60);
+  put(le(BigInt.asUintN(64, p.emaPrice ?? p.price), 8), m + 68);
+  put(le(p.emaConf ?? p.conf, 8), m + 76);
+  put(le(77n, 8), m + 84);
+  return d;
+};
+/** A Switchboard PullFeedAccountData: the discriminator, last_update_timestamp at 2216 and result.value at 2264. */
+export const swbData = (w: Swb) => {
+  const d = Buffer.alloc(w.len ?? 3208);
+  Buffer.from(w.disc ?? [196, 27, 108, 196, 10, 215, 219, 40]).copy(d, 0, 0, Math.min(8, d.length));
+  if (d.length >= 2224) le(BigInt.asUintN(64, w.lastUpdate), 8).copy(d, 2216);
+  if (d.length >= 2280) le(BigInt.asUintN(128, w.value), 16).copy(d, 2264);
+  return d;
+};
+
 /** A bank config as lending_pool_add_bank takes it (BankConfigCompact), with the defaults of a plain collateral bank. */
 export const bankConfig = (over: Record<string, unknown> = {}, ir: Record<string, unknown> = {}) => ({
   asset_weight_init: fx(ratio(1n, 2n)),
@@ -539,9 +584,70 @@ export function marginfiPair() {
     return at;
   };
 
+  /** An account written into both with this data and owner, rent-exempt. */
+  const put = (at: Address, data: Buffer, owner: Address) => {
+    for (const vm of s.vms())
+      vm.setAccount({
+        address: at,
+        data: new Uint8Array(data),
+        executable: false,
+        lamports: lamports(vm.minimumBalanceForRentExemption(BigInt(data.length))),
+        programAddress: owner,
+        space: BigInt(data.length),
+      });
+  };
+  const setPyth = (at: Address, p: Pyth) => put(at, pythData(p), PYTH_RECEIVER);
+  const setSwb = (at: Address, w: Swb) => put(at, swbData(w), w.owner ?? SWITCHBOARD);
+  /** The clock in both: its unix time and slot (the circuit breaker counts slots). */
+  const setClock = (t: bigint, slot: bigint) => {
+    for (const vm of s.vms()) {
+      const c = vm.getClock();
+      c.unixTimestamp = t;
+      c.slot = slot;
+      vm.setClock(c);
+    }
+  };
+  const configureOracle = (
+    group: Address,
+    by: KeyPairSigner,
+    bank: Address,
+    setup: number,
+    oracle: Address,
+    rest: Address[] = [],
+    sysvar: Address = INSTRUCTIONS,
+  ) =>
+    withRest(
+      s.ix("lending_pool_configure_bank_oracle", { setup, oracle: pk(oracle) }, [
+        { address: group },
+        { address: by.address, signer: by },
+        { address: bank, writable: true },
+        { address: sysvar },
+      ]),
+      rest,
+    );
+  const setOraclePrice = (group: Address, by: KeyPairSigner, bank: Address, price: bigint, setup: number, rest: Address[] = []) =>
+    withRest(
+      s.ix("lending_pool_set_oracle_price", { price: fx(price), setup }, [
+        { address: group },
+        { address: by.address, signer: by },
+        { address: bank, writable: true },
+        { address: INSTRUCTIONS },
+      ]),
+      rest,
+    );
+  const pulse = (group: Address, bank: Address, rest: Address[] = []) =>
+    withRest(s.ix("lending_pool_pulse_bank_price_cache", {}, [{ address: group }, { address: bank, writable: true }]), rest);
+
   return {
     s,
     run,
+    put,
+    setPyth,
+    setSwb,
+    setClock,
+    configureOracle,
+    setOraclePrice,
+    pulse,
     createAta,
     repay,
     ata,

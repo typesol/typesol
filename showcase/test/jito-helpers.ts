@@ -177,6 +177,8 @@ export function pairOf(so: string, source: string, programId: Address) {
           true,
         );
         for (const w of watch) expect(s.bytes(s.d.svm, w), `${label}: ${w}`).toBe(s.bytes(s.original, w));
+        // PAIR_PANICS=1: why the original failed (its last log lines).
+        if (process.env.PAIR_PANICS) console.log(`${label}: original failed\n  ${logs(a).split("\n").slice(-3).join("\n  ")}`);
         return "failed";
       }
       expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));

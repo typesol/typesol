@@ -21,6 +21,7 @@ import {
 } from "../model.js";
 import {
   U64,
+  U32,
   U8,
   I64,
   I32,
@@ -73,6 +74,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "require": {
         if (args.length !== 2) this.fail(node, "require(condition, error) takes two arguments");
         const cond = this.expect(this.expr(args[0], BOOL), BOOL, args[0]);
+        if (!this.namesError(args[1])) {
+          // A code computed at run time (a helper that returns its error as a value): u32, the program error it names.
+          const v = this.expr(args[1], U32);
+          const code = v.literal !== undefined ? this.literal(v.literal, U32, args[1]) : this.expect(v, U32, args[1]);
+          this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
+          return undefined;
+        }
         const err = this.errorRef(args[1]);
         this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`)});`);
         return undefined;
@@ -1371,7 +1379,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (argNodes.length !== h.params.length) this.fail(node, `${h.display}() takes ${h.params.length} argument(s)`);
     // Arguments are evaluated left to right: settle earlier ones when a later one runs statements.
     // A helper that takes accounts may change account data, so account text it gets is copied first.
-    const takesAccounts = h.params.some((p) => p.account);
+    // A RemainingAccount parameter counts: the helper may load and write a struct through it.
+    const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account");
     const values: Value[] = [];
     const pieces: (number | string)[] = [];
     h.params.forEach((p, i) => {
@@ -1466,7 +1475,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
    * copy taken at the call (JS passes the object as it was); other helpers cannot write, so a pointer is enough.
    */
   protected snapshotPlace(lv: string, type: FieldType, h: Helper): string {
-    if (!h.params.some((p) => p.account)) return `(&${lv})`;
+    if (!h.params.some((p) => p.account || p.type.kind === "account")) return `(&${lv})`;
     const n = this.fieldBytes(type);
     // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
     const t = this.tmp("argc");
@@ -1488,6 +1497,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
       return this.seeds(n.arguments[0], 0);
     }
     this.fail(n, "pass signer([...seeds with the bump]) or a SignerSeeds parameter");
+  }
+
+  /** Whether `require`'s error is named in the source (an error enum member, AnchorError.X or a message). */
+  protected namesError(node: ts.Expression): boolean {
+    if (ts.isStringLiteral(node)) return true;
+    if (!ts.isPropertyAccessExpression(node)) return false;
+    if (this.exportName(node.expression) === "AnchorError") return true;
+    return ts.isIdentifier(node.expression) && this.model.errorEnums.has(node.expression.text);
   }
 
   protected errorRef(node: ts.Expression): ErrorDef {

@@ -5,8 +5,10 @@
 // - quotients round toward zero;
 // - conversions to integers round toward −∞;
 // - conversions to f64 round to the nearest double, ties to even.
-// The checked forms (Marginfi's `checked_mul(…).ok_or(MathError)`) fail with MathError where `fixed` returns None.
-import { type i128, type u64, i128 as toI128, require, u128, u256, u64 as toU64 } from "typesol";
+// The checked forms (Marginfi's `checked_mul(…).ok_or(MathError)`) fail with MathError where `fixed` returns None; the
+// fxTry forms return that error as a value (the risk engine records some errors instead of failing), and the wrapping
+// forms give the bits `*`, `/` and `from_num` give in the release build (they only debug_assert on overflow).
+import { type i128, type i64, type u32, type u64, i128 as toI128, require, u128, u256, u64 as toU64 } from "typesol";
 import { MarginfiError } from "./errors";
 
 export const I80F48_ONE: i128 = 281474976710656n;
@@ -15,6 +17,14 @@ export const I80F48_MAX: i128 = 170141183460469231731687303715884105727n;
 export const I80F48_MIN: i128 = -170141183460469231731687303715884105728n;
 const FRAC_MASK: i128 = 281474976710655n;
 const TWO_127: u256 = 170141183460469231731687303715884105728n;
+const MASK_128: u256 = 340282366920938463463374607431768211455n;
+const MATH_ERROR: u32 = 6062n;
+
+/** An I80F48 or the error computing it (0 when there is none). */
+export interface Fx {
+  err: u32;
+  v: i128;
+}
 
 /** |x| as a u256 (i128::MIN included). */
 function magnitude(x: i128): u256 {
@@ -29,6 +39,18 @@ function signed(m: u256, negative: boolean): i128 {
   }
   require(m < TWO_127, MarginfiError.MathError);
   return toI128(u128(m));
+}
+
+/** ±m modulo 2^128, as an i128: the bits a wrapping operation keeps. */
+function wrap128(m: u256, negative: boolean): i128 {
+  let r = m & MASK_128;
+  if (negative && r !== 0n) r = MASK_128 - r + 1n;
+  if (r < TWO_127) return toI128(u128(r));
+  return -toI128(u128(MASK_128 - r)) - 1n;
+}
+/** Whether the i128 with this magnitude and sign exists. */
+function fits(m: u256, negative: boolean): boolean {
+  return negative ? m <= TWO_127 : m < TWO_127;
 }
 
 /** checked_add. */
@@ -79,6 +101,47 @@ export function fxDiv(a: i128, b: i128): i128 {
   return signed(q, negative && q !== 0n);
 }
 
+/** checked_mul, its overflow returned. */
+export function fxTryMul(a: i128, b: i128): Fx {
+  const negative = a < 0n !== b < 0n;
+  const p = magnitude(a) * magnitude(b);
+  let q = p >> 48n;
+  if (negative && (p & u256(u128(FRAC_MASK))) !== 0n) q += 1n;
+  if (!fits(q, negative && p !== 0n)) return { err: MATH_ERROR, v: 0n };
+  return { err: 0n, v: wrap128(q, negative) };
+}
+/** checked_div, its zero divisor or overflow returned. */
+export function fxTryDiv(a: i128, b: i128): Fx {
+  if (b === 0n) return { err: MATH_ERROR, v: 0n };
+  const negative = a < 0n !== b < 0n;
+  const q = (magnitude(a) << 48n) / magnitude(b);
+  if (!fits(q, negative && q !== 0n)) return { err: MATH_ERROR, v: 0n };
+  return { err: 0n, v: wrap128(q, negative) };
+}
+/** checked_add, its overflow returned. */
+export function fxTryAdd(a: i128, b: i128): Fx {
+  if (b >= 0n ? a > I80F48_MAX - b : a < I80F48_MIN - b) return { err: MATH_ERROR, v: 0n };
+  return { err: 0n, v: a + b };
+}
+/** checked_sub, its overflow returned. */
+export function fxTrySub(a: i128, b: i128): Fx {
+  if (b >= 0n ? a < I80F48_MIN + b : a > I80F48_MAX + b) return { err: MATH_ERROR, v: 0n };
+  return { err: 0n, v: a - b };
+}
+/** `a * b`: the product rounded toward −∞, its bits past 128 dropped. */
+export function fxWrappingMul(a: i128, b: i128): i128 {
+  const negative = a < 0n !== b < 0n;
+  const p = magnitude(a) * magnitude(b);
+  let q = p >> 48n;
+  if (negative && (p & u256(u128(FRAC_MASK))) !== 0n) q += 1n;
+  return wrap128(q, negative);
+}
+/** `a / b`: the quotient toward zero, its bits past 128 dropped; a zero divisor panics. */
+export function fxWrappingDiv(a: i128, b: i128): i128 {
+  require(b !== 0n, MarginfiError.MathError);
+  return wrap128((magnitude(a) << 48n) / magnitude(b), a < 0n !== b < 0n);
+}
+
 /** checked_abs (MathError for the most negative value). */
 export function fxAbs(a: i128): i128 {
   require(a !== I80F48_MIN, MarginfiError.MathError);
@@ -123,6 +186,19 @@ export function fxRound(a: i128): i128 {
 /** from_num of an integer. */
 export function fxFromU64(n: u64): i128 {
   return toI128(u128(n)) << 48n;
+}
+/** from_num of an i64. */
+export function fxFromI64(n: i64): i128 {
+  return toI128(n) * I80F48_ONE;
+}
+/** from_num of an i128 (Switchboard's results): the value's bits past 128 dropped, as the release build does. */
+export function fxFromI128Wrapping(n: i128): i128 {
+  return wrap128(magnitude(n) << 48n, n < 0n);
+}
+/** to_num::<u64>: toward −∞, then wrapped to 64 bits. */
+export function fxToU64Wrapping(a: i128): u64 {
+  // The integer part is in [-2^79, 2^79); adding 2^80 keeps it modulo 2^64 and makes it positive.
+  return toU64(u128((a >> 48n) + 1208925819614629174706176n) & 18446744073709551615n);
 }
 /** checked_to_num::<u64> (to_num where Marginfi unwraps it): toward −∞; MathError when out of range. */
 export function fxToU64(a: i128): u64 {

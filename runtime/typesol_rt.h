@@ -74,6 +74,10 @@ static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg
   return code;
 }
 #define TS_FAIL(code, msg) return ts_fail((code), (msg), sol_strlen(msg))
+/* require(condition, code) with a code computed at run time: 0 would read as success, so it fails as an overflow. */
+static __attribute__((noinline, unused)) uint64_t ts_fail_code(uint32_t code, const char *msg) {
+  return ts_fail(code ? code : TS_ERR_OVERFLOW, msg, sol_strlen(msg));
+}
 
 #define TS_TRY(expr)                 \
   do {                               \

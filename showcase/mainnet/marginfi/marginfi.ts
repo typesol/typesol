@@ -27,6 +27,7 @@ import {
   type SystemProgram,
   type u32,
   constraint,
+  currentSlot,
   emit,
   f64FromBits,
   findProgramAddress,
@@ -71,6 +72,9 @@ import {
 } from "./account";
 import { type BankConfigCompact, type BankConfigFast } from "./args";
 import {
+  ASSET_TAG_JUPLEND,
+  BANK_ASSET_TAG_STAKED,
+  BANK_SAME_ASSET_EMODE_ELIGIBLE,
   BANK_SEED_KNOWN,
   CIRCUIT_BREAKER_ENABLED,
   FAILS_IF_PAUSED_OR_REDUCE_STATE,
@@ -86,6 +90,7 @@ import {
   remainingDepositCapacity,
   totalLiquidationFee,
   updateBankCache,
+  updateCachePrice,
   updateInterestRateConfig,
   validateBankConfig,
   validateBankState,
@@ -100,18 +105,31 @@ import {
   type LendingAccountPremiumSettledEvent,
   type LendingAccountRepayEvent,
   type LendingPoolBankCollectFeesEvent,
+  type LendingPoolBankConfigureOracleEvent,
+  type LendingPoolBankSetOraclePriceEvent,
   type LendingPoolBankCreateEvent,
   type MarginfiAccountCreateEvent,
   type MarginfiGroupConfigureEvent,
   type MarginfiGroupCreateEvent,
 } from "./events";
 import { I80F48_ONE, I80F48_ZERO, fxFromU64, fxInt, fxSub, fxToF64Bits, fxToU64 } from "./i80f48";
+import {
+  ASSET_TAG_DEFAULT,
+  ASSET_TAG_SOL,
+  feedFamily,
+  fixedFeed,
+  loadFeed,
+  oracleCount,
+  priceAndConfidence,
+  setupOf,
+  validateFeedAccount,
+  validateOracleCount,
+  validatesFeedAccount,
+} from "./oracle";
 import { PROGRAM_FEES_ENABLED, basisToU32, validateInterestRateConfig } from "./interest_rate";
-import { type Bank, type FeeState, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState } from "./state";
+import { type Bank, type FeeState, type MarginfiAccount, type MarginfiGroup, type WrappedI80F48, BankOperationalState, OracleSetup } from "./state";
 
 const SYSTEM_PROGRAM_ID = pubkey("11111111111111111111111111111111");
-const ASSET_TAG_DEFAULT: u8 = 0n;
-const ASSET_TAG_SOL: u8 = 1n;
 const MAX_PREMIUM_ENTRIES = 64n;
 
 // ---- ix_utils.rs ---------------------------------------------------------------------------------------------------
@@ -548,6 +566,124 @@ export function lendingPoolUpdateFeesDestinationAccount(
   constraint(destination_account, destination_account.mint === bank.mint, MarginfiError.InvalidFeesDestinationAccount);
   checkNoDurableNonce(instruction_sysvar);
   bank.fees_destination_account = destination_account.key;
+}
+
+// ---- oracles -------------------------------------------------------------------------------------------------------
+
+/**
+ * Point a bank at a price feed (governance admin only): the setup's kind of feed and its account, checked as it is set.
+ * Fixed prices and Exponent PT setups go through lending_pool_set_oracle_price, Scope feeds through their own
+ * instruction; a bank in same-asset e-mode keeps the same feed account and kind of feed.
+ */
+export function lendingPoolConfigureBankOracle(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  setup: u8,
+  oracle: Pubkey,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  // A bank with frozen settings panics in the original.
+  require((bank.flags & FREEZE_SETTINGS) !== FREEZE_SETTINGS, MarginfiError.InternalLogicError);
+  const s = setupOf(setup);
+  require(
+    s !== OracleSetup.Fixed &&
+      s !== OracleSetup.FixedKamino &&
+      s !== OracleSetup.FixedDrift &&
+      s !== OracleSetup.FixedJuplend &&
+      s !== OracleSetup.PTPyth &&
+      s !== OracleSetup.PTFixed,
+    MarginfiError.UseSetOraclePrice,
+  );
+  require(s !== OracleSetup.Scope && s !== OracleSetup.ScopeKamino && s !== OracleSetup.ScopeJuplend, MarginfiError.UseConfigureBankOracleScope);
+  require(
+    (bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) !== BANK_SAME_ASSET_EMODE_ELIGIBLE ||
+      (bank.config.oracle_keys.get(0n) === oracle && feedFamily(bank.config.oracle_setup) === feedFamily(s)),
+    MarginfiError.BadEmodeConfig,
+  );
+  bank.config.oracle_setup = s;
+  bank.config.oracle_keys.set(0n, oracle);
+  bank.config.fixed_price.value = I80F48_ZERO;
+  // mSOL and LST setups take their multiplier's account from the remaining accounts.
+  const rem = remainingAccounts();
+  if (s === OracleSetup.PythMSOL || s === OracleSetup.PythLST) {
+    require(rem.length === 2n, MarginfiError.WrongNumberOfOracleAccounts);
+    bank.config.oracle_keys.set(1n, rem.get(1n).key);
+  } else if (s === OracleSetup.KaminoMSOL || s === OracleSetup.JuplendMSOL || s === OracleSetup.KaminoLST || s === OracleSetup.JuplendLST) {
+    require(rem.length === 3n, MarginfiError.WrongNumberOfOracleAccounts);
+    bank.config.oracle_keys.set(2n, rem.get(2n).key);
+  }
+  let err = validateOracleCount(bank, rem.length);
+  if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
+  require(err === 0n, err);
+  emit<LendingPoolBankConfigureOracleEvent>({ header: { signer: governance_admin.key, marginfi_group: group.key }, bank: bank.key, oracle_setup: setup, oracle });
+}
+
+/**
+ * Give a bank a fixed price (governance admin only; not a staked bank or one in same-asset e-mode): `Fixed` (the venue
+ * kind of fixed price for a Kamino, Drift or JupLend bank), or an Exponent PT's start price in (0, 1].
+ */
+export function lendingPoolSetOraclePrice(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group">,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  price: WrappedI80F48,
+  setup: u8,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  // A bank with frozen settings panics in the original.
+  require((bank.flags & FREEZE_SETTINGS) !== FREEZE_SETTINGS, MarginfiError.InternalLogicError);
+  require((bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) !== BANK_SAME_ASSET_EMODE_ELIGIBLE, MarginfiError.BadEmodeConfig);
+  require(bank.config.asset_tag !== BANK_ASSET_TAG_STAKED, MarginfiError.Unauthorized);
+  const p = price.value;
+  const s = setupOf(setup);
+  const rem = remainingAccounts();
+  if (s === OracleSetup.PTPyth || s === OracleSetup.PTFixed) {
+    require(rem.length === (s === OracleSetup.PTPyth ? 2n : 1n), MarginfiError.WrongNumberOfOracleAccounts);
+    require(p > I80F48_ZERO && p <= I80F48_ONE, MarginfiError.InvalidPtStartPrice);
+    bank.config.oracle_setup = s;
+    bank.config.oracle_keys.set(0n, rem.get(0n).key);
+    if (s === OracleSetup.PTPyth) bank.config.oracle_keys.set(1n, rem.get(1n).key);
+  } else {
+    require(s === OracleSetup.Fixed, MarginfiError.InvalidOracleSetup);
+    require(p >= I80F48_ZERO, MarginfiError.FixedOraclePriceNegative);
+    const tag = bank.config.asset_tag;
+    if (tag === ASSET_TAG_DEFAULT) bank.config.oracle_setup = OracleSetup.Fixed;
+    else if (tag === 3n) bank.config.oracle_setup = OracleSetup.FixedKamino;
+    else if (tag === 4n) bank.config.oracle_setup = OracleSetup.FixedDrift;
+    else if (tag === ASSET_TAG_JUPLEND) bank.config.oracle_setup = OracleSetup.FixedJuplend;
+    else require(false, MarginfiError.InvalidOracleSetup);
+    // The other keys stay, so a venue bank can return to its setup.
+    bank.config.oracle_keys.set(0n, SYSTEM_PROGRAM_ID);
+  }
+  bank.config.fixed_price.value = p;
+  require(validatesFeedAccount(bank) === false, MarginfiError.InternalLogicError);
+  const err = validateOracleCount(bank, rem.length);
+  require(err === 0n, err);
+  emit<LendingPoolBankSetOraclePriceEvent>({ header: { signer: governance_admin.key, marginfi_group: group.key }, bank: bank.key, price: { value: p } });
+}
+
+/**
+ * Price a bank now (permissionless): its interest accrues (not while the protocol is paused), the oracle's unbiased
+ * spot price and confidence go into its cache, and the circuit breaker observes them. The remaining accounts are the
+ * bank's oracle accounts (none for a fixed price).
+ */
+export function lendingPoolPulseBankPriceCache(group: Account<MarginfiGroup>, bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>): void {
+  const t = now();
+  if (!protocolPaused(group)) {
+    accrueInterest(bank, group, bank.key, t);
+    updateBankCache(bank, group, t);
+  }
+  const rem = remainingAccounts();
+  const count = oracleCount(bank, rem.length);
+  require(count === 0n, count);
+  const f = rem.length === 0n ? fixedFeed(bank) : loadFeed(bank, rem.get(0n), t);
+  require(f.err === 0n, f.err);
+  const p = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  require(p.err === 0n, p.err);
+  updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
 }
 
 // ---- marginfi accounts -------------------------------------------------------------------------------------------
