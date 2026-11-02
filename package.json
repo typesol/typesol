@@ -94,7 +94,7 @@
     }
   },
   "devDependencies": {
-    "@anchor-lang/core": "1.2.1",
+    "@anchor-lang/core": "1.2.2",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "@solana-program/system": "^0.16.0",
